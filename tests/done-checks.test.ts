@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { doneCheckCommands } from "../src/core/done-checks.js";
+import { closestTestFile, doneCheckCommands } from "../src/core/done-checks.js";
 import { TRIAGE_SCHEMA, parseTriage } from "../src/core/outputs.js";
 import { renderSpec } from "../src/core/spec-comment.js";
 import { unsupportedKeyword } from "../src/impl/runner/output-schema.js";
@@ -101,5 +101,26 @@ describe("the spec comment's Done when", () => {
   it("shows the lines as before for a spec without done_checks", () => {
     const r = parseTriage(answer());
     expect(r.ok ? renderSpec(r.value, 2) : "").toContain("- CI runs the gate\n");
+  });
+});
+
+// A missing test file (design 04-pre-push-gates, 2026-11-24): the closest existing test file by name, shared by the
+// implement run's fix-step note and triage's check of the spec's test file names.
+describe("closestTestFile", () => {
+  const FILES = ["tests/data-table-docs.test.ts", "tests/docs.test.ts", "tests/schedule.test.ts", "tests/fixtures/table-docs.json"];
+
+  it("is the existing file sharing the most words with the missing name, of the same suffix", () => {
+    expect(closestTestFile("tests/table-docs.test.ts", FILES)).toBe("tests/data-table-docs.test.ts");
+    expect(closestTestFile("tests/schedule-feedback.test.ts", FILES)).toBe("tests/schedule.test.ts");
+  });
+
+  it("breaks a tie in sorted order, whatever order the files come in", () => {
+    const tied = ["tests/b-feedback.test.ts", "tests/a-feedback.test.ts"];
+    expect(closestTestFile("tests/feedback-x.test.ts", tied)).toBe("tests/a-feedback.test.ts");
+  });
+
+  it("is null when no file shares a word with the missing name", () => {
+    expect(closestTestFile("tests/zzz.test.ts", FILES)).toBeNull();
+    expect(closestTestFile("tests/zzz.test.ts", [])).toBeNull();
   });
 });

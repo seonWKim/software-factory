@@ -79,6 +79,71 @@ export function parseDoneChecks(v: unknown, lines: readonly string[], commands?:
   return { ok: true, value: out };
 }
 
+/** A file's name split at its first dot: the words before it (under tests/, lower case), and the suffix (`.test.ts`). */
+function nameParts(path: string): { words: string[]; suffix: string } {
+  const rest = path.replace(/^tests\//, "");
+  const slash = rest.lastIndexOf("/");
+  const dot = rest.indexOf(".", slash + 1);
+  const stem = dot < 0 ? rest : rest.slice(0, dot);
+  return { words: stem.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean), suffix: dot < 0 ? "" : rest.slice(dot) };
+}
+
+/**
+ * The existing test file closest by name to `missing` (design 04-pre-push-gates): of the files in `files` with the same
+ * suffix, the one sharing the most words with it, ties in sorted order; null when none shares a word.
+ */
+export function closestTestFile(missing: string, files: readonly string[]): string | null {
+  const want = nameParts(missing);
+  let best: { file: string; score: number } | null = null;
+  for (const file of [...files].sort()) {
+    const got = nameParts(file);
+    if (file === missing || got.suffix !== want.suffix) continue;
+    const score = new Set(got.words.filter((w) => want.words.includes(w))).size;
+    if (score > 0 && (!best || score > best.score)) best = { file, score };
+  }
+  return best?.file ?? null;
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const isStr = (v: unknown): v is string => typeof v === "string";
+const isStrs = (v: unknown): v is string[] => Array.isArray(v) && v.every(isStr);
+
+/** An exact file under tests/ (no folder, no glob): a name triage checks against the repo's files. */
+const isExactTestPath = (p: string): boolean => p.startsWith("tests/") && !/[*?[]/.test(p) && /\/[^/]*\.[^/]+$/.test(p);
+
+/** The decision that names one swap of an unknown test file for the closest existing one. */
+const swapDecision = (file: string, closest: string) => ({
+  question: `The spec named \`${file}\`, which does not exist; it now names \`${closest}\`, the closest existing test file by name. Keep the swap?`,
+  reason: "A check on a test file that does not exist fails as if the code were broken.", options: [], default: "keep the swap", owner_only: false,
+});
+
+/**
+ * Triage's test file names against the repo's files (design 04-pre-push-gates), before parseTriage: each done_checks
+ * test file and each exact tests/ file in allowed_paths or files_to_change that `files` (the repo's tests/ files) lacks is
+ * replaced everywhere it is named, done-when lines included, by the closest existing test file by name, and a decision
+ * names each swap. A name no file is close to stays: a file the run creates. Anything else is left for parseTriage.
+ */
+export function checkTestFiles(v: unknown, files: readonly string[]): unknown {
+  if (!isObj(v) || !(v.decisions === undefined || Array.isArray(v.decisions))) return v;
+  const lists = (x: unknown): unknown[] => (Array.isArray(x) ? x : []);
+  const named = [
+    ...lists(v.done_checks).flatMap((c) => (isObj(c) && isStr(c.test_file) ? [c.test_file] : [])),
+    ...[v.allowed_paths, v.files_to_change].flatMap((l) => (isStrs(l) ? l.filter(isExactTestPath) : [])),
+  ];
+  const swap = new Map([...new Set(named)].flatMap((f) => { const c = files.includes(f) ? null : closestTestFile(f, files); return c ? [[f, c] as const] : []; }));
+  if (swap.size === 0) return v;
+  const path = (p: unknown) => (isStr(p) ? (swap.get(p) ?? p) : p);
+  const text = (t: unknown) => (isStr(t) ? [...swap].reduce((s, [from, to]) => s.split(from).join(to), t) : t);
+  const paths = (l: unknown) => (isStrs(l) ? [...new Set(l.map((p) => path(p) as string))] : l);
+  return {
+    ...v,
+    ...(Array.isArray(v.done_criteria) ? { done_criteria: v.done_criteria.map(text) } : {}),
+    ...(Array.isArray(v.done_checks) ? { done_checks: v.done_checks.map((c) => (isObj(c) ? { ...c, line: text(c.line), ...("test_file" in c ? { test_file: path(c.test_file) } : {}) } : c)) } : {}),
+    allowed_paths: paths(v.allowed_paths), files_to_change: paths(v.files_to_change),
+    decisions: [...lists(v.decisions), ...[...swap].map(([from, to]) => swapDecision(from, to))],
+  };
+}
+
 /** A check as the spec comment shows it after its done-when line: `check: <command or test file>`, or `manual: <reason>`. */
 export function doneCheckText(c: DoneCheck): string {
   if ("command" in c) return `check: \`${c.command}\``;

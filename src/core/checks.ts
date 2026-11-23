@@ -6,7 +6,7 @@ import type { FactoryConfig } from "./config.js";
 import { failingTests, stripAnsi } from "./output-summary.js";
 import { type SelectionMode, type SelectionRecord, type TestSelection, noteSelection, selectTests, selectionMode, uncovered } from "./test-selection.js";
 import type { TrustedGit } from "./pre-push.js";
-import type { DoneCheck } from "./done-checks.js";
+import { type DoneCheck, closestTestFile } from "./done-checks.js";
 import type { RunId, StateChangeDetail } from "./types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { ExecResult, Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
@@ -97,7 +97,12 @@ export interface CheckResult {
   tail: string;
   /** The done-when lines this command checks (doneCheckRound); absent: none. */
   lines?: string[];
+  /** A test file check whose file does not exist (doneCheckRound's `missing`): the file, and the closest existing one by name. */
+  missing?: { file: string; closest: string | null };
 }
+
+/** The outcome of a test file check whose file does not exist (design 04-pre-push-gates), in place of its exit code. */
+const missingTestFileText = (file: string): string => `the check names ${file}, which does not exist`;
 
 export interface CheckRound {
   /** The commands that ran, in order; the last one is the failure, if any. */
@@ -283,26 +288,42 @@ function doneCheckArgv(repo: FactoryConfig["repo"], c: DoneCheck): string[] | nu
  * An implement run's check round with the item's done checks (design 04-pre-push-gates): the repo's check list, then
  * each test file check (`repo.test_command` on that file only) not already in it; a command check is the repo command
  * it names, run once. `manual` lines run nothing. `mark` puts each command's done-when lines on a round's results, by
- * place (a selection keeps the order). Null done_checks: the check list as before.
+ * place (a selection keeps the order). `testFile` names the test file of a round's failed test file check; `missing`
+ * makes that failure say the file does not exist when `present` (the branch's files) lacks it. Null done_checks: the check list as before.
  */
 export function doneCheckRound(repo: FactoryConfig["repo"], checks: readonly DoneCheck[] | null): {
   commands: string[][]; mark<R extends CheckRound>(round: R): R; results(round: CheckRound): DoneCheckResult[] | undefined;
+  testFile(round: CheckRound): string | null; missing<R extends CheckRound>(round: R, present: readonly string[]): R;
 } {
   const commands = checkCommands(repo);
   const lines: string[][] = commands.map(() => []);
+  const files: (string | undefined)[] = []; // each test file check's file, at its command's place
   // Each check's place in `commands`: -1 for a manual line (or a command no longer in the list), which runs nothing.
   const at = (checks ?? []).map((c) => {
     const argv = doneCheckArgv(repo, c);
     if (!argv) return -1;
     let i = commands.findIndex((cmd) => commandText(cmd) === commandText(argv));
-    if (i < 0) i = commands.push(argv) - 1;
+    if (i < 0) {
+      i = commands.push(argv) - 1;
+      if ("test_file" in c) files[i] = c.test_file;
+    }
     (lines[i] ??= []).push(c.line);
     return i;
   });
+  const testFile = (round: CheckRound) => (round.failed ? (files[round.results.length - 1] ?? null) : null);
   return {
     commands,
     mark: (round) => {
       for (const [i, r] of round.results.entries()) if (lines[i]?.length) r.lines = [...lines[i]!];
+      return round;
+    },
+    testFile,
+    missing: (round, present) => {
+      const file = testFile(round);
+      if (round.failed && file && !present.includes(file)) {
+        round.failed.how = missingTestFileText(file);
+        round.failed.missing = { file, closest: closestTestFile(file, present) };
+      }
       return round;
     },
     results: (round) => checks?.map((c, i): DoneCheckResult => {

@@ -64,10 +64,11 @@ class GitPushBroker implements ToolBroker {
   }
 }
 
-/** The test command: with no file it passes; with files it fails, vitest-style, on the first one that holds "broken". */
-const TESTS = ["sh", "-c", 'for f; do if grep -q broken "$f" 2>/dev/null; then echo " FAIL  $f > checks the line"; exit 1; fi; done', "tests"];
+/** The test command: with no file it passes; with files it fails, vitest-style, on a missing one or the first one that holds "broken". */
+const TESTS = ["sh", "-c", 'for f; do [ -e "$f" ] || { echo "No test files found, exiting with code 1"; exit 1; }; if grep -q broken "$f"; then echo " FAIL  $f > checks the line"; exit 1; fi; done', "tests"];
 const TYPECHECK = ["sh", "-c", "exit 0", "typecheck"];
 const NEW_TEST = "tests/new.test.ts";
+const EXISTING = ["tests/data-table-docs.test.ts", "tests/table-docs-extra.test.ts"];
 const LINES = ["the new test passes", "the whole suite passes", "the page looks right"];
 
 const repos = gitTemplate((root) => {
@@ -76,6 +77,7 @@ const repos = gitTemplate((root) => {
   git(root, "init", "--quiet", "--bare", "-b", "main", origin);
   git(root, "clone", "--quiet", origin, dev);
   commitFile(dev, "src/a.txt", "a\n", "add a");
+  for (const f of EXISTING) commitFile(dev, f, "passes\n", `add ${f}`);
   git(dev, "push", "--quiet", "origin", "main");
   git(root, "clone", "--quiet", origin, join(root, "repo"));
 });
@@ -140,6 +142,7 @@ async function setup(o: { done_checks: DoneCheck[]; implement: AgentStep; fix?: 
   return { store, clock, cfg, step, item, fixSteps, broker, implementRuns, testRuns };
 }
 
+const changeA: AgentStep = (wd) => commitFile(wd, "src/a.txt", "a changed\n", "change a");
 const testFile = (line: string, test_file = NEW_TEST): DoneCheck => ({ line, test_file });
 const manual = (line: string): DoneCheck => ({ line, manual: true, reason: "a person looks at the page" });
 
@@ -156,6 +159,9 @@ describe("implement run: the item's done checks run before push", { timeout: 60_
     expect(first!.outcome).toMatchObject({ status: "failed", error_code: "checks_failed" });
     const outcome = first!.outcome as unknown as { detail: string; done_checks: unknown };
     expect(outcome.detail).toContain(`"${LINES[0]}"`);
+    // The run created the file: its failure is its exit code, as before, never "does not exist".
+    expect(outcome.detail).toContain("exited 1");
+    expect(outcome.detail).not.toContain("does not exist");
     expect(outcome.done_checks).toEqual([
       { line: LINES[0], result: "fail", check: `${TESTS.join(" ")} ${NEW_TEST}` },
       { line: LINES[1], result: "pass", check: TESTS.join(" ") },
@@ -200,6 +206,43 @@ describe("implement run: the item's done checks run before push", { timeout: 60_
   });
 });
 
+// A test file check on a file that does not exist (design 04-pre-push-gates, 2026-11-24): triage swaps an unknown name for
+// the closest existing test file; a missing file the run did not create fails with "does not exist", not its exit code.
+describe("a done check on a missing test file", { timeout: 60_000 }, () => {
+  it("triage replaces an unknown test file name by the closest existing one and names the swap in a decision", async () => {
+    const f = await setup({ done_checks: [testFile(LINES[0]!, "tests/table-docs.test.ts"), manual(LINES[1]!), manual(LINES[2]!)], implement: changeA });
+    const [first] = await f.implementRuns();
+    expect(f.item.done_checks?.[0]).toEqual({ line: LINES[0], test_file: "tests/data-table-docs.test.ts" });
+    const triage = (await f.store.listRuns(f.item.id)).find((r) => r.kind === "triage");
+    const spec = (triage!.outcome as unknown as { data: { spec: { decision_items: { text: string }[] } } }).data.spec;
+    expect(spec.decision_items.map((d) => d.text)).toEqual([expect.stringContaining("`tests/table-docs.test.ts`, which does not exist; it now names `tests/data-table-docs.test.ts`")]);
+    expect(first!.outcome).toMatchObject({ status: "succeeded" });
+  });
+
+  it("a missing file the run did not create fails with its own outcome, and the fix step names no file when none is close", async () => {
+    const f = await setup({ done_checks: [testFile(LINES[0]!, "tests/zzz.test.ts"), manual(LINES[1]!), manual(LINES[2]!)], implement: changeA });
+    const [first] = await f.implementRuns();
+    expect(first!.outcome).toMatchObject({ status: "failed", error_code: "checks_failed" });
+    const detail = (first!.outcome as unknown as { detail: string }).detail;
+    expect(detail).toContain("the check names tests/zzz.test.ts, which does not exist");
+    expect(detail).not.toContain("exited 1");
+    expect(f.fixSteps[0]!.prompt).toContain("failed (the check names tests/zzz.test.ts, which does not exist)");
+    expect(f.fixSteps[0]!.prompt).toContain("The test file `tests/zzz.test.ts` does not exist on this branch");
+    expect(f.fixSteps[0]!.prompt).not.toContain("closest existing test file");
+  });
+
+  it("the fix step suggests the closest existing test file by name", async () => {
+    const gone = EXISTING[0]!;
+    const f = await setup({
+      done_checks: [testFile(LINES[0]!, gone), manual(LINES[1]!), manual(LINES[2]!)],
+      implement: (wd) => { git(wd, "rm", "--quiet", "--", gone); git(wd, "commit", "--quiet", "-m", "drop it"); },
+    });
+    const [first] = await f.implementRuns();
+    expect((first!.outcome as unknown as { detail: string }).detail).toContain(`the check names ${gone}, which does not exist`);
+    expect(f.fixSteps[0]!.prompt).toContain(`The closest existing test file by name is \`${EXISTING[1]}\``);
+  });
+});
+
 describe("doneCheckRound", () => {
   const repo = { ...config.repo, test_command: ["npm", "test"], check_commands: [["npm", "run", "typecheck"], ["npm", "test"]] };
   const ran = (oks: boolean[]): CheckRound => {
@@ -225,5 +268,16 @@ describe("doneCheckRound", () => {
   it("a line whose command never ran, because an earlier one failed first, is not_run", () => {
     const d = doneCheckRound(repo, [{ line: "a", command: "npm run typecheck" }, testFile("b")]);
     expect(d.results(ran([false]))!.map((r) => r.result)).toEqual(["fail", "not_run"]);
+  });
+
+  it("a failed test file check on a file the branch lacks says it does not exist, with the closest file; a present one keeps its exit code", () => {
+    const d = doneCheckRound(repo, [testFile("a", "tests/table-docs.test.ts")]);
+    const failed = d.missing(ran([true, true, false]), ["tests/data-table-docs.test.ts"]).failed!;
+    expect(failed).toMatchObject({ how: "the check names tests/table-docs.test.ts, which does not exist", missing: { file: "tests/table-docs.test.ts", closest: "tests/data-table-docs.test.ts" } });
+    expect(d.missing(ran([true, true, false]), ["tests/table-docs.test.ts"]).failed).toMatchObject({ how: "exited 1" });
+    expect(d.missing(ran([true, true, false]), ["tests/table-docs.test.ts"]).failed).not.toHaveProperty("missing");
+    // A failure of a command that is not a test file check names no file.
+    expect(d.testFile(ran([true, false]))).toBeNull();
+    expect(d.missing(ran([true, false]), []).failed).toMatchObject({ how: "exited 1" });
   });
 });

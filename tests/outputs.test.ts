@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseTriage } from "../src/core/outputs.js";
+import { checkTestFiles, parseTriage } from "../src/core/outputs.js";
 import { answersYes, dependencyQuestion, proposedDependency } from "../src/core/task-build.js";
 import { triageSpec } from "./helpers/fakes/config.js";
 
@@ -72,5 +72,47 @@ describe("goal_done_when", () => {
     }
     const p = parseTriage({ ...split, goal_done_when: ["<invoke name=\"x\">"] });
     expect(!p.ok && p.error).toMatch(/^goal_done_when: tool-call markup/);
+  });
+});
+
+// Triage checks the spec's test file names against the repo's files (design 04-pre-push-gates, 2026-11-24): an unknown
+// one is replaced by the closest existing test file, named in a decision; with none close it stays, a file the run creates.
+describe("checkTestFiles", () => {
+  const FILES = ["tests/data-table-docs.test.ts", "tests/outputs.test.ts"];
+  const LINE = "tests/table-docs.test.ts shows the table docs";
+  const spec = (o: Record<string, unknown> = {}) => ({
+    ...triageSpec, done_criteria: [LINE, "the docs say so"],
+    done_checks: [{ line: LINE, test_file: "tests/table-docs.test.ts" }, { line: "the docs say so", manual: true, reason: "a person reads them" }],
+    allowed_paths: ["src/", "tests/table-docs.test.ts", "tests/outputs.test.ts", "tests/new/"], files_to_change: ["src/", "tests/table-docs.test.ts"], ...o,
+  });
+
+  it("replaces a missing test file everywhere it is named by the closest existing one, and names the swap in a decision", () => {
+    const p = parseTriage(checkTestFiles(spec(), FILES));
+    expect(p.ok).toBe(true);
+    if (!p.ok) return;
+    const swapped = "tests/data-table-docs.test.ts shows the table docs";
+    expect(p.value.done_criteria[0]).toBe(swapped);
+    expect(p.value.done_checks?.[0]).toEqual({ line: swapped, test_file: "tests/data-table-docs.test.ts" });
+    expect(p.value.allowed_paths).toEqual(["src/", "tests/data-table-docs.test.ts", "tests/outputs.test.ts", "tests/new/"]);
+    expect(p.value.files_to_change).toEqual(["src/", "tests/data-table-docs.test.ts"]);
+    expect(p.value.decision_items).toEqual([expect.objectContaining({ owner_only: false, default: "keep the swap" })]);
+    expect(p.value.decision_items?.[0]?.text).toContain("`tests/table-docs.test.ts`, which does not exist; it now names `tests/data-table-docs.test.ts`");
+  });
+
+  it("checks an exact tests/ file in allowed_paths or files_to_change too, keeping the decisions triage wrote first", () => {
+    const own = { question: "Which colour?", reason: "it shows", options: [], default: "red", owner_only: false };
+    const p = parseTriage(checkTestFiles(spec({ done_checks: undefined, decisions: [own], allowed_paths: ["src/", "tests/outputs-triage.test.ts"], files_to_change: ["tests/outputs-triage.test.ts"] }), FILES));
+    expect(p.ok && p.value.allowed_paths).toEqual(["src/", "tests/outputs.test.ts"]);
+    expect(p.ok && p.value.decision_items?.map((d) => d.text)).toEqual(["Which colour?", expect.stringContaining("it now names `tests/outputs.test.ts`")]);
+  });
+
+  it("keeps a missing name no file is close to, with no decision: a file the run creates", () => {
+    const v = spec({ done_checks: undefined, allowed_paths: ["tests/zzz.test.ts"], files_to_change: ["tests/zzz.test.ts"] });
+    expect(checkTestFiles(v, FILES)).toBe(v);
+  });
+
+  it("leaves an answer whose test files all exist, and folders, as they are", () => {
+    const v = spec({ done_checks: undefined, allowed_paths: ["tests/", "tests/outputs.test.ts", "tests/new/"], files_to_change: ["tests/outputs.test.ts"] });
+    expect(checkTestFiles(v, FILES)).toBe(v);
   });
 });
