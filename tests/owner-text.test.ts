@@ -118,12 +118,11 @@ describe("owner text for a failed item (issue #758)", () => {
     const table = await screen.findByRole("table", { name: "Runs" });
     await screen.findByRole("heading", { level: 1, name: "Add the export button" });
     expect(internalNames(visibleText(container))).toEqual([]);
-    // The Runs table: the step and a short run ID; the full ID is under the row's Details.
+    // The Runs table: the row's title is the step and its attempt; no run ID, short or full, is row text (Copy ID in
+    // its ⋯ menu copies it, design 09-dashboard-item).
     const run = table.querySelector<HTMLElement>(`tr[data-run="${RUN}"]`)!;
-    const kind = run.querySelector<HTMLElement>("td")!;
-    expect(visibleText(kind)).toContain("f726027e");
-    expect(visibleText(run)).not.toContain(RUN);
-    expect([...run.querySelectorAll("details code")].map((c) => c.textContent)).toContain(RUN);
+    expect(run.querySelector<HTMLElement>("[data-cell-title]")!.textContent).toMatch(/^\w+ #\d+$/);
+    expect(run.textContent).not.toContain("f726027e");
     // The thread names the message's kind in words.
     const thread = screen.getByRole("list", { name: "Thread" });
     expect(within(thread).getByText("Run failed")).toBeTruthy();

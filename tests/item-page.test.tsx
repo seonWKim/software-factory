@@ -10,7 +10,7 @@ import { Markdown } from "../web/src/components/ui/markdown.js";
 
 // The item page (design §9, issue #313): a split parent lists its phases and a phase links back to its parent;
 // the spec triage wrote sits behind "spec written (show)" and renders as markdown, never as escaped JSON; the
-// spec comment and PR link only for http(s) URLs; the Runs table names each run by kind and ID. A waiting spec
+// spec comment and PR link only for http(s) URLs; the Runs table names each run by kind and attempt. A waiting spec
 // (issue #526) shows In short above Commands, its decisions as questions, and a confirm step before approve; Reject
 // and Revise open a dialog (issue #527).
 
@@ -235,15 +235,17 @@ describe("item page: links and runs", () => {
     expect(document.querySelector('a[href^="javascript:"]')).toBeNull();
   });
 
-  it("the Runs table shows each run's step and ID, its try and its result", async () => {
+  it("the Runs table shows each run as an ItemRow: its status, then its kind and attempt as the title, its ID only behind Copy ID", async () => {
     mount("/app/items/wi_parent");
     const table = await screen.findByRole("table", { name: "Runs" });
     const run = table.querySelector<HTMLElement>('tr[data-run="run_triage_1"]')!;
     const cells = [...run.querySelectorAll("td")].map((c) => c.textContent);
-    expect(cells[0]).toContain("triage");
-    expect(cells[0]).toContain("run_triage_1");
-    expect(cells[1]).toBe("Try 2");
-    expect(cells[2]).toBe("Done");
+    expect(cells[0]).toBe("Done");
+    expect(cells[1]).toBe("Triage #2");
+    expect(run.dataset.itemId).toBe("wi_parent");
+    expect(run.textContent).not.toMatch(/run_|wi_/);
+    fireEvent.click(within(run).getByRole("button", { name: "More actions: Triage #2" }));
+    expect(within(run).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Copy ID"]);
   });
 });
 
@@ -708,7 +710,7 @@ describe("item page: Interactive task badge", () => {
     const table = await screen.findByRole("table", { name: "Runs" });
     const heading = screen.getByRole("heading", { level: 1 });
     expect(within(heading.parentElement!.parentElement!).getByText("Interactive task")).toBeTruthy();
-    const cell = table.querySelector<HTMLElement>('tr[data-run="run_i_1"] td')!;
+    const cell = table.querySelector<HTMLElement>('tr[data-run="run_i_1"] [data-cell-title]')!;
     expect(cell.textContent).toContain("Interactive task");
     expect(cell.textContent).not.toMatch(/\binteractive\b/);
   });
@@ -716,8 +718,9 @@ describe("item page: Interactive task badge", () => {
   it("a finished interactive run shows no header badge, only the kind label in the table", async () => {
     mount("/app/items/wi_done");
     const table = await screen.findByRole("table", { name: "Runs" });
-    expect(screen.getAllByText("Interactive task")).toHaveLength(1);
-    expect(table.querySelector('tr[data-run="run_i_2"] td')!.textContent).toContain("Interactive task");
+    // No header badge: the run's title is the only text that names it.
+    expect(screen.queryAllByText("Interactive task")).toHaveLength(0);
+    expect(table.querySelector('tr[data-run="run_i_2"] [data-cell-title]')!.textContent).toBe("Interactive task #1");
   });
 });
 
@@ -781,7 +784,7 @@ describe("item page: timeline and Runs in plain words", () => {
     expect(raw).toContain("brand_new_reason");
   });
 
-  it("the Runs table reads Step / Try / Result, folds consecutive cancelled tries, and shows one error line", async () => {
+  it("the Runs rows read Status / Run / Detail, fold consecutive cancelled tries, and show one error line", async () => {
     await serveWords([], [
       run("run_a", "implement", "canceled", 0),
       run("run_b", "implement", "canceled", 0),
@@ -790,21 +793,21 @@ describe("item page: timeline and Runs in plain words", () => {
       run("run_e", "implement", "failed", 2, { code: "some_unlisted_code", detail: "long text" }),
     ]);
     const table = await screen.findByRole("table", { name: "Runs" });
-    expect(within(table).getAllByRole("columnheader").slice(0, 3).map((h) => h.textContent)).toEqual(["Step", "Try", "Result"]);
-    const rows = [...table.querySelectorAll("tr[data-run]")];
+    expect(within(table).getAllByRole("columnheader").slice(0, 3).map((h) => h.textContent)).toEqual(["Status", "Run", "Detail"]);
+    const rows = [...table.querySelectorAll<HTMLElement>("tr[data-run]")];
     expect(rows.map((r) => r.getAttribute("data-run"))).toEqual(["run_e", "run_d", "run_c"]);
     const folded = rows[2]!;
-    expect(folded.querySelectorAll("td")[1]!.textContent).toBe("3 tries");
-    expect(folded.querySelectorAll("td")[2]!.textContent).toBe("Stopped");
-    const ids = [...folded.querySelectorAll("[data-raw] li")].map((l) => l.textContent);
-    expect(ids).toEqual(["run_c", "run_b", "run_a"]);
+    expect(folded.querySelectorAll("td")[0]!.textContent).toBe("Stopped");
+    expect(folded.textContent).toContain("3 tries");
+    expect(folded.textContent).not.toMatch(/run_/);
     const timedOut = rows[1]!;
-    expect(visible(timedOut as HTMLElement)).toContain("Timed out before it started");
-    expect(visible(timedOut as HTMLElement)).not.toMatch(/2026-11-16|schedule_to_close/);
+    expect(visible(timedOut)).toContain("Timed out before it started");
+    expect(visible(timedOut)).not.toMatch(/2026-11-16|schedule_to_close/);
     expect(timedOut.querySelector("[data-raw]")?.textContent).toContain("2026-11-16T22:39:21.171Z");
-    expect(rows[0]!.querySelectorAll("td")[3]!.textContent).toContain("Failed");
-    expect(visible(rows[0] as HTMLElement)).not.toContain("some_unlisted_code");
+    expect(rows[0]!.querySelector("[data-row-second]")!.textContent).toContain("Failed");
+    expect(visible(rows[0]!)).not.toContain("some_unlisted_code");
   });
+
 });
 
 describe("item page: About (the request and the approved spec)", () => {

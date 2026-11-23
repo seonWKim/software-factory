@@ -91,7 +91,7 @@ const NO_CLI_VERB = new Set(["restart"]);
  * The controls in a row or card that are no actions: they open a reading dialog or a form, copy, or go somewhere. A new
  * control must carry data-action, or be added here on purpose.
  */
-const NOT_ACTIONS = new Set([t("tasks.description"), t("tasks.addSub"), t("tasks.projectsItem"), t("tasks.delete"), t("commands.copyCli"), t("needs.noMore")]);
+const NOT_ACTIONS = new Set([t("tasks.description"), t("tasks.addSub"), t("tasks.projectsItem"), t("tasks.delete"), t("commands.copyCli"), t("copy.id"), t("needs.noMore")]);
 const notAction = (el: HTMLElement) =>
   el.getAttribute("aria-haspopup") === "menu" // a ⋯ menu's button: its entries are listed instead
   || el.hasAttribute("data-id") // a person's name, which copies its ID

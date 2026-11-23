@@ -8,8 +8,8 @@ import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { CopyText } from "../components/ui/copy.js";
 import { Input } from "../components/ui/input.js";
-import { type Column, DataTable } from "../components/ui/data-table.js";
-import { ErrorNote, Loading, type StoredFlags, Table, Td, Tr, useRefetchWhile } from "../components/ui/parts.js";
+import { DataTable } from "../components/ui/data-table.js";
+import { ErrorNote, Loading, type StoredFlags, useRefetchWhile } from "../components/ui/parts.js";
 import { Notice, PageHeader, PageToolbar, EmptyState } from "../components/ui/notice.js";
 import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { FailuresSection, FailuresWindowSwitch, useFailuresWindow } from "./failures.js";
@@ -27,7 +27,8 @@ import { duration, groupedInteger, localClock, localDateTime, relativeTime, runS
 import { GROUP_LABELS, ITEM_STATES, STATE_GROUPS, type StateGroup, groupOf, groupStates, isGroup, stateLabel } from "../../../src/shared/states.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, RawNames, When, byId, QueueTable, RunningTable, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
+import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, RawNames, When, byId, QueueTable, RunningTable, WhyText, WorkerName, isInteractiveRun, runKindLabel, runTitle, useNow, useViewer } from "./common.js";
+import { ItemTable, type ItemTableRow } from "./item-row.js";
 import { ItemDecision } from "./decision-card.js";
 import { ItemAbout } from "./item-about.js";
 import { ClosedStatus, ItemFacts, TIMELINE_ANCHOR, timelineSentence } from "./item-facts.js";
@@ -459,47 +460,7 @@ export function ItemPage({ id }: { id: string }) {
         </Card>
       )}
       <Card title={t("item.runs")} count={runs.length}>
-        {runs.length === 0 ? <EmptyState title={t("item.noRun")} /> : (
-          <Table label={t("item.runs")} head={[t("item.step"), t("item.try"), t("item.result"), t("item.error"), t("col.worker"), t("item.started"), t("item.took"), t("col.tokens"), t("item.transcript")]}>
-            {foldRuns(runs).map(({ run: r, tries }) => (
-              <Tr key={r.id} data-run={r.id}>
-                <Td className="min-w-40">
-                  {runKindLabel(r.kind)}{" "}
-                  {tries.length === 1 ? <code className="font-mono text-xs break-all text-text-2" title={r.id}>{shortRunId(r.id)}</code> : (
-                    <RawDetails className="mt-1">
-                      <ul aria-label={t("item.runIds")} className="mt-1 font-mono text-xs break-all">
-                        {tries.map((x) => <li key={x.id}><code>{x.id}</code></li>)}
-                      </ul>
-                    </RawDetails>
-                  )}
-                </Td>
-                <Td className="tabular-nums">{tries.length > 1 ? t("item.foldedTries", { count: tries.length }) : t("item.tryNumber", { number: Math.max(1, r.attempt) })}</Td>
-                <Td><StatusBadge state={r.status}>{runResultLabel(r.status)}</StatusBadge></Td>
-                <Td className="max-w-md min-w-40 text-xs break-words text-text-1">
-                  {r.error ? (
-                    <>
-                      <span className="font-medium">{errorSentence(r.error.code)}</span>
-                      <RawDetails>
-                        <p>{t("item.runId")} <code className="font-mono break-all">{r.id}</code></p>
-                        {r.error.code && <code className="font-mono">{r.error.code}</code>}
-                        {r.error.detail && <p className="mt-1 whitespace-pre-wrap">{r.error.detail}</p>}
-                      </RawDetails>
-                    </>
-                  ) : "–"}
-                </Td>
-                <Td><WorkerName id={r.attempts?.at(-1)?.worker_id} /></Td>
-                <Td className="tabular-nums whitespace-nowrap"><When at={r.started_at} now={now} /></Td>
-                <Td className="tabular-nums">{r.started_at && r.finished_at ? duration(Date.parse(r.finished_at) - Date.parse(r.started_at)) : "–"}</Td>
-                <Td className="tabular-nums">{tokens(tries.reduce((sum, x) => sum + (x.tokens ?? 0), 0))}</Td>
-                <Td className="whitespace-nowrap">
-                  {(transcripts[r.id]?.length ?? 0) > 0 ? (
-                    <Link href={transcriptPath(item.id, r.id)} className={LINK_CLASS}>{t("item.open")}</Link>
-                  ) : "–"}
-                </Td>
-              </Tr>
-            ))}
-          </Table>
-        )}
+        <ItemTable label={t("item.runs")} head={RUN_HEAD()} empty={t("item.noRun")} rows={foldRuns(runs).map(({ run, tries }) => runRow(run, tries, item.id, (transcripts[run.id]?.length ?? 0) > 0, now))} />
       </Card>
       <Card id={TIMELINE_ANCHOR} title={t("item.timeline")} count={entries.length}>
         <ol className="space-y-1 text-sm">
@@ -521,6 +482,43 @@ export function ItemPage({ id }: { id: string }) {
       </>}
     </>
   );
+}
+
+/** The item page's Runs columns: an ItemRow's slots. */
+const RUN_HEAD = () => ({ badge: t("item.status"), title: t("col.run"), why: t("col.detail"), project: t("tasks.project"), worker: t("col.worker"), age: t("item.started"), actions: t("item.transcript") });
+
+/**
+ * One run as a compact ItemRow (design 09-dashboard-item): its result, its kind and attempt as the title ("Implement
+ * #2"), its folded tries, how long it took and its tokens, its worker, when it started, Open (its transcript, when one
+ * is stored) and Copy ID (the run's ID) in "⋯". A failed run's error sentence is its second line, the stored code and
+ * full text behind Details. `tries` are the consecutive cancelled tries folded into this row (just the run otherwise).
+ */
+function runRow(r: ItemDetail["runs"][number], tries: ItemDetail["runs"], itemId: string, transcript: boolean, now: number): ItemTableRow {
+  const title = runTitle(r);
+  const took = r.started_at && r.finished_at ? t("item.tookTime", { took: duration(Date.parse(r.finished_at) - Date.parse(r.started_at)) }) : null;
+  const used = tries.reduce((sum, x) => sum + (x.tokens ?? 0), 0);
+  return {
+    key: r.id,
+    itemId,
+    "data-run": r.id,
+    badge: <StatusBadge state={r.status}>{runResultLabel(r.status)}</StatusBadge>,
+    title,
+    why: [tries.length > 1 ? t("item.foldedTries", { count: tries.length }) : null, took, used ? t("item.tokensCount", { tokens: tokens(used) }) : null].filter(Boolean).join(" · ") || undefined,
+    worker: <WorkerName id={r.attempts?.at(-1)?.worker_id} />,
+    age: <When at={r.started_at} now={now} />,
+    action: transcript && <Link href={transcriptPath(itemId, r.id)} className={LINK_CLASS}>{t("item.open")}</Link>,
+    menuLabel: t("items.more", { title }),
+    copyId: r.id,
+    second: r.error && (
+      <span className="text-text-1">
+        <span className="font-medium">{errorSentence(r.error.code)}</span>
+        <RawDetails>
+          {r.error.code && <code className="font-mono">{r.error.code}</code>}
+          {r.error.detail && <p className="mt-1 whitespace-pre-wrap">{r.error.detail}</p>}
+        </RawDetails>
+      </span>
+    ),
+  };
 }
 
 /**
@@ -601,12 +599,6 @@ function specMarkdown(v: unknown): string {
   if (Array.isArray(v)) return v.map((x) => `- ${shortValue(x)}`).join("\n");
   return shortValue(v);
 }
-
-/**
- * A run's short ID for the Runs table: "f726027e" for "run_f726027e…", the first 8 of its 32 hex characters; any other
- * ID as it is. The full ID is the tooltip, and under the error's Details.
- */
-const shortRunId = (id: string): string => /^run_([0-9a-f]{8})[0-9a-f]{24}$/.exec(id)?.[1] ?? id;
 
 /** The runs, newest first, with consecutive cancelled tries of one step folded into one row (its newest try, and every folded try). */
 function foldRuns(runs: ItemDetail["runs"]): { run: ItemDetail["runs"][number]; tries: ItemDetail["runs"] }[] {

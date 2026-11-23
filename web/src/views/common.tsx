@@ -1,17 +1,19 @@
 import { type ReactNode, useEffect, useState } from "react";
-import { API, type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Session, type Why, mergeCheckLabel, showsMerge, useApi } from "../api.js";
+import { API, type ItemRow as Item, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Session, type Why, mergeCheckLabel, showsMerge, useApi } from "../api.js";
 import { IdDetails } from "../components/ui/copy.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { type MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
-import { BLOCK_LINK_CLASS, ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
+import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { duration, isHttpUrl, isWorkerId, localDateTime, relativeTime, shortSource, whyText, workerName } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 import { StatusBadge } from "../components/ui/badge.js";
 import { groupOf } from "../../../src/shared/states.js";
+import type { MenuItem } from "../components/ui/menu.js";
+import { ItemTable, type ItemTableRow } from "./item-row.js";
 
 /** Date.now(), ticking each second, for "Ns ago" texts. */
 export function useNow(): number {
@@ -88,7 +90,7 @@ export function ItemTitle({ id, title }: { id: string; title: string | null }) {
 }
 
 /** The item cell of the running and queue rows: the title, or the column label until the item is loaded. Never an id. */
-function RunItemCell({ id, item }: { id: string; item: ItemRow | undefined }) {
+function RunItemCell({ id, item }: { id: string; item: Item | undefined }) {
   return item ? <ItemTitle id={id} title={item.title} /> : <Link href={itemPath(id)} className={LINK_CLASS}>{t("col.item")}</Link>;
 }
 
@@ -195,7 +197,7 @@ export function WhyText({ why }: { why: Why }) {
 }
 
 /** The items list keyed by item ID. */
-export const byId = (items: readonly ItemRow[] | undefined): Map<string, ItemRow> => new Map((items ?? []).map((i) => [i.id, i]));
+export const byId = (items: readonly Item[] | undefined): Map<string, Item> => new Map((items ?? []).map((i) => [i.id, i]));
 
 /** What a Needs-you row asks of the owner: merge a PR, approve a spec, or answer or fix (everything else). */
 export type NeedGroup = "merge" | "approve" | "answer";
@@ -205,59 +207,54 @@ export type NeedGroup = "merge" | "approve" | "answer";
  * A triage run's ask (Waiting), a failed run and a stuck item (Problem) are no row; an item started past a deadlock is
  * Blocked by another task and goes on by itself.
  */
-export const needsYou = (items: readonly ItemRow[]): ItemRow[] => items.filter((i) => groupOf(i.item_phase) === "needs");
+export const needsYou = (items: readonly Item[]): Item[] => items.filter((i) => groupOf(i.item_phase) === "needs");
 
-export function needGroup(it: ItemRow): NeedGroup {
+export function needGroup(it: Item): NeedGroup {
   if (showsMerge(it.merge) || it.item_phase === "ready_to_merge") return "merge";
   return it.item_phase === "needs_approval" || it.commands?.some((c) => c.name === "approve" && c.allowed) ? "approve" : "answer";
 }
 
-/** A link out to GitHub; only drawn for the github plugin. */
-function Ext({ href, children }: { href: string; children: React.ReactNode }) {
-  return (
-    <a href={href} target="_blank" rel="noreferrer" className={LINK_CLASS}>
-      {children}
-    </a>
-  );
+/**
+ * The Work items list as a table of compact ItemRows (design 09-dashboard-system): the state, the title (the link to
+ * the item's page), why, the worker, since when, the PR as the one action, and the "⋯" menu with Copy ID (and the
+ * issue, only with the GitHub plugin, `plugins` from the overview). Below `sm` each row is a card.
+ */
+export function ItemsTable({ items, now, label, empty, plugins }: { items: readonly Item[]; now: number; label: string; empty: string; plugins?: Overview["plugins"] }) {
+  const rows = items.map((it): ItemTableRow => ({
+    key: it.id,
+    itemId: it.id,
+    "data-key": it.id,
+    badge: (
+      <>
+        <StatusBadge state={it.item_phase} />
+        {isInteractiveRun(it.run) && <> <InteractiveBadge /></>}
+        {it.merge_check && <MergeCheckNote check={it.merge_check} />}
+      </>
+    ),
+    title: it.title ?? t("item.untitled"),
+    titleRaw: it.title !== null,
+    href: itemPath(it.id),
+    why: it.why ? <WhyText why={it.why} /> : it.blocked_reason || undefined,
+    worker: it.run?.worker_id ? <WorkerName id={it.run.worker_id} /> : undefined,
+    age: <When at={it.since} now={now} />,
+    action: it.change_ref === null ? undefined : <PrLink number={it.change_ref} url={it.change_url} />,
+    menuLabel: t("items.more", { title: it.title ?? t("item.untitled") }),
+    menuItems: plugins?.issues === "github" && it.issue ? [openItem(t("items.openIssue", { number: it.issue.number }), it.issue.url)] : [],
+    copyId: it.id,
+  }));
+  return <ItemTable label={label} head={head()} rows={rows} empty={empty} />;
 }
 
-/** The Work items table. The title links to the item's page; the Item cell has no link out. The Issue column exists only when the GitHub plugin is in use (`plugins` from the overview); the PR column always shows. */
-export function ItemsTable({ items, now, label, empty, plugins }: { items: readonly ItemRow[]; now: number; label: string; empty: string; plugins?: Overview["plugins"] }) {
-  const columns: Column<ItemRow>[] = [
-    {
-      key: "item",
-      header: t("col.item"),
-      className: "max-w-md",
-      render: (it) => (
-        <Link href={itemPath(it.id)} data-raw data-row-title className={cn("font-medium sm:truncate", BLOCK_LINK_CLASS)}>
-          {it.title ?? shortSource(it.source.id)}
-        </Link>
-      ),
-    },
-    {
-      key: "state",
-      header: t("col.state"),
-      render: (it) => (
-        <>
-          <StatusBadge state={it.item_phase} />
-          {isInteractiveRun(it.run) && <> <InteractiveBadge /></>}
-          {it.merge_check && <MergeCheckNote check={it.merge_check} />}
-        </>
-      ),
-    },
-    { key: "why", header: t("col.why"), className: "text-text-2", render: (it) => (it.why ? <WhyText why={it.why} /> : it.blocked_reason || "–") },
-    { key: "since", header: t("col.since"), className: "tabular-nums whitespace-nowrap", render: (it) => <When at={it.since} now={now} /> },
-    ...(plugins?.issues === "github"
-      ? [{ key: "issue", header: t("col.issue"), className: "tabular-nums", render: (it: ItemRow) => (it.issue ? <Ext href={it.issue.url}>#{it.issue.number}</Ext> : "–") }]
-      : []),
-    {
-      key: "pr",
-      header: t("col.pr"),
-      className: "tabular-nums",
-      render: (it) => (it.change_ref === null ? "–" : it.change_url ? <Ext href={it.change_url}>#{it.change_ref}</Ext> : `#${it.change_ref}`),
-    },
-  ];
-  return <DataTable label={label} columns={columns} rows={items} rowKey={(it) => it.id} empty={empty} dataKey />;
+/** The columns of the Work and Runners tables: an ItemRow's slots. */
+const head = () => ({ badge: t("col.state"), title: t("col.item"), why: t("col.why"), project: t("tasks.project"), worker: t("col.worker"), age: t("col.since"), actions: t("col.pr") });
+
+/** A "⋯" menu item that opens `url` in a new tab. */
+const openItem = (label: string, url: string): MenuItem => ({ label, onSelect: () => void window.open(url, "_blank", "noopener,noreferrer") });
+
+/** An item's PR as "PR #N": a link out when it has a stored link, plain text otherwise. */
+export function PrLink({ number, url, className }: { number: string; url: string | null; className?: string }) {
+  const text = t("tree.pr", { ref: number });
+  return url ? <a href={url} target="_blank" rel="noreferrer" className={cn(LINK_CLASS, className)}>{text}</a> : <span className={className}>{text}</span>;
 }
 
 /** A run kind as people read it: an `interactive` run is an interactive task (a person handles the item in their own session). */
@@ -271,21 +268,40 @@ export function InteractiveBadge() {
   return <StatusBadge state="running">{t("run.interactive")}</StatusBadge>;
 }
 
-/** Running runs with their item, owner and heartbeat. */
-export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; items: ReadonlyMap<string, ItemRow>; now: number }) {
-  const columns: Column<RunRow>[] = [
-    { key: "item", header: t("col.item"), className: "max-w-md", render: (r) => <RunItemCell id={r.work_item_id} item={items.get(r.work_item_id)} /> },
-    { key: "kind", header: t("col.run"), render: (r) => runKindLabel(r.kind) },
-    { key: "attempt", header: t("col.attempt"), numeric: false, className: "tabular-nums" },
-    { key: "worker", header: t("col.worker"), render: (r) => <WorkerName id={r.owner} /> },
-    { key: "running_for", header: t("col.runningFor"), className: "tabular-nums", render: (r) => (r.started_at ? duration(now - Date.parse(r.started_at)) : t("format.none")) },
-    { key: "heartbeat", header: t("col.heartbeat"), className: "tabular-nums", render: (r) => <When at={r.heartbeat_at} now={now} /> },
-  ];
-  return <DataTable label={t("running.label")} columns={columns} rows={runs.filter((r) => r.status === "running")} rowKey={(r) => r.id} empty={t("running.empty")} dataKey />;
+/** A run as a row names it: its kind and attempt, "Implement #2". */
+export const runTitle = (run: { kind: string; attempt: number }): string => {
+  const kind = runKindLabel(run.kind);
+  return t("item.runTitle", { kind: kind.charAt(0).toUpperCase() + kind.slice(1), attempt: run.attempt });
+};
+
+/**
+ * Runners' running runs as compact ItemRows: the run's state, its item's title (the link; the column label until the
+ * items are read, never an ID), the run and its heartbeat as why, the worker, how long it has run, and Copy ID.
+ */
+export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; items: ReadonlyMap<string, Item>; now: number }) {
+  const rows = runs.filter((r) => r.status === "running").map((r): ItemTableRow => {
+    const item = items.get(r.work_item_id);
+    const title = item ? (item.title ?? t("item.untitled")) : t("col.item");
+    return {
+      key: r.id,
+      itemId: r.work_item_id,
+      "data-key": r.id,
+      badge: <StatusBadge state={r.status} />,
+      title,
+      titleRaw: item?.title != null,
+      href: itemPath(r.work_item_id),
+      why: <>{runTitle(r)} · <When at={r.heartbeat_at} now={now} label="running.heartbeat" /></>,
+      worker: <WorkerName id={r.owner} />,
+      age: r.started_at ? duration(now - Date.parse(r.started_at)) : undefined,
+      menuLabel: t("items.more", { title }),
+      copyId: r.work_item_id,
+    };
+  });
+  return <ItemTable label={t("running.label")} head={{ ...head(), age: t("col.runningFor"), actions: t("col.actions") }} rows={rows} empty={t("running.empty")} />;
 }
 
 /** Queued runs in claim order, with their item and when each may start: "now" or its retry time, else why it waits. */
-export function QueueTable({ queue, items, now, limit }: { queue: readonly QueueRow[]; items: ReadonlyMap<string, ItemRow>; now: number; limit?: number }) {
+export function QueueTable({ queue, items, now, limit }: { queue: readonly QueueRow[]; items: ReadonlyMap<string, Item>; now: number; limit?: number }) {
   const columns: Column<QueueRow>[] = [
     { key: "position", header: "#", numeric: false, className: "tabular-nums" },
     { key: "item", header: t("col.item"), className: "max-w-md", render: (q) => <RunItemCell id={q.work_item_id} item={items.get(q.work_item_id)} /> },

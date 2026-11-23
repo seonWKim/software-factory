@@ -11,8 +11,9 @@ import { SLOW, TOKEN, TasksPage, card, chooseMenu, item, menuItems, reset, row, 
 beforeEach(reset);
 afterEach(teardown);
 
-// Done tasks stay on the Tasks page, struck through, with Reopen (design 02-tasks, done tasks stay), all of them in one
-// Done group below the list that is closed on load (design 02-tasks-page, 2026-11-22).
+// Done tasks stay on the Tasks page in text-2, never struck through, with Reopen in the ⋯ menu (design 02-tasks, done
+// tasks stay; design 09-dashboard-tasks, one ItemRow), all of them in one Done group below the list that is closed on
+// load (design 02-tasks-page, 2026-11-22).
 
 /** Opens the closed Done group ("N done") below the list, so its rows are drawn. */
 async function openDone() {
@@ -23,7 +24,7 @@ async function openDone() {
 /** The page's drawn task rows, in order. */
 const drawn = () => [...document.querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task);
 
-describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", () => {
+describe("done tasks stay, in text-2 (design 02-tasks, done tasks stay)", () => {
   const AT = "2026-11-12T09:10:00.000Z";
   const done = (id: string, over: Partial<TaskRow> = {}): TaskRow => row(id, { done_at: AT, ...over });
   // A built task's title is a link to its work item; any other title a paragraph.
@@ -31,7 +32,7 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
   /** Today's tk_now as the server places it, done or open. */
   const withNow = (now: TaskRow) => view({ today: { overdue: view().today.overdue, due: [now] } });
 
-  it("a task marked done from the list moves into the closed Done group: opened, its title is struck through, Reopen in its menu and no checkbox", async () => {
+  it("a task marked done from the list moves into the closed Done group: opened, its title in text-2 with no strikethrough, Reopen in its menu and no checkbox", async () => {
     await show();
     s.answer = { status: 200, body: { task_id: "tk_now", completed: true, next_id: null } };
     s.current = withNow(done("tk_now", { due_date: "2026-11-12", due_time: "09:00" }));
@@ -42,23 +43,24 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
     await openDone();
     expect(card("tk_now").hasAttribute("data-done")).toBe(true);
     expect(menuItems(card("tk_now"))).toEqual(["Reopen"]);
-    expect(title("tk_now").className.split(" ")).toContain("line-through");
+    expect(title("tk_now").className.split(" ")).toContain("text-text-2");
+    expect(title("tk_now").className.split(" ")).not.toContain("line-through");
     expect(within(card("tk_now")).queryByRole("checkbox")).toBeNull();
     expect(drawn().at(-1)).toBe("tk_now");
   });
 
-  it("a task whose factory work merged shows struck through, with its work item and Reopen, not removed", async () => {
+  it("a task whose factory work merged shows done, with its work item, Reopen and Copy ID, not removed", async () => {
     s.items = [item("wi_1", { item_phase: "closed", close_reason: "completed", stage: "CLOSED" })];
     s.current = view({ projects: [{ list: null, tasks: [done("tk_built", { work_item_id: "wi_1" }), row("tk_inbox")] }] });
     await show();
     await openDone();
-    expect(title("tk_built").className.split(" ")).toContain("line-through");
+    expect(title("tk_built").className.split(" ")).toContain("text-text-2");
     // Its title links to the work item; the raw ID is not shown (design-system/writing.md).
     expect(within(card("tk_built")).getByRole("link", { name: "tk_built" }).getAttribute("href")).toBe("/app/items/wi_1");
     expect(card("tk_built").textContent).not.toContain("wi_1");
-    expect(menuItems(card("tk_built"))).toEqual(["Reopen"]);
+    expect(menuItems(card("tk_built"))).toEqual(["Reopen", "Copy ID"]);
     expect(card("tk_built").textContent).toContain("Done 2026-11-12");
-    expect(title("tk_inbox").className.split(" ")).not.toContain("line-through");
+    expect(title("tk_inbox").className.split(" ")).not.toContain("text-text-2");
   });
 
   it("a task whose work item closed without a merge shows the item's close reason in the row's details, done or open", async () => {
@@ -74,8 +76,8 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
     });
     await show();
     await openDone();
-    // A rejected or wont_do close leaves the task open: not struck through, its checkbox still there, the reason beside it.
-    expect(title("tk_rejected").className.split(" ")).not.toContain("line-through");
+    // A rejected or wont_do close leaves the task open: not done, its checkbox still there, the reason beside it.
+    expect(title("tk_rejected").className.split(" ")).not.toContain("text-text-2");
     expect(within(card("tk_rejected")).getByRole("checkbox", { name: "Complete: tk_rejected" })).toBeTruthy();
     expect(within(card("tk_rejected")).getByText("Rejected")).toBeTruthy();
     expect(within(card("tk_wont")).getByText("Not planned")).toBeTruthy();
@@ -100,7 +102,7 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
     expect(JSON.parse(String(s.posts[0]!.init.body))).toEqual({ id: "tk_now" });
     await waitFor(() => expect(card("tk_now").hasAttribute("data-done")).toBe(false), SLOW);
     expect(menuItems(card("tk_now"))).not.toContain("Reopen");
-    expect(title("tk_now").className.split(" ")).not.toContain("line-through");
+    expect(title("tk_now").className.split(" ")).not.toContain("text-text-2");
     expect(within(card("tk_now")).getByRole("checkbox", { name: "Complete: tk_now" })).toBeTruthy();
   });
 
@@ -124,7 +126,7 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
     expect(document.querySelector("[data-dialog]")).toBeNull();
   });
 
-  it("a done past-due task is under Done, after No date, struck through with its done time; never under Overdue", async () => {
+  it("a done past-due task is under Done, after No date, in text-2 with its done time; never under Overdue", async () => {
     s.current = view({
       today: { overdue: [row("tk_late", { due_date: "2026-11-10" }), done("tk_sent", { due_date: "2026-11-09" })], due: [done("tk_now", { due_date: "2026-11-12" })] },
       projects: [{ list: null, tasks: [done("tk_past", { due_date: "2026-11-11" }), done("tk_soon", { due_date: "2026-11-13" }), row("tk_inbox")] }],
@@ -144,7 +146,7 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
     // A done task due today or later is under Done too, never in its day.
     expect(ids("Done")).toEqual(expect.arrayContaining(["tk_now", "tk_soon"]));
     expect(drawn().filter((id) => id === "tk_now")).toHaveLength(1);
-    expect(title("tk_past").className.split(" ")).toContain("line-through");
+    expect(title("tk_past").className.split(" ")).toContain("text-text-2");
     expect(card("tk_past").textContent).toContain("Done 2026-11-12");
   });
 
@@ -155,7 +157,7 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
     s.answer = { status: 409, body: { error: "its next occurrence is done: undo that one first" } };
     chooseMenu(card("tk_now"), "Reopen");
     expect((await within(card("tk_now")).findByRole("alert", undefined, SLOW)).textContent).toBe("its next occurrence is done: undo that one first");
-    expect(title("tk_now").className.split(" ")).toContain("line-through");
+    expect(title("tk_now").className.split(" ")).toContain("text-text-2");
   });
 
   it("there is no Show done switch and no done list read", async () => {
@@ -168,7 +170,7 @@ describe("done tasks stay, struck through (design 02-tasks, done tasks stay)", (
     s.current = view({ can_build: false, projects: [{ list: null, tasks: [done("tk_a")] }] });
     await show();
     await openDone();
-    expect(title("tk_a").className.split(" ")).toContain("line-through");
+    expect(title("tk_a").className.split(" ")).toContain("text-text-2");
     expect(screen.queryByRole("button", { name: /Reopen/ })).toBeNull();
   });
 });
