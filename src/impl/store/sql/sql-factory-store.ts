@@ -1,11 +1,10 @@
-import { createHash } from "node:crypto";
 import type { TierHistory } from "../../../core/budget.js";
 import type {
-  Actor, BudgetCheckpoint, BudgetCheckpointId, BudgetOutcome, ClaimDecision, CloseReason, DependencyEdge, DependencyState, FiledPattern,
+  Actor, BudgetCheckpoint, BudgetCheckpointId, BudgetOutcome, ClaimDecision, CloseReason, DependencyState, FiledPattern,
   FiledPatternId, Handoff, HostSleep, ImproveReport, ImproveReportId, Run, RunAttempt, RunAttemptStatus, RunId, RunKind, RunOutcome,
-  RunStatus, SourceRef, SourceType, Stage, StandingGate, StandingProposal, StandingProposalId, StandingRule, StateChange,
+  RunInput, RunStatus, SessionRecord, SourceRef, SourceType, Stage, StandingGate, StandingProposal, StandingProposalId, StandingRule, StateChange,
   StateChangeDetail, StateChangeId, Tier, Timestamp, UnreviewedMerge, UnreviewedMergeId, UserId, Verdict, VerdictId, VerdictSeverity,
-  WorkItem, WorkItemId, WorkItemPatch, ClaimPauseName, RunInput, RunResume, SessionRecord, WorkerId, WorkerPause,
+  WorkItem, WorkItemId, WorkItemPatch, ClaimPauseName, RunResume, WorkerId, WorkerPause,
 } from "../../../core/types.js";
 import { RECURRING_FAILURE, outcomeTokens } from "../../../core/types.js";
 import {
@@ -22,36 +21,25 @@ import {
   GITHUB_RATE_LIMIT, IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, NETWORK, NETWORK_ANSWERED, PROBE_PAUSES, type ProbePause,
   SESSION_LOST, TAKEOVER_OUTCOME, failureClass, probePauseOf,
 } from "../../../core/policy.js";
-import { prNumber } from "../../../core/change-ref.js";
 import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
 import type { LinkedAccount } from "../../../interfaces/auth-provider.js";
 import type { Clock } from "../../../interfaces/clock.js";
-import { recordAction } from "../../../outbound/index.js";
-import { claimOwner, readOwner, recordOwnerDecision } from "../../../identity/index.js";
 import type {
   AbandonedAttempt,
-  AppCommandRequest,
-  AppendInboxResult,
   AnswerBudgetCheckpointInput,
   ApproveClaimHoldInput,
-  ApproveClaimHoldResult,
   RunIntent,
   BudgetCheckpointResult,
   ClaimInput,
-  CliCommand,
   FactoryStore,
-  InboxRow,
-  ItemMessage,
   LeaseResult,
   ListenerLease,
   ForgeBudget,
   SyncFence,
   SyncLease,
   SyncLeaseResult,
-  LabelState,
   LabelTarget,
-  MergeCheck,
   NewMergeCheck,
   NewPostedComment,
   PostedComment,
@@ -72,39 +60,28 @@ import type {
   OpenBudgetCheckpointInput,
   RecordConflictsInput,
   RecordPrHeadInput,
-  RecordPrHeadResult,
   RecordVerdictInput,
-  ThreadDelivery,
-  ThreadLinkField,
   RecordVerdictResult,
   OwnerDecision,
-  RedeemLinkResult,
   ResetSettingInput,
   SchemaVersion,
   SessionUpdate,
   SetSettingInput,
-  SettingChange,
-  SettingOverride,
   StartSessionInput,
-  StoreTable,
-  TableCell,
-  TablePage,
-  TablePageInput,
   StartSessionResult,
+  TablePageInput,
   TransitionInput,
   TransitionResult,
   WorkItemFilter,
-  WorkerProcess,
   WorkerProcessReport,
 } from "../../../interfaces/factory-store.js";
-import { EXTRA_SLOT_KINDS, LINK_CODE_MAX_FAILURES, LINK_CODE_TTL_MS, TABLE_PAGE_DEFAULT, TABLE_PAGE_MAX } from "../../../interfaces/factory-store.js";
+import { EXTRA_SLOT_KINDS } from "../../../interfaces/factory-store.js";
 import { type ChildRestart, migrationPendingError } from "../../../interfaces/updater.js";
-import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
 import { countLegacyProjectRows, legacyRowsMessage } from "../project-keys.js";
 import { changeAssignments, changeFields } from "./change-fields.js";
 import {
-  diffPatch, newId, newWorkItem, rowToBudgetCheckpoint, rowToClaimDecision, rowToDependencyEdge, rowToHandoff, rowToHostSleep, rowToRun,
+  diffPatch, newId, newWorkItem, rowToBudgetCheckpoint, rowToRun,
   rowToRunAttempt, rowToStateChange, rowToUnreviewedMerge, rowToVerdict, rowToWorkItem, workItemInsert,
 } from "./rows.js";
 import * as filed from "./filed-patterns.js";
@@ -116,7 +93,7 @@ import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
 import { SqlAttachmentStore } from "./attachments.js";
 import { claimLock, endReservations, liveReservations, reservationOf } from "./reservations.js";
-import { type CoordContext, claimDecisionsOf, claimOrder, claimOrderSql, implementTimes, RELEASED, releaseHolder, writeClaimDecision } from "./claim-coordination.js";
+import { type CoordContext, claimDecisionsOf, claimOrder, claimOrderSql, implementTimes, releaseHolder, writeClaimDecision } from "./claim-coordination.js";
 import * as notices from "./notices.js";
 import * as alerts from "./alerts.js";
 import * as noticeMessages from "./notice-messages.js";
@@ -124,6 +101,17 @@ import * as basePush from "./base-push.js";
 import * as posted from "./posted-comments.js";
 import * as verdicts from "./verdicts.js";
 import * as standing from "./standing-rules.js";
+import { type StoreSteps, type StoreTime, insertOnce } from "./store-steps.js";
+import * as sessions from "./sessions.js";
+import * as improve from "./improve-reports.js";
+import * as deps from "./dependencies.js";
+import * as prHeads from "./pr-heads.js";
+import * as intake from "./intake.js";
+import * as links from "./identity-links.js";
+import * as sync from "./github-sync.js";
+import * as health from "./worker-health.js";
+import * as local from "./local-items.js";
+import * as tables from "./tables.js";
 
 /**
  * FactoryStore over a SqlDriver (SQLite; `db` is public for components owning tables). Every write is one driver transaction. Correctness
@@ -134,6 +122,12 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
   constructor(db: SqlDriver, private readonly clock: Clock) {
     super(db, () => clock.now().toISOString() as Timestamp);
   }
+
+  /** The store's time and its own transaction steps, for the method groups in their own modules (store-steps.ts). */
+  private readonly time: StoreTime = { now: () => this.now(), after: (ms) => this.after(ms) };
+  private readonly steps: StoreSteps = {
+    selectItem: (q, id) => this.selectItem(q, id), selectRun: (q, id) => this.selectRun(q, id), applyTransition: (tx, input) => this.applyTransition(tx, input),
+  };
 
   /**
    * The schema (the driver builds it), then the project-key check: the store
@@ -1079,23 +1073,8 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
     });
   }
 
-  async updateSession(runId: RunId, token: number, update: SessionUpdate): Promise<LeaseResult> {
-    return this.db.transaction(async (tx): Promise<LeaseResult> => {
-      const run = await this.selectRun(tx, runId);
-      const s = run?.input?.session;
-      if (!run || !s || run.status !== "running" || run.lease?.token !== token) return { ok: false, reason: "lease_lost" };
-      const now = this.now();
-      const next: SessionRecord = {
-        ...s,
-        ...(update.note !== undefined ? { notes: [...s.notes, { at: now, text: update.note }].slice(-MAX_SESSION_NOTES) } : {}),
-        ...(update.last_finish !== undefined ? { last_finish: { ...update.last_finish, at: now } } : {}),
-      };
-      await tx.run("UPDATE worker_runs SET input = ?, session_tokens = ?, transcript_url = ?, updated_at = ? WHERE id = ?", [
-        JSON.stringify({ ...run.input, session: next }), update.tokens ?? run.session_tokens, update.transcript_url ?? run.transcript_url, now, runId,
-      ]);
-      return { ok: true, run: (await this.selectRun(tx, runId))! };
-    });
-  }
+  // A session start is a claim, so it stays here; its updates: sessions.ts
+  updateSession(runId: RunId, token: number, update: SessionUpdate) { return sessions.updateSession(this.db, this.time, this.steps, runId, token, update); }
 
   /** Running runs of `kinds` with their items; the recorded conflicts of one project inside `conflict_window_days`. */
   private async runningItems(tx: SqlExecutor, kinds: readonly RunKind[]): Promise<{ run_id: string; item: WorkItem }[]> {
@@ -1164,47 +1143,12 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
     });
   }
 
-  // Improve reports (design §7)
-
-  async recordImproveReport(input: NewImproveReport): Promise<{ report: ImproveReport; created: boolean }> {
-    const report: ImproveReport = { ...input, id: newId("ir") as ImproveReportId, created_at: this.now() };
-    const created = await this.insertOnce(
-      this.db,
-      `INSERT INTO controller_improve_reports (id, run_id, project_key, window_start, window_end, failure_groups, patterns, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        report.id, report.run_id, report.project, report.window_start, report.window_end,
-        JSON.stringify(report.groups), JSON.stringify(report.patterns), report.created_at,
-      ],
-    );
-    return created ? { report, created } : { report: (await this.getImproveReport(input.run_id))!, created };
-  }
-
-  async getImproveReport(run_id: RunId): Promise<ImproveReport | null> {
-    const [row] = await this.db.all("SELECT * FROM controller_improve_reports WHERE run_id = ?", [run_id]);
-    return row ? rowToImproveReport(row) : null;
-  }
-
-  async getLatestImproveReport(project?: string): Promise<ImproveReport | null> {
-    const where = project === undefined ? "" : "WHERE project_key = ? ";
-    const [row] = await this.db.all(
-      `SELECT * FROM controller_improve_reports ${where}ORDER BY created_at DESC, id DESC LIMIT 1`,
-      project === undefined ? [] : [project],
-    );
-    return row ? rowToImproveReport(row) : null;
-  }
-
-  async listImproveReports(project: string, since: Timestamp): Promise<ImproveReport[]> {
-    const rows = await this.db.all(
-      "SELECT * FROM controller_improve_reports WHERE project_key = ? AND created_at >= ? ORDER BY created_at, id",
-      [project, since],
-    );
-    return rows.map(rowToImproveReport);
-  }
-
-  async setImproveGroups(id: ImproveReportId, groups: ImproveReport["groups"], patterns?: ImproveReport["patterns"]): Promise<void> {
-    await this.db.run(`UPDATE controller_improve_reports SET failure_groups = ?${patterns ? ", patterns = ?" : ""} WHERE id = ?`, [JSON.stringify(groups), ...(patterns ? [JSON.stringify(patterns)] : []), id]);
-  }
+  // Improve reports (design §7): improve-reports.ts
+  recordImproveReport(input: NewImproveReport) { return improve.recordImproveReport(this.db, this.time, input); }
+  getImproveReport(run_id: RunId) { return improve.getImproveReport(this.db, run_id); }
+  getLatestImproveReport(project?: string) { return improve.getLatestImproveReport(this.db, project); }
+  listImproveReports(project: string, since: Timestamp) { return improve.listImproveReports(this.db, project, since); }
+  setImproveGroups(id: ImproveReportId, groups: ImproveReport["groups"], patterns?: ImproveReport["patterns"]) { return improve.setImproveGroups(this.db, id, groups, patterns); }
 
   // Filed patterns (design 07-self-improvement): in ./filed-patterns.ts.
   getFiledPattern(project: string, pattern_key: string): Promise<FiledPattern | null> {
@@ -1253,72 +1197,12 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
     return (await this.db.all("SELECT * FROM controller_standing_proposals ORDER BY gate, tier, run_length")).map(rowToStandingProposal);
   }
 
-  // Coordination (design §5, 2026-11-03)
-
-  async replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[], read_at?: Timestamp): Promise<DependencyEdge[]> {
-    return this.db.transaction(async (tx) => {
-      const now = this.now();
-      const wanted = new Map<string, DependencyLink>();
-      for (const l of links) if (!wanted.has(l.depends_on)) wanted.set(l.depends_on, l);
-      const current = (await tx.all("SELECT depends_on FROM controller_dependency_edges WHERE work_item_id = ?", [id])).map((r) => r.depends_on as string);
-      for (const d of current) {
-        if (!wanted.has(d)) await tx.run("DELETE FROM controller_dependency_edges WHERE work_item_id = ? AND depends_on = ?", [id, d]);
-      }
-      for (const l of wanted.values()) {
-        await this.insertOnce(
-          tx,
-          "INSERT INTO controller_dependency_edges (work_item_id, depends_on, kind, state, created_at, updated_at) VALUES (?, ?, ?, 'open', ?, ?)",
-          [id, l.depends_on, l.kind, now, now],
-        );
-      }
-      if (read_at !== undefined) {
-        await tx.run("UPDATE controller_dependency_edges SET source_updated_at = ? WHERE work_item_id = ?", [read_at, id]);
-        await tx.run("UPDATE controller_work_items SET edges_source_updated_at = ? WHERE id = ?", [read_at, id]);
-      }
-      const rows = await tx.all(`SELECT * FROM controller_dependency_edges WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`, [id]);
-      return rows.map(rowToDependencyEdge);
-    });
-  }
-
-  async dependencyLinksReadAt(id: WorkItemId): Promise<Timestamp | null> {
-    const [row] = await this.db.all("SELECT edges_source_updated_at FROM controller_work_items WHERE id = ?", [id]);
-    return (row?.edges_source_updated_at as Timestamp | null | undefined) ?? null;
-  }
-
-  async markDependencyLinksStale(id: WorkItemId): Promise<void> {
-    await this.db.run("UPDATE controller_work_items SET edges_source_updated_at = NULL WHERE id = ?", [id]);
-  }
-
-  async listDependencyEdges(filter: { work_item_id?: WorkItemId; depends_on?: string } = {}): Promise<DependencyEdge[]> {
-    const where: string[] = [];
-    const params: SqlValue[] = [];
-    if (filter.work_item_id !== undefined) {
-      where.push("work_item_id = ?");
-      params.push(filter.work_item_id);
-    }
-    if (filter.depends_on !== undefined) {
-      where.push("depends_on = ?");
-      params.push(filter.depends_on);
-    }
-    const rows = await this.db.all(
-      `SELECT * FROM controller_dependency_edges${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at, ${this.db.dialect.seq}`,
-      params,
-    );
-    return rows.map(rowToDependencyEdge);
-  }
-
-  async setDependencyState(id: WorkItemId, depends_on: string, state: DependencyState): Promise<boolean> {
-    return this.db.transaction(async (tx) => {
-      const [row] = await tx.all("SELECT state FROM controller_dependency_edges WHERE work_item_id = ? AND depends_on = ?", [id, depends_on]);
-      if (!row) return false;
-      if (row.state !== state) {
-        await tx.run("UPDATE controller_dependency_edges SET state = ?, updated_at = ? WHERE work_item_id = ? AND depends_on = ?", [
-          state, this.now(), id, depends_on,
-        ]);
-      }
-      return true;
-    });
-  }
+  // Coordination (design §5, 2026-11-03): dependency edges and claim holds in dependencies.ts; the recorded conflicts the claim reads stay here
+  replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[], read_at?: Timestamp) { return deps.replaceDependencyEdges(this.db, this.time, id, links, read_at); }
+  dependencyLinksReadAt(id: WorkItemId) { return deps.dependencyLinksReadAt(this.db, id); }
+  markDependencyLinksStale(id: WorkItemId) { return deps.markDependencyLinksStale(this.db, id); }
+  listDependencyEdges(filter?: { work_item_id?: WorkItemId; depends_on?: string }) { return deps.listDependencyEdges(this.db, filter); }
+  setDependencyState(id: WorkItemId, depends_on: string, state: DependencyState) { return deps.setDependencyState(this.db, this.time, id, depends_on, state); }
 
   async recordConflicts(input: RecordConflictsInput): Promise<number> {
     assertProjectKey(input.project);
@@ -1350,92 +1234,16 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
     return out;
   }
 
-  listClaimDecisions(id: WorkItemId): Promise<ClaimDecision[]> { return this.claimDecisionsWhere("work_item_id = ?", [id]); }
-  listClaimDecisionsSince(since: Timestamp): Promise<ClaimDecision[]> { return this.claimDecisionsWhere("at >= ?", [since]); }
-  private async claimDecisionsWhere(where: string, args: readonly string[]): Promise<ClaimDecision[]> {
-    return (await this.db.all(
-      `SELECT * FROM controller_claim_decisions WHERE decision <> '${RELEASED}' AND (${where}) ORDER BY at, ${this.db.dialect.seq}`, [...args],
-    )).map(rowToClaimDecision);
-  }
+  listClaimDecisions(id: WorkItemId) { return deps.listClaimDecisions(this.db, id); }
+  listClaimDecisionsSince(since: Timestamp) { return deps.listClaimDecisionsSince(this.db, since); }
+  listLatestClaimDecisions(ids: readonly WorkItemId[]) { return deps.listLatestClaimDecisions(this.db, ids); }
+  approveClaimHold(input: ApproveClaimHoldInput) { return deps.approveClaimHold(this.db, this.steps, input); }
 
-  async listLatestClaimDecisions(ids: readonly WorkItemId[]): Promise<Map<WorkItemId, ClaimDecision>> {
-    const out = new Map<WorkItemId, ClaimDecision>();
-    if (ids.length === 0) return out;
-    for (const d of await this.claimDecisionsWhere(`work_item_id IN (${placeholders(ids.length)})`, ids)) out.set(d.work_item_id, d); // oldest first: the last one wins
-    return out;
-  }
-
-  async approveClaimHold(input: ApproveClaimHoldInput): Promise<ApproveClaimHoldResult> {
-    return this.db.transaction(async (tx): Promise<ApproveClaimHoldResult> => {
-      const [row] = await tx.all(
-        `SELECT d.* FROM controller_claim_decisions d JOIN worker_runs r ON r.id = d.run_id
-         WHERE d.run_id = ? AND d.work_item_id = ? AND d.decision = 'held' AND d.approved_by IS NULL AND r.status = 'queued'`,
-        [input.run_id, input.id],
-      );
-      if (!row) return { ok: false, reason: "not_held" };
-      const held = rowToClaimDecision(row);
-      const r = await this.applyTransition(tx, {
-        id: input.id,
-        expected_version: input.expected_version,
-        patch: {},
-        actor: input.actor,
-        reason: "coordination_approved",
-        detail: { run_id: input.run_id, holder: held.holder_ref, cost: held.cost, threshold: held.threshold },
-      });
-      if (!r.ok) return r;
-      await tx.run("UPDATE controller_claim_decisions SET approved_by = ? WHERE run_id = ?", [input.actor.id, input.run_id]);
-      const [after] = await tx.all("SELECT * FROM controller_claim_decisions WHERE run_id = ?", [input.run_id]);
-      return { ok: true, item: r.item, state_change: r.state_change, decision: rowToClaimDecision(after!) };
-    });
-  }
-
-  // PR heads
-
-  async recordPushedHead(runId: RunId, token: number, head_sha: string): Promise<{ ok: true } | { ok: false; reason: "lease_lost" }> {
-    return this.db.transaction(async (tx) => {
-      // As appendHandoff: the run stays `running` with this token until this commits.
-      const [held] = await tx.all(
-        `SELECT work_item_id FROM worker_runs WHERE id = ? AND status = 'running' AND lease_token = ?`,
-        [runId, token],
-      );
-      if (!held) return { ok: false, reason: "lease_lost" };
-      await tx.run("UPDATE controller_work_items SET last_head_sha = ? WHERE id = ?", [head_sha, held.work_item_id as string]);
-      return { ok: true };
-    });
-  }
-
-  async recordPrHead(input: RecordPrHeadInput): Promise<RecordPrHeadResult> {
-    return this.db.transaction(async (tx): Promise<RecordPrHeadResult> => {
-      const current = await this.selectItem(tx, input.id);
-      if (!current) return { ok: false, reason: "not_found" };
-      if (current.last_head_sha !== input.expected_head) return { ok: false, reason: "head_moved", current };
-      const moved = await tx.run(
-        `UPDATE controller_work_items SET last_head_sha = ? WHERE id = ? AND ${input.expected_head === null ? "last_head_sha IS NULL" : "last_head_sha = ?"}`,
-        input.expected_head === null ? [input.head_sha, input.id] : [input.head_sha, input.id, input.expected_head],
-      );
-      if (moved !== 1) return { ok: false, reason: "head_moved", current };
-      let run: Run | null = null;
-      if (input.manual && input.expected_head !== null) {
-        const now = this.now();
-        const outcome: RunOutcome = {
-          status: "succeeded",
-          summary: "a person pushed to the PR branch",
-          data: { actor: input.manual.actor, from_sha: input.expected_head, to_sha: input.head_sha, pr_number: prNumber({ change_ref: input.manual.change_ref }) },
-        };
-        const id = newId("run") as RunId;
-        // Written finished and acknowledged: never queued, so no claim returns it and the controller applies nothing.
-        const inserted = await this.insertOnce(
-          tx,
-          `INSERT INTO worker_runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_token, outcome, acknowledged_at,
-             started_at, finished_at, created_at, updated_at)
-           VALUES (?, ?, 'manual', ?, 'succeeded', 0, 0, ?, ?, ?, ?, ?, ?)`,
-          [id, input.id, `${input.id}:manual:${input.expected_head}..${input.head_sha}`, JSON.stringify(outcome), now, now, now, now, now],
-        );
-        run = inserted ? await this.selectRun(tx, id) : null;
-      }
-      return { ok: true, item: (await this.selectItem(tx, input.id))!, run };
-    });
-  }
+  // PR heads and handoffs: pr-heads.ts
+  recordPushedHead(runId: RunId, token: number, head_sha: string) { return prHeads.recordPushedHead(this.db, runId, token, head_sha); }
+  recordPrHead(input: RecordPrHeadInput) { return prHeads.recordPrHead(this.db, this.time, this.steps, input); }
+  appendHandoff(input: Omit<Handoff, "id" | "at">, token: number) { return prHeads.appendHandoff(this.db, this.time, input, token); }
+  listHandoffs(id: WorkItemId) { return prHeads.listHandoffs(this.db, id); }
 
   // Unreviewed merges
 
@@ -1462,80 +1270,11 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
     return Number(row!.n);
   }
 
-  // Handoffs
-
-  async appendHandoff(
-    input: Omit<Handoff, "id" | "at">,
-    token: number,
-  ): Promise<{ ok: true; handoff: Handoff } | { ok: false; reason: "lease_lost" }> {
-    return this.db.transaction(async (tx) => {
-      const now = this.now();
-      // Status and token are what fence the holder; the write transaction keeps the reaper and a
-      // completion from moving the run out of 'running' (and a reclaim from bumping the token) until this commits.
-      const [holds] = await tx.all(
-        `SELECT 1 AS held FROM worker_runs WHERE id = ? AND work_item_id = ? AND status = 'running' AND lease_token = ?`,
-        [input.run_id, input.work_item_id, token],
-      );
-      if (!holds) return { ok: false, reason: "lease_lost" };
-      await this.insertOnce(
-        tx,
-        `INSERT INTO controller_handoffs (id, run_id, work_item_id, commit_sha, worked_on, next_steps, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [newId("ho"), input.run_id, input.work_item_id, input.commit_sha, input.worked_on, input.next_steps, now],
-      );
-      const [row] = await tx.all("SELECT * FROM controller_handoffs WHERE run_id = ? AND commit_sha = ?", [input.run_id, input.commit_sha]);
-      return { ok: true, handoff: rowToHandoff(row!) };
-    });
-  }
-
-  async listHandoffs(id: WorkItemId): Promise<Handoff[]> {
-    const rows = await this.db.all(`SELECT * FROM controller_handoffs WHERE work_item_id = ? ORDER BY at, ${this.db.dialect.seq}`, [id]);
-    return rows.map(rowToHandoff);
-  }
-
-  // Cursors
-
-  async getCursor(name: string): Promise<string | null> {
-    const [row] = await this.db.all("SELECT value FROM inbound_cursors WHERE name = ?", [name]);
-    return (row?.value as string | undefined) ?? null;
-  }
-
-  async advanceCursor(name: string, expected: string | null, next: string): Promise<boolean> {
-    return this.db.transaction(async (tx) =>
-      expected === null
-        ? this.insertOnce(tx, "INSERT INTO inbound_cursors (name, value) VALUES (?, ?)", [name, next])
-        : (await tx.run("UPDATE inbound_cursors SET value = ? WHERE name = ? AND value = ?", [next, name, expected])) === 1,
-    );
-  }
-
-  // Stream intake
-
-  async appendInbox(input: NewInboxEvent): Promise<AppendInboxResult> {
-    return this.db.transaction(async (tx): Promise<AppendInboxResult> => {
-      // On the lease row: a takeover (token + 1) waits for this append to commit, and appends of
-      // one source type commit one at a time, so their seqs commit in order and a cursor never skips one.
-      const [held] = await tx.all(
-        `SELECT token FROM inbound_listener_leases WHERE source_type = ? AND token = ?`,
-        [input.source_type, input.lease_token],
-      );
-      if (!held) return { ok: false, reason: "lease_lost" };
-      const existing = await this.selectInbox(tx, input.source_type, input.dedupe_key);
-      if (existing) return { ok: true, row: existing, duplicate: true };
-      const inserted = await this.insertOnce(
-        tx,
-        "INSERT INTO inbound_raw_records (source_type, dedupe_key, event, received_at) VALUES (?, ?, ?, ?)",
-        [input.source_type, input.dedupe_key, JSON.stringify(input.event), this.now()],
-      );
-      const row = (await this.selectInbox(tx, input.source_type, input.dedupe_key))!;
-      return { ok: true, row, duplicate: !inserted };
-    });
-  }
-
-  async listInboxAfter(source_type: SourceType, after_seq: number, limit: number): Promise<InboxRow[]> {
-    const rows = await this.db.all("SELECT * FROM inbound_raw_records WHERE source_type = ? AND seq > ? ORDER BY seq LIMIT ?", [
-      source_type, after_seq, limit,
-    ]);
-    return rows.map(rowToInbox);
-  }
+  // Cursors and stream intake: intake.ts
+  getCursor(name: string) { return intake.getCursor(this.db, name); }
+  advanceCursor(name: string, expected: string | null, next: string) { return intake.advanceCursor(this.db, name, expected, next); }
+  appendInbox(input: NewInboxEvent) { return intake.appendInbox(this.db, this.time, input); }
+  listInboxAfter(source_type: SourceType, after_seq: number, limit: number) { return intake.listInboxAfter(this.db, source_type, after_seq, limit); }
 
   async acquireListenerLease(source_type: SourceType, owner: string, lease_ms: number): Promise<ListenerLeaseResult> {
     return this.db.transaction(async (tx): Promise<ListenerLeaseResult> => {
@@ -1639,113 +1378,20 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
     });
   }
 
-  // Identity links (design 2026-11-01)
+  // Identity links (design 2026-11-01) and the one owner (issue #577): identity-links.ts
+  resolveLink(provider: LinkedAccount["provider"], subject: string) { return links.resolveLink(this.db, provider, subject); }
+  listLinks(user_id: UserId) { return links.listLinks(this.db, user_id); }
+  createLinkCode(user_id: UserId, code: string) { return links.createLinkCode(this.db, this.time, user_id, code); }
+  redeemLinkCode(code: string, account: LinkedAccount) { return links.redeemLinkCode(this.db, this.time, code, account); }
+  getOwner() { return links.getOwner(this.db); }
+  claimOwner(user_id: UserId) { return links.claimOwner(this.db, this.time, user_id); }
+  recordOwnerDecision(d: OwnerDecision) { return links.recordOwnerDecision(this.db, this.time, d); }
 
-  async resolveLink(provider: LinkedAccount["provider"], subject: string): Promise<UserId | null> {
-    const [row] = await this.db.all("SELECT user_id FROM identity_user_links WHERE provider = ? AND subject = ?", [provider, subject]);
-    return row ? (String(row.user_id) as UserId) : null;
-  }
-
-  async listLinks(user_id: UserId): Promise<LinkedAccount[]> {
-    const rows = await this.db.all(
-      `SELECT provider, subject FROM identity_user_links WHERE user_id = ? ORDER BY created_at, ${this.db.dialect.seq}`,
-      [user_id],
-    );
-    return rows.map((r) => ({ provider: String(r.provider) as LinkedAccount["provider"], subject: String(r.subject) }));
-  }
-
-  async createLinkCode(user_id: UserId, code: string): Promise<{ expires_at: Timestamp }> {
-    const expires_at = this.after(LINK_CODE_TTL_MS);
-    await this.db.transaction((tx) =>
-      tx.run("INSERT INTO identity_link_codes (code_hash, user_id, expires_at, failures, created_at) VALUES (?, ?, ?, 0, ?)", [
-        hashCode(code), user_id, expires_at, this.now(),
-      ]),
-    );
-    return { expires_at };
-  }
-
-  async redeemLinkCode(code: string, account: LinkedAccount): Promise<RedeemLinkResult> {
-    const now = this.now();
-    return this.db.transaction(async (tx): Promise<RedeemLinkResult> => {
-      const [row] = await tx.all(`SELECT * FROM identity_link_codes WHERE code_hash = ?`, [hashCode(code)]);
-      const user_id = row ? (String(row.user_id) as UserId) : null;
-      if (row && row.used_at !== null && row.used_provider === account.provider && row.used_subject === account.subject) {
-        return { ok: true, user_id: user_id! };
-      }
-      const reason = !row ? "invalid" : row.used_at !== null ? "used" : String(row.expires_at) <= now ? "expired"
-        : Number(row.failures) >= LINK_CODE_MAX_FAILURES ? "locked" : null;
-      if (reason !== null) {
-        // A failed attempt counts against every live code, so guessing cannot outlast the lock.
-        await tx.run("UPDATE identity_link_codes SET failures = failures + 1 WHERE used_at IS NULL AND expires_at > ?", [now]);
-        return { ok: false, reason };
-      }
-      const [linked] = await tx.all("SELECT user_id FROM identity_user_links WHERE provider = ? AND subject = ?", [account.provider, account.subject]);
-      if (linked && linked.user_id !== user_id) return { ok: false, reason: "already_linked" };
-      if (!linked) {
-        await tx.run("INSERT INTO identity_user_links (provider, subject, user_id, created_at) VALUES (?, ?, ?, ?)", [
-          account.provider, account.subject, user_id, now,
-        ]);
-      }
-      await tx.run("UPDATE identity_link_codes SET used_at = ?, used_provider = ?, used_subject = ? WHERE code_hash = ?", [
-        now, account.provider, account.subject, row!.code_hash as string,
-      ]);
-      return { ok: true, user_id: user_id! };
-    });
-  }
-
-  // The one owner (issue #577)
-
-  async getOwner(): Promise<UserId | null> {
-    return (await readOwner(this.db)) as UserId | null;
-  }
-
-  async claimOwner(user_id: UserId): Promise<UserId> {
-    return (await claimOwner(this.db, user_id, this.now())) as UserId;
-  }
-
-  async recordOwnerDecision(d: OwnerDecision): Promise<void> {
-    await recordOwnerDecision(this.db, d, this.now());
-  }
-
-  // Runtime settings overrides (design 2026-11-03)
-
-  async listSettingOverrides(): Promise<SettingOverride[]> {
-    const rows = await this.db.all("SELECT * FROM runtime_settings_overrides ORDER BY setting_key, project_key");
-    return rows.map(settingsSql.rowToOverride);
-  }
-
-  async setSettingOverride(input: SetSettingInput): Promise<SettingChange> {
-    const at = this.now();
-    return this.db.transaction(async (tx) => {
-      const old = await this.selectOverride(tx, input.key, input.project);
-      if (old) {
-        await tx.run("UPDATE runtime_settings_overrides SET value_json = ?, set_by = ?, set_at = ? WHERE setting_key = ? AND project_key = ?", [
-          input.value, input.actor, at, input.key, input.project,
-        ]);
-      } else {
-        await tx.run("INSERT INTO runtime_settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)", [
-          input.key, input.project, input.value, input.actor, at,
-        ]);
-      }
-      return this.insertSettingChange(tx, input.key, input.project, old?.value ?? null, input.value, input.actor, at);
-    });
-  }
-
-  async resetSettingOverride(input: ResetSettingInput): Promise<SettingChange | null> {
-    const at = this.now();
-    return this.db.transaction(async (tx) => {
-      const old = await this.selectOverride(tx, input.key, input.project);
-      if (!old) return null;
-      const n = await tx.run("DELETE FROM runtime_settings_overrides WHERE setting_key = ? AND project_key = ?", [input.key, input.project]);
-      if (n === 0) return null;
-      return this.insertSettingChange(tx, input.key, input.project, old.value, null, input.actor, at);
-    });
-  }
-
-  async listSettingChanges(limit: number): Promise<SettingChange[]> {
-    const rows = await this.db.all(`SELECT * FROM runtime_settings_changes ORDER BY seq DESC LIMIT ${Math.max(0, Math.floor(limit))}`);
-    return rows.map(settingsSql.rowToSettingChange);
-  }
+  // Runtime settings overrides (design 2026-11-03): settings.ts
+  listSettingOverrides() { return settingsSql.listSettingOverrides(this.db); }
+  setSettingOverride(input: SetSettingInput) { return settingsSql.setSettingOverride(this.db, this.time, input); }
+  resetSettingOverride(input: ResetSettingInput) { return settingsSql.resetSettingOverride(this.db, this.time, input); }
+  listSettingChanges(limit: number) { return settingsSql.listSettingChanges(this.db, limit); }
 
   // Learned settings (design 08-settings): in ./settings.ts, beside the overrides' row mappers.
   getLearnedSetting(project: string, key: string) {
@@ -1768,78 +1414,20 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
     return settingsSql.listLearnedSettingChanges(this.db, limit);
   }
 
-  private async selectOverride(tx: SqlExecutor, key: string, project: string): Promise<SettingOverride | null> {
-    const [row] = await tx.all(`SELECT * FROM runtime_settings_overrides WHERE setting_key = ? AND project_key = ?`, [key, project]);
-    return row ? settingsSql.rowToOverride(row) : null;
-  }
-
-  private async insertSettingChange(
-    tx: SqlExecutor, key: string, project: string, old_value: string | null, new_value: string | null, actor: string, at: Timestamp,
-  ): Promise<SettingChange> {
-    await tx.run("INSERT INTO runtime_settings_changes (setting_key, project_key, old_value, new_value, actor, at) VALUES (?, ?, ?, ?, ?, ?)", [
-      key, project, old_value, new_value, actor, at,
-    ]);
-    const [row] = await tx.all("SELECT * FROM runtime_settings_changes WHERE setting_key = ? AND project_key = ? ORDER BY seq DESC LIMIT 1", [key, project]);
-    return settingsSql.rowToSettingChange(row!);
-  }
-
-  // Merge checks (design §5 Merge check, issue #248): one latest row per item, replaced on each check.
-
-  async recordMergeCheck(c: NewMergeCheck): Promise<MergeCheck> {
-    const checked_at = this.now();
-    const values: SqlValue[] = [c.mergeable ? 1 : 0, JSON.stringify(c.conflicts), c.head_sha, c.base_sha, checked_at];
-    const update = () => this.db.run("UPDATE controller_merge_checks SET mergeable = ?, conflicts = ?, head_sha = ?, base_sha = ?, checked_at = ? WHERE work_item_id = ?", [...values, c.work_item_id]);
-    // Keyed by work_item_id: update the row, else insert it; a concurrent first insert that loses updates instead.
-    if ((await update()) === 0) {
-      const sql = "INSERT INTO controller_merge_checks (mergeable, conflicts, head_sha, base_sha, checked_at, work_item_id) VALUES (?, ?, ?, ?, ?, ?)";
-      if (!(await this.insertOnce(this.db, sql, [...values, c.work_item_id]))) await update();
-    }
-    return { ...c, conflicts: [...c.conflicts], checked_at };
-  }
-
-  async getMergeCheck(work_item_id: WorkItemId): Promise<MergeCheck | null> {
-    const [row] = await this.db.all("SELECT * FROM controller_merge_checks WHERE work_item_id = ?", [work_item_id]);
-    return row ? rowToMergeCheck(row) : null;
-  }
-
-  async clearMergeCheck(work_item_id: WorkItemId): Promise<boolean> {
-    return (await this.db.run("DELETE FROM controller_merge_checks WHERE work_item_id = ?", [work_item_id])) > 0;
-  }
-  async listMergeChecks(work_item_ids: readonly WorkItemId[]): Promise<MergeCheck[]> {
-    if (work_item_ids.length === 0) return [];
-    const rows = await this.db.all(`SELECT * FROM controller_merge_checks WHERE work_item_id IN (${placeholders(work_item_ids.length)})`, [...work_item_ids]);
-    return rows.map(rowToMergeCheck);
-  }
-
-  // GitHub sync records (design §5, GitHub call budget): posted comments and label states, shared by replicas.
-
-  async getPostedComment(
-    source_id: string, marker: string, body: string,
-  ): Promise<(PostedComment & { same_body: boolean; waiting: boolean }) | null> {
-    const [row] = await this.db.all("SELECT * FROM outbound_deliveries WHERE source_id = ? AND marker = ?", [source_id, marker]);
-    if (!row) return null;
-    const c = posted.rowToPostedComment(row);
-    return { ...c, same_body: c.body_hash === bodyHash(body), waiting: c.next_attempt_at !== null && c.next_attempt_at > this.now() };
-  }
-
-  async recordPostedComment(c: NewPostedComment): Promise<void> {
-    const now = this.now();
-    const values: SqlValue[] = [c.comment_id, c.url, bodyHash(c.body), now];
-    // A row of failed posts only gets the comment; a row that has one keeps it.
-    const update = () =>
-      this.db.run(
-        `UPDATE outbound_deliveries SET comment_id = ?, url = ?, body_hash = ?, attempts = 0, next_attempt_at = NULL, updated_at = ?
-         WHERE source_id = ? AND marker = ? AND comment_id IS NULL`,
-        [...values, c.source_id, c.marker],
-      );
-    if ((await update()) > 0) return;
-    const sql = `INSERT INTO outbound_deliveries (comment_id, url, body_hash, attempts, next_attempt_at, created_at, updated_at, source_id, marker)
-         VALUES (?, ?, ?, 0, NULL, ?, ?, ?, ?)`;
-    if (!(await this.insertOnce(this.db, sql, [...values, now, c.source_id, c.marker]))) await update();
-  }
+  // Merge checks (design §5 Merge check, issue #248) and GitHub sync records (design §5, GitHub call budget): github-sync.ts
+  recordMergeCheck(c: NewMergeCheck) { return sync.recordMergeCheck(this.db, this.time, c); }
+  getMergeCheck(work_item_id: WorkItemId) { return sync.getMergeCheck(this.db, work_item_id); }
+  clearMergeCheck(work_item_id: WorkItemId) { return sync.clearMergeCheck(this.db, work_item_id); }
+  listMergeChecks(work_item_ids: readonly WorkItemId[]) { return sync.listMergeChecks(this.db, work_item_ids); }
+  getPostedComment(source_id: string, marker: string, body: string) { return sync.getPostedComment(this.db, this.time, source_id, marker, body); }
+  recordPostedComment(c: NewPostedComment) { return sync.recordPostedComment(this.db, this.time, c); }
+  recordCommentFailure(source_id: string, marker: string, attempts: number, delay_ms: number) { return sync.recordCommentFailure(this.db, this.time, source_id, marker, attempts, delay_ms); }
+  claimLabelWrite(source_id: string, target: LabelTarget, status: string, ttl_ms: number) { return sync.claimLabelWrite(this.db, this.time, source_id, target, status, ttl_ms); }
+  recordLabelState(source_id: string, target: LabelTarget, status: string, token: string) { return sync.recordLabelState(this.db, this.time, source_id, target, status, token); }
+  releaseLabelClaim(source_id: string, target: LabelTarget, token: string) { return sync.releaseLabelClaim(this.db, source_id, target, token); }
+  listLabelStates(source_ids: readonly string[]) { return sync.listLabelStates(this.db, source_ids); }
 
   // Their reads for reactions (issue #524), and the row mapper, live in posted-comments.ts.
-
   listPostedCommentsById(comment_id: string): Promise<PostedComment[]> {
     return posted.listPostedCommentsById(this.db, comment_id);
   }
@@ -1849,451 +1437,52 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
     return posted.listPostedComments(this.db, source_prefix, this.after(-within_ms));
   }
 
-  async recordCommentFailure(source_id: string, marker: string, attempts: number, delay_ms: number): Promise<boolean> {
-    const now = this.now();
-    const next_attempt_at = this.after(delay_ms);
-    if (attempts === 1) {
-      const inserted = await this.insertOnce(
-        this.db,
-        `INSERT INTO outbound_deliveries (source_id, marker, comment_id, url, body_hash, attempts, next_attempt_at, created_at, updated_at)
-         VALUES (?, ?, NULL, NULL, NULL, 1, ?, ?, ?)`,
-        [source_id, marker, next_attempt_at, now, now],
-      );
-      if (inserted) return true;
-    }
-    const changed = await this.db.run(
-      "UPDATE outbound_deliveries SET attempts = ?, next_attempt_at = ?, updated_at = ? WHERE source_id = ? AND marker = ? AND attempts = ?",
-      [attempts, next_attempt_at, now, source_id, marker, attempts - 1],
-    );
-    return changed > 0;
-  }
-
-  async claimLabelWrite(source_id: string, target: LabelTarget, status: string, ttl_ms: number): Promise<string | null> {
-    const token = newId("lbl");
-    const now = this.now();
-    const until = this.after(ttl_ms);
-    return this.db.transaction(async (tx) => {
-      const [row] = await tx.all(
-        `SELECT * FROM outbound_label_states WHERE source_id = ? AND target = ?`, [source_id, target],
-      );
-      if (!row) {
-        const inserted = await this.insertOnce(
-          tx,
-          `INSERT INTO outbound_label_states (source_id, target, status, claim_token, claim_status, claim_until, updated_at)
-           VALUES (?, ?, NULL, ?, ?, ?, ?)`,
-          [source_id, target, token, status, until, now],
-        );
-        // A concurrent first claim committed first: that write is under way.
-        return inserted ? token : null;
-      }
-      if (row.status === status) return null;
-      const held = row.claim_token !== null && row.claim_status === status && String(row.claim_until) > now;
-      if (held) return null;
-      // Conditional on the claim read, so of two replicas taking over the same row only one wins.
-      const changed = await tx.run(
-        `UPDATE outbound_label_states SET claim_token = ?, claim_status = ?, claim_until = ?, updated_at = ?
-         WHERE source_id = ? AND target = ? AND ${row.claim_token === null ? "claim_token IS NULL" : "claim_token = ?"}`,
-        [token, status, until, now, source_id, target, ...(row.claim_token === null ? [] : [row.claim_token as string])],
-      );
-      return changed > 0 ? token : null;
-    });
-  }
-
-  async recordLabelState(source_id: string, target: LabelTarget, status: string, token: string): Promise<void> {
-    await this.db.run(
-      `UPDATE outbound_label_states SET status = ?, claim_token = NULL, claim_status = NULL, claim_until = NULL, updated_at = ?
-       WHERE source_id = ? AND target = ? AND claim_token = ?`,
-      [status, this.now(), source_id, target, token],
-    );
-  }
-
-  async releaseLabelClaim(source_id: string, target: LabelTarget, token: string): Promise<void> {
-    await this.db.run(
-      "UPDATE outbound_label_states SET claim_token = NULL, claim_status = NULL, claim_until = NULL WHERE source_id = ? AND target = ? AND claim_token = ?",
-      [source_id, target, token],
-    );
-  }
-
-  async listLabelStates(source_ids: readonly string[]): Promise<LabelState[]> {
-    const out: LabelState[] = [];
-    // In chunks, so a long list stays under every backend's parameter limit.
-    for (let i = 0; i < source_ids.length; i += 500) {
-      const chunk = source_ids.slice(i, i + 500);
-      const rows = await this.db.all(`SELECT * FROM outbound_label_states WHERE source_id IN (${placeholders(chunk.length)})`, [...chunk]);
-      out.push(...rows.map(rowToLabelState));
-    }
-    return out;
-  }
-
-  // Worker processes (design §5 Coordination, 2026-11-07)
-
-  async reportWorkerProcess(r: WorkerProcessReport): Promise<WorkerProcess> {
-    const reported_at = this.now();
-    const values: SqlValue[] = [r.pid, r.host, r.slots, r.max_slots, r.busy, r.index_base, r.started_at, reported_at];
-    const update = () =>
-      this.db.run(
-        `UPDATE worker_processes SET pid = ?, host = ?, slots = ?, max_slots = ?, busy = ?, index_base = ?, started_at = ?, reported_at = ?
-         WHERE process_id = ?`,
-        [...values, r.process_id],
-      );
-    // Keyed by process_id: update the row, else insert it; a concurrent first insert that loses updates instead.
-    if ((await update()) === 0) {
-      const sql = `INSERT INTO worker_processes (pid, host, slots, max_slots, busy, index_base, started_at, reported_at, process_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-      if (!(await this.insertOnce(this.db, sql, [...values, r.process_id]))) await update();
-    }
-    return { ...r, reported_at };
-  }
-
-  async listWorkerProcesses(max_age_ms: number): Promise<WorkerProcess[]> {
-    const since = new Date(this.clock.now().getTime() - max_age_ms).toISOString();
-    const rows = await this.db.all("SELECT * FROM worker_processes WHERE reported_at >= ? ORDER BY host, pid, process_id", [since]);
-    return rows.map(rowToWorkerProcess);
-  }
-
-  async removeWorkerProcess(process_id: string): Promise<boolean> {
-    return (await this.db.run("DELETE FROM worker_processes WHERE process_id = ?", [process_id])) > 0;
-  }
-
-  // Host sleeps (design §5 Host sleep, issue #218): one row per (worker_id, woke_at).
-
-  async recordHostSleep(sleep: HostSleep): Promise<{ created: boolean; sleep: HostSleep }> {
-    const existing = await this.selectHostSleep(sleep.worker_id, sleep.woke_at);
-    if (existing) return { created: false, sleep: existing };
-    const created = await this.insertOnce(
-      this.db,
-      "INSERT INTO worker_host_sleeps (worker_id, woke_at, gap_ms, run_id) VALUES (?, ?, ?, ?)",
-      [sleep.worker_id, sleep.woke_at, Math.round(sleep.gap_ms), sleep.run_id],
-    );
-    // A concurrent first write that lost the insert reports the row the other one stored.
-    return { created, sleep: (await this.selectHostSleep(sleep.worker_id, sleep.woke_at))! };
-  }
-
-  async listHostSleeps(opts: { limit: number; work_item_id?: WorkItemId }): Promise<HostSleep[]> {
-    const limit = Math.max(0, Math.floor(opts.limit));
-    // limit is an integer computed here, inlined as the other paged reads do.
-    const rows = opts.work_item_id === undefined
-      ? await this.db.all(`SELECT * FROM worker_host_sleeps ORDER BY woke_at DESC, worker_id DESC LIMIT ${limit}`)
-      : await this.db.all(
-          `SELECT h.* FROM worker_host_sleeps h JOIN worker_runs r ON r.id = h.run_id WHERE r.work_item_id = ?
-           ORDER BY h.woke_at DESC, h.worker_id DESC LIMIT ${limit}`,
-          [opts.work_item_id],
-        );
-    return rows.map(rowToHostSleep);
-  }
-
-  private async selectHostSleep(worker_id: WorkerId, woke_at: Timestamp): Promise<HostSleep | null> {
-    const [row] = await this.db.all("SELECT * FROM worker_host_sleeps WHERE worker_id = ? AND woke_at = ?", [worker_id, woke_at]);
-    return row ? rowToHostSleep(row) : null;
-  }
-
-  // Alerts (design 05-alarms): alerts.ts
+  // Worker processes, host sleeps and restart history: worker-health.ts; alerts (design 05-alarms): alerts.ts
+  reportWorkerProcess(r: WorkerProcessReport) { return health.reportWorkerProcess(this.db, this.time, r); }
+  listWorkerProcesses(max_age_ms: number) { return health.listWorkerProcesses(this.db, this.time, max_age_ms); }
+  removeWorkerProcess(process_id: string) { return health.removeWorkerProcess(this.db, process_id); }
+  recordHostSleep(sleep: HostSleep) { return health.recordHostSleep(this.db, sleep); }
+  listHostSleeps(opts: { limit: number; work_item_id?: WorkItemId }) { return health.listHostSleeps(this.db, opts); }
   recordAlert(input: NewAlert, dedupe_ms: number) { return alerts.recordAlert(this.db, this.now(), input, this.after(-dedupe_ms)); }
   listAlerts(opts: { limit: number }) { return alerts.listAlerts(this.db, opts.limit); }
   dismissAlert(alert_id: string, actor: UserId) { return alerts.dismissAlert(this.db, this.now(), alert_id, actor); }
   listAlertDismissals(since: Timestamp) { return alerts.listAlertDismissals(this.db, since); }
+  recordChildRestart(restart: ChildRestart) { return health.recordChildRestart(this.db, restart); }
+  listChildRestartsWithin(window_ms: number) { return health.listChildRestartsWithin(this.db, this.time, window_ms); }
 
-  // Restart history (design 05-restarts): the key is the restart's time and a hash of its reason, so the same
-  // restart read again from the supervisor's file, on this replica or another, is one row.
-
-  async recordChildRestart(restart: ChildRestart): Promise<{ created: boolean }> {
-    const key = `${restart.at}:${createHash("sha256").update(restart.reason).digest("hex").slice(0, 16)}`;
-    const created = await this.insertOnce(this.db, "INSERT INTO runtime_child_restarts (restart_key, at, reason) VALUES (?, ?, ?)", [
-      key, restart.at, restart.reason,
-    ]);
-    return { created };
-  }
-
-  async listChildRestartsWithin(window_ms: number): Promise<ChildRestart[]> {
-    const rows = await this.db.all("SELECT at, reason FROM runtime_child_restarts WHERE at >= ? ORDER BY at, restart_key", [this.after(-window_ms)]);
-    return rows.map((r) => ({ at: r.at as string, reason: r.reason as string }));
-  }
-
-  // Local work items (issue #198). Messages live in `item_thread`, commands in `command_inbox` (migration 24, issue #281).
-
-  async recordRunIntent(intent: RunIntent): Promise<void> {
-    await recordAction(this.db, intent, this.clock.now().toISOString());
-  }
-
-  async recordItemMessage(input: NewItemMessage): Promise<{ created: boolean; message: ItemMessage }> {
-    return this.db.transaction(async (tx) => {
-      const existing = await this.selectItemMessage(tx, input.work_item_id, input.marker);
-      if (existing) return { created: false, message: existing };
-      const now = this.now();
-      const created = await this.insertOnce(
-        tx,
-        "INSERT INTO controller_item_thread (work_item_id, marker, body, created_at, actor) VALUES (?, ?, ?, ?, ?)",
-        [input.work_item_id, input.marker, input.body, now, input.actor ?? null],
-      );
-      const message = (await this.selectItemMessage(tx, input.work_item_id, input.marker))!;
-      const d = input.delivery;
-      if (created && d) {
-        await tx.run(
-          `INSERT INTO outbound_intents (thread_seq, work_item_id, source_type, target, link_field, attempts, next_attempt_at, claim_token,
-             created_at) VALUES (?, ?, ?, ?, ?, 0, ?, 0, ?)`,
-          [message.seq, input.work_item_id, d.source_type, JSON.stringify(d.target), d.link_field ?? null, now, now],
-        );
-      }
-      return { created, message };
-    });
-  }
-
-  // The thread outbox (issue #282). Claims are fenced by a token that only a claim bumps, like run leases.
-
-  async listPendingDeliveries(source_types: readonly SourceType[], limit: number): Promise<ThreadDelivery[]> {
-    if (source_types.length === 0) return [];
-    const now = this.now();
-    const rows = await this.db.all(
-      `${DELIVERY_SELECT} WHERE o.delivered_at IS NULL AND o.source_type IN (${placeholders(source_types.length)})
-         AND o.next_attempt_at <= ? AND (o.claimed_until IS NULL OR o.claimed_until <= ?)
-       ORDER BY o.seq LIMIT ${Math.max(0, Math.floor(limit))}`,
-      [...source_types, now, now],
-    );
-    return rows.map(rowToDelivery);
-  }
-
-  async listDeliveries(work_item_id: WorkItemId): Promise<ThreadDelivery[]> {
-    const rows = await this.db.all(`${DELIVERY_SELECT} WHERE o.work_item_id = ? ORDER BY o.seq`, [work_item_id]);
-    return rows.map(rowToDelivery);
-  }
-
-  async claimDelivery(seq: number, lease_ms: number, fence?: SyncFence): Promise<number | null> {
-    return this.claimQueued(QUEUES.outbox, seq, lease_ms, fence);
-  }
-
-  async getDelivery(seq: number): Promise<ThreadDelivery | null> {
-    const [row] = await this.db.all(`${DELIVERY_SELECT} WHERE o.seq = ?`, [seq]);
-    return row ? rowToDelivery(row) : null;
-  }
-
-  async finishDelivery(seq: number, token: number, url: string | null): Promise<boolean> {
-    const n = await this.db.run(
-      `UPDATE outbound_intents SET delivered_at = ?, url = ?, claimed_until = NULL, last_error = NULL
-       WHERE seq = ? AND claim_token = ? AND delivered_at IS NULL AND claimed_until IS NOT NULL`,
-      [this.now(), url, seq, token],
-    );
-    return n > 0;
-  }
-
-  async linkDelivery(seq: number): Promise<void> {
-    const [row] = await this.db.all("SELECT work_item_id, link_field, url FROM outbound_intents WHERE seq = ? AND delivered_at IS NOT NULL", [seq]);
-    const field = row?.link_field as string | null | undefined;
-    const url = row?.url as string | null | undefined;
-    if (!row || !url || (field !== "spec_comment_url" && field !== "failure_comment_url")) return;
-    // Only the item's newest entry for this field fills it: an older one delivered late never hides a newer.
-    await this.db.run(
-      `UPDATE controller_work_items SET ${field} = ? WHERE id = ? AND NOT EXISTS (
-         SELECT 1 FROM outbound_intents n WHERE n.work_item_id = ? AND n.link_field = ? AND n.seq > ?)`,
-      [url, row.work_item_id as string, row.work_item_id as string, field, seq],
-    );
-  }
-
-  async failDelivery(seq: number, token: number, error: string, retry_in_ms: number): Promise<boolean> {
-    return this.failQueued(QUEUES.outbox, seq, token, error, retry_in_ms);
-  }
+  // Local work items (issue #198): the item thread, its outbox (issue #282) and the command inbox (issue #245) in local-items.ts
+  recordRunIntent(intent: RunIntent) { return local.recordRunIntent(this.db, this.time, intent); }
+  recordItemMessage(input: NewItemMessage) { return local.recordItemMessage(this.db, this.time, input); }
+  listItemMessages(work_item_id: WorkItemId) { return local.listItemMessages(this.db, work_item_id); }
+  listPendingDeliveries(source_types: readonly SourceType[], limit: number) { return local.listPendingDeliveries(this.db, this.time, source_types, limit); }
+  listDeliveries(work_item_id: WorkItemId) { return local.listDeliveries(this.db, work_item_id); }
+  claimDelivery(seq: number, lease_ms: number, fence?: SyncFence) { return local.claimDelivery(this.db, this.time, seq, lease_ms, fence); }
+  getDelivery(seq: number) { return local.getDelivery(this.db, seq); }
+  finishDelivery(seq: number, token: number, url: string | null) { return local.finishDelivery(this.db, this.time, seq, token, url); }
+  linkDelivery(seq: number) { return local.linkDelivery(this.db, seq); }
+  failDelivery(seq: number, token: number, error: string, retry_in_ms: number) { return local.failDelivery(this.db, this.time, seq, token, error, retry_in_ms); }
+  appendCliCommand(input: NewCliCommand) { return local.appendCliCommand(this.db, this.time, input); }
+  listCliCommandsAfter(after_seq: number, limit: number) { return local.listCliCommandsAfter(this.db, after_seq, limit); }
+  listUnmirroredCliCommands(limit: number) { return local.listUnmirroredCliCommands(this.db, limit); }
+  markCliCommandMirrored(key: string) { return local.markCliCommandMirrored(this.db, this.time, key); }
+  recordAppCommandRequest(input: NewAppCommandRequest) { return local.recordAppCommandRequest(this.db, this.time, input); }
+  markAppCommandRequest(seq: number, refusal: string | null) { return local.markAppCommandRequest(this.db, this.time, seq, refusal); }
+  getAppCommandRequest(ref: number | string) { return local.getAppCommandRequest(this.db, ref); }
+  listAppCommandRequestsForItem(id: WorkItemId, limit: number) { return local.listAppCommandRequestsForItem(this.db, id, limit); }
+  listItemCommands(id: WorkItemId, limit: number) { return local.listItemCommands(this.db, id, limit); }
 
   // The base push (design 05-sources, Local items; RFC 0015 M8): base-push.ts
-
   getBasePush(work_item_id: WorkItemId) { return basePush.getBasePush(this.db, work_item_id); }
   listBasePushBacklogs() { return basePush.listBasePushBacklogs(this.db); }
-
-  /** Claims row `seq` of a queue for `lease_ms`: only an unfinished row with no live claim (and, with `fence`, a held lease). */
-  private async claimQueued(q: Queue, seq: number, lease_ms: number, fence?: SyncFence): Promise<number | null> {
-    return this.db.transaction(async (tx) => {
-      if (fence && !(await this.fenceHeld(tx, fence))) return null;
-      const now = this.now();
-      const until = new Date(this.clock.now().getTime() + Math.max(0, lease_ms)).toISOString();
-      const n = await tx.run(
-        `UPDATE ${q.table} SET claim_token = claim_token + 1, claimed_until = ?
-         WHERE seq = ? AND ${q.done} IS NULL AND (claimed_until IS NULL OR claimed_until <= ?)`,
-        [until, seq, now],
-      );
-      if (n === 0) return null;
-      const [row] = await tx.all(`SELECT claim_token FROM ${q.table} WHERE seq = ?`, [seq]);
-      return Number(row!.claim_token);
-    });
-  }
-
-  /** A failed try of row `seq` under claim `token`: one more attempt, the error, the claim released, the next try later. */
-  private async failQueued(q: Queue, seq: number, token: number, error: string, retry_in_ms: number): Promise<boolean> {
-    const next = new Date(this.clock.now().getTime() + Math.max(0, retry_in_ms)).toISOString();
-    const n = await this.db.run(
-      `UPDATE ${q.table} SET attempts = attempts + 1, last_error = ?, next_attempt_at = ?, claimed_until = NULL
-       WHERE seq = ? AND claim_token = ? AND ${q.done} IS NULL AND claimed_until IS NOT NULL`,
-      [error.slice(0, 1000), next, seq, token],
-    );
-    return n > 0;
-  }
-
-  async listItemMessages(work_item_id: WorkItemId): Promise<ItemMessage[]> {
-    const rows = await this.db.all("SELECT * FROM controller_item_thread WHERE work_item_id = ? ORDER BY seq", [work_item_id]);
-    return rows.map(rowToItemMessage);
-  }
-
-  async appendCliCommand(input: NewCliCommand): Promise<{ created: boolean; command: CliCommand }> {
-    return this.db.transaction(async (tx) => {
-      const existing = await this.selectCliCommand(tx, input.key);
-      if (existing) return { created: false, command: existing };
-      await this.lockCommandSequence(tx);
-      const created = await this.insertOnce(
-        tx,
-        "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, mirror, passport_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [commandId(input.key), commandOrigin(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), this.now(), input.mirror ? 1 : 0, input.passport_id ?? null],
-      );
-      return { created, command: (await this.selectCliCommand(tx, input.key))! };
-    });
-  }
-
-  async listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]> {
-    const rows = await this.db.all(`SELECT * FROM inbound_commands WHERE seq > ? ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`, [
-      after_seq,
-    ]);
-    return rows.map(rowToCliCommand);
-  }
-
-  async listUnmirroredCliCommands(limit: number): Promise<CliCommand[]> {
-    const rows = await this.db.all(
-      `SELECT * FROM inbound_commands WHERE mirror = 1 AND mirrored_at IS NULL ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`,
-    );
-    return rows.map(rowToCliCommand);
-  }
-
-  async markCliCommandMirrored(key: string): Promise<boolean> {
-    const n = await this.db.run("UPDATE inbound_commands SET mirrored_at = ? WHERE command_key = ? AND mirror = 1 AND mirrored_at IS NULL", [
-      this.now(),
-      key,
-    ]);
-    return n > 0;
-  }
-
-  // App command requests (issue #245)
-
-  async recordAppCommandRequest(input: NewAppCommandRequest): Promise<{ created: boolean; request: AppCommandRequest }> {
-    return this.db.transaction(async (tx) => {
-      const existing = await this.selectAppCommandRequest(tx, input.key);
-      if (existing) return { created: false, request: existing };
-      await this.lockCommandSequence(tx);
-      const created = await this.insertOnce(
-        tx,
-        "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, passport_id) VALUES (?, 'app', ?, ?, ?, ?, ?, ?)",
-        [commandId(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), this.now(), input.passport_id ?? null],
-      );
-      return { created, request: (await this.selectAppCommandRequest(tx, input.key))! };
-    });
-  }
-
-  async markAppCommandRequest(seq: number, refusal: string | null): Promise<boolean> {
-    const n = await this.db.run(`UPDATE inbound_commands SET handled_at = ?, refusal = ? WHERE ${APP_REQUEST_SEQ} AND handled_at IS NULL`, [
-      this.now(),
-      refusal,
-      seq,
-      seq,
-    ]);
-    return n > 0;
-  }
-
-  async getAppCommandRequest(ref: number | string): Promise<AppCommandRequest | null> {
-    if (typeof ref === "string") return this.selectAppCommandRequest(this.db, ref);
-    const [row] = await this.db.all(`SELECT * FROM inbound_commands WHERE ${APP_REQUEST_SEQ}`, [ref, ref]);
-    return row ? rowToAppCommandRequest(row) : null;
-  }
-
-  async listAppCommandRequestsForItem(id: WorkItemId, limit: number): Promise<AppCommandRequest[]> {
-    return (await this.itemCommandRows(id, "origin = 'app'", ["work_item_id"], limit)).map(rowToAppCommandRequest).filter((r) => r.args.work_item_id === id);
-  }
-  async listItemCommands(id: WorkItemId, limit: number): Promise<CliCommand[]> {
-    return (await this.itemCommandRows(id, "origin IN ('cli', 'app')", ["item", "work_item_id"], limit)).map(rowToCliCommand).filter((c) => (c.args.item ?? c.args.work_item_id) === id);
-  }
-  /** The newest `limit` rows of `origins` (SQL) whose `args` (JSON text, the pair verbatim) name `id` in a field, oldest first; LIKE narrows, callers check the exact id. */
-  private itemCommandRows(id: WorkItemId, origins: string, fields: string[], limit: number): Promise<Row[]> {
-    const like = (f: string) => `%${`${JSON.stringify(f)}:${JSON.stringify(id)}`.replace(/[!%_]/g, (c) => `!${c}`)}%`;
-    return this.db.all(`SELECT * FROM (SELECT * FROM inbound_commands WHERE ${origins} AND (${fields.map(() => "args LIKE ? ESCAPE '!'").join(" OR ")}) ORDER BY seq DESC LIMIT ${Math.max(0, Math.floor(limit))}) ORDER BY seq`, fields.map(like));
-  }
-  // Raw table reads (design §9 Data page, issue #239). Names come only from the catalog; see ident(). The Ask's query is the driver's (SQLite only).
+  // Raw table reads (design §9 Data page, issue #239). Names come only from the catalog (tables.ts). The Ask's query is the driver's (SQLite only).
   get readOnlyQuery(): FactoryStore["readOnlyQuery"] { return (this.db as Pick<FactoryStore, "readOnlyQuery">).readOnlyQuery?.bind(this.db); }
-  async listTables(): Promise<StoreTable[]> {
-    const out: StoreTable[] = [];
-    for (const t of await this.catalog()) {
-      const [row] = await this.db.all(`SELECT COUNT(*) AS n FROM ${ident(t.name)}`);
-      out.push({ ...t, rows: Number(row?.n ?? 0) });
-    }
-    return out;
-  }
-
-  async listTableRows(input: TablePageInput): Promise<TablePage | null> {
-    const t = (await this.catalog()).find((c) => c.name === input.table);
-    if (!t) return null;
-    if (input.filter && !t.columns.includes(input.filter.column)) return null;
-    const limit = pageLimit(input.limit);
-    const offset = Number.isFinite(input.offset) ? Math.max(0, Math.floor(input.offset!)) : 0;
-    const where = input.filter ? ` WHERE ${ident(input.filter.column)} = ?` : "";
-    const params: SqlValue[] = input.filter ? [input.filter.value] : [];
-    const order = t.order_by.length ? ` ORDER BY ${t.order_by.map((c) => `${ident(c)} DESC`).join(", ")}` : "";
-    const [count] = await this.db.all(`SELECT COUNT(*) AS n FROM ${ident(t.name)}${where}`, params);
-    // limit and offset are integers computed here, inlined as the other paged reads do.
-    const rows = await this.db.all(`SELECT * FROM ${ident(t.name)}${where}${order} LIMIT ${limit} OFFSET ${offset}`, params);
-    return {
-      rows: rows.map((r) => Object.fromEntries(t.columns.map((c) => [c, toCell(r[c])]))),
-      total: Number(count?.n ?? 0),
-      limit,
-      offset,
-    };
-  }
-
-  /** The schema's tables from SQLite's own catalog, without row counts. */
-  private async catalog(): Promise<Omit<StoreTable, "rows">[]> {
-    const tables = new Map<string, { columns: string[]; pk: { name: string; pos: number }[] }>();
-    const names = await this.db.all(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
-    );
-    for (const n of names) {
-      const cols = await this.db.all("SELECT name, pk FROM pragma_table_info(?) ORDER BY cid", [n.name as string]);
-      tables.set(n.name as string, {
-        columns: cols.map((c) => c.name as string),
-        pk: cols.filter((c) => Number(c.pk) > 0).map((c) => ({ name: c.name as string, pos: Number(c.pk) })),
-      });
-    }
-    const out: Omit<StoreTable, "rows">[] = [];
-    for (const [name, t] of [...tables].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-      const primary_key = t.pk.sort((a, b) => a.pos - b.pos).map((p) => p.name);
-      const time = TIME_COLUMNS.find((c) => t.columns.includes(c));
-      const order_by = [...(time ? [time] : []), ...primary_key.filter((c) => c !== time)];
-      out.push({ name, columns: t.columns, primary_key, order_by });
-    }
-    return out;
-  }
-
-  private async selectItemMessage(q: SqlExecutor, work_item_id: WorkItemId, marker: string): Promise<ItemMessage | null> {
-    const [row] = await q.all("SELECT * FROM controller_item_thread WHERE work_item_id = ? AND marker = ?", [work_item_id, marker]);
-    return row ? rowToItemMessage(row) : null;
-  }
-
-  private async selectAppCommandRequest(q: SqlExecutor, key: string): Promise<AppCommandRequest | null> {
-    const [row] = await q.all("SELECT * FROM inbound_commands WHERE command_key = ? AND origin = 'app'", [key]);
-    return row ? rowToAppCommandRequest(row) : null;
-  }
-
-  private async selectCliCommand(q: SqlExecutor, key: string): Promise<CliCommand | null> {
-    const [row] = await q.all("SELECT * FROM inbound_commands WHERE command_key = ?", [key]);
-    return row ? rowToCliCommand(row) : null;
-  }
+  listTables() { return tables.listTables(this.db); }
+  listTableRows(input: TablePageInput) { return tables.listTableRows(this.db, input); }
 
   // Internals
-
-  private async selectInbox(q: SqlExecutor, source_type: SourceType, dedupe_key: string): Promise<InboxRow | null> {
-    const [row] = await q.all("SELECT * FROM inbound_raw_records WHERE source_type = ? AND dedupe_key = ?", [source_type, dedupe_key]);
-    return row ? rowToInbox(row) : null;
-  }
-
   private async selectSyncLease(q: SqlExecutor, name: string): Promise<SyncLease | null> {
     const [row] = await q.all("SELECT * FROM inbound_sync_leases WHERE name = ?", [name]);
     return row ? { name: row.name as string, owner: row.owner as string, token: Number(row.token), expires_at: row.expires_at as Timestamp } : null;
-  }
-
-  /** Whether `fence.token` is still the token of its sync lease. A takeover (token + 1) waits for the fenced write to commit, so no write lands after another replica took the lease. */
-  private async fenceHeld(tx: SqlExecutor, fence: SyncFence): Promise<boolean> {
-    const [held] = await tx.all(`SELECT token FROM inbound_sync_leases WHERE name = ? AND token = ?`, [fence.name, fence.token]);
-    return held !== undefined;
   }
 
   private async selectListenerLease(q: SqlExecutor, source_type: SourceType): Promise<ListenerLease | null> {
@@ -2308,25 +1497,9 @@ export class SqlFactoryStore extends SqlAttachmentStore implements FactoryStore 
       : null;
   }
 
-  /**
-   * Reads the `commands` lock row, which a driver with row locks holds until the transaction ends, so inserts into
-   * `inbound_commands` commit in seq order and inbound's cursor (`seq > cursor`) never skips a lower seq (design
-   * 10-event-driven, sequence locks). SQLite has one writer, so there the read only checks that the row exists.
-   */
-  private async lockCommandSequence(tx: SqlExecutor): Promise<void> {
-    const [row] = await tx.all(`SELECT name FROM inbound_sequence_locks WHERE name = 'commands'`);
-    if (!row) throw new Error("inbound_sequence_locks has no commands row: run npm run migrate");
-  }
-
   /** False if a unique key says the row is already there. */
-  private async insertOnce(tx: SqlExecutor, sql: string, params: SqlValue[]): Promise<boolean> {
-    try {
-      await tx.run(sql, params);
-      return true;
-    } catch (err) {
-      if (this.db.isDuplicateKey(err)) return false;
-      throw err;
-    }
+  private insertOnce(tx: SqlExecutor, sql: string, params: SqlValue[]): Promise<boolean> {
+    return insertOnce(this.db, tx, sql, params);
   }
 
   /** A patch's diff as assignments, with change_url when it sets change_ref (on the patched project). */
@@ -2491,27 +1664,6 @@ function probeInEffect(probeAt: string | undefined, answeredAt: string | undefin
   return probeAt !== undefined && probeAt > (answeredAt ?? "");
 }
 
-function rowToInbox(row: Row): InboxRow {
-  return {
-    seq: Number(row.seq),
-    source_type: row.source_type as SourceType,
-    dedupe_key: row.dedupe_key as string,
-    event: JSON.parse(row.event as string) as SourceEvent,
-    received_at: row.received_at as Timestamp,
-  };
-}
-
-function rowToItemMessage(row: Row): ItemMessage {
-  return {
-    seq: Number(row.seq),
-    work_item_id: row.work_item_id as WorkItemId,
-    marker: row.marker as string,
-    body: row.body as string,
-    created_at: row.created_at as Timestamp,
-    ...(row.actor != null && { actor: row.actor as string }),
-  };
-}
-
 function rowToForgeBudget(row: Row): ForgeBudget {
   return {
     project: row.project_key as string,
@@ -2520,68 +1672,6 @@ function rowToForgeBudget(row: Row): ForgeBudget {
     limit: Number(row.limit),
     reset_at: row.reset_at as Timestamp,
     updated_at: row.updated_at as Timestamp,
-  };
-}
-
-const DELIVERY_SELECT =
-  "SELECT o.*, t.marker AS thread_marker, t.body AS thread_body FROM outbound_intents o JOIN controller_item_thread t ON t.seq = o.thread_seq";
-
-/** The claimed queues: their table and the column that marks a row done. Fixed names, never input. */
-type Queue = { table: string; done: string };
-const QUEUES = {
-  outbox: { table: "outbound_intents", done: "delivered_at" },
-} as const satisfies Record<string, Queue>;
-
-function rowToDelivery(row: Row): ThreadDelivery {
-  return {
-    seq: Number(row.seq),
-    thread_seq: Number(row.thread_seq),
-    work_item_id: row.work_item_id as WorkItemId,
-    source_type: row.source_type as SourceType,
-    target: JSON.parse(row.target as string) as SourceRef,
-    link_field: (row.link_field as ThreadLinkField | null) ?? null,
-    marker: row.thread_marker as string,
-    body: row.thread_body as string,
-    attempts: Number(row.attempts),
-    next_attempt_at: row.next_attempt_at as Timestamp,
-    delivered_at: (row.delivered_at as Timestamp | null) ?? null,
-    url: (row.url as string | null) ?? null,
-    last_error: (row.last_error as string | null) ?? null,
-    created_at: row.created_at as Timestamp,
-  };
-}
-
-/** An app request by seq (RFC 0015 D7): one recorded before the merge keeps its old seq as `legacy_seq`; `?` twice. */
-const APP_REQUEST_SEQ = "origin = 'app' AND ((legacy_table = 'app_command_requests' AND legacy_seq = ?) OR (legacy_table IS NULL AND seq = ?))";
-/** A command's id from its key, so a repeated append computes the same one; its origin from the key's prefix. */
-const commandId = (key: string) => `cmd_${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
-const commandOrigin = (key: string) => (key.startsWith("github:") ? "github" : key.startsWith("app:") ? "app" : "cli");
-
-function rowToCliCommand(row: Row): CliCommand {
-  return {
-    seq: Number(row.seq),
-    id: row.id as string,
-    origin: row.origin as string,
-    key: row.command_key as string,
-    actor: row.actor as string,
-    command: row.command as string,
-    args: JSON.parse(row.args as string) as Record<string, unknown>,
-    ...(Number(row.mirror) === 1 ? { mirror: true } : {}),
-    ...(row.passport_id != null ? { passport_id: String(row.passport_id) } : {}),
-    created_at: row.created_at as Timestamp,
-  };
-}
-
-function rowToAppCommandRequest(row: Row): AppCommandRequest {
-  return {
-    seq: row.legacy_table === "app_command_requests" ? Number(row.legacy_seq) : Number(row.seq),
-    key: row.command_key as string,
-    actor: row.actor as UserId,
-    command: row.command as string,
-    args: JSON.parse(row.args as string) as Record<string, unknown>,
-    created_at: row.created_at as Timestamp,
-    handled_at: (row.handled_at ?? null) as Timestamp | null,
-    refusal: (row.refusal ?? null) as string | null,
   };
 }
 
@@ -2605,20 +1695,12 @@ function whereOf(filter: Omit<WorkItemFilter, "limit">): { where: string; params
   return { where: where.length ? ` WHERE ${where.join(" AND ")}` : "", params };
 }
 
-/** Notes kept per session: the newest ones. */
-const MAX_SESSION_NOTES = 200;
-
 /** The `worker_pauses` row that pauses every worker loop (`workers pause --all`). */
 const ALL_WORKERS = "*" as const;
 const PAUSE_INSERT = "INSERT INTO worker_pauses (worker_id, paused_by, paused_at) VALUES (?, ?, ?)";
 
 function rowToWorkerPause(r: Row): WorkerPause {
   return { worker_id: r.worker_id as WorkerId | "*", paused_by: r.paused_by as string, paused_at: r.paused_at as Timestamp };
-}
-
-/** Link codes are stored only as this hash (design 2026-11-01). */
-function hashCode(code: string): string {
-  return createHash("sha256").update(code.trim().toUpperCase()).digest("hex");
 }
 
 function abandonedAttempt(row: Row, outcome: AbandonedAttempt["outcome"]): AbandonedAttempt {
@@ -2637,77 +1719,10 @@ function abandonedAttempt(row: Row, outcome: AbandonedAttempt["outcome"]): Aband
   };
 }
 
-/** A posted comment's body is stored only as this hash: enough to tell that a repeat post changed it. */
-function bodyHash(body: string): string {
-  return createHash("sha256").update(body).digest("hex");
-}
-
-function rowToLabelState(row: Row): LabelState {
-  return { source_id: row.source_id as string, target: row.target as LabelTarget, status: (row.status as string | null) ?? null, updated_at: row.updated_at as Timestamp };
-}
-
-function rowToMergeCheck(row: Row): MergeCheck {
-  return {
-    work_item_id: row.work_item_id as WorkItemId, mergeable: Number(row.mergeable) === 1, conflicts: JSON.parse(row.conflicts as string) as string[],
-    head_sha: row.head_sha as string, base_sha: row.base_sha as string, checked_at: row.checked_at as Timestamp,
-  };
-}
-
-function rowToImproveReport(row: Row): ImproveReport {
-  return {
-    id: row.id as ImproveReportId,
-    run_id: row.run_id as RunId,
-    project: row.project_key as string,
-    window_start: row.window_start as Timestamp,
-    window_end: row.window_end as Timestamp,
-    groups: JSON.parse(row.failure_groups as string) as ImproveReport["groups"],
-    patterns: JSON.parse(row.patterns as string) as ImproveReport["patterns"],
-    created_at: row.created_at as Timestamp,
-  };
-}
-
 function rowToStandingProposal(row: Row): StandingProposal {
   return {
     id: row.id as StandingProposalId, gate: row.gate as StandingGate, tier: Number(row.tier) as Tier,
     run_length: Number(row.run_length), threshold: Number(row.threshold), created_at: row.created_at as Timestamp,
   };
-}
-
-function rowToWorkerProcess(row: Row): WorkerProcess {
-  return {
-    process_id: row.process_id as string,
-    pid: Number(row.pid),
-    host: row.host as string,
-    slots: Number(row.slots),
-    max_slots: Number(row.max_slots),
-    busy: Number(row.busy),
-    index_base: Number(row.index_base),
-    started_at: row.started_at as Timestamp,
-    reported_at: row.reported_at as Timestamp,
-  };
-}
-
-/** A table's order column is the first of these it has (design §9 Data page). */
-const TIME_COLUMNS = ["created_at", "at", "started_at", "updated_at", "woke_at"] as const;
-
-/** A quoted identifier. Only names read from the database's catalog reach here; any other is refused, so no caller text is ever spliced into SQL. */
-function ident(name: string): string {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`not a plain identifier: ${JSON.stringify(name)}`);
-  return `\`${name}\``;
-}
-
-function pageLimit(limit: number | undefined): number {
-  if (limit === undefined || !Number.isFinite(limit)) return TABLE_PAGE_DEFAULT;
-  return Math.min(TABLE_PAGE_MAX, Math.max(1, Math.floor(limit)));
-}
-
-/** A driver value as a TableCell: dates as ISO text, big integers as numbers when exact, else text. */
-function toCell(v: unknown): TableCell {
-  if (v === null || v === undefined) return null;
-  if (typeof v === "string" || typeof v === "number") return v;
-  if (typeof v === "bigint") return Number.isSafeInteger(Number(v)) ? Number(v) : v.toString();
-  if (v instanceof Date) return v.toISOString();
-  if (v instanceof Uint8Array) return Buffer.from(v).toString("utf8");
-  return String(v);
 }
 

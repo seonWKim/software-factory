@@ -16,6 +16,7 @@ import { DEFAULT_APP_DIR, appText, isAppPath, serveApp } from "./app.js";
 import { MAX_COMMAND_BODY } from "./commands.js";
 import { CSRF_HEADER } from "./settings-api.js";
 import type { MigrateDeps } from "./migrate-api.js";
+import type { EvalsWriteDeps } from "./evals-api.js";
 import { servePluginsStored } from "./plugins-api.js";
 import { APP_HOME, STYLE_HASH, errorPage } from "./html.js";
 import { POST_ONLY, commandsWrite, pathOf, post, writeRoute } from "./write-routes.js";
@@ -27,8 +28,8 @@ export type { UiDeps } from "./deps.js";
 export type { PauseDeps } from "./pause-api.js";
 export type { ApiDeps } from "./api.js";
 
-/** What the server answers from: the API's dependencies and, when wired, Migrate now, Start and Restart now. */
-export type ServerDeps = ApiDeps & MigrateDeps;
+/** What the server answers from: the API's dependencies and, when wired, Migrate now, Start and Restart now, and the evals writes. */
+export type ServerDeps = ApiDeps & MigrateDeps & EvalsWriteDeps;
 
 export const BIND = "127.0.0.1";
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost"]);

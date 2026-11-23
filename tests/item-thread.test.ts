@@ -43,7 +43,8 @@ describe("SQLite migration 24: item thread and command inbox", () => {
 
 describe("the store reads and writes only the new tables", () => {
   it("no SQL statement in the store names item_messages or cli_commands; the docs name the new tables", () => {
-    const store = readFileSync(join(process.cwd(), "src/impl/store/sql/sql-factory-store.ts"), "utf8");
+    // The class and local-items.ts, which holds its item thread and command inbox methods.
+    const store = ["sql-factory-store.ts", "local-items.ts"].map((f) => readFileSync(join(process.cwd(), "src/impl/store/sql", f), "utf8")).join("\n");
     for (const t of OLD_TABLES) expect(store, t).not.toMatch(new RegExp(`\\b${t}\\b`));
     // Under their RFC 0015 names since the prefix migration.
     const STORE_TABLES = ["controller_item_thread", "inbound_commands"];
