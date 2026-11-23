@@ -4,6 +4,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { isGatePath } from "../../src/core/improver.js";
 import { MODEL_RUN_KINDS } from "../../src/core/model-choice.js";
 import { READ_TOOLS, WRITE_TOOLS } from "../../src/worker/index.js";
+import { ROUTINE_TOOLS } from "../../src/worker/support.js";
 import { ROLES_DIR, type RoleCatalog, loadRoles, rolesShortOfGolden } from "../../src/runtime/index.js";
 import { type RoleDescriptor, approvalRefusal, defineRole, roleProblems, ruleOfTwoRefusal } from "../../src/shared/role.js";
 import { AUTO_ACTOR } from "../../src/core/policy.js";
@@ -31,6 +32,8 @@ const BASE: Omit<RoleDescriptor, "kind"> = {
   golden: { min_cases: 1 },
 };
 
+const names = (t: readonly { name: string }[]) => t.map((x) => x.name);
+
 describe("rule-of-two", () => {
   it("every role is well formed, at src/worker/roles/<name>.role.ts, on the gate list", () => {
     const bad: string[] = [];
@@ -49,9 +52,22 @@ describe("rule-of-two", () => {
     const steps = ["review-confirm"], pinned = ["judge"];
     expect(roles.all().map((r) => r.name).filter((n) => !steps.includes(n) && !pinned.includes(n))).toEqual([...MODEL_RUN_KINDS].sort());
     for (const s of [...steps, ...pinned]) expect(roles.get(s), s).not.toBeNull();
-    const names = (t: readonly { name: string }[]) => t.map((x) => x.name);
-    const readOnly = ["triage", ...steps, ...pinned];
-    for (const r of roles.all()) expect(r.tools, r.name).toEqual(names(readOnly.includes(r.name) ? READ_TOOLS : WRITE_TOOLS));
+    // Read-only roles: the read set, and for a routine the read set plus Browse (GET of the owner-set URL only).
+    const readOnly: Record<string, readonly { name: string; capability: string }[]> = { routine: ROUTINE_TOOLS };
+    for (const n of ["triage", ...steps, ...pinned]) readOnly[n] = READ_TOOLS;
+    for (const r of roles.all()) expect(r.tools, r.name).toEqual(names(readOnly[r.name] ?? WRITE_TOOLS));
+  });
+
+  it("the read-only branch accepts the routine role: read tools only, no external effect, autonomous", () => {
+    const routine = roles.get("routine")!;
+    expect(routine).not.toBeNull();
+    expect(routine.prompt).toBe("routine.md");
+    expect(routine.tools).toEqual(names(ROUTINE_TOOLS));
+    expect(ROUTINE_TOOLS.every((t) => t.capability === "read")).toBe(true);
+    expect(routine.rule_of_two.external_effect).toBe(false);
+    expect(routine.autonomous).toBe(true);
+    expect(routine.approves).toEqual([]);
+    expect(ruleOfTwoRefusal(routine, { person_approved: false })).toBeNull();
   });
 
   it("refuses an autonomous role with all three facts, a missing fact, and a role that approves what it proposes", () => {

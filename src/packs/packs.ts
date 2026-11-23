@@ -180,8 +180,9 @@ export async function packPrompt(packs: readonly Pack[], name: string): Promise<
 
 /**
  * Every prompt through the layers (packPrompt), each passed through `fill` (the placeholders). Triage, implement
- * and review are required: no layer having one fails startup. `resolve`, `improve`, `review-confirm` and `judge` are optional (resolve:
- * `prompt_missing`; improve: no drafts; review-confirm: each finding stays unchecked; judge: `prompt_missing`, so a goal split closes unjudged). `owner-defaults`, the owner's standing answers (design 04-triage.md, issue
+ * and review are required: no layer having one fails startup. `resolve`, `improve`, `review-confirm`, `judge` and `routine` are optional (resolve:
+ * `prompt_missing`; improve: no drafts; review-confirm: each finding stays unchecked; judge: `prompt_missing`, so a goal split closes unjudged;
+ * routine: `prompt_missing`). `owner-defaults`, the owner's standing answers (design 04-triage.md, issue
  * #315), is appended to triage so triage applies them instead of asking.
  */
 export async function packPrompts(packs: readonly Pack[], fill: (text: string) => string): Promise<Prompts> {
@@ -195,7 +196,7 @@ export async function packPrompts(packs: readonly Pack[], fill: (text: string) =
     return text;
   };
   const prompts: Prompts = { triage: await required("triage"), implement: await required("implement"), review: await required("review") };
-  for (const name of ["resolve", "improve", "review-confirm", "judge"] as const) {
+  for (const name of ["resolve", "improve", "review-confirm", "judge", "routine"] as const) {
     const text = await optional(name);
     if (text !== undefined) prompts[name] = text;
   }

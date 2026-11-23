@@ -10,7 +10,7 @@ export const MODEL_CLASSES = ["cheap", "standard", "strong"] as const;
 export type ModelClass = (typeof MODEL_CLASSES)[number];
 
 /** The run kinds that run an agent. `update` runs no agent and has no class. */
-export const MODEL_RUN_KINDS = ["triage", "implement", "review", "resolve"] as const;
+export const MODEL_RUN_KINDS = ["triage", "implement", "review", "resolve", "routine"] as const;
 export type ModelRunKind = (typeof MODEL_RUN_KINDS)[number];
 
 export const TIER_KEYS = ["1", "2", "3", "4", "5"] as const;
@@ -26,14 +26,16 @@ export interface ModelTable {
 }
 
 /**
- * The shipped `model_by` (factory.config.json holds exactly this). Each run kind is one class for every
- * tier, or a class per tier "1" to "5". Also the table used when `model_by` is absent.
+ * The default `model_by`: every row factory.config.json lists is the same, and a kind it leaves out keeps its row
+ * here. Each run kind is one class for every tier, or a class per tier "1" to "5". Also the table used when
+ * `model_by` is absent. `routine` (a read-only routine run) is cheap.
  */
 export const DEFAULT_MODEL_BY = {
   triage: "cheap",
   implement: { "1": "standard", "2": "standard", "3": "strong", "4": "strong", "5": "strong" },
   review: { "1": "standard", "2": "standard", "3": "strong", "4": "strong", "5": "strong" },
   resolve: { "1": "standard", "2": "standard", "3": "strong", "4": "strong", "5": "strong" },
+  routine: "cheap",
   retry_up: true,
 } as const;
 
