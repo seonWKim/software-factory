@@ -490,12 +490,12 @@ export const CHAT_BOT = "@software-factory";
  * reads, the request that starts work, and `/link` (there a bare `link` would be a request). In an item's thread: the
  * reads, `merge` when it applies, and the item's commands that apply now, each with its full description for that
  * state (issue #528) shown without its `/` (chatForm, issue #541), as typed after the mention there. Writes refused in
- * chat (`edge`) are never listed.
+ * chat (`edge`) are never listed, nor the schedule commands: the reply's first Slack section is full (SET_UP.md lists them).
  */
 export function chatHelpReply(may: (w: CommandWho) => boolean, state: CommandState | null): string {
   const lines: string[] = [];
   for (const c of COMMAND_TABLE) {
-    if (c.edge || !may(c.who)) continue;
+    if (c.edge || !may(c.who) || c.group === "schedule") continue;
     if (c.chat_args === "request" && state !== null) continue;
     if (c.item && (c.name !== "merge" || (state?.phase !== "merge_pending" && !state?.merge_check))) continue;
     lines.push(`- \`${c.chat}\`: ${c.does}.`);
