@@ -13,13 +13,16 @@ What it does: the place `factory eval import <skill> [--source <plugin>]` reads 
 
 **What import stores.** Each new case is a local copy in the skill's suite with id `import:<source>:<skill>:<source case id>`. A re-import stores only ids not stored yet; a stored case keeps its input and expected. A case the source drops stays stored. Every new case passes the `case add` rule and the egress scan (G5) before any is stored; one bad case or one finding stores none, and a finding is printed by rule name only.
 
-## `none`
+## Plugins
 
-No source. Imports nothing; no secrets, no settings.
+- `none`: no source. Imports nothing.
+  - Enable: `"plugins": { "eval_source": "none" }`, or leave the key out. Secrets: none. Settings: none.
+- `agents-home`: the owner's golden cases, read through the owner's `golden` CLI in their agents home.
+  - Enable: `"plugins": { "eval_source": "agents-home" }`. Secrets: none. Settings: `AGENTS_HOME` in the environment, else `~/.agents`.
 
-## `agents-home`
+### `agents-home` details
 
-The owner's golden cases, read through the owner's `golden` CLI in their agents home: `AGENTS_HOME` when set, else `~/.agents`. No secrets. Each call runs `<home>/bin/golden` with its own argv items (no shell), in the home, with a clean environment (`PATH`, `HOME`, `TMPDIR`, `LANG` and `AGENTS_HOME`), and stops after 30 seconds. Only `golden show` runs, so nothing is written under the home.
+Each call runs `<home>/bin/golden` with its own argv items (no shell), in the home, with a clean environment (`PATH`, `HOME`, `TMPDIR`, `LANG` and `AGENTS_HOME`), and stops after 30 seconds. Only `golden show` runs, so nothing is written under the home.
 
 **The CLI form, from its `--help` (checked 2026-11-24):**
 
