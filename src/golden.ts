@@ -17,6 +17,7 @@ import type { RunId, RunKind, StateChange, WorkItem, WorkItemId } from "./core/t
 import { ROLES_DIR, goldenCasesByRole, loadRoles } from "./runtime/index.js";
 import { implementReplayRunner } from "./controller/golden-gate/implement-replay.js";
 import { loadTriageCases, triageReplayRunner } from "./controller/golden-gate/triage-replay.js";
+export { genTriageDrafts, parseGenArgs } from "./controller/golden-gate/triage-gen.js"; // golden gen (drafts triage cases from a closed item)
 import { ROLE_NAME, type RoleDescriptor } from "./shared/role.js";
 import { toolsNamed } from "./worker/index.js";
 import type { AgentRole, AgentRunner } from "./interfaces/agent-runner.js";
@@ -187,7 +188,7 @@ export async function addCase(deps: AddDeps, opts: AddOptions): Promise<{ dir: s
   const golden = join(deps.rolesDir, checkRole(opts.role), "golden");
   const dir = join(golden, id);
   const rel = `${ROLES_DIR}/${opts.role}/golden/${id}`;
-  if ((await exists(dir)) && !opts.force) throw new GoldenError(`${rel} already exists; pass --force to replace it`);
+  if ((await stat(dir).then(() => true, () => false)) && !opts.force) throw new GoldenError(`${rel} already exists; pass --force to replace it`);
 
   const found = await readPrRecord(deps.store, deps.project.key, pr);
   if (!found) throw new GoldenError(`PR #${pr} has no factory work item in ${deps.project.label}`);
@@ -667,4 +668,3 @@ function gitIdentity(id: { name: string; email: string }): Record<string, string
   return { GIT_AUTHOR_NAME: id.name, GIT_AUTHOR_EMAIL: id.email, GIT_COMMITTER_NAME: id.name, GIT_COMMITTER_EMAIL: id.email };
 }
 
-const exists = (p: string): Promise<boolean> => stat(p).then(() => true, () => false);

@@ -1,6 +1,7 @@
 import type { SelectionMode, TestSelectionConfig } from "../core/test-selection.js";
 import type { ToolSpec } from "../core/tools/types.js";
-import type { RunId, RunKind, WorkItemId } from "../core/types.js";
+import type { Run, RunId, RunKind, WorkItemId } from "../core/types.js";
+import type { FactoryStore } from "./factory-store.js";
 import type { SandboxHandle } from "./sandbox.js";
 
 // The tool-using loop. First impl: ClaudeCodeRunner (`claude -p` in the sandbox workdir).
@@ -79,6 +80,11 @@ export interface AgentRunSpec {
    * of the start ends `stalled`. Absent: the runner's default (180000).
    */
   first_output_ms?: number;
+  /**
+   * The gate Stop check's time limit (design §4 Pre-push gates): the live `agent_stop_check_ms`, read for each run.
+   * Used only with `gate_hooks`. Absent: the runner's fallback (STOP_CHECK_MS, the setting's default).
+   */
+  stop_check_ms?: number;
   /** JSON Schema the final answer must match. */
   output_schema?: Record<string, unknown>;
   /** Abort when the worker loses its lease, or when `workers pause` stops the run (design §5 Pause). */
@@ -298,4 +304,31 @@ export interface AgentRunner {
 export const TOOLS_NOT_EXPOSED = "tools_not_exposed";
 export function toolsNotExposedMessage(grants: readonly string[]): string {
   return `this agent runner cannot expose broker tools to its agent; granted: ${grants.join(", ")}`;
+}
+
+/** The failure detail's code word for a gate Stop check that ran out its limit (`AgentRunSpec.stop_check_ms`). */
+export const STOP_CHECK_TIMED_OUT = "stop_check_timed_out";
+/** How far back a `stop_check_timed_out` detail looks for merge-check runs, and how many it names at most. */
+export const MERGE_CHECK_LOOKBACK_MS = 86_400_000;
+export const MERGE_CHECK_TIMES = 5;
+
+/**
+ * A failed step's detail: the runner's error. A `stop_check_timed_out` one also says how long the merge-check runs
+ * that finished in the last MERGE_CHECK_LOOKBACK_MS took (newest first, from the store's finished runs), since those
+ * run the whole check list: the measure to set `agent_stop_check_ms` by.
+ */
+export async function runFailureDetail(result: Pick<AgentRunResult, "error">, store: Pick<FactoryStore, "listRunsFinishedWithin">): Promise<string> {
+  const error = result.error ?? "";
+  if (!error.startsWith(`${STOP_CHECK_TIMED_OUT}: `)) return error;
+  const took = (await store.listRunsFinishedWithin(MERGE_CHECK_LOOKBACK_MS)).filter((r) => r.kind === "merge-check" && r.status === "succeeded").map(runMinutes)
+    .filter((m): m is number => m !== null).slice(0, MERGE_CHECK_TIMES);
+  return took.length === 0
+    ? `${error}; no merge-check run finished in the last ${MERGE_CHECK_LOOKBACK_MS / 3_600_000} hours`
+    : `${error}; recent merge-check runs took ${took.map((m) => `${m} min`).join(", ")} (newest first)`;
+}
+
+/** A finished run's length in whole minutes, rounded up; null without both times. */
+function runMinutes(r: Pick<Run, "started_at" | "finished_at">): number | null {
+  if (!r.started_at || !r.finished_at) return null;
+  return Math.ceil((Date.parse(r.finished_at) - Date.parse(r.started_at)) / 60_000);
 }

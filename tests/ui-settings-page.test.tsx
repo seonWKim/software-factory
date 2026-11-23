@@ -315,7 +315,7 @@ describe("Settings page", () => {
     expect(headers["x-csrf-token"]).toBe(TOKEN);
     expect(headers["content-type"]).toBe("application/json");
     expect(JSON.parse(posts[0]!.init.body as string)).toEqual({ action: "set", key: "max_loops", value: "5" });
-    expect(within(loops).getByRole("status").textContent).toContain("max_loops = 5");
+    expect(within(loops).getByRole("status").textContent).toBe("Review rounds saved: 5");
 
     await act(async () => fireEvent.click(within(rowOf(table, "phases_auto_approve")).getByRole("switch")));
     expect(JSON.parse(posts[1]!.init.body as string)).toEqual({ action: "set", key: "phases_auto_approve", value: "true" });

@@ -18,7 +18,7 @@ import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
 import type { MergeIO } from "../core/mechanical.js";
 import { Read, type ToolSpec } from "../core/tools/index.js";
 import { type Run, type RunKind, type RunOutcome, type RunUsage, type Timestamp, type WorkItem, type WorkerId, usageTokens } from "../core/types.js";
-import { type AgentRunResult, type AgentRunSpec, type PackCheckPoint, type PackMcpServer, type PackChecks, type PackGate, type PackRefusal, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage } from "../interfaces/agent-runner.js";
+import { type AgentRunResult, type AgentRunSpec, type PackCheckPoint, type PackMcpServer, type PackChecks, type PackGate, type PackRefusal, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, runFailureDetail, toolsNotExposedMessage } from "../interfaces/agent-runner.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfaces/tool-broker.js";
@@ -766,7 +766,7 @@ export class Worker {
       lease_token: run.lease!.token,
       deny_paths: this.cfg.deny_paths,
       writable_paths: [],
-      timeout_ms: this.cfg.run_timeout_ms,
+      timeout_ms: this.cfg.run_timeout_ms, stop_check_ms: this.live.values().agent_stop_check_ms, // the live Stop check limit, per run (design §4)
       stall_ms: this.cfg.stall_ms ?? STALL_DEFAULTS.stall_ms,
       first_output_ms: this.cfg.first_output_ms ?? STALL_DEFAULTS.first_output_ms,
       signal: AbortSignal.any([signal, live.stop.signal, ...(pause ? [pause] : [])]),
@@ -821,7 +821,7 @@ export class Worker {
     }
     if (result.status !== "completed") { // `stalled` → `agent_stalled` (failureClass, design §5 Restarts); tail scanned on its own, null when flagged.
       const out = tail(result.transcript), clean = out === "" || (await this.d.scanner.scan("run_outcome", out)).clean;
-      throw new RunFailure(`agent_${result.status}`, result.error ?? "", result.status === "timed_out", { output_tail: clean ? out : null } as RunFailure["extra"]);
+      throw new RunFailure(`agent_${result.status}`, await runFailureDetail(result, this.d.store), result.status === "timed_out", { output_tail: clean ? out : null } as RunFailure["extra"]);
     }
     await this.packChecks("after_agent", run, item, handle, signal);
     return result;

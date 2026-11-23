@@ -31,14 +31,33 @@ import { Card, CardSection } from "../components/ui/card.js";
 
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
 
-/** A write and its outcome for one field: the refusal stays next to the field until the next try. */
+/** A value sent with a set, in plain words: text as typed, a list joined by commas; "" for an empty or nested value. */
+function plainValue(sent: string): string {
+  const v = parse(sent);
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v) && v.every((x) => typeof x === "string" || typeof x === "number")) return v.join(", ");
+  return "";
+}
+
+/** The confirmation, composed from the request: the setting's label and the value sent, never the CLI's line. */
+function confirmation(body: SettingsWrite, named?: string): string {
+  if (body.action === "project-label") return t("settings.savedPlain", { label: t("settings.projectLabel") });
+  const label = named ?? keyLabel(body.key);
+  if (body.action === "reset") return t("settings.resetDone", { label });
+  if (body.action === "edit-file") return t("settings.savedFile", { label });
+  const value = plainValue(body.value);
+  return value === "" ? t("settings.savedPlain", { label }) : t("settings.savedValue", { label, value });
+}
+
+/** A write and its outcome for one field (`named` is a row's label when the key's own differs, as a plugin kind's): the refusal stays next to the field until the next try. */
 export function useWrite(token: string) {
   const client = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [filed, setFiled] = useState<{ item: string; branch: string } | null>(null);
-  const write = async (body: SettingsWrite): Promise<boolean> => {
+  const write = async (body: SettingsWrite, named?: string): Promise<boolean> => {
     setBusy(true);
     setError(null);
     setDone(null);
@@ -48,7 +67,7 @@ export function useWrite(token: string) {
         setError(r.error);
         return false;
       }
-      setDone(r.lines[0] ?? t("settings.saved"));
+      setDone(confirmation(body, named));
       setFiled(r.filed ?? null);
       await client.invalidateQueries({ queryKey: [API.settings] });
       return true;
@@ -318,7 +337,7 @@ function FileKey({ name, member, label, help, spec, value, token, danger, guard 
   const own = member === undefined ? value : isObject(value) ? value[member] : undefined;
   const shown = draft ?? toDraft(spec, own);
   const send = async (next: Json): Promise<boolean> => {
-    const ok = await write({ action: "edit-file", key: name, value: JSON.stringify(next), confirm: danger });
+    const ok = await write({ action: "edit-file", key: name, value: JSON.stringify(next), confirm: danger }, label);
     if (ok) setDraft(null);
     return ok;
   };
