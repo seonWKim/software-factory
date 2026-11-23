@@ -6,6 +6,7 @@ import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, SESSION_RELEASED, blockingRunKind 
 import type { Run, RunKind, WorkItem } from "./types.js";
 import { MERGE_CHECK_HELP_LINE, awaitingSpec } from "./request-transition.js";
 export * from "./request-transition.js"; // the approve and merge gates' shared checks (design 04-gate-commands)
+export { AT_TRIAGE, type Attachment, addedContext, attachmentLine } from "./attachments.js"; // added context and attachments, for triage (design 02-attachments)
 
 /**
  * The human commands on a work item (design §4): one table of names, usage, descriptions and the states
@@ -90,10 +91,8 @@ export interface CommandSpec {
   /** Phases where it also applies to a local item with no PR, with the meaning in `local_description` (issue #563). */
   local_phases?: readonly CommandPhase[];
   local_description?: string;
-  /** What it means in the `implementing` phase, when that differs (`/revise` queued, design 04-gate-commands). */
-  implementing_description?: string;
-  /** What it means in the `triaging` phase, when that differs (`/revise` adds context, design 02-attachments). */
-  triaging_description?: string;
+  /** What it means in the `implementing` or the `triaging` phase, when that differs (`/revise` queued, design 04-gate-commands; added context, 02-attachments). */
+  implementing_description?: string; triaging_description?: string;
   /** At `agent_needs_human`, it applies only when the run that asked was one of these kinds. Absent: any kind. */
   asked_by?: readonly RunKind[];
 }
@@ -215,6 +214,7 @@ export const commandSpec = (name: CommandName): CommandSpec => BY_NAME.get(name)
 /** blocked_reason prefix (with `blocked_on: human`) of an item whose dependency closed without a merge (design §5). */
 export { DEPENDENCY_CLOSED } from "./phase.js";
 export { LOCAL_ID, dependsOnIds, localItemOf, wantedDependsOn, withDependsOn } from "./task-build.js"; // for `/hold` and the coordination unit
+export { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "./local-cli.js"; export { specKind } from "./standing.js"; // for the commands unit
 
 /** Block reasons whose step `/retry` reads from the stage (or, for the agent blocks, from the item's runs first). */
 const STAGE_RETRY_REASONS: readonly (string | null)[] = ["max_attempts", "max_restart", AGENT_NEEDS_HUMAN, REPEATED_FAILURE];

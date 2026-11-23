@@ -6,6 +6,9 @@ import { join } from "node:path";
 import { type CliEnvironment, type CliIdentity, type FactoryStore, type Loaded, buildStatsStore } from "../compose.js";
 import { loadedIdentity } from "./support.js";
 
+/** The registry and the local owner check, for a command that builds plugins or checks the owner itself (attach). */
+export { Plugins, localAuth } from "../compose.js";
+
 /** What a command is called with: by main.ts, by another command (setup runs settings) or by a test. */
 export interface CommandCall {
   /** The name the command was called by (one of its `names`). */

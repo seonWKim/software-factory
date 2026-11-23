@@ -1,17 +1,15 @@
-import type { ModelClass } from "../../../core/model-choice.js";
 import { TRIAGE_SCHEMA, parseTriage } from "../../../core/outputs.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import { ownerAnswersFor } from "../../../shared/command-notes.js";
-import { RunFailure, renderAttachments, renderOwnerAnswers, renderRevision, renderWorkItem, tail } from "../../support.js";
-import { addedContext } from "../../../core/attachments.js";
+import { RunFailure, addedContext, renderAttachments, renderOwnerAnswers, renderRevision, renderWorkItem, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 
 /** The `parseTriage` refusal (issue #454) that earns one re-prompt (issue #488); any other refusal fails at once. */
 const MARKUP_REFUSAL = ": tool-call markup outside code";
 
-async function triage(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, model: ModelClass, step: RunCall["step"]) {
+async function triage(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, model: RunCall["model"], step: RunCall["step"]) {
   // One journaled step: a takeover after it returns the stored spec.
   return step("run-agent", async () => {
     // The owner's stored answers bind every re-write of the spec, a phase's from its parent's split (design 04-agents.md).

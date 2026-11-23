@@ -6,8 +6,6 @@
 
 import { type CommandEvent, type Decision, type Refusal, MAX_FEEDBACK_CHARS, SYSTEM, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
-import { runKey } from "../../../core/policy.js";
-import { AT_TRIAGE } from "../../../core/attachments.js";
 
 type ReviseEvent = Extract<CommandEvent, { kind: "revise_requested" }>;
 type WorkItem = Parameters<typeof footerAfter>[0];
@@ -23,6 +21,8 @@ export const REVISE_QUEUED_PATH = "queued: applies when this run ends";
 /** The refusal of a `/revise` with no feedback after it. */
 export const FEEDBACK_REQUIRED = "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`";
 
+/** The `at` detail of added context (a `/revise` on a New or in-triage item); core/attachments.ts addedContext reads the same word. */
+export const AT_TRIAGE = "triage";
 /** The path an added context took, as its reply names it. */
 export const CONTEXT_QUEUED_PATH = "queued: one more triage run reads it when the current one ends";
 
@@ -85,14 +85,14 @@ export async function replyQueued(c: Ctx, item: WorkItem, comment_id: string): P
 }
 
 /**
- * The end of an implement run that would queue its review (`d`), with the item's queued feedback applied: every pending
+ * The end of an implement run that would queue its review (`d`) (on a New item: its triage run's end, `retriage`, `nextKey` its triage key), with the item's queued feedback applied: every pending
  * feedback, oldest first, goes into one implement run on the branch (loop_count + 1, reason `revise_applied`, the key
  * from the first feedback's comment ID after `nextKey`, the next loop's implement key) instead of the review, in `d`'s transaction. At the loop limit the item blocks
  * with `max_loops` as `prFeedback` does. Both rows name the comment IDs, so a second apply (another worker on the same
  * run end) finds none pending and returns `d` unchanged, which its acknowledged run then fences. None pending: `d`.
  */
 export async function applyQueued(c: Ctx, it: WorkItem, d: NonNullable<Decision>, nextKey: string): Promise<NonNullable<Decision>> {
-  if (it.stage === "NEW") return retriage(c, it, d);
+  if (it.stage === "NEW") return retriage(c, it, d, nextKey);
   const pending = pendingRevises(await c.k.reader.listStateChanges(it.id));
   if (pending.length === 0) return d;
   const { enqueue: _review, ...rest } = d;
@@ -124,7 +124,7 @@ export async function applyQueued(c: Ctx, it: WorkItem, d: NonNullable<Decision>
  * ID, so a second apply on the same run end finds none pending. The stage stays NEW; the next triage reads every
  * context added so far. None pending: `d`.
  */
-async function retriage(c: Ctx, it: WorkItem, d: NonNullable<Decision>): Promise<NonNullable<Decision>> {
+async function retriage(c: Ctx, it: WorkItem, d: NonNullable<Decision>, triageKey: string): Promise<NonNullable<Decision>> {
   const pending = pendingRevises(await c.k.reader.listStateChanges(it.id), AT_TRIAGE);
   if (pending.length === 0) return d;
   const { enqueue: _spec, ...rest } = d;
@@ -133,6 +133,6 @@ async function retriage(c: Ctx, it: WorkItem, d: NonNullable<Decision>): Promise
     actor: SYSTEM,
     reason: REVISE_APPLIED,
     detail: { comment_ids: JSON.stringify(pending.map((p) => p.comment_id)), at: AT_TRIAGE },
-    enqueue: { kind: "triage", idempotency_key: `${runKey(it, "triage")}:context-${pending[0]!.comment_id}` },
+    enqueue: { kind: "triage", idempotency_key: `${triageKey}:context-${pending[0]!.comment_id}` },
   };
 }

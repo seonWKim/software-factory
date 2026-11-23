@@ -1,13 +1,13 @@
 import type { ModelClass } from "../core/model-choice.js";
 import type { DiffStat } from "../core/diff-gate.js";
-import { MAX_COMMAND_PATHS, retryPathsReply } from "../core/commands.js";
+import { type Attachment, MAX_COMMAND_PATHS, attachmentLine, retryPathsReply } from "../core/commands.js";
+export { addedContext } from "../core/commands.js";
 import { type ReviewOutput, builtDifferentlyOf, specFindings, unverifiedOf } from "../core/outputs.js";
 import { AGENT_STALLED, RATE_LIMITED, SETUP_MISSING, classifyNetwork, isSetupMissing } from "../core/policy.js";
 import { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, baseRefspec, claimableKinds, hasTool, prTitle, requeueForCredential, routeFor, runPushIntents, threadDelivery } from "../core/worker-deps.js";
 import { failingTestsAndSuites, stripAnsi } from "../core/output-summary.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "../core/tools/index.js";
 import type { Run, RunId, RunKind, RunResume, RunUsage, Timestamp, WipRef, WorkItem } from "../core/types.js";
-import { type Attachment, attachmentLine } from "../core/attachments.js";
 import type { AgentRunResult } from "../interfaces/agent-runner.js";
 import type { SandboxHandle } from "../interfaces/sandbox.js";
 import { type DecisionAnswer, answerLines } from "../shared/command-notes.js";

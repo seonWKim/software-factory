@@ -3,7 +3,10 @@
 // (`factory attach`) and the dashboard's Attach dialog both store through `attach`, so their refusals are the same.
 // The egress scanner reads text only: a link's URL and label are scanned, an image's bytes are not.
 
+import type { AuthProvider } from "../interfaces/auth-provider.js";
+import type { FactoryStore } from "../interfaces/factory-store.js";
 import { commandPhase, phaseLabel } from "./commands.js";
+import { cliName, resolveItem } from "./local-cli.js";
 import type { Timestamp, UserId, WorkItem, WorkItemId } from "./types.js";
 
 /** The `at` detail of added context: a `revise_queued` state change on a New or in-triage item (design 02-attachments). */
@@ -71,10 +74,10 @@ export function attachStageRefusal(it: Pick<WorkItem, "stage" | "blocked_on" | "
   return `nothing was attached: attachments are taken only while the item is New or in triage, and it is ${phaseLabel(commandPhase(it))}`;
 }
 
-/** The refusal of an image's bytes (type, size), else null. */
-export function imageRefusal(bytes: Uint8Array): string | null {
+/** The refusal of an image (its first bytes and its size: type, then size), else null. */
+export function imageRefusal(bytes: Uint8Array, size = bytes.length): string | null {
   if (imageType(bytes) === null) return "nothing was attached: only a png, jpeg, gif or webp image can be attached, and this file is none of those";
-  if (bytes.length > MAX_IMAGE_BYTES) return `nothing was attached: the image is ${(bytes.length / 1024 / 1024).toFixed(1)} MB, and the largest taken is 5 MB`;
+  if (size > MAX_IMAGE_BYTES) return `nothing was attached: the image is ${(size / 1024 / 1024).toFixed(1)} MB, and the largest taken is 5 MB`;
   return null;
 }
 
@@ -137,4 +140,52 @@ export function attachmentLine(a: Attachment): string {
   return a.kind === "image"
     ? `${a.id}: image ${a.name ?? ""} (${a.media_type}, ${Math.ceil((a.size_bytes ?? 0) / 1024)} KB)`
     : `${a.id}: link ${a.url}${a.label ? ` (${a.label})` : ""}`;
+}
+
+/** `factory attach`'s usage line. */
+export const ATTACH_USAGE = "usage: factory attach <id> <file> | factory attach <id> --link <url> [label]";
+
+export type AttachArgs = { id: string; file: string } | { id: string; url: string; label: string | null };
+
+/** The parsed arguments, or an error line. */
+export function parseAttachArgs(args: readonly string[]): AttachArgs | { error: string } {
+  const [id, first, ...rest] = args;
+  if (!id || !first) return { error: ATTACH_USAGE };
+  if (first === "--link") {
+    const [url, ...label] = rest;
+    return url ? { id, url, label: label.join(" ").trim() || null } : { error: ATTACH_USAGE };
+  }
+  return rest.length === 0 ? { id, file: first } : { error: ATTACH_USAGE };
+}
+
+export interface AttachCliDeps extends Omit<AttachDeps, "store"> {
+  store: Pick<FactoryStore, "findWorkItemIds" | "getWorkItem" | "addAttachment" | "listAttachments">;
+  auth: Pick<AuthProvider, "authorize">;
+  user: UserId;
+  /** A file's size and its first bytes (or all of them, when it is no larger than the image limit). */
+  read(path: string): Promise<{ size: number; bytes: Uint8Array }>;
+  /** The environment the CLI's name is read from (FACTORY_CLI_NAME, else `factory`), for the hint line. */
+  env: Readonly<Record<string, string | undefined>>;
+}
+
+/** `factory attach`: the item, the owner check, then `attach`. Exit 0 with the stored line, else 1 with the one refusal. */
+export async function runAttach(d: AttachCliDeps, a: AttachArgs): Promise<{ code: number; lines: string[] }> {
+  const item = await resolveItem(d.store, a.id);
+  if ("lines" in item) return item;
+  const allowed = await d.auth.authorize({ user_id: d.user }, "approve_spec", { kind: "work_item", id: item.id });
+  if (!allowed.allow) return { code: 1, lines: [`nothing was attached: ${allowed.reason}`] };
+  let input: Parameters<typeof attach>[2];
+  if ("file" in a) {
+    const f = await d.read(a.file).catch(() => null);
+    if (!f) return { code: 1, lines: [`nothing was attached: cannot read ${a.file}`] };
+    // A file over the limit is never read whole; the stage refusal still comes first, as `attach` orders it.
+    const big = f.size > MAX_IMAGE_BYTES ? imageRefusal(f.bytes, f.size) : null;
+    if (big) return { code: 1, lines: [attachStageRefusal(item) ?? big] };
+    input = { kind: "image", bytes: f.bytes, name: a.file };
+  } else {
+    input = { kind: "link", url: a.url, label: a.label };
+  }
+  const r = await attach(d, item, input, d.user);
+  if ("refuse" in r) return { code: 1, lines: [r.refuse] };
+  return { code: 0, lines: [`attached ${attachmentLine(r.attachment)}`, `the next triage run of ${item.id} reads it; \`${cliName(d.env)} revise ${item.id} <text>\` adds context and starts one`] };
 }
