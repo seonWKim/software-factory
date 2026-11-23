@@ -6,7 +6,7 @@ import { NO_FILES_REFUSAL, changesNoFile, commandFooter, commandState, retryPath
 import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, doneCheckCommands, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
 import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, STALL_STREAK_HOLD, stallStreak, takenOver, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED, freeMigrationStamps, takenStamps } from "../../../core/policy.js";
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail, ownerAnswersFor } from "../../../shared/command-notes.js";
-import { dependencyStop } from "./dependency-stop.js"; import { autoGrant } from "./auto-grant.js";
+import { dependencyStop } from "./dependency-stop.js"; import { autoGrant } from "./auto-grant.js"; import { isScreenshotStep, queueScreenshots, screenshotStep } from "./screenshots.js";
 import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
 import { autoApprovedFooter, droppedAnswers, droppedValues, heldNote, renderSpec } from "../../../core/spec-comment.js";
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
@@ -48,12 +48,11 @@ function withSpent(d: Decision, run: Run, it: WorkItem): Decision {
   if (!d || spent === 0 || d.ack_run !== run.id || "token_cost" in d.patch) return d;
   return { ...d, patch: { ...d.patch, token_cost: it.token_cost + spent } };
 }
-/** The PR link a run outcome carries from the forge's open result (`pr_url`), as the patch's change_url (design 02). */
 /** An implement run's push and PR wait in outbound (RFC 0015 M7): `blocked_on: outbound`. */
 export const PR_PENDING = "pr_pending";
 /** An update or resolve run's push waits for outbound (RFC 0015 M7) before the review of its head is queued. */
 export const PUSH_PENDING = "push_pending";
-
+/** The PR link a run outcome carries from the forge's open result (`pr_url`), as the patch's change_url (design 02). */
 function prUrlOf(data: Record<string, unknown>): { change_url?: string } {
   return typeof data.pr_url === "string" ? { change_url: data.pr_url } : {};
 }
@@ -133,7 +132,9 @@ export class RunResultsUnit {
 
   async apply(run: Run): Promise<void> {
     // A merge-check run changes no item stage: the merge queue decides on its entry and acks it (RFC 0015 M8); a restart run's result is posted and acked (local-merge unit).
+    // Screenshot runs and screenshot reviews post and ack, changing no item state; a passing review on a UI change queues a screenshot run first (design 04-screenshots).
     if (run.kind === "merge-check" || run.kind === "restart") return run.kind === "restart" ? this.c.unit("local-merge").restarted(run) : this.c.unit("merge-queue").checked(run);
+    if (isScreenshotStep(run)) return screenshotStep(this.c, run); else await this.c.k.guard("screenshots", () => queueScreenshots(this.c, run));
     // A succeeded improve run's groups are filed before its ack (design §7); a fault is logged and the run acked.
     if (run.kind === "improve" && run.outcome?.status === "succeeded") await this.c.k.guard("improve filing", () => this.c.unit("improve").fileImprove(run));
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
@@ -156,8 +157,7 @@ export class RunResultsUnit {
       }
 
       switch (run.kind) {
-        case "merge-check": case "restart":
-          // `apply` hands merge-check runs to the merge queue, and restart runs to the local-merge unit, before it reads any outcome.
+        case "merge-check": case "restart": case "screenshot": // `apply` hands these to the merge queue, the local-merge unit and screenshots.ts before it reads any outcome.
           throw new Error(`${run.kind} run ${run.id} reached the run outcome path`);
         case "triage": {
           // The item's size caps decide whether the estimate needs phases (src/core/split.ts).
@@ -669,7 +669,7 @@ export class RunResultsUnit {
 
   /** The item's latest succeeded review run, the one the CI gate applies to. */
   async latestReview(id: WorkItemId): Promise<Run | undefined> {
-    return (await this.c.k.reader.listRuns(id)).filter((r) => r.kind === "review" && r.outcome?.status === "succeeded").at(-1);
+    return (await this.c.k.reader.listRuns(id)).filter((r) => r.kind === "review" && r.outcome?.status === "succeeded" && r.input?.screenshot_review !== true).at(-1);
   }
 
   /**

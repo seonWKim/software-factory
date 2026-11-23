@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { prNumber } from "../../../core/change-ref.js";
 import type { ModelClass } from "../../../core/model-choice.js";
 import {
@@ -12,6 +15,7 @@ import { type ResumePlan, RunFailure, ciResults, fenced, gitIdentity, hasTool, l
 import type { Worker } from "../../runner.js";
 import { decisionsSection } from "../../../shared/command-notes.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
+import { type Capture, SCREENSHOT_REVIEW, type ScreenshotReview, notCapturedLine, parseScreenshotOutcome } from "../../../shared/screenshots.js";
 
 async function review(
   w: Worker,
@@ -24,6 +28,7 @@ async function review(
   plan: ResumePlan | null,
   step: RunCall["step"],
 ) {
+  if (run.input?.[SCREENSHOT_REVIEW] === true) return screenshotReview(w, run, item, handle, signal, model, step);
   // A local item (no forge tool, design 05-sources) is reviewed from its local branch: the sandbox put the run folder
   // on it, and a missing one must not be reviewed as the empty diff of a fresh branch.
   const local = !hasTool(w.route(item).broker, PREFLIGHT);
@@ -90,6 +95,78 @@ async function review(
     return true;
   });
   return { review: v, head_sha };
+}
+
+/** Where, inside the run folder, the screenshot review's images are copied for the reviewer to read. */
+export const SCREENSHOTS_DIR = ".factory-screenshots";
+
+/**
+ * The screenshot review (design 04-screenshots): a review run queued after the screenshot run, with its captures or
+ * the reason it took none. The stored images are copied into the run folder and the reviewer checks each against
+ * `design-system/patterns.md`; each broken rule is a finding of kind `code` naming the rule by its number. A capture
+ * that did not happen is the unverified line `screenshots not captured: <reason>` and starts no agent. Nothing here
+ * changes the item: the controller posts the result as one comment. Its data is `screenshot_review`, never `review`,
+ * so no verdict, unchanged-head check or merge gate reads it.
+ */
+async function screenshotReview(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, model: ModelClass, step: RunCall["step"]) {
+  const shots = parseScreenshotOutcome(run.input?.screenshots) ?? { captures: [], reason: "the screenshot run stored nothing" };
+  const notCaptured = shots.reason ? [notCapturedLine(shots.reason)] : [];
+  const looked = await step("run-agent", async () => {
+    const attached = await attachScreenshots(w, handle, shots.captures);
+    const missing = shots.captures.length - attached.length;
+    const unread = missing > 0 ? [notCapturedLine(`${missing} stored screenshot(s) could not be read`)] : [];
+    if (attached.length === 0) return { review: null, unread };
+    const result = await w.agent(run, item, handle, signal, {
+      prompt: [renderWorkItem(item, { includeSpec: true }), screenshotsSection(attached, [...notCaptured, ...unread])].join("\n\n"),
+      model_class: model,
+      output_schema: REVIEW_SCHEMA,
+      env_allowlist: gitIdentity(w.cfg.agent_git_identity),
+    });
+    const parsed = parseReview(result.output);
+    if (!parsed.ok) throw new RunFailure("invalid_output", parsed.error, false, { output_tail: tail(result.transcript) });
+    return { review: parsed.value, unread };
+  });
+  const r = looked.review;
+  const out: ScreenshotReview = {
+    findings: (r?.findings ?? []).map((f) => ({ kind: "code", text: f.text })),
+    unverified: [...notCaptured, ...looked.unread, ...(r ? unverifiedOf(r).filter((u) => !u.startsWith("screenshots not captured")) : [])],
+    summary: r?.summary ?? "",
+  };
+  // Scanned before it is stored or posted (issue #222): a flagged text is withheld whole, with only the rule names.
+  const scan = await w.d.scanner.scan("comment", [...out.findings.map((f) => f.text), ...out.unverified, out.summary].join("\n"));
+  if (!scan.clean) return { screenshot_review: { findings: [], unverified: [], summary: `The screenshot review's text was withheld (${[...new Set(scan.findings.map((f) => f.rule))].join(", ")}).` } };
+  return { screenshot_review: { ...out, verdict: r?.verdict ?? null } };
+}
+
+/** The stored captures copied into the run folder under SCREENSHOTS_DIR, through a temp folder; the ones it could read. */
+async function attachScreenshots(w: Worker, handle: SandboxHandle, captures: readonly Capture[]): Promise<{ file: string; capture: Capture }[]> {
+  const dir = await mkdtemp(join(tmpdir(), "sf-screenshots-"));
+  try {
+    const attached: { file: string; capture: Capture }[] = [];
+    for (const capture of captures) {
+      const bytes = await w.d.storage.get(capture.key).catch(() => null);
+      if (!bytes) continue;
+      const name = `${capture.page}-${capture.width}-${capture.theme}.png`;
+      await writeFile(join(dir, name), bytes);
+      attached.push({ file: `${SCREENSHOTS_DIR}/${name}`, capture });
+    }
+    if (attached.length > 0) await w.d.sandbox.copyIn(handle, dir, SCREENSHOTS_DIR);
+    return attached;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** The screenshot review's input section: each image's file, page, width and theme, then what was not captured. */
+function screenshotsSection(attached: readonly { file: string; capture: Capture }[], notCaptured: readonly string[]): string {
+  return [
+    "## Screenshots",
+    "",
+    "This is the screenshot review (step 7): the factory captured these dashboard pages from the seeded fixture store after the review passed. Open each image file and check it against `design-system/patterns.md`. Each broken rule is a finding of kind `code` that names the rule by its number and the page, width and theme. Your verdict and findings change no state: they are posted on the item.",
+    "",
+    ...attached.map((a) => `- \`${a.file}\`: page ${a.capture.page}, ${a.capture.width}px, ${a.capture.theme}`),
+    ...(notCaptured.length > 0 ? ["", "Not captured (list each under `unverified` as it is written):", ...notCaptured.map((l) => `- ${l}`)] : []),
+  ].join("\n");
 }
 
 /** Whether `f` is the factory's own built-differently finding (parseReview adds it): it gets no confirm run and stays. */
