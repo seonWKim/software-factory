@@ -10,6 +10,7 @@ import type { ActionRow } from "../../../outbound/index.js";
 import { type Decision, DELIVERY_FAILED, type Refusal, SYSTEM, completed, splitFiling, splitOpen, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
+import { FIX_PHASE_CAP, GOAL_LIMIT, GOAL_PHASE_ADDED, GOAL_QUESTION, JUDGE_FAILED, JUDGE_QUEUED, JUDGE_SKIPPED, JUDGE_VERDICT, fixPhases, goalLines, judgeKey, judgeable, jsonStrings } from "./goal.js";
 
 /** Held phases and open split parents looked at per intake tick (design 2026-11-01). */
 const PHASE_BATCH = 50;
@@ -41,32 +42,18 @@ function phaseBody(it: WorkItem, f: PhaseFiling): string {
   return phaseIssueBody({ parent: it.source, phase: f.phase, index: f.index, total: f.total, depends_on: f.prev });
 }
 
-/** State change reason on a goal split's parent when its judge run for a phase was queued; detail: the phase and its merge sha. */
-const JUDGE_QUEUED = "judge_queued";
-/** State change reason on the parent applying a judge's verdict: detail `phase`, `verdict`, `reason`, `applied` (and a fix's fields). */
-const JUDGE_VERDICT = "judge_verdict";
-/** State change reason on the parent when its judge run found no prompts/judge.md: the phase counts as unjudged, as with no goal. */
-const JUDGE_SKIPPED = "judge_skipped";
-/** State change reason on the parent when its judge run reached a retry limit: the goal stops as a goal question. */
-const JUDGE_FAILED = "judge_failed";
-/** blocked_reason (with `blocked_on: human`) of a goal split whose judge answered fix or ask, or next on its last phase. */
-const GOAL_QUESTION = "goal_question";
-/** The judge run's key for phase `phase` of goal split `parent`: one per phase (design 04-split-specs). */
-const judgeKey = (parent: WorkItemId, phase: number): string => `judge:${parent}:${phase}`;
-
-/** The goal lines a split_approved detail stores (`goal_done_when`, a JSON array), or null for a split without a goal. */
-function goalLines(d: StateChangeDetail | null | undefined): string[] | null {
-  if (!d || typeof d.goal_done_when !== "string") return null;
-  try {
-    const v: unknown = JSON.parse(d.goal_done_when);
-    return Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === "string") ? v : null;
-  } catch {
-    return null;
-  }
+/** The fix a judge verdict's detail stores (`fix_*`), checked as parseJudge checks a fix (its reason a placeholder); null for none. */
+function storedFix(d: StateChangeDetail): TriagePhase | null {
+  // parseJudge needs a non-empty reason; this one is a placeholder, never a state change's reason.
+  const placeholder = "stored";
+  const r = parseJudge({ verdict: "fix", reason: placeholder, fix: { title: d.fix_title, problem: d.fix_problem, done_criteria: jsonStrings(d.fix_done_criteria), allowed_paths: jsonStrings(d.fix_allowed_paths) } });
+  return r.ok ? (r.value.fix ?? null) : null;
 }
-
-/** A goal phase the judge reads: closed completed with a merge sha. */
-const judgeable = (p: WorkItem): p is WorkItem & { phase: number; merge_sha: string } => completed(p) && p.phase !== null && typeof p.merge_sha === "string" && p.merge_sha !== "";
+/** The source ids of a split's recorded phases in order: its last split_approved's `sub_issues`, then each goal_phase_added's after it. */
+function recordedIds(changes: readonly StateChange[]): string[] | null {
+  const at = changes.findLastIndex((c) => c.reason === SPLIT_APPROVED), ids = parseSubIssues(changes[at]?.detail);
+  return ids && [...ids, ...fixPhases(changes.slice(at + 1)).map((c) => String(c.detail?.sub_issue))];
+}
 
 /** Split specs: the approval that files one phase per sub-issue, phase holds and releases, closing a finished split. */
 export class PhasesUnit {
@@ -179,7 +166,7 @@ export class PhasesUnit {
     const refs: SourceRef[] = [];
     for (const [i, phase] of phases.entries()) {
       const f = { index: i + 1, phase, total: phases.length, prev: refs[i - 1] ?? null };
-      const ref = known.get(i + 1) ?? (local ? await this.takeIn(it, claim, f, localPhaseRef(it.source, f.index)) : await this.filed(it, claim, f));
+      const ref = known.get(i + 1) ?? (local ? await this.takeIn(it, claim.actor, f, localPhaseRef(it.source, f.index)) : await this.filed(it, claim, f));
       if (!ref) return;
       refs.push(ref);
     }
@@ -203,19 +190,10 @@ export class PhasesUnit {
       "",
       footerAfter(it, patch),
     ].join("\n"));
-    await this.settleSplit(it, {
-      patch,
-      actor: claim.actor,
-      reason: SPLIT_APPROVED,
-      detail: {
-        phases: phases.length,
-        sub_issues: JSON.stringify(refs.map((r) => r.id)),
-        ...(goal ? { goal_done_when: JSON.stringify(goal) } : {}),
-        ...(typeof d.note === "string" ? { note: d.note } : {}),
-        ...specDecisionDetail({ tier: it.tier, kind: "split", outcome: "approved", spec_changed: false, actor: claim.actor }),
-        ...tag,
-      },
-    });
+    const gate = specDecisionDetail({ tier: it.tier, kind: "split", outcome: "approved", spec_changed: false, actor: claim.actor });
+    await this.settleSplit(it, { patch, actor: claim.actor, reason: SPLIT_APPROVED, detail: {
+      phases: phases.length, sub_issues: JSON.stringify(refs.map((r) => r.id)), ...(goal ? { goal_done_when: JSON.stringify(goal) } : {}), ...(typeof d.note === "string" ? { note: d.note } : {}), ...gate, ...tag,
+    } });
   }
 
   /**
@@ -237,26 +215,18 @@ export class PhasesUnit {
       return null;
     }
     // The source files under its own type: the ref is the parent's type with the delivered id.
-    return this.takeIn(it, claim, f, { type: it.source.type, id: a.delivered_ref, link: a.delivered_url ?? "" });
+    return this.takeIn(it, claim.actor, f, { type: it.source.type, id: a.delivered_ref, link: a.delivered_url ?? "" });
   }
 
   /** Phase `f.index` taken in as a work item under `ref`, linked to its parent, held after the first; keyed on `ref`. */
-  private async takeIn(it: WorkItem, claim: StateChange, f: PhaseFiling, ref: SourceRef): Promise<SourceRef> {
+  private async takeIn(it: WorkItem, actor: Actor, f: PhaseFiling, ref: SourceRef): Promise<SourceRef> {
     const title = phaseTitle(f.index, f.total, f.phase.title);
     const body = phaseBody(it, f);
-    const requester = claim.actor.kind === "user" ? claim.actor.id : it.requester_id;
+    const requester = actor.kind === "user" ? actor.id : it.requester_id;
+    const hold = f.prev ? { hold: { blocked_on: "upstream" as const, blocked_reason: PHASE_HOLD } } : {};
     const { item, created } = await this.c.k.d.store.createWorkItem(
-      {
-        source: ref,
-        title,
-        requester_id: requester,
-        project: it.project,
-        problem: `${title}\n\n${body}`,
-        resources: [ref.link, it.source.link],
-        parent: { id: it.id, phase: f.index },
-        ...(f.prev ? { hold: { blocked_on: "upstream" as const, blocked_reason: PHASE_HOLD } } : {}),
-      },
-      claim.actor,
+      { source: ref, title, requester_id: requester, project: it.project, problem: `${title}\n\n${body}`, resources: [ref.link, it.source.link], parent: { id: it.id, phase: f.index }, ...hold },
+      actor,
       {
         detail: phaseLinkDetail({ parent_work_item_id: it.id, phase: f.index, phases: f.total, depends_on: f.prev?.id ?? null }),
         // The intake key, so a later delivery of the same issue is a no-op.
@@ -279,15 +249,10 @@ export class PhasesUnit {
     const patch = { blocked_on: "human" as const, blocked_reason: DELIVERY_FAILED };
     await this.c.unit("outbox").comment(it, `split-failed:${it.id}:${a.seq}`, [
       `Filing phase ${f.index} of ${f.total} as a sub-issue was refused (${error}), so the split stopped after ${f.index - 1} of ${f.total}. ` +
-        "Reply `/approve` again to file the rest (none is filed twice).",
-      "",
-      footerAfter(it, patch),
+        "Reply `/approve` again to file the rest (none is filed twice).", "", footerAfter(it, patch),
     ].join("\n"));
-    await this.c.unit("transitions").decide(it.id, (cur) =>
-      splitFiling(cur)
-        ? { patch, actor: SYSTEM, reason: DELIVERY_FAILED, detail: { action: "file_sub_issue", phase: f.index, phases: f.total, error } }
-        : null,
-    );
+    const detail = { action: "file_sub_issue", phase: f.index, phases: f.total, error };
+    await this.c.unit("transitions").decide(it.id, (cur) => (splitFiling(cur) ? { patch, actor: SYSTEM, reason: DELIVERY_FAILED, detail } : null));
   }
 
   /** The claim's end (`split_approved`), conditional on the claim being the item's last change. */
@@ -341,17 +306,10 @@ export class PhasesUnit {
     // A phase whose own triage proposed phases, or whose spec is at its size checkpoint, still waits for a human.
     const spec = await this.latestSpec(it);
     if (!spec || !(await this.approvedByParent(it, spec))) return;
-    await this.c.unit("transitions").decide(id, (cur) =>
-      phaseSpecPending(cur)
-        ? {
-            patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
-            actor: SYSTEM,
-            reason: "phase_spec_auto_approved",
-            detail: { parent_work_item_id: cur.parent_id! },
-            enqueue: { kind: "implement", idempotency_key: runKey(cur, "implement") },
-          }
-        : null,
-    );
+    await this.c.unit("transitions").decide(id, (cur) => phaseSpecPending(cur) ? {
+      patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null }, actor: SYSTEM, reason: "phase_spec_auto_approved",
+      detail: { parent_work_item_id: cur.parent_id! }, enqueue: { kind: "implement", idempotency_key: runKey(cur, "implement") },
+    } : null);
   }
 
   /** Releases held phase `id` once the phase before it (by the store's parent link and phase number) closed as completed. */
@@ -402,14 +360,14 @@ export class PhasesUnit {
   }
 
   /**
-   * The parent's phases, only those its approval recorded (`sub_issues` of its last split_approved). Another
-   * work item linked to the parent (a duplicate sub-issue a racing approval filed, then closed by hand) neither
-   * holds the next phase nor keeps the parent open. With no recorded list, every linked phase counts.
+   * The parent's phases, only those its approval recorded (`sub_issues` of its last split_approved) and the fix
+   * phases its goal added since (goal_phase_added). Another work item linked to the parent (a duplicate sub-issue a
+   * racing approval filed, then closed by hand) neither holds the next phase nor keeps the parent open. With no
+   * recorded list, every linked phase counts.
    */
   async recordedPhases(parentId: WorkItemId): Promise<WorkItem[]> {
     const phases = await this.c.k.d.store.listPhases(parentId);
-    const approved = (await this.c.k.d.store.listStateChanges(parentId)).filter((c) => c.reason === SPLIT_APPROVED).at(-1);
-    const ids = parseSubIssues(approved?.detail);
+    const ids = recordedIds(await this.c.k.d.store.listStateChanges(parentId));
     return ids ? phases.filter((p) => ids.includes(p.source.id)) : phases;
   }
 
@@ -429,9 +387,8 @@ export class PhasesUnit {
   async closeSplitIfDone(id: WorkItemId): Promise<void> {
     const it = await this.c.k.d.store.getWorkItem(id);
     if (!it || !splitOpen(it)) return;
-    // How many phases the approval filed: the store's phase rows must all exist and all be closed.
-    const approved = (await this.c.k.d.store.listStateChanges(id)).filter((c) => c.reason === SPLIT_APPROVED).at(-1);
-    const ids = parseSubIssues(approved?.detail);
+    // How many phases the approval and the goal's fix phases filed: the store's phase rows must all exist and all be closed.
+    const ids = recordedIds(await this.c.k.d.store.listStateChanges(id));
     if (!ids) return;
     const phases = await this.recordedPhases(id);
     if (phases.length < ids.length || !phases.every((p) => p.stage === "CLOSED")) return;
@@ -452,16 +409,9 @@ export class PhasesUnit {
     if (merged) await this.c.unit("outbox").close(it, "completed");
     else await this.c.unit("outbox").close(it);
     const merge_sha = merged ? (last?.merge_sha ?? null) : null;
-    await this.c.unit("transitions").decide(id, (cur) =>
-      splitOpen(cur)
-        ? {
-            patch: { stage: "CLOSED", close_reason: merged ? "completed" : "rejected", merge_sha, blocked_on: "none", blocked_reason: null },
-            actor: SYSTEM,
-            reason: merged ? "split_completed" : "split_rejected",
-            detail: { phases: ids.length, completed: done, ...(goalMet ? { goal_met: true } : {}) },
-          }
-        : null,
-    );
+    const patch = { stage: "CLOSED" as const, close_reason: merged ? ("completed" as const) : ("rejected" as const), merge_sha, blocked_on: "none" as const, blocked_reason: null };
+    const detail = { phases: ids.length, completed: done, ...(goalMet ? { goal_met: true } : {}) };
+    await this.c.unit("transitions").decide(id, (cur) => (splitOpen(cur) ? { patch, actor: SYSTEM, reason: merged ? "split_completed" : "split_rejected", detail } : null));
     // Its dependents count it merged, or get the dependency_closed hold, now that its phases are closed (design §5).
     await this.c.k.guard("dependents", () => this.c.unit("coordination").releaseDependents(it.source.id));
   }
@@ -486,29 +436,27 @@ export class PhasesUnit {
       await this.c.unit("transitions").decide(id, async (cur) => {
         if (!splitOpen(cur)) return null;
         if ((await this.c.k.d.store.listRuns(id)).some((r) => r.kind === "judge" && sameStep(r.idempotency_key, key))) return null;
-        const judge = {
-          phase: p.phase, goal_done_when: goal, title: p.title ?? "", problem: p.problem, done_criteria: p.done_criteria ?? [], merge_sha: p.merge_sha, phases: phases.map((x) => x.title ?? ""),
-        };
+        const judge = { phase: p.phase, goal_done_when: goal, title: p.title ?? "", problem: p.problem, done_criteria: p.done_criteria ?? [], merge_sha: p.merge_sha, phases: phases.map((x) => x.title ?? "") };
         return { patch: {}, actor: SYSTEM, reason: JUDGE_QUEUED, detail: { phase: p.phase, merge_sha: p.merge_sha }, enqueue: { kind: "judge" as const, idempotency_key: key, input: { judge } } };
       });
     }
   }
 
-  /** The parent's latest judgement of `phase`: its judge_verdict or judge_skipped change; null while none is applied. */
+  /** The parent's latest judgement of `phase`: its judge_verdict, judge_skipped or goal_phase_added change; null while none is applied. */
   private async judgement(id: WorkItemId, phase: WorkItem): Promise<StateChange | null> {
-    return (await this.c.k.d.store.listStateChanges(id))
-      .filter((c) => (c.reason === JUDGE_VERDICT || c.reason === JUDGE_SKIPPED) && c.detail?.phase === phase.phase)
-      .at(-1) ?? null;
+    const judged = [JUDGE_VERDICT, JUDGE_SKIPPED, GOAL_PHASE_ADDED];
+    return (await this.c.k.d.store.listStateChanges(id)).filter((c) => judged.includes(c.reason) && c.detail?.phase === phase.phase).at(-1) ?? null;
   }
 
   /**
    * Whether the goal may go on past `phase`: always for a split without goal lines or a phase the judge does not read
-   * (no merge sha); else once its judgement let it (next, done, or no prompts/judge.md). A goal question keeps it.
+   * (no merge sha); else once its judgement let it (next, done, a fix phase filed after it, or no prompts/judge.md).
+   * A goal question or the fix cap keeps it.
    */
   private async judgedOn(id: WorkItemId, phase: WorkItem): Promise<boolean> {
     if (!judgeable(phase) || !(await this.goal(id))) return true;
     const j = await this.judgement(id, phase);
-    return j !== null && (j.reason === JUDGE_SKIPPED || j.detail?.applied === "next" || j.detail?.applied === "done");
+    return j !== null && (j.reason === JUDGE_SKIPPED || j.detail?.applied === "next" || j.detail?.applied === "done" || j.detail?.applied === "fix");
   }
 
   /** The phase a judge run judges: its input's, else its key's (`judge:<parent>:<phase>`, a retry's `:a<n>` after it). */
@@ -538,8 +486,8 @@ export class PhasesUnit {
     if (takenOver(run) || !splitOpen(it)) return ack("run_ignored");
     const phase = this.judgedPhase(run);
     const of = `phase ${phase ?? "?"} of ${(await this.recordedPhases(it.id)).length}`;
-    const stop = (limit: string, detail: StateChangeDetail) => this.goalQuestion(it, run, phase, JUDGE_FAILED, { ...detail, phase, limit },
-      `The judge of ${of} could not give a verdict (${limit}), so the goal waits for the owner.`, `Last error: ${String(detail.error_code)}`);
+    const stop = (limit: string, detail: StateChangeDetail) => this.waitForOwner(it, run, phase, GOAL_QUESTION, JUDGE_FAILED, { ...detail, phase, limit },
+      [`The judge of ${of} could not give a verdict (${limit}), so the goal waits for the owner.`, "", `Last error: ${String(detail.error_code)}`]);
     if (run.outcome?.status !== "succeeded") {
       const code = run.outcome?.status === "failed" ? run.outcome.error_code || "unknown" : "cancelled";
       if (code === "prompt_missing") return ack(JUDGE_SKIPPED, { phase, run_id: run.id, error_code: code });
@@ -548,27 +496,71 @@ export class PhasesUnit {
     const parsed = parseJudge(run.outcome.data.verdict);
     if (!parsed.ok) return this.c.unit("run-results").retryOrBlock(it, run, "task", "invalid_output", stop);
     const v = parsed.value;
+    const fix = v.fix ? { fix_title: v.fix.title, fix_problem: v.fix.problem, fix_done_criteria: JSON.stringify(v.fix.done_criteria), fix_allowed_paths: JSON.stringify(v.fix.allowed_paths) } : {};
+    const verdict = { phase, verdict: v.verdict, reason: v.reason, run_id: run.id, ...fix };
+    const found = `The judge found that the goal's lines do not hold after ${of}: ${v.reason}`;
+    if (v.verdict === "fix" && v.fix) {
+      // Decision 3: fix phases are filed up to the cap; past it, the owner decides on the next one.
+      const filed = fixPhases(await this.c.k.d.store.listStateChanges(it.id)).length;
+      if (filed < FIX_PHASE_CAP) return { ...(await this.addFixPhase(it, SYSTEM, verdict, v.fix, found)), ack_run: run.id };
+      return this.waitForOwner(it, run, phase, GOAL_LIMIT, JUDGE_VERDICT, { ...verdict, applied: GOAL_LIMIT },
+        [`${found}. It proposes fix phase "${v.fix.title}", but this goal already filed ${filed} fix phases, the cap of ${FIX_PHASE_CAP}, so it waits for the owner.`]);
+    }
     const isLast = phase !== null && phase === (await this.lastPhase(it.id))?.phase;
     // done before the last phase goes on as next; next on the last leaves no phase to run, so the owner decides.
-    const applied = v.verdict === "done" ? (isLast ? "done" : "next") : v.verdict === "next" && !isLast ? "next" : GOAL_QUESTION;
-    const fix = v.fix
-      ? { fix_title: v.fix.title, fix_problem: v.fix.problem, fix_done_criteria: JSON.stringify(v.fix.done_criteria), fix_allowed_paths: JSON.stringify(v.fix.allowed_paths) }
-      : {};
-    const detail = { phase, verdict: v.verdict, reason: v.reason, applied, run_id: run.id, ...fix };
-    if (applied !== GOAL_QUESTION) return ack(JUDGE_VERDICT, detail);
-    const why = v.verdict === "fix"
-      ? `The judge found that the goal's lines do not hold after ${of} and proposes a fix phase, "${v.fix?.title ?? ""}". Fix phases are not filed yet, so the goal waits for the owner.`
-      : v.verdict === "ask"
-        ? `The judge of ${of} asks the owner to decide before the goal goes on.`
-        : `The judge answered next on ${of}, the last recorded phase, so no phase is left to run and the goal waits for the owner.`;
-    return this.goalQuestion(it, run, phase, JUDGE_VERDICT, detail, why, `Reason: ${v.reason}`);
+    const applied = v.verdict === "done" ? (isLast ? "done" : "next") : v.verdict === "next" && !isLast ? "next" : GOAL_QUESTION, detail = { ...verdict, applied };
+    if (applied !== GOAL_QUESTION) {
+      const said = applied === "done" ? `The judge found the goal's lines met after ${of}, the last recorded phase.` : `The judge let the goal go on after ${of}: the next phase starts.`;
+      await this.c.unit("outbox").comment(it, `goal-verdict:${it.id}:${phase ?? "?"}`, `${said}\n\nReason: ${v.reason}`);
+      return ack(JUDGE_VERDICT, detail);
+    }
+    const why = v.verdict === "ask" ? `The judge of ${of} asks the owner to decide before the goal goes on.` : `The judge answered next on ${of}, the last recorded phase, so no phase is left to run and the goal waits for the owner.`;
+    return this.waitForOwner(it, run, phase, GOAL_QUESTION, JUDGE_VERDICT, detail, [why, "", `Reason: ${v.reason}`]);
   }
 
-  /** Stops goal split `it` for the owner on `phase`: blocked_on human, goal_question, with one comment keyed on the phase. */
-  private async goalQuestion(it: WorkItem, run: Run, phase: number | null, reason: string, detail: StateChangeDetail, why: string, line: string): Promise<Decision> {
-    const patch = { blocked_on: "human" as const, blocked_reason: GOAL_QUESTION };
-    await this.c.unit("outbox").comment(it, `goal-question:${it.id}:${phase ?? "?"}`, [why, "", line, "", footerAfter(it, patch)].join("\n"));
+  /** Stops goal split `it` for the owner on `phase` (blocked_on human, `blocked`: goal_question or goal_limit), with one comment keyed on the phase. */
+  private async waitForOwner(it: WorkItem, run: Run, phase: number | null, blocked: string, reason: string, detail: StateChangeDetail, lines: string[]): Promise<Decision> {
+    const patch = { blocked_on: "human" as const, blocked_reason: blocked };
+    const answers = "Reply `/approve` to go on (filing the proposed fix phase, if any), or `/reject <reason>` to close the goal.";
+    await this.c.unit("outbox").comment(it, `${blocked.replace("_", "-")}:${it.id}:${phase ?? "?"}`, [...lines, "", answers, "", footerAfter(it, patch)].join("\n"));
     return { patch, actor: SYSTEM, reason, detail, ack_run: run.id };
+  }
+
+  /**
+   * Files `fix` as the goal's next phase (design 04-split-specs; a local task, decision 1): the number after its last
+   * recorded phase, held after it, keyed on its derived ref so a second pass finds the same row, with one comment in
+   * the goal's thread. Returns the goal_phase_added change recording it (`sub_issue`), the goal waiting on its phases.
+   */
+  private async addFixPhase(it: WorkItem, actor: Actor, verdict: StateChangeDetail, fix: TriagePhase, found: string): Promise<NonNullable<Decision>> {
+    const last = await this.lastPhase(it.id), index = (last?.phase ?? 0) + 1, filed = fixPhases(await this.c.k.d.store.listStateChanges(it.id)).length + 1;
+    const ref = await this.takeIn(it, actor, { index, phase: fix, total: index, prev: last?.source ?? null }, localPhaseRef(it.source, index));
+    const open = { blocked_on: "upstream" as const, blocked_reason: PHASES_OPEN };
+    await this.c.unit("outbox").comment(it, `goal-phase:${it.id}:${index}`, [
+      `${found}. So the factory filed fix phase ${index}, "${fix.title}", as a local task, ${ref.link}, which starts when phase ${index - 1} closes as completed ` +
+        `(fix phase ${filed} of this goal; the cap is ${FIX_PHASE_CAP} before the owner decides).`, "", footerAfter(it, open),
+    ].join("\n"));
+    return { patch: splitOpen(it) ? {} : open, actor, reason: GOAL_PHASE_ADDED, detail: { ...verdict, applied: "fix", added_phase: index, sub_issue: ref.id } };
+  }
+
+  /** Whether goal split `it` waits for the owner's answer on its goal: a goal question or the fix cap. */
+  waitsOnGoal(it: WorkItem): boolean {
+    return it.stage === "READY" && it.blocked_on === "human" && (it.blocked_reason === GOAL_QUESTION || it.blocked_reason === GOAL_LIMIT);
+  }
+
+  /**
+   * `/approve` on a goal waiting for the owner (design 04-split-specs, decision 4), inside the command's conditional
+   * transition. The latest verdict's fix (`fix_*`) is filed as a fix phase, past the cap too. No fix: an applied next
+   * verdict on the judged phase lets judgedOn release the next held phase; on the last recorded phase it is refused.
+   */
+  async approveGoal(it: WorkItem, actor: Actor): Promise<Decision | Refusal> {
+    const d = (await this.c.k.d.store.listStateChanges(it.id)).filter((c) => c.reason === JUDGE_VERDICT || c.reason === JUDGE_FAILED).at(-1)?.detail ?? {};
+    const phase = typeof d.phase === "number" ? d.phase : null, last = await this.lastPhase(it.id), fix = storedFix(d);
+    const of = `phase ${phase ?? "?"} of ${(await this.recordedPhases(it.id)).length}`;
+    if (fix) return this.addFixPhase(it, actor, { ...d, answered_by: "approve" }, fix, `The owner approved the fix phase the judge proposed after ${of}`);
+    if (phase === null || last === null || phase >= (last.phase ?? 0)) {
+      return { refuse: `the goal's question is on ${of}, the last recorded phase, so no held phase is left to start; reply \`/reject <reason>\` to close the goal` };
+    }
+    return { patch: { blocked_on: "upstream", blocked_reason: PHASES_OPEN }, actor, reason: JUDGE_VERDICT, detail: { ...d, applied: "next", answered_by: "approve" } };
   }
 }
 
