@@ -19,7 +19,11 @@ export async function checksBeforePush(w: Worker, run: Run, item: WorkItem, hand
   // Each round selects the test files its own diff reaches; enforce mode runs only those, shadow mode notes misses (design §4).
   // The item's done checks run in the same round, after the check list (doneCheckRound); their failure is a failed check.
   const done = doneCheckRound(w.cfg.repo, item.done_checks);
-  const round = async () => done.mark(sel.saw(await w.runCheckList(run, handle, signal, { ...SHRINK_ENV, commands: await sel.commands(done.commands, (a) => w.git(handle, a), s.baseSha) })));
+  const round = async () => {
+    const r = done.mark(sel.saw(await w.runCheckList(run, handle, signal, { ...SHRINK_ENV, commands: await sel.commands(done.commands, (a) => w.git(handle, a), s.baseSha) })));
+    // A failed test file check whose file the branch does not have says so, not its exit code (design 04-pre-push-gates).
+    return done.testFile(r) ? done.missing(r, (await w.git(handle, ["ls-files", "-z", "--", "tests"])).split("\0").filter(Boolean)) : r;
+  };
   await cleanTree(w, handle);
   const first = await round();
   if (!first.failed) return { results: first.results, fixed: false, done: done.results(first) };
@@ -30,7 +34,7 @@ export async function checksBeforePush(w: Worker, run: Run, item: WorkItem, hand
   await cleanTree(w, handle);
   const second = await round();
   if (!second.failed) return { results: second.results, fixed: true, done: done.results(second) };
-  const onBase = await failsOnBase(w, run, handle, signal, s.baseSha, second.failed);
+  const onBase = second.failed.missing ? null : await failsOnBase(w, run, handle, signal, s.baseSha, second.failed);
   if (onBase) return checksEnv(w, run, item, second.failed, onBase);
   return checksFailed(w, run, item, first.failed, second.failed, done.results(second));
 }
@@ -96,6 +100,7 @@ export async function fixStep(
       "check" in failed
         ? `Before its gates, the factory ran the pack check \`${cmd}\` on this branch and it refused. Your work is already committed. Find the cause, fix it and commit the fix. Do not rebase, reset, amend or push: the factory runs the pack checks again (refusals past the check's retries fail the run), then its checks and the scope, size and floor gates, and pushes only if all pass. Change only files under the allowed paths.`
         : `Before pushing, the factory ran its checks on this branch and \`${cmd}\` failed (${failed.how})${checkedLinesText(failed)}. Your work is already committed. Its output below is what to fix: find the cause, fix it, run \`${cmd}\` yourself to confirm, and commit the fix. Do not rebase, reset, amend or push: the factory runs every check again, then the scope, size and floor gates, and pushes only if all pass. This is the only fix step in this run. Change only files under the allowed paths.`,
+      ...("missing" in failed && failed.missing ? ["", missingNote(failed.missing)] : []),
       "",
       ...output,
     ].join("\n"),
@@ -109,6 +114,15 @@ export async function fixStep(
   if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
   await w.distrustAgentGit(handle, s.dirs);
 }
+
+/** The fix step's note on a test file check whose file does not exist: the closest existing test file by name, when there is one. */
+function missingNote(m: NonNullable<CheckResult["missing"]>): string {
+  const closest = m.closest ? ` The closest existing test file by name is \`${m.closest}\`: if it holds the tests this check means, say so in your answer.` : "";
+  return `The test file \`${m.file}\` does not exist on this branch, so the check found no tests to run.${closest} Otherwise create \`${m.file}\` with the tests for its done-when line.`;
+}
+
+/** A failed check as the outcome says it: a missing test file's text with its command, else the command and how it failed. */
+const failedText = (r: CheckResult) => (r.missing ? `${r.how} (\`${commandText(r.command)}\`)` : `\`${commandText(r.command)}\` ${r.how}`);
 
 /** The architecture ratchet lists, and the env under which the pre-push checks lower (never raise) them (design §4). */
 export const RATCHET_LISTS = "tests/architecture/known-violations/";
@@ -129,7 +143,7 @@ async function checksFailed(w: Worker, run: Run, item: WorkItem, first: CheckRes
   // The failing tests by name (design §5 Restarts), so the detail says what broke, not only the exit code.
   const tests = failingTestNames(second.tail);
   const named = tests.length > 0 ? `; failing tests: ${tests.join(", ")}` : "";
-  throw new RunFailure(CHECKS_FAILED_RUN, `\`${cmd}\` ${second.how} after one fix step${checkedLinesText(second)} (before it: \`${before}\` ${first.how})${named}`.slice(0, 500), false, {
+  throw new RunFailure(CHECKS_FAILED_RUN, `${failedText(second)} after one fix step${checkedLinesText(second)} (before it: ${failedText(first)})${named}`.slice(0, 500), false, {
     output_tail: second.tail, ...(done ? { done_checks: done } : {}), // each done-when line's result, on the failed outcome
   } as RunFailure["extra"]);
 }
