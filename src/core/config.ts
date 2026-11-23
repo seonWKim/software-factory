@@ -110,8 +110,8 @@ export function toolGrantsShape(raw: unknown): ToolGrants {
   return out;
 }
 
-/** The keys of the `capabilities` block (design 08-settings, 2026-11-13). */
-export const CAPABILITIES_KEYS = ["skill_folders"] as const;
+export const CAPABILITIES_KEYS = ["skill_folders"] as const; // The `capabilities` block's keys (design 08-settings, 2026-11-13).
+export { SKILL_IMPROVE_DEFAULTS, SKILL_IMPROVE_KEYS, type SkillImproveConfig, skillImproveConfig, skillImproveProblems } from "./skill-improve-config.js"; // Design 07-self-improvement; folders: capabilities.skill_folders.
 
 /**
  * `capabilities` from factory.config.json: `skill_folders`, the folders whose skills the Settings page lists (a

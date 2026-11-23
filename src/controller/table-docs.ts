@@ -42,6 +42,8 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   "controller_schedules.running_since": "When the fired occurrence started; empty while the schedule is idle.",
   "controller_schedules.skip_when_busy": "Whether a due occurrence is skipped while 15 or more implement runs are queued; empty means no.",
   controller_signals:"The signal ledger: gate decisions, verdicts, failed runs and other signals, as ids and codes only.",
+  controller_skill_draft_days: "How many skill drafts each project started on each UTC day; one row per project and day.",
+  controller_skill_drafts: "Drafted changes to a skill: the project, the skill, its state (tried, proposed, promoted, rejected or held) and the tokens it spent.",
   controller_skill_eval_cases: "Cases of a skill eval suite: the input to replay and the output expected.",
   controller_skill_eval_replays: "One verdict per case in an eval run, with its detail; one row per run and case.",
   controller_skill_eval_runs: "Runs of a skill eval suite: their status and when each started and finished.",

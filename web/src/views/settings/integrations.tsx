@@ -42,18 +42,43 @@ function TurnOnDialog({ name, busy, error, onTurnOn, onClose }: { name: string; 
   );
 }
 
-/** Each integration's state; the Switch turns an `integrations` entry off at once, and the tacit ledger on through a dialog. */
+/** The eval source plugin the Switch turns on (src/impl/eval-source/agents-home.plugin.ts). */
+const EVAL_SOURCE = "agents-home";
+
+/** Turning the eval source on: names the plugin; Turn on sets the entry's `eval_source` to it. A refusal stays in the dialog. */
+function EvalSourceDialog({ name, busy, error, onTurnOn, onClose }: { name: string; busy: boolean; error: string | null; onTurnOn: () => void; onClose: () => void }) {
+  return (
+    <Dialog
+      title={t("settings.turnOnTitle", { name })}
+      consequence={t("settings.turnOnConsequence")}
+      confirmLabel={t("settings.turnOn")}
+      confirmDisabled={busy}
+      error={error}
+      onConfirm={onTurnOn}
+      onClose={onClose}
+    >
+      <p className="text-sm text-pretty">{t("settings.evalSourceTurnOn", { plugin: EVAL_SOURCE })}</p>
+    </Dialog>
+  );
+}
+
+/**
+ * Each integration's state; the Switch turns an `integrations` entry off at once, the tacit ledger on through its
+ * dialog, and the eval source on through its own (the entry's `eval_source` set to agents-home).
+ */
 function IntegrationsSection({ view }: { view: SettingsView }) {
   const { busy, error, done, write } = useWrite(view.csrf_token);
-  const [turningOn, setTurningOn] = useState<string | null>(null);
+  const [turningOn, setTurningOn] = useState<{ kind: string; name: string } | null>(null);
   const row = view.keys.find((k) => k.key === "integrations");
   const integrations = view.integrations ?? [];
   if (!row || integrations.length === 0) return null;
+  const entry = () => ({ ...(asObject(row.value) ?? {}) });
   const back = (kind: string) => {
-    const rest = { ...(asObject(row.value) ?? {}) };
+    const rest = entry();
     delete rest[kind];
     void write(Object.keys(rest).length === 0 ? { action: "reset", key: row.key } : { action: "set", key: row.key, value: JSON.stringify(rest) });
   };
+  const turnOn = (value: string) => void write({ action: "set", key: row.key, value }).then((ok) => ok && setTurningOn(null));
   return (
     <Card title={t("settings.integrations")} count={integrations.length}>
       <ul className={SETTINGS_ROWS}>
@@ -61,7 +86,7 @@ function IntegrationsSection({ view }: { view: SettingsView }) {
           const on = i.plugin !== "none";
           return (
             <li key={i.kind} data-integration={i.kind} className={cn(SETTINGS_ROW, "flex flex-wrap items-center gap-2")}>
-              <Switch aria-label={t("settings.integrationLabel", { name: i.interface })} checked={on} disabled={busy || (on && i.source !== "setting")} onCheckedChange={() => (on ? back(i.kind) : setTurningOn(i.interface))} />
+              <Switch aria-label={t("settings.integrationLabel", { name: i.interface })} checked={on} disabled={busy || (on && i.source !== "setting")} onCheckedChange={() => (on ? back(i.kind) : setTurningOn({ kind: i.kind, name: i.interface }))} />
               <span className="font-medium">{i.interface}</span>
               <Badge level={on ? "needs_approval" : undefined}>{on ? i.plugin : t("settings.integrationOff")}</Badge>
               <span className="text-xs text-pretty text-text-2">{i.source === "setting" ? t("settings.integrationFromDashboard") : t("settings.integrationFromConfig")}</span>
@@ -70,14 +95,16 @@ function IntegrationsSection({ view }: { view: SettingsView }) {
         })}
       </ul>
       <Outcome error={error} done={done} />
-      {turningOn !== null && (
-        <TurnOnDialog
-          name={turningOn}
+      {turningOn?.kind === "eval_source" ? (
+        <EvalSourceDialog
+          name={turningOn.name}
           busy={busy}
           error={error}
-          onTurnOn={(value) => void write({ action: "set", key: row.key, value }).then((ok) => ok && setTurningOn(null))}
+          onTurnOn={() => turnOn(JSON.stringify({ ...entry(), eval_source: EVAL_SOURCE }))}
           onClose={() => setTurningOn(null)}
         />
+      ) : turningOn !== null && (
+        <TurnOnDialog name={turningOn.name} busy={busy} error={error} onTurnOn={turnOn} onClose={() => setTurningOn(null)} />
       )}
     </Card>
   );

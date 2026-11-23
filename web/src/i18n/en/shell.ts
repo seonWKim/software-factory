@@ -146,6 +146,7 @@ export const shell = {
   "loading.dataRows": "Table rows",
   "loading.evalCompare": "Score comparison",
   "loading.evalRuns": "Eval runs",
+  "loading.evalSuite": "Test cases",
   "loading.changedFiles": "Changed files",
   "loading.fileDiff": "File diff",
   "loading.running": "Running work",

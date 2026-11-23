@@ -9,7 +9,8 @@ import type { EvalComparison, EvalRun, EvalRunSummary } from "../web/src/api/eva
 import { BASE, evalsRoute, routeFor } from "../web/src/pages.js";
 
 // The evals page at evals/<skill> (design 09-dashboard-evals): Trend, Grid and Compare in that order, "no run" in an
-// empty grid cell, plain words only (no run, suite or skill ID), no control that starts a run. The reads are a fake fetch.
+// empty grid cell, plain words only (no run, suite or skill ID), and Run now in the header, whose Dialog posts one run.
+// The reads and the POST are a fake fetch.
 
 // A variable path keeps the view's JSX out of the test type check, as the Efficiency page test does.
 const VIEW_MODULE = "../web/src/views/evals.js";
@@ -39,12 +40,21 @@ let grid: EvalRunSummary[] = GRID;
 let comparison: EvalComparison | null = null;
 let fail = false;
 let urls: string[] = [];
+let posts: { url: string; body: unknown; token: string | null }[] = [];
+/** The POST's answer: a stored run by default. */
+let postAnswer = () => json(200, { run_id: "run_new1", status: "passed" });
 
 beforeEach(() => {
   urls = [];
-  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+  posts = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     urls.push(url);
     const enc = encodeURIComponent(SKILL);
+    if (init?.method === "POST") {
+      posts.push({ url, body: JSON.parse(String(init.body)), token: new Headers(init.headers).get("x-csrf-token") });
+      return postAnswer();
+    }
+    if (url === "/api/v1/session") return json(200, { as_of: "2026-11-24T00:00:00.000Z", csrf_token: "tok", commands_enabled: true, actor: null, actor_source: null });
     if (fail) return json(500, { error: "boom" });
     if (url === `/api/v1/evals/${enc}/runs`) return json(200, { runs });
     if (url === `/api/v1/evals/${enc}/grid`) return json(200, { rows: grid });
@@ -62,6 +72,7 @@ afterEach(() => {
   grid = GRID;
   comparison = null;
   fail = false;
+  postAnswer = () => json(200, { run_id: "run_new1", status: "passed" });
   cleanup();
   vi.unstubAllGlobals();
 });
@@ -90,15 +101,17 @@ describe("evals route", () => {
 });
 
 describe("evals page", () => {
-  it("shows Trend, Grid and Compare in that order under the skill's name, with no control that starts a run", async () => {
+  it("shows Trend, Grid and Compare in that order under the skill's name, with Run now as the header's one primary action", async () => {
     const { container } = show();
     await screen.findByRole("region", { name: "Compare two runs" }, SLOW);
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("review-plan");
     expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Pass rate over time", "Latest run per version and model class", "Compare two runs"]);
-    expect(screen.queryByRole("button", { name: /run now/i })).toBeNull();
-    expect(container.textContent).not.toMatch(/run now/i);
-    // The only controls are the two pickers.
-    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    const header = container.querySelector("header")!;
+    expect(within(header).getAllByRole("button").map((b) => b.textContent)).toEqual(["Run now"]);
+    // The one primary Button on the page is Run now (the Button's primary variant is the accent fill).
+    const primary = [...container.querySelectorAll("button")].filter((b) => b.className.includes("bg-accent"));
+    expect(primary.map((b) => b.textContent)).toEqual(["Run now"]);
+    // Beside Run now, the only controls are the two pickers.
     expect(screen.getAllByRole("combobox")).toHaveLength(2);
   });
 
@@ -187,5 +200,286 @@ describe("evals page", () => {
     const alert = await screen.findByRole("alert", undefined, SLOW);
     expect(alert.textContent).not.toContain("review-plan");
     expect(alert.textContent).not.toContain("HTTP");
+  });
+});
+
+describe("Run now", () => {
+  async function open() {
+    const view = show();
+    fireEvent.click(await screen.findByRole("button", { name: "Run now" }, SLOW));
+    const dialog = await screen.findByRole("dialog", undefined, SLOW);
+    // The session token is read when the Dialog opens; Run is enabled once it is in.
+    await vi.waitFor(() => expect((within(dialog).getByRole("button", { name: "Run" }) as HTMLButtonElement).disabled).toBe(false), SLOW);
+    return { ...view, dialog };
+  }
+
+  it("opens a Dialog with Field, Select and Input (type number) for model, judge model and replay count; replays start at 1", async () => {
+    const { dialog } = await open();
+    expect(within(dialog).getByRole("combobox", { name: "Model" }).textContent).toContain("standard");
+    expect(within(dialog).getByRole("combobox", { name: "Judge model" }).textContent).toContain("strong");
+    const replays = within(dialog).getByLabelText("Replays per case") as HTMLInputElement;
+    expect(replays.type).toBe("number");
+    expect(replays.value).toBe("1");
+    // The footer is a ButtonRow with the primary Button last.
+    const buttons = within(dialog).getAllByRole("button").filter((b) => b.getAttribute("role") !== "combobox" && !b.hasAttribute("aria-haspopup"));
+    expect(buttons.map((b) => b.textContent).slice(-2)).toEqual(["Cancel", "Run"]);
+    expect(buttons.at(-1)!.className).toContain("bg-accent");
+    // The model options are model classes as stored, never a model ID.
+    fireEvent.click(within(dialog).getByRole("combobox", { name: "Model" }));
+    expect(screen.getAllByRole("option").map((o) => o.textContent?.trim())).toEqual(["cheap", "standard", "strong"]);
+  });
+
+  it("the judge model follows the chosen model, and the run is posted with that class, as stored", async () => {
+    const { dialog } = await open();
+    fireEvent.click(within(dialog).getByRole("combobox", { name: "Model" }));
+    fireEvent.click(screen.getByRole("option", { name: /strong/ }));
+    expect(within(dialog).getByRole("combobox", { name: "Judge model" }).textContent).toContain("standard");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Run" }));
+    await vi.waitFor(() => expect(posts).toHaveLength(1), SLOW);
+    expect(posts[0]).toEqual({ url: `/api/v1/evals/${encodeURIComponent(SKILL)}/runs`, body: { model_class: "strong", judge_model_class: "standard", replays: 1 }, token: "tok" });
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), SLOW);
+  });
+
+  it.each([
+    [403, "Only the owner starts a skill eval run: you are local:bob."],
+    [409, "--replays 2: a run stores one verdict per case, so it replays each case once: nothing run"],
+  ])("shows a %i reason in the Dialog, which stays open", async (status, error) => {
+    postAnswer = () => json(status, { error });
+    const { dialog } = await open();
+    fireEvent.change(within(dialog).getByLabelText("Replays per case"), { target: { value: "2" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Run" }));
+    const alert = await within(dialog).findByRole("alert", undefined, SLOW);
+    expect(alert.textContent).toBe(error);
+    expect(posts[0]!.body).toMatchObject({ replays: 2 });
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  it("shows in the header with no runs yet", async () => {
+    runs = [];
+    grid = [];
+    show();
+    expect(await screen.findByText("No runs yet", undefined, SLOW)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeTruthy();
+  });
+});
+
+// The Plugins page's Evals card (design 09-dashboard-settings, 2026-11-24): an Evals button on each Skills row with a
+// SKILL.md path opens the card under the Skills table, above Skill folders. It reads /suite and /runs for the path,
+// writes through POST /api/v1/evals/write with GET /api/v1/pauses's token, and opens every input, delete and try
+// result in a Dialog; a 409 stays in the open Dialog. The reads and writes are a fake fetch.
+
+const PLUGINS_MODULE = "../web/src/views/plugins.js";
+const { PluginsPage } = (await import(/* @vite-ignore */ PLUGINS_MODULE)) as { PluginsPage: FunctionComponent };
+const INTEGRATIONS_MODULE = "../web/src/views/settings/integrations.js";
+const { IntegrationsTab } = (await import(/* @vite-ignore */ INTEGRATIONS_MODULE)) as { IntegrationsTab: FunctionComponent<{ view: unknown }> };
+
+const PATH = "/home/me/.claude/skills/review-plan/SKILL.md";
+const ENC = encodeURIComponent(PATH);
+const SUITE = { id: "suite_abc1", skill_ref: PATH, title: "Plan reviews" };
+const CASES = [
+  { id: "case_one1", suite_id: SUITE.id, input: "Review this plan: ship it.", expected: ["Names a risk", "Says yes or no"] },
+  { id: "case_two2", suite_id: SUITE.id, input: { plan: "x" }, expected: { checks: ["Is short"] } },
+];
+const SKILL_ROWS = [
+  { name: "review-plan", folder: "/home/me/.claude/skills", description: null, roles: [], last_used: null, source: "claude", path: PATH, state: "ok" },
+  { name: "tests-first", folder: "skills", description: null, roles: [], last_used: null },
+];
+
+let suiteView: { suite: typeof SUITE | null; cases: typeof CASES } = { suite: SUITE, cases: CASES };
+let answer: { status: number; body: unknown } = { status: 200, body: {} };
+let writes: unknown[] = [];
+
+function stubPlugins() {
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    urls.push(url);
+    if (init?.method === "POST") {
+      writes.push({ url, token: (init.headers as Record<string, string>)["x-csrf-token"], body: JSON.parse(String(init.body)) });
+      return json(answer.status, answer.body);
+    }
+    if (url === "/api/v1/plugins") return json(200, { as_of: "2026-11-24T00:00:00.000Z", csrf_token: "t", mcp: [], tools: [], skills: SKILL_ROWS, skill_folders: ["skills"], settings_token: "s" });
+    if (url === "/api/v1/evals") return json(200, { skills: [] });
+    if (url === "/api/v1/pauses") return json(200, { pauses: [], csrf_token: "tok_evals" });
+    if (url === `/api/v1/evals/${ENC}/suite`) return json(200, suiteView);
+    if (url === `/api/v1/evals/${ENC}/runs`) return json(200, { runs: [run("run_a1", 20, { suite_id: SUITE.id }), run("run_b2", 19, { suite_id: SUITE.id }), run("run_old", 1, { suite_id: "suite_gone" })] });
+    return json(404, { error: "Not found." });
+  }));
+}
+
+async function openCard() {
+  history.replaceState(null, "", "/app/plugins?tab=skills");
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(createElement(QueryClientProvider, { client }, createElement(PluginsPage)));
+  fireEvent.click(await screen.findByRole("button", { name: "Evals for review-plan" }, SLOW));
+  return screen.findByRole("region", { name: "Evals: review-plan" }, SLOW);
+}
+
+const dialog = () => screen.getByRole("dialog");
+const confirmIn = (name: string) => fireEvent.click(within(dialog()).getByRole("button", { name }));
+const closed = () => vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), SLOW);
+
+describe("Plugins Skills tab: the Evals card", () => {
+  beforeEach(() => {
+    suiteView = { suite: SUITE, cases: CASES };
+    answer = { status: 200, body: {} };
+    writes = [];
+    stubPlugins();
+  });
+
+  it("has an Evals button on each row with a SKILL.md path, and an off one with its reason on a row without", async () => {
+    history.replaceState(null, "", "/app/plugins?tab=skills");
+    render(createElement(QueryClientProvider, { client: new QueryClient() }, createElement(PluginsPage)));
+    const on = await screen.findByRole("button", { name: "Evals for review-plan" }, SLOW);
+    const off = screen.getByRole("button", { name: "Evals for tests-first" });
+    expect((on as HTMLButtonElement).disabled).toBe(false);
+    expect((off as HTMLButtonElement).disabled).toBe(true);
+    expect(off.getAttribute("title")).toBe("Only a skill with a SKILL.md file can have evals.");
+  });
+
+  it("opens the card under the Skills table and above Skill folders, reading the suite for the URL-encoded path", async () => {
+    const card = await openCard();
+    const table = screen.getByRole("table", { name: "Skills" });
+    const folders = screen.getByRole("region", { name: "Skill folders" });
+    expect(table.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(card.compareDocumentPosition(folders) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(urls).toContain(`/api/v1/evals/${ENC}/suite`);
+    const cases = await within(card).findByRole("table", undefined, SLOW);
+    expect(within(cases).getAllByRole("row")).toHaveLength(CASES.length + 1);
+    expect(card.textContent).toContain("Plan reviews");
+    // Plain words: no suite, case or run ID, and no SKILL.md path.
+    expect(card.textContent).not.toMatch(/suite_|case_|run_|SKILL\.md/);
+  });
+
+  it("offers Add test set only when the skill has none, and posts suite.add with the pauses token", async () => {
+    suiteView = { suite: null, cases: [] };
+    const card = await openCard();
+    fireEvent.click(await within(card).findByRole("button", { name: "Add test set" }, SLOW));
+    await vi.waitFor(() => expect(dialog()).toBeTruthy());
+    confirmIn("Add test set");
+    await vi.waitFor(() => expect(writes).toHaveLength(1), SLOW);
+    expect(writes[0]).toEqual({ url: "/api/v1/evals/write", token: "tok_evals", body: { op: "suite.add", skill: PATH, title: "review-plan" } });
+    cleanup();
+    suiteView = { suite: SUITE, cases: CASES };
+    const full = await openCard();
+    await within(full).findByRole("table", undefined, SLOW);
+    expect(within(full).queryByRole("button", { name: "Add test set" })).toBeNull();
+  });
+
+  it("renames the suite and adds, edits, tries and imports cases through Dialogs", async () => {
+    const card = await openCard();
+    await within(card).findByRole("table", undefined, SLOW);
+    const rowHeights = () => within(card).getAllByRole("row").map((r) => r.textContent);
+    const before = rowHeights();
+
+    fireEvent.click(within(card).getByRole("button", { name: "Rename" }));
+    fireEvent.change(within(dialog()).getByLabelText("Name"), { target: { value: "Reviews" } });
+    // Opening an input changes no row of the card.
+    expect(rowHeights()).toEqual(before);
+    confirmIn("Rename");
+    await vi.waitFor(() => expect(writes.at(-1)).toMatchObject({ body: { op: "suite.rename", skill: PATH, title: "Reviews" } }), SLOW);
+    await closed();
+
+    fireEvent.click(within(card).getByRole("button", { name: "Add case" }));
+    fireEvent.change(within(dialog()).getByLabelText("What the skill is given"), { target: { value: "A plan" } });
+    fireEvent.change(within(dialog()).getByLabelText("Checks, one per line"), { target: { value: "One\n\n Two \n" } });
+    confirmIn("Add case");
+    await vi.waitFor(() => expect(writes.at(-1)).toMatchObject({ body: { op: "case.add", skill: PATH, input: "A plan", expected: ["One", "Two"] } }), SLOW);
+    await closed();
+
+    fireEvent.click(within(card).getByRole("button", { name: "Edit case 1" }));
+    expect((within(dialog()).getByLabelText("What the skill is given") as HTMLTextAreaElement).value).toBe(CASES[0]!.input);
+    fireEvent.change(within(dialog()).getByLabelText("Checks, one per line"), { target: { value: "Names a risk" } });
+    confirmIn("Save");
+    await vi.waitFor(() => expect(writes.at(-1)).toMatchObject({ body: { op: "case.edit", case: "case_one1", expected: ["Names a risk"] } }), SLOW);
+    expect((writes.at(-1) as { body: object }).body).not.toHaveProperty("input");
+    await closed();
+
+    answer = { status: 200, body: { op: "case.try", case: "case_two2", source: "agents-home", tried: { verdict: "fail", checks: [{ check: "Is short", answer: "no", reason: "It runs long." }], error: null } } };
+    fireEvent.click(within(card).getByRole("button", { name: "Try case 2" }));
+    confirmIn("Try");
+    await within(dialog()).findByText("Failed", undefined, SLOW);
+    expect(dialog().textContent).toContain("It runs long.");
+    expect(writes.at(-1)).toMatchObject({ body: { op: "case.try", case: "case_two2" } });
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Close" }));
+    await closed();
+
+    answer = { status: 200, body: { op: "import", skill: PATH, source: "agents-home", added: ["a", "b"], kept: ["c"] } };
+    fireEvent.click(within(card).getByRole("button", { name: "Import cases" }));
+    confirmIn("Import cases");
+    await within(dialog()).findByText("Added 2; 1 already here.", undefined, SLOW);
+    expect(writes.at(-1)).toMatchObject({ body: { op: "import", skill: PATH } });
+  });
+
+  it("each delete Dialog says how many of the suite's runs keep their history, and posts the delete", async () => {
+    const card = await openCard();
+    await within(card).findByRole("table", undefined, SLOW);
+    fireEvent.click(within(card).getByRole("button", { name: "Delete test set" }));
+    await within(dialog()).findByText("2 past runs keep their history.", undefined, SLOW);
+    expect(urls).toContain(`/api/v1/evals/${ENC}/runs`);
+    confirmIn("Delete");
+    await vi.waitFor(() => expect(writes.at(-1)).toMatchObject({ body: { op: "suite.delete", skill: PATH } }), SLOW);
+    await closed();
+
+    fireEvent.click(within(card).getByRole("button", { name: "Delete case 2" }));
+    await within(dialog()).findByText("2 past runs keep their history.", undefined, SLOW);
+    confirmIn("Delete");
+    await vi.waitFor(() => expect(writes.at(-1)).toMatchObject({ body: { op: "case.delete", case: "case_two2" } }), SLOW);
+  });
+
+  it("shows a 409 refusal in the open Dialog and reads nothing again", async () => {
+    const card = await openCard();
+    await within(card).findByRole("table", undefined, SLOW);
+    answer = { status: 409, body: { error: "expected must be a list of rubric check texts: nothing written" } };
+    fireEvent.click(within(card).getByRole("button", { name: "Add case" }));
+    fireEvent.change(within(dialog()).getByLabelText("What the skill is given"), { target: { value: "A plan" } });
+    fireEvent.change(within(dialog()).getByLabelText("Checks, one per line"), { target: { value: "One" } });
+    const reads = urls.filter((u) => u.endsWith("/suite")).length;
+    confirmIn("Add case");
+    await within(dialog()).findByText(/nothing written/, undefined, SLOW);
+    expect(urls.filter((u) => u.endsWith("/suite")).length).toBe(reads);
+    expect(within(card).getAllByRole("row")).toHaveLength(CASES.length + 1);
+  });
+});
+
+// Integrations: the eval source keeps its Switch; on opens its own Dialog naming agents-home, off resets the entry.
+describe("Integrations: the eval source switch", () => {
+  const settingsView = (entry: Record<string, string> | null) => ({
+    csrf_token: "tok_s",
+    keys: [{ key: "integrations", kind: "json", value: entry === null ? "{}" : JSON.stringify(entry), source: entry === null ? "default" : "override", file_value: null, default_value: "{}", applies_at: "", description: "", project_settable: false, projects: [] }],
+    integrations: [
+      { kind: "tacit", interface: "TacitLedger", plugin: entry?.tacit ?? "none", source: entry?.tacit ? "setting" : "config", configured: "none" },
+      { kind: "eval_source", interface: "SkillEvalSource", plugin: entry?.eval_source ?? "none", source: entry?.eval_source ? "setting" : "config", configured: "none" },
+    ],
+  });
+  let posts: unknown[] = [];
+  beforeEach(() => {
+    posts = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posts.push(JSON.parse(String(init.body)));
+        return json(200, { lines: ["ok"] });
+      }
+      return json(404, { error: "Not found." });
+    }));
+  });
+  const showTab = (entry: Record<string, string> | null) =>
+    render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(IntegrationsTab, { view: settingsView(entry) })));
+
+  it("turning it on opens a Dialog naming agents-home, whose confirm sets eval_source in the entry", async () => {
+    showTab({ tacit: "agents-home" });
+    fireEvent.click(screen.getByRole("switch", { name: "Integration: SkillEvalSource" }));
+    const d = await screen.findByRole("dialog", undefined, SLOW);
+    expect(d.textContent).toContain("agents-home");
+    expect(d.textContent).not.toMatch(/rule/i);
+    fireEvent.click(within(d).getByRole("button", { name: "Turn on" }));
+    await vi.waitFor(() => expect(posts).toHaveLength(1), SLOW);
+    expect(posts[0]).toMatchObject({ action: "set", key: "integrations" });
+    expect(JSON.parse((posts[0] as { value: string }).value)).toEqual({ tacit: "agents-home", eval_source: "agents-home" });
+  });
+
+  it("turning it off resets the entry", async () => {
+    showTab({ eval_source: "agents-home" });
+    fireEvent.click(screen.getByRole("switch", { name: "Integration: SkillEvalSource" }));
+    await vi.waitFor(() => expect(posts).toHaveLength(1), SLOW);
+    expect(posts[0]).toMatchObject({ action: "reset", key: "integrations" });
   });
 });

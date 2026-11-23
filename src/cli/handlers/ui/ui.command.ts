@@ -9,7 +9,7 @@ import { modelStallChecks, projectKeyChecks, readFactoryStatus } from "../../../
 import { HealthMonitor, syncChecks } from "../../../ui/health.js";
 import { startUi } from "../../../ui/server.js";
 import { LastChecks, checkoutRevision, olderThanFactory, serverRevision, watchRevision } from "../../../ui/system-actions.js";
-import { type SkillEvalTryFn, defineCommand } from "../../command.js";
+import { type SkillEvalRunFn, type SkillEvalTryFn, defineCommand } from "../../command.js";
 import type { SkillEvalAuthoring } from "../../../runtime/index.js";
 import { stopOnSignals } from "../../support.js";
 
@@ -41,6 +41,8 @@ export default defineCommand({
     const uiEvals = (authoring: SkillEvalAuthoring & { importCases: NonNullable<SkillEvalAuthoring["importCases"]> }, tryCase: SkillEvalTryFn) => ({
       authoring,
       tryCase: (store: Parameters<SkillEvalTryFn>[0], r: Parameters<SkillEvalTryFn>[2]) => tryCase(store, loaded, r),
+      // Run now (POST /api/v1/evals/<skill>/runs): `eval run` with the same checks, as the page's factory user.
+      ...(ctx.runSkillEval && { run: (store: Parameters<SkillEvalRunFn>[0], r: Parameters<SkillEvalRunFn>[2]) => ctx.runSkillEval!(store, loaded, r) }),
       source: {
         configured: loaded.plugins.eval_source, registered: Object.keys(loaded.registry.eval_source.plugins), settings: parts.tacit.settings,
         open: (name: string) => createPlugin(loaded.registry, "eval_source", name, new Plugins(loaded).base),
@@ -88,7 +90,8 @@ export default defineCommand({
         // behind the resume route's owner check.
         migrate: parts.migrate,
         // POST /api/v1/evals/write: the CLI's suite and case rules, `case try`, and import from the eval source the
-        // `integrations` entry names, else plugins.eval_source, built for each call through the registry.
+        // `integrations` entry names, else plugins.eval_source, built for each call through the registry; and
+        // POST /api/v1/evals/<skill>/runs: Run now, `eval run` through runSkillEval.
         ...(ctx.authoring?.importCases && ctx.trySkillEvalCase && { evals: uiEvals({ ...ctx.authoring, importCases: ctx.authoring.importCases }, ctx.trySkillEvalCase) }),
         ...(parts.changes && { changes: parts.changes }),
       },

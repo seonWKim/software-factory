@@ -21,7 +21,7 @@ import type { SessionReservation, SessionReservationStore } from "../core/sessio
 import type { ProposalStore } from "../core/proposals.js";
 import type { StandingChangeStore } from "../core/standing.js";
 import type { ScheduleStore } from "../core/schedule.js"; import type { AttachmentStore } from "../core/attachments.js";
-import type { SkillEvalStore } from "./skill-eval-store.js";
+import type { SkillEvalStore } from "./skill-eval-store.js"; import type { SkillDraftStore } from "./skill-draft-store.js";
 import type { AlertDismissalStore } from "../core/alarms.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
@@ -355,7 +355,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore, AttachmentStore, AlertDismissalStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore, SkillDraftStore, AttachmentStore, AlertDismissalStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes

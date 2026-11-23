@@ -6,7 +6,7 @@
 import type { Attachment, AttachmentStore, ImageType, NewAttachment } from "../../../core/attachments.js";
 import type { Timestamp, UserId, WorkItemId } from "../../../core/types.js";
 import type { Row, SqlDriver } from "../../../state/index.js";
-import { SqlSkillEvalStore } from "./skill-evals.js";
+import { SqlSkillDraftStore } from "./skill-drafts.js";
 
 const COLUMNS = "id, work_item_id, kind, media_type, data, size_bytes, name, url, label, created_by, created_at";
 const text = (v: unknown) => (v == null ? null : String(v));
@@ -18,7 +18,7 @@ const rowToAttachment = (r: Row): Attachment => ({
 });
 
 /** AttachmentStore over a SqlDriver; `attachStamp` is the store's injected Clock's time. */
-export class SqlAttachmentStore extends SqlSkillEvalStore implements AttachmentStore {
+export class SqlAttachmentStore extends SqlSkillDraftStore implements AttachmentStore {
   constructor(db: SqlDriver, private readonly attachStamp: () => Timestamp) {
     super(db, attachStamp);
   }
