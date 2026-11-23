@@ -9,7 +9,7 @@ import type {
 } from "../../../core/types.js";
 import { RECURRING_FAILURE, outcomeTokens } from "../../../core/types.js";
 import {
-  type CoordinationSettings, type DependencyLink, type Hold, type Holder,
+  type CoordinationSettings, type DependencyLink, type Holder,
   DEFAULT_COORDINATION,
   aheadOf,
   claimDecision,
@@ -119,6 +119,7 @@ import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
 import { SqlSkillEvalStore } from "./skill-evals.js";
 import { claimLock, endReservations, liveReservations, reservationOf } from "./reservations.js";
+import { type CoordContext, claimOrder, implementTimes, writeClaimDecision } from "./claim-coordination.js";
 import * as notices from "./notices.js";
 import * as noticeMessages from "./notice-messages.js";
 import * as posted from "./posted-comments.js";
@@ -643,16 +644,7 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
       decisions.set(r.run_id as string, rowToClaimDecision(r));
     }
     const depHeld = (id: string) => unmet.has(id) || items.get(id)?.blocked_on === "dependency";
-    // When each item's first implement run was queued and started: the order rule (design 05-dependencies, 2026-11-23).
-    const itemIds = [...items.keys()];
-    const times = new Map<string, { queued: Timestamp | null; started: Timestamp | null }>();
-    for (const r of itemIds.length === 0 ? [] : await tx.all(
-      `SELECT work_item_id, MIN(created_at) AS queued, MIN(started_at) AS started FROM worker_runs
-       WHERE kind = 'implement' AND work_item_id IN (${placeholders(itemIds.length)}) GROUP BY work_item_id`,
-      itemIds,
-    )) {
-      times.set(r.work_item_id as string, { queued: (r.queued as Timestamp | null) ?? null, started: (r.started as Timestamp | null) ?? null });
-    }
+    const times = await implementTimes(tx, [...items.keys()]);
     // Holders: running items, open PRs, then other claimable queued implement runs of items with no PR.
     const holders: Holder[] = [];
     const ref = (it: WorkItem, self: string) => (it.change_ref !== null ? `#${it.change_ref}` : shortRef(it.source.id, self));
@@ -674,17 +666,7 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
       const it = items.get(id);
       if (it && it.change_ref === null && !busy.has(id) && !depHeld(id)) holders.push(holderOf(it, "waiting"));
     }
-    // Each queued item's place in the claim order, and whether its run is held now (rule 2: it holds newer runs).
-    const order = new Map<string, number>();
-    const held = new Map<string, boolean>();
-    for (const [i, q] of runs.entries()) {
-      const id = q.work_item_id as string;
-      if (order.has(id)) continue;
-      order.set(id, i);
-      const d = decisions.get(q.id as string);
-      held.set(id, d?.decision === "held" && d.approved_by === null);
-    }
-    return { items, holders, conflicts, decisions, depHeld, times, order, held };
+    return { items, holders, conflicts, decisions, depHeld, times, ...claimOrder(runs, decisions) };
   }
 
   /**
@@ -720,7 +702,8 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
       c.conflicts.get(it.project) ?? new Map(), s);
     const verdict = claimDecision(holds);
     if (verdict === "free") return true;
-    const write = (decision: ClaimDecision["decision"]) => this.writeDecision(tx, it, runId, decision, holds[0]!, s.max_cost, existing, since);
+    const write = (decision: ClaimDecision["decision"]) =>
+      writeClaimDecision(tx, (sql, params) => this.insertOnce(tx, sql, params), now, { it, runId, decision, hold: holds[0]!, threshold: s.max_cost, existing, held_since: since });
     if (existing?.approved_by) {
       await write("approved");
       return true;
@@ -739,49 +722,6 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
     const h = c.items.get(holderId);
     if (!h) return holderId;
     return h.change_ref !== null ? `#${h.change_ref}` : shortRef(h.source.id, self.source.id);
-  }
-
-  /** Upserts the run's claim decision; a decision equal to the stored one writes nothing. approved_by is kept. */
-  private async writeDecision(
-    tx: SqlExecutor, it: WorkItem, runId: RunId, decision: ClaimDecision["decision"], hold: Hold, threshold: number,
-    existing: ClaimDecision | null, held_since: Timestamp,
-  ): Promise<void> {
-    const row = {
-      decision,
-      holder_work_item_id: hold.holder.work_item_id,
-      holder_ref: hold.holder.ref,
-      holder_kind: hold.holder.kind,
-      shared: JSON.stringify(hold.shared),
-      cost: hold.cost,
-      threshold,
-      fallback: hold.holder.fallback ? 1 : 0,
-      held_since,
-    };
-    if (
-      existing && existing.decision === row.decision && existing.holder_work_item_id === row.holder_work_item_id &&
-      existing.holder_ref === row.holder_ref && existing.holder_kind === row.holder_kind &&
-      JSON.stringify(existing.shared) === row.shared && existing.cost === row.cost && existing.threshold === row.threshold &&
-      (existing.fallback ? 1 : 0) === row.fallback && existing.held_since === row.held_since
-    ) {
-      return;
-    }
-    const values = [
-      row.decision, row.holder_work_item_id, row.holder_ref, row.holder_kind, row.shared, row.cost, row.threshold, row.fallback, row.held_since,
-    ];
-    const now = this.now();
-    const updated = await tx.run(
-      `UPDATE controller_claim_decisions SET decision = ?, holder_work_item_id = ?, holder_ref = ?, holder_kind = ?, shared = ?, cost = ?,
-         threshold = ?, fallback = ?, held_since = ?, at = ? WHERE run_id = ?`,
-      [...values, now, runId],
-    );
-    if (updated === 0) {
-      await this.insertOnce(
-        tx,
-        `INSERT INTO controller_claim_decisions (run_id, work_item_id, decision, holder_work_item_id, holder_ref, holder_kind, shared, cost,
-           threshold, fallback, held_since, approved_by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-        [runId, it.id, ...values, now],
-      );
-    }
   }
 
   async pauseClaims(resume_at: Timestamp, name: ClaimPauseName = RATE_LIMIT_PAUSE): Promise<{ extended: boolean; started?: boolean; resume_at: Timestamp }> {
@@ -2698,23 +2638,6 @@ function whereOf(filter: Omit<WorkItemFilter, "limit">): { where: string; params
     if (v !== undefined) { where.push(sql); params.push(v); }
   }
   return { where: where.length ? ` WHERE ${where.join(" AND ")}` : "", params };
-}
-
-/** What claimRun reads once for the coordination check (design §5, 2026-11-03). */
-interface CoordContext {
-  items: Map<string, WorkItem>;
-  holders: Holder[];
-  /** Recorded conflicts per project, then per path. */
-  conflicts: Map<string, Map<string, number>>;
-  decisions: Map<string, ClaimDecision>;
-  /** Held by a dependency: an edge not yet merged, or `blocked_on: dependency`. */
-  depHeld: (id: string) => boolean;
-  /** Per item: when its first implement run was queued and started. */
-  times: Map<string, { queued: Timestamp | null; started: Timestamp | null }>;
-  /** Per queued item: its place in the claim order. */
-  order: Map<string, number>;
-  /** Per queued item: whether its run is held (stored, or decided earlier in this claim). */
-  held: Map<string, boolean>;
 }
 
 /** Notes kept per session: the newest ones. */

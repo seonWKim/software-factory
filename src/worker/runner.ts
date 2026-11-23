@@ -10,7 +10,6 @@ import { storeSql } from "../impl/store/sql/store-sql.js";
 import { PACK_TOOL_REFUSED, type PackRefusal as PackGrantRefusal, checkPackGrants, packRefusalMessage } from "../packs/pack-grants.js";
 import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor, readOnlyOverlaps, readOnlyRunFields } from "../core/config.js";
 import { LiveSettings } from "../core/settings.js";
-import { type CoordinationSettings, DEFAULT_COORDINATION } from "../core/coordination.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
 import { errorText, type LogFields } from "../core/log.js";
 import { type CheckRound, checkCommands, commandText, failingTestFiles, mergeMiss, runChecks, withTestFiles } from "../core/checks.js";
@@ -230,9 +229,9 @@ export class Worker {
   }
 
   async executeHeld(run: Run, token: number, engine: ExecutionEngine, ref: RunRef, adopted: Adopted, lease: AbortController): Promise<void> {
-    const log = { run_id: run.id, work_item_id: run.work_item_id, kind: run.kind, attempt: run.attempt, worker_id: this.d.id };
-    const startedAt = this.d.clock.now().getTime();
-    this.d.log.info("run start", { ...log, ...(await holdLogFields(this.d.store, run, this.cfg.coordination)) });
+    const log = { run_id: run.id, work_item_id: run.work_item_id, kind: run.kind, attempt: run.attempt, worker_id: this.d.id }, startedAt = this.d.clock.now().getTime();
+    const hold = run.kind === "implement" ? (await this.d.store.listClaimDecisions(run.work_item_id)).find((d) => d.run_id === run.id && d.decision !== "held") : undefined, p = this.live.values().hold_policy; // a run past a cost hold names its decision and, timed_out, the limit (design 05-dependencies)
+    this.d.log.info("run start", { ...log, hold_decision: hold?.decision, hold_limit_minutes: hold?.decision === "timed_out" && p.mode === "run_after_minutes" ? p.minutes : undefined });
     const stopHeartbeat = new AbortController();
     const heartbeat = this.heartbeat(run, engine, stopHeartbeat.signal);
     // `workers pause` reaches a running implement or review run within one tick_ms (design §5 Pause).
@@ -1034,19 +1033,4 @@ function stepFailure(err: unknown): unknown {
   if (err instanceof StepTimeoutError) return new RunFailure(err.code, err.message, true);
   if (err instanceof RunDeadlineError) return new RunFailure(err.code, err.message, false);
   return err;
-}
-
-/**
- * The run start log's hold fields (design 05-dependencies, 2026-11-23): an implement run started past a coordination
- * hold names the claim decision (`hold_decision`) and, for `timed_out`, the hold limit it waited out
- * (`hold_limit_minutes`, from `hold_policy`). Empty for other runs, and for one that started free.
- */
-export async function holdLogFields(
-  store: Pick<WorkerDeps["store"], "listClaimDecisions">, run: Pick<Run, "id" | "kind" | "work_item_id">, coordination: CoordinationSettings | undefined,
-): Promise<LogFields> {
-  if (run.kind !== "implement") return {};
-  const d = (await store.listClaimDecisions(run.work_item_id)).find((x) => x.run_id === run.id);
-  if (!d || d.decision === "held") return {};
-  const policy = (coordination ?? DEFAULT_COORDINATION).hold_policy;
-  return { hold_decision: d.decision, ...(d.decision === "timed_out" && policy.mode === "run_after_minutes" ? { hold_limit_minutes: policy.minutes } : {}) };
 }
