@@ -112,9 +112,10 @@ export function App() {
             </div>
           </div>
         </aside>
-        <div data-scroll-root className="flex min-w-0 flex-1 flex-col overflow-y-auto">
+        {/* A word longer than its line breaks (overflow-wrap is inherited), so no page's text widens the column. */}
+        <div data-scroll-root className="flex min-w-0 flex-1 flex-col overflow-y-auto wrap-break-word">
           {/* One row at every width: the revision and the status text shrink, the controls do not wrap. */}
-          <header className="flex items-center gap-x-3 border-b border-border px-4 py-2">
+          <header className="flex items-center gap-x-3 border-b border-border px-4 py-2 max-sm:gap-x-2">
             <ModeChip />
             <span className="min-w-0 overflow-hidden"><FactoryRevision factory={overview.data?.factory} /></span>
             <span className="ml-auto min-w-0 truncate text-sm text-text-2" aria-live="polite">
