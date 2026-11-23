@@ -81,7 +81,7 @@ export function SourceLink({ source, className, itemId }: { source: { id: string
 /** An item's title linking to its page, wrapping at any width; "Untitled item" when it has none. */
 export function ItemTitle({ id, title }: { id: string; title: string | null }) {
   return (
-    <Link href={itemPath(id)} data-raw={title !== null ? "" : undefined} className={cn("font-medium", LINK_CLASS)}>
+    <Link href={itemPath(id)} data-raw={title !== null ? "" : undefined} className={cn("max-w-full font-medium break-words", LINK_CLASS)}>
       {title ?? t("item.untitled")}
     </Link>
   );
