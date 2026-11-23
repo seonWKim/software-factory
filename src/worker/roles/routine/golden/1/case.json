@@ -1,0 +1,6 @@
+{
+  "id": "1",
+  "work_item_id": "golden_routine_1",
+  "expect": "should_pass",
+  "note": "The instruction asks whether the factory's own prompts are in place. prompts/triage.md, prompts/implement.md and prompts/review.md exist in every checkout and are not empty, and no page is set, so Browse is not needed. The routine must read them and answer pass with no finding; a bug verdict is a false alarm."
+}

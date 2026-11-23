@@ -29,6 +29,7 @@ export default defineSetting({
       "4": "strong",
       "5": "strong"
     },
+    "routine": "cheap",
     "retry_up": true
   },
   description: "Which model class each run kind uses per tier, and whether a retry goes one class up.",

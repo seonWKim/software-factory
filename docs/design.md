@@ -15,8 +15,8 @@ for a new topic. "§5" means `05-*`.
 - [02-tasks-projects.md](design/02-tasks-projects.md): task projects.
 - [02-tasks-build.md](design/02-tasks-build.md): Build this, merge close.
 - [02-tasks-edit.md](design/02-tasks-edit.md): edit, delete, sub-tasks.
-- [02-tasks-page.md](design/02-tasks-page.md): what the Tasks page lists and edits.
-- [02-tasks-calendar.md](design/02-tasks-calendar.md): calendar, Google sync, events in tasks.
+- [02-tasks-page.md](design/02-tasks-page.md): the Tasks page.
+- [02-tasks-calendar.md](design/02-tasks-calendar.md): calendar, Google sync.
 
 ## 3. Risk
 - [03-risk.md](design/03-risk.md): how the tier is set, rechecked; safety ratchet.
@@ -24,7 +24,7 @@ for a new topic. "§5" means `05-*`.
 ## 4. Agents
 - [04-agents.md](design/04-agents.md): agent roles, model class per kind and tier.
 - [04-gate-commands.md](design/04-gate-commands.md): human commands, refusals, footers.
-- [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise`, `/resolve`.
+- [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise`.
 - [04-chat-commands.md](design/04-chat-commands.md): classifier, chat answers, proposals.
 - [04-verdicts.md](design/04-verdicts.md): `/verdict`, implicit verdicts, pushbacks.
 - [04-closing-source-issue.md](design/04-closing-source-issue.md): closing the source issue.
@@ -49,7 +49,7 @@ for a new topic. "§5" means `05-*`.
 - [05-stream-intake.md](design/05-stream-intake.md): stream intake, adopted PRs.
 - [05-interactive-sessions.md](design/05-interactive-sessions.md): own LLM session as run.
 - [05-status-labels.md](design/05-status-labels.md): the eight status labels.
-- [05-standing-approvals.md](design/05-standing-approvals.md): spec decision records, run check.
+- [05-standing-approvals.md](design/05-standing-approvals.md): spec decision records.
 
 ## 6. Measurement
 - [06-measurement.md](design/06-measurement.md): feedback rate, reverts, stats, golden set.
@@ -90,6 +90,7 @@ for a new topic. "§5" means `05-*`.
 - [09-dashboard-tasks-needs.md](design/09-dashboard-tasks-needs.md): Needs you.
 - [09-dashboard-tasks-quick-add.md](design/09-dashboard-tasks-quick-add.md): Quick add.
 - [09-dashboard-tasks-calendar.md](design/09-dashboard-tasks-calendar.md): Calendar page.
+- [09-dashboard-schedules.md](design/09-dashboard-schedules.md): Schedules page.
 - [09-dashboard-tasks-projects.md](design/09-dashboard-tasks-projects.md): Project switcher.
 - [09-dashboard-rules.md](design/09-dashboard-rules.md): Rules page.
 - [09-dashboard-rules-waiting.md](design/09-dashboard-rules-waiting.md): waiting rows.
@@ -115,8 +116,8 @@ for a new topic. "§5" means `05-*`.
 
 ## 11. Packs and signal ledger
 - [11-packs.md](design/11-packs.md): pack layers, the `packs` key.
-- [11-plugin-import.md](design/11-plugin-import.md): `plugins import` of skills, MCP servers.
+- [11-plugin-import.md](design/11-plugin-import.md): `plugins import`.
 - [11-signal-ledger.md](design/11-signal-ledger.md): `controller_signals`, sources, tags.
 
 ## 12. Notification channels
-- [12-notification-channels.md](design/12-notification-channels.md): channel picker, outbox rows.
+- [12-notification-channels.md](design/12-notification-channels.md): channel picker.

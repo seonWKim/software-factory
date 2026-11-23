@@ -179,6 +179,13 @@ describe("packs: prompts", () => {
     expect((await load(f.codeRoot)).prompts.resolve).toBe("Project resolve.\n");
   });
 
+  it("the routine prompt loads through the packs, and a pack's routine.md overrides its sections", async () => {
+    const f = fixture();
+    expect((await load(f.codeRoot)).prompts.routine).toBeUndefined();
+    write(join(f.project, "prompts", "routine.md"), "Project routine.\n");
+    expect((await load(f.codeRoot)).prompts.routine).toBe("Project routine.\n");
+  });
+
   it("merging with no section of the overlay keeps the base text exactly; a heading inside a code fence is not a section", () => {
     expect(mergeSections(BASE_TRIAGE, "")).toBe(BASE_TRIAGE);
     expect(mergeSections(BASE_TRIAGE, "only a preamble\n")).toBe(BASE_TRIAGE);
@@ -189,7 +196,7 @@ describe("packs: prompts", () => {
   it("the checked-in prompts load unchanged: the base pack is the code root's prompts/", async () => {
     const loaded = await loadConfig(REPO_ROOT, { configFile: join(fixture().codeRoot, "factory.config.json") });
     expect(loaded.packs[0]).toEqual({ layer: "base", dir: REPO_ROOT });
-    for (const name of ["triage", "implement", "review", "resolve", "improve"] as const) {
+    for (const name of ["triage", "implement", "review", "resolve", "improve", "routine"] as const) {
       const base = readFileSync(join(REPO_ROOT, "prompts", `${name}.md`), "utf8");
       const limits = settingValues(`${loaded.config.repo.owner}/${loaded.config.repo.name}`, loaded.config.settings);
       const filled = fillPrompt(base, loaded.config.repo, loaded.plugins.forge ?? "local", loaded.config.toolchain, limits);

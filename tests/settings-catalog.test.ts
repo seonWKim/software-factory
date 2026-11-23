@@ -55,7 +55,7 @@ describe("settings catalog", () => {
 
   it("holds worker_kinds, a global runtime list of the worker, free, defaulting to every claimable kind", () => {
     expect(catalog.get("worker_kinds")).toMatchObject({ owner: "worker", type: "list", changed_by: "runtime", scope: "global", direction: "free", default: [...WORKER_KINDS] });
-    expect(WORKER_KINDS).toEqual(expect.arrayContaining(["screenshot", "judge"]));
+    expect(WORKER_KINDS).toEqual(expect.arrayContaining(["screenshot", "judge", "routine"]));
     expect(SETTABLE_DEFAULTS.worker_kinds).toEqual([...WORKER_KINDS]);
   });
 

@@ -1,7 +1,7 @@
 import type { Sandbox, SandboxHandle } from "../../interfaces/sandbox.js";
 import type { GuardPolicy } from "./policy.js";
 
-/** What a tool may do. Read, Glob, Grep: read. Write, Edit: write. Bash: exec. */
+/** What a tool may do. Read, Glob, Grep, Browse: read. Write, Edit: write. Bash: exec. */
 export type ToolCapability = "read" | "write" | "exec";
 
 /**
@@ -16,6 +16,8 @@ export interface ToolContext {
   /** From `guardPolicy`. Every path and env check uses it; nothing comes from the runner. */
   policy: GuardPolicy;
   signal?: AbortSignal;
+  /** Browse's HTTP client; absent: the global fetch. Tests pass a fake, so no test reaches the network. */
+  fetch?: (url: string, init: RequestInit) => Promise<Response>;
 }
 
 export interface ToolSpec {
