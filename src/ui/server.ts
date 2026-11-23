@@ -16,8 +16,7 @@ import { DEFAULT_APP_DIR, appText, isAppPath, serveApp } from "./app.js";
 import { MAX_COMMAND_BODY } from "./commands.js";
 import { CSRF_HEADER } from "./settings-api.js";
 import type { MigrateDeps } from "./migrate-api.js";
-import { Activity } from "./background-refresh.js";
-import { startPluginsSnapshot } from "./plugins-api.js";
+import { servePluginsStored } from "./plugins-api.js";
 import { APP_HOME, STYLE_HASH, errorPage } from "./html.js";
 import { POST_ONLY, commandsWrite, pathOf, post, writeRoute } from "./write-routes.js";
 import { MAX_FILE_BODY, PROJECT_FILE_ROUTES, PROJECT_FILE_WRITE_PATH } from "./project-files.js";
@@ -144,18 +143,13 @@ export interface UiServer {
 
 /** Listens on 127.0.0.1:`port` (0 picks a free port). */
 export async function startUi(d: ServerDeps, port: number): Promise<UiServer> {
-  // The Health and Plugins reads answer from background snapshots, refreshed after each successful write (design 09-health).
-  // One Activity: a read of either route keeps both refreshing.
-  const activity = new Activity(d.clock);
-  d.health.start(activity);
-  const plugins = startPluginsSnapshot(d, activity);
+  // The Health and Plugins reads answer from their stored results, refreshed in the background when a read finds them
+  // older than their interval, and at once after each successful write (design 09-health, 2026-11-19). No timer.
+  d.health.serveStored();
+  const plugins = servePluginsStored(d);
   const refreshAll = () => {
-    d.health.refresh();
-    plugins.refresh();
-  };
-  const stopRefresh = () => {
-    d.health.stop();
-    plugins.stop();
+    d.health.refreshNow();
+    plugins.refreshNow();
   };
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
@@ -192,9 +186,6 @@ export async function startUi(d: ServerDeps, port: number): Promise<UiServer> {
       server.off("error", reject);
       resolve();
     });
-  }).catch((err: unknown) => {
-    stopRefresh();
-    throw err;
   });
   const addr = server.address() as AddressInfo;
   return {
@@ -202,7 +193,6 @@ export async function startUi(d: ServerDeps, port: number): Promise<UiServer> {
     port: addr.port,
     close: () =>
       new Promise<void>((resolve, reject) => {
-        stopRefresh();
         server.closeAllConnections();
         server.close((err) => (err ? reject(err) : resolve()));
       }),

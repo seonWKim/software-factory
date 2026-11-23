@@ -6,7 +6,8 @@
 // dialog's secret names; model-credential.ts), /api/v1/supervisor (what Migrate now, Start and Restart now may do;
 // migrate-api.ts), /api/v1/calendar/events (the Calendar page's range read; calendar-events-api.ts), /api/v1/screenshot
 // (one stored image of an item's screenshot run; item-screenshots.ts) and /api/v1/evals/<skill>/runs, /grid and
-// /compare (a skill's eval runs, grid and compare; evals-api.ts, a path pattern); every other
+// /compare (a skill's eval runs, grid and compare; evals-api.ts, a path pattern) and /api/v1/items/:id/changes (the
+// item page's Changes tab; changes.ts); every other
 // path is api.ts's. They are served here beside api.ts so it stays within its size budget. A new read route adds one
 // entry to READ_ROUTES, not a line in server.ts.
 
@@ -26,6 +27,7 @@ import { MODEL_CREDENTIAL_PATH, readModelCredential } from "./model-credential.j
 import { SUPERVISOR_PATH, readSupervisor } from "./migrate-api.js";
 import { SCREENSHOT_PATH, readScreenshot } from "./item-screenshots.js";
 import { EVALS_PATH, readSkillEvals } from "./evals-api.js";
+import { changesPathId, readItemChanges } from "./changes.js";
 import type { ServerDeps, UiRequest } from "./server.js";
 
 /** One GET (or HEAD) route under /api/v1: its path (or a pattern over it) and its read. */
@@ -62,5 +64,7 @@ const READ_ROUTES: readonly ReadRoute[] = [
 /** Answers one GET (or HEAD) under /api/v1 on its parsed URL. */
 export async function readApi(d: ServerDeps, url: URL, req: UiRequest): Promise<ApiResult> {
   const route = READ_ROUTES.find((r) => (typeof r.path === "string" ? r.path === url.pathname : r.path.test(url.pathname)));
-  return route ? route.run(d, url, req) : api(d, url);
+  if (route) return route.run(d, url, req);
+  const changesId = changesPathId(url.pathname);
+  return changesId !== null ? readItemChanges(d, changesId, url.searchParams.get("path")) : api(d, url);
 }

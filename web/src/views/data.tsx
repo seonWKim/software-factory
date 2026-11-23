@@ -47,7 +47,7 @@ export function DataPage() {
       {tables.data?.csrf_token ? <AskBox token={tables.data.csrf_token} /> : null}
       <div data-raw className="flex min-w-0 gap-4 max-md:flex-col">
         <nav aria-label={t("data.tables")} className="w-56 shrink-0 max-md:w-full">
-          {tables.isError ? <ErrorNote error={tables.error} /> : !tables.data ? <Loading rows={6} /> : (
+          {tables.isError ? <ErrorNote error={tables.error} /> : !tables.data ? <Loading rows={6} label="loading.dataTables" onRetry={() => void tables.refetch()} /> : (
             <ul className="space-y-0.5 text-sm">
               {tables.data.tables.map((tb) => (
                 <li key={tb.name}>
@@ -85,7 +85,7 @@ export function DataPage() {
 function AutonomyLine() {
   const q = useManualApi<DataAutonomy>(API.dataAutonomy);
   if (q.isError) return <ErrorNote error={q.error} />;
-  if (!q.data) return <Loading rows={1} />;
+  if (!q.data) return <Loading rows={1} label="loading.dataAutonomy" onRetry={() => void q.refetch()} />;
   const a = q.data;
   return (
     <p className="text-sm" data-testid="data-autonomy">
@@ -125,7 +125,7 @@ function TableRows({
   const [copied, setCopied] = useState<number | null>(null);
 
   if (q.isError) return <ErrorNote error={q.error} />;
-  if (!q.data) return <Loading rows={8} />;
+  if (!q.data) return <Loading rows={8} label="loading.dataRows" onRetry={() => void q.refetch()} />;
   const d = q.data;
   const pages = Math.max(1, Math.ceil(d.total / d.limit));
   const first = d.total === 0 ? 0 : (d.page - 1) * d.limit + 1;

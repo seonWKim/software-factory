@@ -306,7 +306,7 @@ export function CalendarPage() {
     </PageToolbar>
     {/* The period ("Nov 9 – 15, 2026") is the Card's h2, announced when it changes. */}
     <Card title={label} live>
-      {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Events v={v} view={view} label={label} s={s} />}
+      {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} label="loading.calendar" onRetry={() => void q.refetch()} /> : <Events v={v} view={view} label={label} s={s} />}
     </Card>
     </>
   );

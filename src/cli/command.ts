@@ -4,6 +4,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { type CliEnvironment, type CliIdentity, type FactoryStore, type Loaded, buildStatsStore } from "../compose.js";
+import type { Authored, SkillEvalAuthoring, TriedCase } from "../runtime/index.js";
 import { loadedIdentity } from "./support.js";
 
 /** What a command is called with: by main.ts, by another command (setup runs settings) or by a test. */
@@ -20,6 +21,10 @@ export interface CommandCall {
   readonly openStore?: (loaded: Loaded) => Promise<FactoryStore>;
   /** Runs one skill eval with the configured plugins (src/skill-evals.ts skillEvalRun, built by main.ts); absent: `eval run` refuses. */
   readonly runSkillEval?: SkillEvalRunFn;
+  /** Replays and judges one skill-eval case, storing nothing (src/skill-evals.ts skillEvalTry, built by main.ts); absent: `eval case try` refuses. */
+  readonly trySkillEvalCase?: SkillEvalTryFn;
+  /** The suite and case authoring rules (src/skill-evals.ts skillEvalAuthoring, built by main.ts); absent: `eval suite` and `eval case` refuse. */
+  readonly authoring?: SkillEvalAuthoring;
   /** Grid and compare over stored runs (src/core/skill-eval-compare.ts, passed by main.ts); absent: `eval results --by` and `eval compare` refuse. */
   readonly skillEvalReads?: SkillEvalReads;
 }
@@ -38,6 +43,11 @@ export interface SkillEvalRunOptions {
 export type SkillEvalRunFn = (
   store: FactoryStore, loaded: Loaded, r: { skill: string; created_by: CliIdentity["user"]; signal: AbortSignal } & SkillEvalRunOptions,
 ) => Promise<{ run: SkillEvalRunRow } | { refused: string }>;
+
+/** One `eval case try <case>`: the tried case's verdict and checks, or why nothing was tried. */
+export type SkillEvalTryFn = (
+  store: FactoryStore, loaded: Loaded, r: { case_id: string; model_class: string; signal: AbortSignal },
+) => Promise<Authored<TriedCase>>;
 
 /**
  * One run in a grid row or a comparison. The shapes of src/core/skill-eval-compare.ts, restated here because the CLI

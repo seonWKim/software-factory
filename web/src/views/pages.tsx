@@ -9,7 +9,7 @@ import { ButtonRow } from "../components/ui/button-row.js";
 import { CopyText } from "../components/ui/copy.js";
 import { Input } from "../components/ui/input.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
-import { ErrorNote, Loading, Table, Td, Tr } from "../components/ui/parts.js";
+import { ErrorNote, Loading, type StoredFlags, Table, Td, Tr, useRefetchWhile } from "../components/ui/parts.js";
 import { Notice, PageHeader, PageToolbar, EmptyState } from "../components/ui/notice.js";
 import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { FailuresSection, FailuresWindowSwitch, useFailuresWindow } from "./failures.js";
@@ -30,7 +30,7 @@ import { BASE, itemPath } from "../pages.js";
 import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, RawNames, When, byId, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, isInteractiveRun, runKindLabel, useNow, useViewer } from "./common.js";
 import { ItemDecision } from "./decision-card.js";
 import { ItemAbout } from "./item-about.js";
-import { type ItemScreenshotReview, type ItemScreenshots, ItemChanges } from "./item-changes.js";
+import { type ItemScreenshotReview, type ItemScreenshots, ItemChanges, ItemChangesTab, RecheckButton } from "./item-changes.js";
 import { AddModelCredential } from "./model-credential-dialog.js";
 import { ResumeNow, type SupervisorActionName, SupervisorActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
@@ -179,7 +179,7 @@ export function ActivityPage() {
   return (
     <div className="mt-6">
       <Card title={t("running.label")} count={o?.running}>
-        {runs.isError ? <ErrorNote error={runs.error} /> : !runs.data ? <Loading rows={2} /> : <RunningTable runs={runs.data.runs} items={map} now={now} />}
+        {runs.isError ? <ErrorNote error={runs.error} /> : !runs.data ? <Loading rows={2} label="loading.running" onRetry={() => void runs.refetch()} /> : <RunningTable runs={runs.data.runs} items={map} now={now} />}
       </Card>
       {o && (o.unreviewed_merges_7d ?? 0) > 0 && (
         <p data-testid="unreviewed-merges-line" className="mt-4 text-sm">
@@ -349,11 +349,11 @@ export function ItemsPage() {
       {rateLimit?.ends_at && <div className="mb-3"><Notice tone="warn">{t("items.rateLimit", { state: t("items.ratePaused", { time: rateLimit.ends_at }) })}</Notice></div>}
       {queuedView ? (
         <Card title={t("queue.title")} count={queue.data?.queue.length}>
-          {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data || !items.data ? <Loading rows={4} /> : <QueueTable queue={queue.data.queue} items={itemsById} now={now} />}
+          {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data || !items.data ? <Loading rows={4} label="loading.queue" onRetry={() => void Promise.all([queue.refetch(), items.refetch()])} /> : <QueueTable queue={queue.data.queue} items={itemsById} now={now} />}
         </Card>
       ) : (
         <Card>
-          {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : rows.length === 0 && !state && !q.trim() && !ids ? (
+          {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} label="loading.items" onRetry={() => void items.refetch()} /> : rows.length === 0 && !state && !q.trim() && !ids ? (
             <EmptyState icon={ListTodo} title={t("items.emptyTitle")} description={t("items.emptyBody")} action={<Link href={`${BASE}tasks`} className={LINK_CLASS}>{t("items.emptyAction")}</Link>} />
           ) : tree ? (
             nodes.length === 0 ? <EmptyState icon={ListTodo} title={t("items.noMatch")} /> : (
@@ -369,7 +369,7 @@ export function ItemsPage() {
   );
 }
 
-/** The item page's tabs (design 04-screenshots): its overview, and the Changes tab with the screenshots. */
+/** The item page's tabs (design 04-screenshots): its overview, and the Changes tab with the changed files and the screenshots. */
 type ItemTab = "overview" | "changes";
 /** What the item API adds for the Changes tab (src/ui/item-screenshots.ts). */
 type ItemChangesFields = { screenshots?: ItemScreenshots | null; screenshot_review?: ItemScreenshotReview | null };
@@ -377,7 +377,9 @@ type ItemChangesFields = { screenshots?: ItemScreenshots | null; screenshot_revi
 /**
  * One work item (design 09-dashboard-item): its title, then its decision (the DecisionCard while the owner is next,
  * else its reason and "…" menu), its facts, the current run with its live state, the thread (collapsed after its
- * first message), the runs (with errors) and the timeline.
+ * first message), the runs (with errors) and the timeline. An item with a branch or a screenshot run has the tabs
+ * Overview and Changes (item-changes.tsx) in a PageToolbar under the header, kept in `?tab=`; About and the decision
+ * (with Merge) stay above both tabs' content.
  */
 export function ItemPage({ id }: { id: string }) {
   const now = useNow();
@@ -385,7 +387,7 @@ export function ItemPage({ id }: { id: string }) {
   const viewer = useViewer();
   const [picked, pick] = useUrlParam("tab", (v) => v === "changes");
   if (q.isError) return <><PageHeader title={t("app.workItem")} /><ErrorNote error={q.error} /></>;
-  if (!q.data) return <><PageHeader title={t("app.workItem")} /><Loading rows={6} /></>;
+  if (!q.data) return <><PageHeader title={t("app.workItem")} /><Loading rows={6} label="loading.item" onRetry={() => void q.refetch()} /></>;
   const { item, runs, timeline } = q.data;
   // State changes and host sleeps of the item's runs, newest first.
   const entries: ({ kind: "change"; at: string; t: ItemDetail["timeline"][number] } | { kind: "sleep"; at: string; h: HostSleepRow })[] = [
@@ -396,8 +398,9 @@ export function ItemPage({ id }: { id: string }) {
   const transcripts = q.data.transcripts ?? {};
   const short = shortItemId(item.id);
   const level = item.item_phase;
-  const tab: ItemTab = picked === "changes" ? "changes" : "overview";
-  const tabs: { id: ItemTab; label: string }[] = [{ id: "overview", label: t("changes.tabOverview") }, { id: "changes", label: t("changes.tabChanges") }];
+  const hasTabs = item.has_changes === true || q.data.screenshots != null;
+  const tab: ItemTab = hasTabs && picked === "changes" ? "changes" : "overview";
+  const tabs: { id: ItemTab; label: string }[] = [{ id: "overview", label: t("item.tabOverview") }, { id: "changes", label: t("item.tabChanges") }];
   return (
     <>
       <nav aria-label={t("item.breadcrumb")} className="mb-1 text-sm">
@@ -406,12 +409,12 @@ export function ItemPage({ id }: { id: string }) {
         <Link href={itemPath(item.id)} aria-current="page" title={item.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", ID_CLASS)}>{short}</Link>
       </nav>
       <PageHeader title={<span data-raw>{item.title ?? short}</span>} actions={runs.some(isInteractiveRun) ? <InteractiveBadge /> : undefined} />
+      {hasTabs && <PageToolbar tabs={<Tabs label={t("item.views")} options={tabs} value={tab} onChange={(v) => pick(v === "overview" ? null : v)} />} />}
       {item.parent_id && (
         <p data-testid="parent" className="mt-1 text-sm">
           {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
         </p>
       )}
-      <PageToolbar tabs={<Tabs label={t("changes.tabs")} options={tabs} value={tab} onChange={(v) => pick(v === "overview" ? null : v)} />} />
       <ItemAbout item={item} />
       <ItemDecision
         id={item.id}
@@ -423,7 +426,12 @@ export function ItemPage({ id }: { id: string }) {
           </p>
         ) : null}
       />
-      {tab === "changes" ? <ItemChanges itemId={item.id} screenshots={q.data.screenshots ?? null} review={q.data.screenshot_review ?? null} /> : (
+      {tab === "changes" ? (
+        <>
+          {item.has_changes && <ItemChangesTab id={item.id} />}
+          <ItemChanges itemId={item.id} screenshots={q.data.screenshots ?? null} review={q.data.screenshot_review ?? null} />
+        </>
+      ) : (
         <>
         <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
           {([
@@ -469,6 +477,7 @@ export function ItemPage({ id }: { id: string }) {
                 {item.merge_check.conflicts.map((f) => <li key={f}>{f}</li>)}
               </ul>
             )}
+            {item.merge_check.recheck && <RecheckButton id={item.id} />}
           </Card>
         )}
         <Card title={t("item.runs")} count={runs.length}>
@@ -766,7 +775,7 @@ export function RunnersTab() {
         </p>
       )}
       <Card title={t("runners.processes")} count={workers.data?.processes ? processes.length : undefined}>
-        {workers.isError ? <ErrorNote error={workers.error} /> : !workers.data ? <Loading rows={2} /> : workers.data.processes_error ? (
+        {workers.isError ? <ErrorNote error={workers.error} /> : !workers.data ? <Loading rows={2} label="loading.workers" onRetry={() => void workers.refetch()} /> : workers.data.processes_error ? (
           <ErrorNote error={new Error(workers.data.processes_error)} />
         ) : processes.length === 0 ? (
           <EmptyState title={t("runners.none")} />
@@ -883,7 +892,9 @@ function checksTitle(total: number, attention: number, ago: string): string {
 export function HealthPage() {
   const now = useNow();
   // Each read runs the checks: every 30 s, not every 3 s.
-  const health = useApi<Health>(API.health, 30_000);
+  const health = useApi<Health & StoredFlags>(API.health, 30_000);
+  // Pending: the server's first run has not ended (design 09-health, 2026-11-19); read again each second meanwhile.
+  useRefetchWhile(health.data?.pending === true, health.refetch);
   const merges = useApi<UnreviewedMerges>(API.unreviewedMerges, 30_000);
   const pauses = useApi<PausesView>(API.pauses);
   const overview = useApi<Overview>(API.overview);
@@ -894,7 +905,7 @@ export function HealthPage() {
   // The Failures window (`?window=`): a page control in the toolbar's second row while the Failures tab is open.
   const [failuresWindow, setFailuresWindow] = useFailuresWindow();
   if (health.isError) return <><PageHeader title={t("page.health")} /><ErrorNote error={health.error} /></>;
-  if (!health.data) return <><PageHeader title={t("page.health")} /><Loading rows={6} /></>;
+  if (!health.data || health.data.pending) return <><PageHeader title={t("page.health")} /><Loading rows={6} label="loading.health" onRetry={() => void health.refetch()} /></>;
   const order = ["fail", "warn", "ok"];
   const checks = [...health.data.checks].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
   // Warn and fail rows stay in view; ok rows fold behind their count ("22 ok"), or behind "Show the checks" when the title already counts them.
@@ -981,7 +992,7 @@ export function HealthPage() {
       {tab === "merges" && (
         <div id="unreviewed-merges">
           <Card title={t("health.merges")} count={mergeList?.length}>
-            {merges.isError ? <ErrorNote error={merges.error} /> : !mergeList ? <Loading rows={2} /> : (
+            {merges.isError ? <ErrorNote error={merges.error} /> : !mergeList ? <Loading rows={2} label="loading.merges" onRetry={() => void merges.refetch()} /> : (
               <DataTable
                 label={t("health.merges")}
                 columns={[

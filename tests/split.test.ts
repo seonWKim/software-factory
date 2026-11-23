@@ -71,6 +71,14 @@ describe("triage output: estimates and phases", () => {
     expect(parseTriage({ ...triageSpec, estimated_lines: 1275, estimated_files: 34 }, limits).ok).toBe(true);
     expect([MIN_PHASES, MAX_PHASES]).toEqual([2, 4]);
   });
+
+  it("without both caps (the triage branch, which waits at the size checkpoint instead) the estimate is not checked; phase counts still are", () => {
+    const big = { ...triageSpec, estimated_lines: 1400, estimated_files: 12 };
+    expect(parseTriage(big, { check_commands: [] }).ok).toBe(true);
+    expect(parseTriage(big, { max_diff_lines: limits.max_diff_lines }).ok).toBe(true);
+    expect(parseTriage({ ...big, phases: [phase(1)] }, { check_commands: [] }).ok).toBe(false);
+    expect(parseTriage({ ...big, phases: [1, 2, 3, 4, 5].map(phase) }, { check_commands: [] }).ok).toBe(false);
+  });
 });
 
 describe("split spec comment", () => {

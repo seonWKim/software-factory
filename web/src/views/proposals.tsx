@@ -185,7 +185,7 @@ export function ProposalsPage() {
   return (
     <div>
       <PageHeader title={t("page.proposals")} description={t("proposals.intro")} />
-      {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading /> : v.proposals.length === 0 ? (
+      {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading label="loading.proposals" onRetry={() => void q.refetch()} /> : v.proposals.length === 0 ? (
         <EmptyState title={t("proposals.empty")} description={t("proposals.emptyHelp")} />
       ) : (
         <>

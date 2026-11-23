@@ -27,7 +27,7 @@ const item = (extra: object = {}) => ({
   id: ID, source: { type: "local", id: "local-7c1e", link: "local:local-7c1e" }, title: "Tighten the Work rows",
   stage: "REVIEW", close_reason: null, blocked_on: "human", blocked_reason: "merge_pending", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0,
   change_ref: null, change_url: null, spec_comment_url: null, parent_id: null, phase: null, phases: [], version: 3, created_at: AT, updated_at: AT,
-  item_phase: "merge_pending", merge: { enabled: true, reason: null },
+  item_phase: "merge_pending", merge: { enabled: true, reason: null }, has_changes: true,
   why: { code: "merge", reason_code: "person", params: { reason: "Ready to merge" }, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null },
   ...extra,
 });
@@ -53,6 +53,7 @@ beforeEach(() => {
     }
     const bodies: Record<string, unknown> = {
       [`/api/v1/items/${ID}`]: body,
+      [`/api/v1/items/${ID}/changes`]: { as_of: AT, head_sha: "a".repeat(40), base_sha: "b".repeat(40), files: [] },
       "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
       "/api/v1/overview": { as_of: AT, stages: {}, needs_you: 1, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 } },
     };

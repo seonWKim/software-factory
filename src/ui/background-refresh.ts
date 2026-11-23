@@ -1,118 +1,72 @@
-// A per-process snapshot of a slow read (the Health checks, the Plugins discovery): the UI routes answer from the
-// last result and its as-of time at once, and a refresh runs beside them (design 09-health, 09-dashboard-settings,
-// 2026-11-19). In-process on purpose: it is a cache of a read-only probe for this process's own page, never state
-// another worker needs.
+// A per-process stored result of a slow read (the Health checks, the Plugins listing): the UI routes answer from it
+// at once and never wait for a refresh (design 09-health, 09-dashboard-settings, 2026-11-19, wi_926cad13). In-process
+// on purpose: it is a cache of a read-only probe for this process's own page, never state another worker needs.
 //
-// The first read waits for the first refresh only. After that a read never waits: it returns the last result. While
-// started, a refresh runs every `interval_ms` if a read of any snapshot sharing its `Activity` happened in the last
-// `IDLE_MS`; the first read after that idle window returns the last result and starts a refresh of every started
-// snapshot that shares it. A refresh that throws keeps the last good result and
-// its time; with no good result yet, the first read gets the error.
+// A read returns the stored result and its as-of time, or `pending` before the first refresh ends. It starts a
+// refresh only when the stored result is older than `interval_ms` (or there is none) or `markStale()` was called;
+// there is no timer, so with no reads and no writes nothing runs. One refresh at a time per snapshot. A refresh that
+// throws keeps the last good result and its time; with none, reads answer `failed` until the next refresh is due.
 
 /** The part of a Clock the snapshot uses (structural, so any Clock fits). */
 interface Clock {
   now(): Date;
-  sleep(ms: number, signal?: AbortSignal): Promise<void>;
 }
 
-/** No refresh runs unless a read happened within this time: an idle owner's page costs no remote call. */
-export const IDLE_MS = 10 * 60_000;
-
-/**
- * When the page was last read, shared by the snapshots of one UI server: a read of either route keeps both refreshing.
- * The read that ends an idle window wakes every started snapshot that shares it.
- */
-export class Activity {
-  private last_read: number | null = null;
-  private readonly wakers = new Set<() => void>();
-
-  constructor(
-    private readonly clock: Pick<Clock, "now">,
-    private readonly idle_ms = IDLE_MS,
-  ) {}
-
-  /** A read happened within the idle window. */
-  inUse(): boolean {
-    return this.last_read !== null && this.clock.now().getTime() - this.last_read < this.idle_ms;
-  }
-
-  /** Records a read. When it ends an idle window, wakes every subscriber and returns true. */
-  touch(): boolean {
-    const woke = !this.inUse();
-    this.last_read = this.clock.now().getTime();
-    if (woke) for (const w of this.wakers) w();
-    return woke;
-  }
-
-  /** Calls `wake` on each read that ends an idle window; returns the unsubscribe. */
-  onWake(wake: () => void): () => void {
-    this.wakers.add(wake);
-    return () => this.wakers.delete(wake);
-  }
-}
-
-export interface Snapshot<T> {
-  value: T;
-  /** When the refresh that produced `value` finished. */
-  as_of: Date;
-}
+/** What a read answers. `refreshing`: a refresh is running, so a newer result is on its way. */
+export type StoredRead<T> =
+  | { state: "ready"; value: T; /** When the refresh that produced `value` finished. */ as_of: Date; refreshing: boolean }
+  | { state: "pending" }
+  | { state: "failed"; error: unknown; /** When the failed refresh finished. */ at: Date };
 
 export class BackgroundSnapshot<T> {
-  private last: Snapshot<T> | null = null;
-  private inflight: Promise<Snapshot<T>> | null = null;
-  private loop: { abort: AbortController; unsubscribe: () => void } | null = null;
+  private last: { value: T; as_of: Date } | null = null;
+  /** The last refresh's failure, cleared by a success. */
+  private error: { error: unknown; at: Date } | null = null;
+  private inflight: Promise<void> | null = null;
+  private stale = false;
 
   constructor(
     private readonly refresh: () => Promise<T>,
     private readonly clock: Clock,
     private readonly interval_ms: number,
-    private readonly activity = new Activity(clock),
   ) {}
 
-  /** One refresh at a time: a caller during a run shares it. A failure leaves the last good result. */
-  private run(): Promise<Snapshot<T>> {
-    this.inflight ??= this.refresh()
-      .then((value) => (this.last = { value, as_of: this.clock.now() }))
+  /** Older than the interval, never refreshed, or marked stale. Measured from the last refresh's end, good or failed. */
+  private due(): boolean {
+    if (this.stale) return true;
+    const ended = Math.max(this.last?.as_of.getTime() ?? -Infinity, this.error?.at.getTime() ?? -Infinity);
+    return this.clock.now().getTime() - ended >= this.interval_ms;
+  }
+
+  /** Starts a refresh nobody waits for; while one runs, does nothing (single flight). A failure keeps the last result. */
+  refreshInBackground(): void {
+    if (this.inflight) return;
+    this.stale = false;
+    this.inflight = this.refresh()
+      .then(
+        (value) => {
+          this.last = { value, as_of: this.clock.now() };
+          this.error = null;
+        },
+        (error: unknown) => {
+          this.error = { error, at: this.clock.now() };
+        },
+      )
       .finally(() => {
         this.inflight = null;
       });
-    return this.inflight;
   }
 
-  /** Starts a refresh nobody waits for. */
-  refreshInBackground(): void {
-    this.run().catch(() => undefined);
+  /** The next read starts a refresh (after a write). A write during a running refresh makes one more run after it. */
+  markStale(): void {
+    this.stale = true;
   }
 
-  /** The last result; only the first read (no result yet) waits for a refresh, and gets its error if it fails. */
-  async read(): Promise<Snapshot<T>> {
-    const woke = this.activity.touch();
-    if (this.last === null) return this.run();
-    if (woke) this.refreshInBackground();
-    return this.last;
-  }
-
-  /** Starts the interval and the wake on the first read after idle; a second start does nothing. */
-  start(): void {
-    if (this.loop) return;
-    const abort = new AbortController();
-    this.loop = { abort, unsubscribe: this.activity.onWake(() => this.refreshInBackground()) };
-    void (async () => {
-      while (!abort.signal.aborted) {
-        try {
-          await this.clock.sleep(this.interval_ms, abort.signal);
-        } catch {
-          return;
-        }
-        if (this.activity.inUse()) this.refreshInBackground();
-      }
-    })();
-  }
-
-  /** Stops the interval and the wake. A refresh already running finishes; none starts from the timer. */
-  stop(): void {
-    this.loop?.abort.abort();
-    this.loop?.unsubscribe();
-    this.loop = null;
+  /** The stored result at once; starts a refresh when it is due. Never waits and never throws. */
+  read(): StoredRead<T> {
+    if (!this.inflight && this.due()) this.refreshInBackground();
+    if (this.last) return { state: "ready", value: this.last.value, as_of: this.last.as_of, refreshing: this.inflight !== null || this.stale };
+    if (this.inflight || !this.error) return { state: "pending" };
+    return { state: "failed", error: this.error.error, at: this.error.at };
   }
 }

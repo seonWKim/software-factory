@@ -65,7 +65,7 @@ export interface SkillEvalOutcome {
 }
 
 /** A case's rubric checks: `expected` as a list of check texts, or `{ checks: [...] }`; null when it is neither. */
-function rubricChecks(expected: unknown): string[] | null {
+export function rubricChecks(expected: unknown): string[] | null {
   const list = Array.isArray(expected) ? expected : typeof expected === "object" && expected !== null ? (expected as { checks?: unknown }).checks : null;
   if (!Array.isArray(list) || list.length === 0 || !list.every((c) => typeof c === "string" && c.trim() !== "")) return null;
   return list as string[];
@@ -84,7 +84,7 @@ function runStatus(verdicts: readonly string[]): RunStatus {
 }
 
 /** Replays and judges one case; never throws for the replay's or the judge's fault. */
-async function judgeCase(d: SkillEvalEngineDeps, run_id: string, c: { id: string; input: unknown; expected: unknown }, signal: AbortSignal): Promise<{ verdict: CaseVerdict; detail: unknown }> {
+export async function judgeCase(d: Omit<SkillEvalEngineDeps, "store">, run_id: string, c: { id: string; input: unknown; expected: unknown }, signal: AbortSignal): Promise<{ verdict: CaseVerdict; detail: unknown }> {
   const checks = rubricChecks(c.expected);
   if (!checks) return { verdict: "errored", detail: { error: "no_rubric" } };
   const input = caseInput(c.input);

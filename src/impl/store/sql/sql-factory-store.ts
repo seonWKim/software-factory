@@ -1776,11 +1776,7 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
   async recordMergeCheck(c: NewMergeCheck): Promise<MergeCheck> {
     const checked_at = this.now();
     const values: SqlValue[] = [c.mergeable ? 1 : 0, JSON.stringify(c.conflicts), c.head_sha, c.base_sha, checked_at];
-    const update = () =>
-      this.db.run(
-        "UPDATE controller_merge_checks SET mergeable = ?, conflicts = ?, head_sha = ?, base_sha = ?, checked_at = ? WHERE work_item_id = ?",
-        [...values, c.work_item_id],
-      );
+    const update = () => this.db.run("UPDATE controller_merge_checks SET mergeable = ?, conflicts = ?, head_sha = ?, base_sha = ?, checked_at = ? WHERE work_item_id = ?", [...values, c.work_item_id]);
     // Keyed by work_item_id: update the row, else insert it; a concurrent first insert that loses updates instead.
     if ((await update()) === 0) {
       const sql = "INSERT INTO controller_merge_checks (mergeable, conflicts, head_sha, base_sha, checked_at, work_item_id) VALUES (?, ?, ?, ?, ?, ?)";
@@ -1794,6 +1790,9 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
     return row ? rowToMergeCheck(row) : null;
   }
 
+  async clearMergeCheck(work_item_id: WorkItemId): Promise<boolean> {
+    return (await this.db.run("DELETE FROM controller_merge_checks WHERE work_item_id = ?", [work_item_id])) > 0;
+  }
   async listMergeChecks(work_item_ids: readonly WorkItemId[]): Promise<MergeCheck[]> {
     if (work_item_ids.length === 0) return [];
     const rows = await this.db.all(`SELECT * FROM controller_merge_checks WHERE work_item_id IN (${placeholders(work_item_ids.length)})`, [...work_item_ids]);

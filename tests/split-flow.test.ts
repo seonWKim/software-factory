@@ -188,13 +188,29 @@ describe("split spec flow", () => {
     expect((await f.runsOf(item)).map((r) => r.kind)).toEqual(["triage", "implement"]);
   });
 
-  it("a large estimate without phases is invalid output and is retried, not shown", async () => {
+  it("a large estimate without phases waits at the spec gate with its size checkpoint note", async () => {
     const f = await setup();
     const item = await f.intake(72);
-    await f.finish("triage", f.triaged({ ...smallSpec, estimated_lines: 1400 }));
-    expect(f.source.comments.some((c) => c.marker.startsWith("<!-- factory:spec:"))).toBe(false);
-    const changes = await f.store.listStateChanges(item.id);
-    expect(changes.at(-1)).toMatchObject({ reason: "run_retry_scheduled", detail: { error_code: "invalid_output" } });
+    await f.finish("triage", f.triaged({ ...smallSpec, tier: 1, estimated_lines: 1400 }));
+    // Tier 1 would be approved without a person; over the threshold it waits for /approve instead.
+    expect(await f.get(item)).toMatchObject({ stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
+    const spec = f.source.comments.find((c) => c.marker.startsWith("<!-- factory:spec:"))!;
+    expect(spec.body).toContain("at the size checkpoint");
+    expect(spec.body).toContain("1400 lines");
+    expect(spec.body.indexOf("at the size checkpoint")).toBeLessThan(spec.body.indexOf("Commands you can reply with now:"));
+    await f.approve(issueRef(72));
+    expect(await f.get(item)).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
+    expect(f.source.subIssues).toEqual([]);
+  });
+
+  it("1 phase or more than 4 is still invalid output and is retried, not shown", async () => {
+    for (const [n, phases] of [[75, 1], [76, 5]] as const) {
+      const f = await setup();
+      const item = await f.intake(n);
+      await f.finish("triage", f.triaged(bigSpec(phases)));
+      expect(f.source.comments.some((c) => c.marker.startsWith("<!-- factory:spec:"))).toBe(false);
+      expect((await f.store.listStateChanges(item.id)).at(-1)).toMatchObject({ reason: "run_retry_scheduled", detail: { error_code: "invalid_output" } });
+    }
   });
 
   it("phase N+1 is filed only after phase N's delivery; a failed filing is outbound's retry and files each phase once", async () => {
@@ -572,73 +588,6 @@ describe("split spec flow", () => {
     await store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "s", data: { spec: bigSpec(2) } });
     await controller.tickRuns();
     expect(await store.getWorkItemBySource("github_issue", issueRef(76).id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
-  });
-});
-
-describe("phases_auto_approve: the parent's /approve covers its phases", () => {
-  /** A split parent approved: its phases filed, phase 1 queued for triage. */
-  async function approvedSplit(f: Awaited<ReturnType<typeof setup>>, n: number) {
-    const parent = await f.intake(n);
-    await f.finish("triage", f.triaged(bigSpec(2)));
-    await f.approve(issueRef(n));
-    const [p1, p2] = await Promise.all(f.source.subIssues.map((s) => f.bySource(s.ref)));
-    return { parent, p1: p1!, p2: p2! };
-  }
-
-  it("off (the default): each phase's spec waits for its own /approve", async () => {
-    const f = await setup();
-    const { p1 } = await approvedSplit(f, 80);
-    expect(f.source.comments.find((c) => c.body.includes("filed 2 phases"))!.body).toContain("its own `/approve`");
-    await f.finish("triage", f.triaged(smallSpec));
-    expect(await f.get(p1)).toMatchObject({ stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
-  });
-
-  it("on: a phase's spec goes straight to implement, says why in its spec comment, and the next phase does too", async () => {
-    const f = await setup({ ...config, phases_auto_approve: true });
-    const { parent, p1, p2 } = await approvedSplit(f, 81);
-    expect(f.source.comments.find((c) => c.body.includes("filed 2 phases"))!.body).toContain("approved by this `/approve`");
-    await f.finish("triage", f.triaged(smallSpec));
-    expect(await f.get(p1)).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
-    expect((await f.runsOf(p1)).map((r) => r.kind)).toEqual(["triage", "implement"]);
-    const change = (await f.store.listStateChanges(p1.id)).at(-1)!;
-    expect(change).toMatchObject({ reason: "triaged_phase_approved", detail: { parent_work_item_id: parent.id } });
-    const spec = f.source.comments.filter((c) => c.source.id === f.source.subIssues[0]!.ref.id && c.marker.startsWith("<!-- factory:spec:")).at(-1)!;
-    expect(spec.body).toContain("The owner approved the split on the parent issue (`phases_auto_approve`)");
-
-    await f.closeSource(f.source.subIssues[0]!.ref, "completed");
-    await f.finish("triage", f.triaged(smallSpec));
-    expect(await f.get(p2)).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
-  });
-
-  it("turned on live (settings set): a phase spec already waiting is approved on the next phase tick, once", async () => {
-    const f = await setup();
-    const { p1 } = await approvedSplit(f, 82);
-    await f.finish("triage", f.triaged(smallSpec));
-    expect(await f.get(p1)).toMatchObject({ blocked_reason: "spec_pending" });
-
-    await f.set("phases_auto_approve", true);
-    await f.controller.tickPhases();
-    expect(await f.get(p1)).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
-    expect((await f.store.listStateChanges(p1.id)).at(-1)).toMatchObject({ reason: "phase_spec_auto_approved" });
-    const v = (await f.get(p1)).version;
-    await f.controller.tickPhases();
-    expect((await f.get(p1)).version).toBe(v);
-    expect((await f.runsOf(p1)).filter((r) => r.kind === "implement")).toHaveLength(1);
-  });
-
-  it("an item that is not a phase, and a phase whose own spec is a split, still wait for a human", async () => {
-    const f = await setup({ ...config, phases_auto_approve: true });
-    const lone = await f.intake(83);
-    await f.finish("triage", f.triaged(smallSpec));
-    expect(await f.get(lone)).toMatchObject({ blocked_reason: "spec_pending" });
-    await f.controller.tickPhases();
-    expect(await f.get(lone)).toMatchObject({ blocked_reason: "spec_pending" });
-
-    const { p1 } = await approvedSplit(f, 84);
-    await f.finish("triage", f.triaged(bigSpec(2)));
-    expect(await f.get(p1)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
-    await f.controller.tickPhases();
-    expect(await f.get(p1)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
   });
 });
 
