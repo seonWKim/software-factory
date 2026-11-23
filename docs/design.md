@@ -63,15 +63,16 @@ for a new topic. "§5" means `05-*`.
 - [07-design-learnings.md](design/07-design-learnings.md): UI corrections.
 
 ## 8. Operations
-- [08-plugins.md](design/08-plugins.md): plugins, the registry, secret names.
-- [08-self-update.md](design/08-self-update.md): base-branch copy, start-then-drain update.
-- [08-settings.md](design/08-settings.md): layered settings that only tighten gates.
+- [08-plugins.md](design/08-plugins.md): plugins, registry, secret names.
+- [08-self-update.md](design/08-self-update.md): base-branch copy, drain update.
+- [08-settings.md](design/08-settings.md): layered settings, tighten only.
 - [08-settings-page.md](design/08-settings-page.md): Settings page, file-only keys.
-- [08-permissions.md](design/08-permissions.md): owner check (`OwnerAuth`), identity, size limits.
-- [08-enterprise.md](design/08-enterprise.md): one owner, many workers, local first, audit.
+- [08-permissions.md](design/08-permissions.md): `OwnerAuth`, identity, size limits.
+- [08-enterprise.md](design/08-enterprise.md): one owner, many workers, local first.
 - [08-teardown.md](design/08-teardown.md): `factory teardown`.
-- [08-retention.md](design/08-retention.md): daily retention pass and its periods.
-- [08-schedules.md](design/08-schedules.md): schedules, their runs.
+- [08-retention.md](design/08-retention.md): daily retention pass.
+- [08-cleanup.md](design/08-cleanup.md): closed items' leftovers.
+- [08-schedules.md](design/08-schedules.md): schedules and runs.
 
 ## 9. Status page
 - [09-status-page.md](design/09-status-page.md): read-only status page.
