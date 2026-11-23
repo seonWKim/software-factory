@@ -7,6 +7,4 @@
   - **Compare.** "Compare two runs": two `Select`s (First run, Second run) and one `DataTable` with the run date, model class and pass rate of both, then the gap (second minus first, in points), the noise band and whether the gap is within noise (Yes or No). Without two pass rates the table says "Not enough replays to say". The pickers list the runs that have a pass rate, as "date, model class, pass rate"; the run ID is only the option's value. It starts on the two newest runs with a pass rate, the older as First run. With fewer than two such runs the card says so and shows no picker.
   - **Plain words.** The page shows the skill's name, run dates, model classes and pass rates. No run, suite or skill ID, hash or snake_case name appears in its text; its text is in `web/src/i18n/en/evals.ts`.
 
-## History
-
-- Replaced decisions of this topic: none yet; `history/09-dashboard-evals.md` is created with the first one.
+- Replaced decisions of this topic: [history/09-dashboard-evals.md](history/09-dashboard-evals.md).

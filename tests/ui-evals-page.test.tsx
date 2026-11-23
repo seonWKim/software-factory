@@ -3,14 +3,17 @@
 /// <reference lib="dom.iterable" />
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { createElement } from "react";
+import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EvalComparison, EvalRun, EvalRunSummary } from "../web/src/api/evals.js";
 import { BASE, evalsRoute, routeFor } from "../web/src/pages.js";
-import { EvalsPage, skillName } from "../web/src/views/evals.js";
 
 // The evals page at evals/<skill> (design 09-dashboard-evals): Trend, Grid and Compare in that order, "no run" in an
 // empty grid cell, plain words only (no run, suite or skill ID), no control that starts a run. The reads are a fake fetch.
+
+// A variable path keeps the view's JSX out of the test type check, as the Efficiency page test does.
+const VIEW_MODULE = "../web/src/views/evals.js";
+const { EvalsPage, skillName } = (await import(/* @vite-ignore */ VIEW_MODULE)) as { EvalsPage: FunctionComponent<{ skill: string }>; skillName(ref: string): string };
 
 const SLOW = { timeout: 5_000 };
 const SKILL = "skills/review-plan/SKILL.md";
