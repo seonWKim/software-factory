@@ -167,6 +167,7 @@ export const settings = {
   "settings.turnOnTitle": "Turn on {name}?",
   "settings.turnOnConsequence": "It applies with no restart. Turn it off again with its switch.",
   "settings.turnOn": "Turn on",
+  "settings.evalSourceTurnOn": "Test cases are imported from {plugin}: the eval cases kept in your agents home. Import and Try on the Plugins page's Evals card use it.",
   "settings.integrationLabel": "Integration: {name}",
   "settings.integrationOff": "off",
   "settings.integrationFromDashboard": "set from the dashboard",
