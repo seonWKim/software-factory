@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1422,6 +1422,11 @@ describe("updater: git-worktree cleanup", () => {
     mkdirSync(a.world.path(V("c0")), { recursive: true });
     writeFileSync(a.world.path(`${V("c0")}/${PID_FILE}`), "99\n");
     expect(a.world.versions()).toEqual(["c0", "c1", "c2"]);
+    // b did not build c1 or c2, so it orders them by their build markers' mtime. The two fake builds ran
+    // microseconds apart, and a coarse-clock file system (ext4 on CI) gives both the same mtime: date c1 earlier.
+    const marker = (rev: string) => a.world.path(`${V(rev)}/dist/.factory-built-rev`);
+    const c1Built = new Date(statSync(marker("c2")).mtimeMs - 60_000);
+    utimesSync(marker("c1"), c1Built, c1Built);
 
     const b = restart(a);
     a.world.events = [];
@@ -1440,15 +1445,9 @@ describe("updater: git-worktree cleanup", () => {
     await settle();
     await b.updater.poll();
     expect(a.world.versions()).toContain("c1");
-    a.launcher.children[0]!.exit(0);
-    // The sweep's fs calls finish on the thread pool, not the immediate queue: poll until the outcome holds.
-    await vi.waitFor(
-      async () => {
-        await b.updater.poll();
-        expect(a.world.versions()).toEqual(["c2", "c3"]);
-      },
-      { timeout: 5000, interval: 20 },
-    );
+    a.launcher.children[0]!.exit(0); // pidAlive reads world.alive, which exit() clears at once
+    await b.updater.poll();
+    expect(a.world.versions()).toEqual(["c2", "c3"]); // c3: claiming; c2: the newest other build; c1: its pid is gone
   });
 
   it("removal through a real git repository: git worktree list has no entry, and the linked install survives", async () => {
