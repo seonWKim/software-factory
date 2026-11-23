@@ -9,7 +9,8 @@
 // a proposal applies it (2026-11-18; evolve has no apply subcommand): the proposal's current lines, read from `evolve
 // show`, are replaced with its proposed lines in its target file only when they occur there exactly once, then
 // `evolve verdict <id> promote --reason <r> --applied-to <target>` runs (the file is put back if it fails); a proposal
-// whose change is prose (`evolve show`'s JSON, 2026-11-22) runs only that verdict and writes no file. Factory
+// whose change is prose (`evolve show`'s JSON, 2026-11-22) runs only that verdict and writes no file (the Rules page
+// then creates a task to build it, 2026-11-20). Factory
 // processes only: an agent run never gets it. An edit of an applied class (2026-11-22) rewrites its block's heading,
 // default and exception lines in the rules file and runs `sync-agents`, with no verdict. The Pushbacks list reads
 // `tacit show --active --unclustered` and Dismiss runs `tacit status <T-id> noise`: both forms are assumed until the
@@ -20,7 +21,7 @@ import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import {
   type TacitApplied, type TacitDecision, type TacitDraft, type TacitEntryDetail, type TacitLedger, type TacitPendingEntry, type TacitPromotion,
-  type TacitOpenPushback, type TacitPushback, type TacitRetired, type TacitRule, TacitRefusal, TacitSyncFailed, tacitIdKind,
+  type TacitOpenPushback, type TacitPushback, type TacitRetired, type TacitRule, TacitRefusal, TacitSyncFailed, isProse, tacitIdKind,
 } from "../../interfaces/tacit-ledger.js";
 import { SystemClock } from "../clock/system-clock.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
@@ -146,10 +147,10 @@ export class AgentsHomeTacitLedger implements TacitLedger {
 
   /**
    * Promote of a proposal. Checks first, with nothing written and no verdict sent on a refusal: `evolve show <id>`
-   * reads and gives a target. A proposal with neither current nor proposed lines (its change is prose, the owner
-   * applied it) then runs only `evolve verdict <id> promote --reason <r> --applied-to <target>`, writing no file.
-   * Otherwise it must give both; the target is a relative path with no `..` segment whose resolved path is a file
-   * inside the resolved home; the current lines occur there exactly once. Then they are replaced with the proposed
+   * reads and gives a target, a relative path with no `..` segment. A proposal with neither current nor proposed lines
+   * (its change is prose; the Rules page creates a task to build it) then runs only `evolve verdict <id> promote
+   * --reason <r> --applied-to <target>`, writing no file and not checking that the target exists. Otherwise it must give
+   * both; the target's resolved path is a file inside the resolved home; the current lines occur there exactly once. Then they are replaced with the proposed
    * lines and the same verdict runs; a failure (a non-zero exit or the timeout) puts the file back byte for byte and
    * throws the CLI's error.
    */
@@ -163,15 +164,15 @@ export class AgentsHomeTacitLedger implements TacitLedger {
     const d = parseShow(id, shown);
     const verdict = ["verdict", id, "promote", "--reason", reason, "--applied-to"];
     if (d?.target === undefined) throw new TacitRefusal(`${id} (evolve show) has no target line: nothing written`);
-    if (d.current === undefined && d.proposed === undefined) {
+    const pathError = relativePathError(d.target);
+    if (pathError !== null) throw new TacitRefusal(`the target of ${id}, ${d.target}, ${pathError}: nothing written`);
+    if (isProse(d)) {
       await this.run("evolve", [...verdict, d.target]);
       return;
     }
     const part = (["current", "proposed"] as const).find((k) => d[k] === undefined);
     if (part !== undefined) throw new TacitRefusal(`${id} (evolve show) has no ${part} line: nothing written`);
     const { target, current, proposed } = d as Required<Pick<TacitEntryDetail, "target" | "current" | "proposed">>;
-    const pathError = relativePathError(target);
-    if (pathError !== null) throw new TacitRefusal(`the target of ${id}, ${target}, ${pathError}: nothing written`);
     const file = this.homeFile(target);
     const before = readFileSync(file);
     const text = before.toString("utf8");
@@ -328,6 +329,15 @@ export class AgentsHomeTacitLedger implements TacitLedger {
       .filter((v) => v.decision === "retire")
       .sort((a, b) => b.ts - a.ts)
       .map((v) => ({ id: v.class, reason: v.reason, date: v.date }));
+  }
+
+  /** The decision of each of `ids`' newest ledger verdict; an ID with none is left out. Reads only. */
+  async decided(ids: readonly string[]): Promise<Readonly<Record<string, string>>> {
+    const newest = newestVerdicts(this.verdicts());
+    return Object.fromEntries(ids.flatMap((id) => {
+      const v = newest.get(id);
+      return v === undefined ? [] : [[id, v.decision]];
+    }));
   }
 
   /** The ledger's verdict records (`type: "verdict"` with a class, a decision and a `ts`), in file order; no file: none. */
