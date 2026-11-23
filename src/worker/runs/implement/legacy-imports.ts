@@ -13,6 +13,6 @@ export { mergeAppendedConflicts } from "../../../core/mechanical.js";
 export { type ConflictFile, renderResolvePrompt } from "../../../core/resolve.js";
 export { errorText } from "../../../core/log.js";
 export type { Run, RunResume, WipRef, WorkItem } from "../../../core/types.js";
-export type { AgentRunSpec, GateHooks, PackRefusal } from "../../../interfaces/agent-runner.js";
+export type { AgentRunSpec, GateHooks, PackRefusal, StopSelection } from "../../../interfaces/agent-runner.js";
 export type { SandboxHandle } from "../../../interfaces/sandbox.js";
 export { PREFLIGHT, type ToolCallContext } from "../../../interfaces/tool-broker.js";

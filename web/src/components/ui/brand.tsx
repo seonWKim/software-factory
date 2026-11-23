@@ -32,9 +32,9 @@ export function BrandMark({ className }: { className?: string }) {
 /** The mark and the wordmark; below sm (the narrow sidebar) only the mark shows. */
 export function Brand() {
   return (
-    <p className="mb-4 flex items-center gap-2 px-2 text-sm font-semibold max-sm:justify-center max-sm:px-0">
+    <p className="mb-4 flex items-center gap-2 px-2 text-sm font-semibold max-lg:justify-center max-lg:px-0">
       <BrandMark className="size-6 shrink-0" />
-      <span className="max-sm:sr-only">{t("app.name")}</span>
+      <span className="max-lg:sr-only">{t("app.name")}</span>
     </p>
   );
 }

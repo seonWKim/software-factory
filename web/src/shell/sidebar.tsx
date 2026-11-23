@@ -24,8 +24,8 @@ export function SideLinks({ label, pages, current, badges = {} }: { label: strin
               className={cn(LINK_ROW, "relative rounded-control hover:bg-surface-2", p === current && "bg-sidebar-active font-medium before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-nav-active")}
             >
               <p.icon aria-hidden className="size-4 shrink-0" />
-              <span className="max-sm:sr-only">{pageLabel(p)}</span>
-              {!!badges[p.path] && <span role="img" aria-label={t("nav.needYou", { count: badges[p.path]! })} className="ml-auto rounded-pill bg-pill-bad-bg px-1.5 text-xs font-medium text-pill-bad-fg tabular-nums max-sm:sr-only">{badges[p.path]}</span>}
+              <span className="max-lg:sr-only">{pageLabel(p)}</span>
+              {!!badges[p.path] && <span role="img" aria-label={t("nav.needYou", { count: badges[p.path]! })} className="ml-auto rounded-pill bg-pill-bad-bg px-1.5 text-xs font-medium text-pill-bad-fg tabular-nums max-lg:sr-only">{badges[p.path]}</span>}
             </Link>
           </li>
         ))}

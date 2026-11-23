@@ -135,11 +135,13 @@ force.
   and checked by the ToolBroker on every call. The controller decides a command under its passport (Identity checks
   it, the origin's auth plugin decides the role) and auto mode under its service passport; every decision is
   written to `authz_audit`.
-- **The merge queue** (decision changed 2026-11-16, a merged result that fails its checks is sent back to implement;
-  before that 2026-11-09, the landing is an outbound delivery; see History). A red check for failing checks names
+- **The merge queue** (decision changed 2026-11-23, a failed suite counts in `failing_tests`; before that 2026-11-16, a
+  merged result that fails its checks is sent back to implement; before that 2026-11-09, the landing is an outbound
+  delivery; see History). A red check for failing checks names
   what broke and sends the item back: the `merge-check` run's red result (`why: checks`) holds the failing command,
-  its exit text, the failing tests by name (`failing_tests`, `file > name`, at most 10, parsed as the implement run's
-  `checks_failed` does) and the output tail (`output_tail`, at most 2000 characters, through the egress scan first; a
+  its exit text, the failing tests by name (`failing_tests`, `file > name`, and each failed suite, a file vitest fails
+  before its tests run, as `file > (suite failed): <first error line>`, in output order, at most 10 in total, parsed
+  as the implement run's `checks_failed` does; the rerun's file list still reads failed tests only) and the output tail (`output_tail`, at most 2000 characters, through the egress scan first; a
   flagged tail is withheld whole as null, the names are kept). The queue removes the entry with a reason naming the
   failing tests (with none, the command and its exit text) and sends the item back to an implement run as a loop
   (`merge_check_failed`: stage RUNNING, loop_count + 1, one implement run keyed by the new loop), whose prompt lists

@@ -21,17 +21,18 @@ export async function getFiledPattern(db: SqlDriver, project: string, pattern_ke
 export async function takeFiledPattern(
   db: SqlDriver, insertOnce: (sql: string, params: SqlValue[]) => Promise<boolean>, input: NewFiledPattern, now: Timestamp, from: TakeFrom,
 ): Promise<{ row: FiledPattern; taken: boolean }> {
+  const evidence = input.evidence ?? null;
   let taken = await insertOnce(
-    `INSERT INTO controller_filed_patterns (id, project_key, pattern_key, error_code, detail, report_id, filed_ref, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
-    [newId("fp"), input.project, input.pattern_key, input.error_code, input.detail, input.report_id, now],
+    `INSERT INTO controller_filed_patterns (id, project_key, pattern_key, error_code, detail, report_id, filed_ref, created_at, evidence)
+     VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+    [newId("fp"), input.project, input.pattern_key, input.error_code, input.detail, input.report_id, now, evidence],
   );
   const where = "WHERE project_key = ? AND pattern_key = ? AND report_id = ?";
   const at = [input.project, input.pattern_key];
   if (from && "replace" in from && from.replace !== input.report_id) {
     taken = (await db.run(
-      `UPDATE controller_filed_patterns SET report_id = ?, filed_ref = NULL, error_code = ?, detail = ?, created_at = ?, outcome = NULL, outcome_at = NULL ${where}`,
-      [input.report_id, input.error_code, input.detail, now, ...at, from.replace],
+      `UPDATE controller_filed_patterns SET report_id = ?, filed_ref = NULL, error_code = ?, detail = ?, created_at = ?, outcome = NULL, outcome_at = NULL, evidence = ? ${where}`,
+      [input.report_id, input.error_code, input.detail, now, evidence, ...at, from.replace],
     )) === 1 || taken;
   } else if (from && "restart" in from) {
     // A half-done claim taken up again keeps its report (and so its marker); its claim time starts the wait again.
@@ -54,6 +55,11 @@ export async function getOpenWorkItemByTitle(db: SqlDriver, project: string, tit
 
 export async function setFiledPatternRef(db: SqlDriver, id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void> {
   await db.run("UPDATE controller_filed_patterns SET filed_ref = ? WHERE id = ? AND report_id = ?", [JSON.stringify(ref), id, report_id]);
+}
+
+export async function listFiledPatternsSince(db: SqlDriver, since: Timestamp): Promise<FiledPattern[]> {
+  const rows = await db.all("SELECT * FROM controller_filed_patterns WHERE filed_ref IS NOT NULL AND created_at >= ? ORDER BY created_at, id", [since]);
+  return rows.map(rowToFiledPattern);
 }
 
 export async function listFiledPatternsWithoutOutcome(db: SqlDriver, project: string): Promise<FiledPattern[]> {
@@ -81,5 +87,6 @@ function rowToFiledPattern(row: Row): FiledPattern {
     created_at: row.created_at as Timestamp,
     outcome: (row.outcome ?? null) as FiledPattern["outcome"],
     outcome_at: (row.outcome_at ?? null) as Timestamp | null,
+    evidence: row.evidence === null || row.evidence === undefined ? null : Number(row.evidence),
   };
 }

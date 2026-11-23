@@ -1,5 +1,10 @@
 ## History
 
+- **No audit row for a rule write** (decision changed 2026-11-22, wi_5c1c03d0, the add, pause, edit and remove
+  decision at the top of 05-standing-approvals.md). Before: each write from the page or `/standing` was the rule row
+  (`set_by` = the factory user ID) and one log line, with no audit row; a stored per-person audit record was named a
+  follow-up. The page could only turn the rule on or off: no path removed its row, and the threshold changed only
+  through `factory settings set` or the Settings page.
 - **Last fired replaces last used** (decision changed 2026-11-21, wi_1cf90455). Before: each rule showed "last
   used", always null and shown as "not recorded". After: `last_fired_at` and `recent` (items of the last 7 days) come
   from the stored `standing_approved` state changes.

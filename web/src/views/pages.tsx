@@ -190,7 +190,7 @@ export function ActivityPage() {
           <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
               [t("activity.succeeded"), String(o.last_24h.succeeded)],
-              [t("activity.failed"), String(o.last_24h.failed), `${BASE}failures?window=24h`],
+              [t("activity.failed"), String(o.last_24h.failed), `${BASE}health?tab=failures&window=24h`],
               [t("col.tokens"), tokens(o.last_24h.tokens)],
               [t("activity.openItems"), String(o.open)],
             ].map(([k, v, href]) => (
@@ -292,7 +292,7 @@ export function ItemsPage() {
   const allCount = !narrowed && !showClosed && items.data ? items.data.counts.open : local ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed, ids })).length : (items.data?.facets.allStates ?? "");
   return (
     <>
-      <PageHeader title={t("page.work")} />
+      <PageHeader title={t("page.work")} description={t("work.pageDescription")} />
       <PageToolbar
         tabs={
           <div className="flex min-w-0 flex-col gap-2">
@@ -707,7 +707,7 @@ function ProcessRow({ p, local, items, now }: { p: WorkerProcess; local: boolean
         <ul aria-label={t("runners.runsOf", { host: p.host, pid: p.pid })} className="mt-1 space-y-0.5 text-xs">
           {p.runs.map((r) => (
             <li key={r.id} className="flex flex-wrap gap-x-3">
-              <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{items.get(r.work_item_id)?.title || r.work_item_id}</Link>
+              <Link href={itemPath(r.work_item_id)} data-row-title className={LINK_CLASS}>{items.get(r.work_item_id)?.title || r.work_item_id}</Link>
               <span>{runKindLabel(r.kind)}</span>
               <WorkerName id={r.worker_id} />
               <span className="tabular-nums"><When at={r.started_at} now={now} /></span>
@@ -728,11 +728,11 @@ function workersLine(f: FactoryState): string {
   return f.workers === 1 ? t("runners.settingOne", { source }) : t("runners.setting", { count: f.workers, source });
 }
 
-export function RunnersPage() {
+/** Health's Runners tab (design 09-health): the worker processes and the effective worker setting. Running now is on Work only. */
+export function RunnersTab() {
   const now = useNow();
   const workers = useApi<WorkersView>(API.workers);
   const overview = useApi<Overview>(API.overview);
-  const runs = useApi<{ runs: RunRow[] }>(API.runs);
   const items = useApi<Items>(API.items);
   const map = useMemo(() => byId(items.data?.items), [items.data]);
   const f = overview.data?.factory;
@@ -740,32 +740,25 @@ export function RunnersPage() {
   // The factory's own host: the host of the process the supervisor runs (child_pid), where this server runs too.
   const thisHost = processes.find((p) => f?.child_pid != null && p.pid === f.child_pid)?.host;
   return (
-    <>
-      <PageHeader title={t("page.runners")} />
-      <div className="flex flex-col gap-6">
-        <FactoryBanner factory={f} now={now} />
-        <CodeRevision factory={f} />
-        {f && (
-          <p data-testid="effective-workers" className="text-sm tabular-nums">
-            {workersLine(f)}
-          </p>
+    <div className="flex flex-col gap-6">
+      <FactoryBanner factory={f} now={now} />
+      {f && (
+        <p data-testid="effective-workers" className="text-sm tabular-nums">
+          {workersLine(f)}
+        </p>
+      )}
+      <Card title={t("runners.processes")} count={workers.data?.processes ? processes.length : undefined}>
+        {workers.isError ? <ErrorNote error={workers.error} /> : !workers.data ? <Loading rows={2} /> : workers.data.processes_error ? (
+          <ErrorNote error={new Error(workers.data.processes_error)} />
+        ) : processes.length === 0 ? (
+          <EmptyState title={t("runners.none")} />
+        ) : (
+          <ul aria-label={t("runners.processes")} className="space-y-2">
+            {processes.map((p) => <ProcessRow key={p.process_id} p={p} local={p.host === thisHost} items={map} now={now} />)}
+          </ul>
         )}
-        <Card title={t("runners.processes")} count={workers.data?.processes ? processes.length : undefined}>
-          {workers.isError ? <ErrorNote error={workers.error} /> : !workers.data ? <Loading rows={2} /> : workers.data.processes_error ? (
-            <ErrorNote error={new Error(workers.data.processes_error)} />
-          ) : processes.length === 0 ? (
-            <EmptyState title={t("runners.none")} />
-          ) : (
-            <ul aria-label={t("runners.processes")} className="space-y-2">
-              {processes.map((p) => <ProcessRow key={p.process_id} p={p} local={p.host === thisHost} items={map} now={now} />)}
-            </ul>
-          )}
-        </Card>
-        <Card title={t("running.label")} count={runs.data?.runs.filter((r) => r.status === "running").length}>
-          {runs.data ? <RunningTable runs={runs.data.runs} items={map} now={now} /> : <Loading rows={2} />}
-        </Card>
-      </div>
-    </>
+      </Card>
+    </div>
   );
 }
 
@@ -793,7 +786,7 @@ function CheckList({ checks }: { checks: Health["checks"] }) {
   );
 }
 
-type HealthTab = "checks" | "pauses" | "sleeps" | "merges" | "efficiency" | "improve" | "github";
+type HealthTab = "checks" | "spend" | "failures" | "runners" | "sleeps" | "merges" | "pauses" | "efficiency" | "improve" | "github";
 
 
 
@@ -875,8 +868,8 @@ export function HealthPage() {
   const rules = useApi<RulesView>(API.rules);
   const viewer = useViewer();
   const held = (pauses.data?.pauses.length ?? 0) > 0;
-  const [picked, pick] = useUrlParam("tab", (v) => ["checks", "pauses", "sleeps", "merges", "efficiency", "improve", "github"].includes(v));
-  // The Failures window (`?window=`): a page control in the toolbar's second row, read by FailuresSection below every tab.
+  const [picked, pick] = useUrlParam("tab", (v) => ["checks", "spend", "failures", "runners", "sleeps", "merges", "pauses", "efficiency", "improve", "github"].includes(v));
+  // The Failures window (`?window=`): a page control in the toolbar's second row while the Failures tab is open.
   const [failuresWindow, setFailuresWindow] = useFailuresWindow();
   if (health.isError) return <><PageHeader title={t("page.health")} /><ErrorNote error={health.error} /></>;
   if (!health.data) return <><PageHeader title={t("page.health")} /><Loading rows={6} /></>;
@@ -893,9 +886,13 @@ export function HealthPage() {
   const improve = rules.data?.improve ?? null;
   const options: { id: HealthTab; label: string }[] = [
     { id: "checks", label: `${t("health.tabChecks")} (${checks.length})${failing ? ` ${t("health.failMark")}` : ""}` },
-    ...(held ? [{ id: "pauses" as const, label: `${t("pause.title")} (${pauses.data!.pauses.length})` }] : []),
+    { id: "spend", label: t("page.spend") },
+    { id: "failures", label: t("page.failures") },
+    { id: "runners", label: t("health.tabRunners") },
     { id: "sleeps", label: `${t("health.sleeps")} (${sleeps.length})` },
     { id: "merges", label: `${t("health.merges")}${mergeList ? ` (${mergeList.length})` : ""}` },
+    // Only while a worker is held.
+    ...(held ? [{ id: "pauses" as const, label: `${t("pause.title")} (${pauses.data!.pauses.length})` }] : []),
     { id: "efficiency", label: t("efficiency.title") },
     ...(improve ? [{ id: "improve" as const, label: t("health.tabImprove") }] : []),
     // Only while a GitHub budget is stored (GitHub selected and polled).
@@ -906,7 +903,7 @@ export function HealthPage() {
     <>
       <PageHeader title={t("page.health")} />
       <PageToolbar tabs={<Tabs label={t("health.tabs")} options={options} value={tab} onChange={pick} />}>
-        <FailuresWindowSwitch value={failuresWindow} onChange={setFailuresWindow} />
+        {tab === "failures" && <FailuresWindowSwitch value={failuresWindow} onChange={setFailuresWindow} />}
       </PageToolbar>
       <CodeRevision factory={overview.data?.factory} />
       {tab === "checks" && (
@@ -919,6 +916,9 @@ export function HealthPage() {
           )}
         </Card>
       )}
+      {tab === "spend" && <SpendSection />}
+      {tab === "failures" && <FailuresSection win={failuresWindow} />}
+      {tab === "runners" && <RunnersTab />}
       {tab === "pauses" && pauses.data && (
         <Card title={t("pause.title")} count={pauses.data.pauses.length}>
           <PauseList view={pauses.data} now={now} />
@@ -979,8 +979,6 @@ export function HealthPage() {
       {tab === "efficiency" && <EfficiencyTab />}
       {tab === "improve" && improve && <Improve view={improve} />}
       {tab === "github" && budget && <GitHubBudgetTab budget={budget} tokenDays={overview.data?.github_token_days} />}
-      <SpendSection />
-      <FailuresSection win={failuresWindow} />
     </>
   );
 }

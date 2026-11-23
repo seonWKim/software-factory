@@ -20,6 +20,7 @@ import { Activity } from "./background-refresh.js";
 import { startPluginsSnapshot } from "./plugins-api.js";
 import { APP_HOME, STYLE_HASH, errorPage } from "./html.js";
 import { POST_ONLY, commandsWrite, pathOf, post, writeRoute } from "./write-routes.js";
+import { MAX_FILE_BODY, PROJECT_FILE_ROUTES, PROJECT_FILE_WRITE_PATH } from "./project-files.js";
 import { readApi } from "./read-routes.js";
 
 export type { UiDeps } from "./deps.js";
@@ -52,7 +53,7 @@ export interface UiRequest {
   /** x-csrf-token: read for the write routes and for GET /api/v1/plugins/import. */
   csrfToken?: string | undefined;
   body?: string | undefined;
-  /** The body was longer than the route's limit (MAX_BODY, or MAX_COMMAND_BODY for commands) and was not read. */
+  /** The body was longer than the route's limit (MAX_BODY, MAX_COMMAND_BODY for commands, MAX_FILE_BODY for a file save) and was not read. */
   bodyTooLarge?: boolean;
 }
 
@@ -160,15 +161,19 @@ export async function startUi(d: ServerDeps, port: number): Promise<UiServer> {
     const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
     const base: UiRequest = { method: req.method, url: req.url, host: req.headers.host, csrfToken: one(req.headers[CSRF_HEADER]) };
     const write = writeRoute(d, base) !== null || commandsWrite(base) !== null;
+    const path = pathOf(base.url);
+    // A project file read is a POST behind the write guards, but writes nothing: no snapshot refresh after it.
+    const refreshes = PROJECT_FILE_ROUTES[path]?.write ?? true;
+    const max = commandsWrite(base) !== null ? MAX_COMMAND_BODY : path === PROJECT_FILE_WRITE_PATH ? MAX_FILE_BODY : MAX_BODY;
     (write
-      ? readBody(req, commandsWrite(base) !== null ? MAX_COMMAND_BODY : MAX_BODY).then((b) =>
+      ? readBody(req, max).then((b) =>
           respond(d, {
             ...base,
             origin: one(req.headers.origin),
             contentType: one(req.headers["content-type"]),
             ...b,
           }).then((r) => {
-            if (r.status < 300) refreshAll();
+            if (r.status < 300 && refreshes) refreshAll();
             return r;
           }),
         )

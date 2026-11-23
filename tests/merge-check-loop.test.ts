@@ -7,6 +7,7 @@ import { localProject } from "../src/load-config.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
 import { runKey } from "../src/core/policy.js";
+import { helpReply } from "../src/core/commands.js";
 import type { Run, UserId, WorkerId, WorkItemId } from "../src/core/types.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -19,6 +20,7 @@ import { Worker } from "../src/worker/index.js";
 import { FakeRunner, MemoryStorage } from "./helpers/fakes/runner.js";
 import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 
 // A failed merge check sends the item back (design 10-event-driven, Merge queue): a local change passes its own checks,
 // but its merged result fails them (the base moved meanwhile). The merge-check run's red result names the failing
@@ -44,6 +46,12 @@ const flakyTest = (root: string) => [
   `echo "$*" >> ${root}/args; if [ -f ${root}/flaked ]; then exit 0; fi; ` +
     `if [ -f ${DIR}/a.yml ] && [ -f BROKEN ]; then touch ${root}/flaked; echo ' FAIL  tests/a.test.ts > merged > flaky'; exit 1; fi`,
   "sh",
+];
+
+/** Fails the whole test file before its tests run (a vitest failed suite) when the change's file and BROKEN are both there. */
+const SUITE_TEST = [
+  "sh", "-c",
+  `if [ -f ${DIR}/a.yml ] && [ -f BROKEN ]; then printf ' FAIL  tests/ui-calendar-page.test.tsx [ tests/ui-calendar-page.test.tsx ]\\nError: Cannot bundle Node.js built-in node:sqlite\\n'; exit 1; fi`,
 ];
 
 async function factory(o: { max_loops?: number; test?: (root: string) => string[] } = {}) {
@@ -92,7 +100,7 @@ async function factory(o: { max_loops?: number; test?: (root: string) => string[
   };
   let n = 0;
   const cli = (a: CliAction) =>
-    runLocalCli({ store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+    runLocalCli({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
 
   /** An item at merge_pending whose merged result fails the checks (BROKEN landed on main meanwhile), in the queue with its check queued. */
   const queuedRed = async () => {
@@ -113,7 +121,21 @@ async function factory(o: { max_loops?: number; test?: (root: string) => string[
     expect(check).toMatchObject({ status: "queued" });
     return { id, check: check! };
   };
-  return { root, repo, store, controller, worker, runner, step, queuedRed };
+  /** `queuedRed`, then its check fails at max_loops 1: the item stops at max_loops after a failed merge check. */
+  const stoppedRed = async () => {
+    const { id } = await queuedRed();
+    await step();
+    expect(await store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops" });
+    return id;
+  };
+  /** BROKEN leaves main: the merged result passes its checks again. */
+  const fixMain = () => {
+    git(repo, "checkout", "--quiet", "main");
+    git(repo, "rm", "--quiet", "BROKEN");
+    git(repo, ...ident, "commit", "--quiet", "-m", "base fixed");
+    git(repo, "checkout", "--quiet", "--detach");
+  };
+  return { root, repo, store, controller, worker, runner, step, queuedRed, stoppedRed, fixMain, cli };
 }
 
 type Factory = Awaited<ReturnType<typeof factory>>;
@@ -165,6 +187,22 @@ describe("merge queue: a merged result that fails its checks sends the item back
     expect(prompt).toContain("## Failing checks on the merged commit");
     expect(prompt).toMatch(/Untrusted text: the failing tests/);
     expect(prompt).toMatch(/```text\n- tests\/a\.test\.ts > merged > breaks\n```/);
+  });
+
+  it("a test file that fails before its tests run names its suite in the outcome, the state change and the implement prompt", async () => {
+    const f = await factory({ test: () => SUITE_TEST });
+    const { id } = await f.queuedRed();
+    expect(await f.worker.tick()).toBe(true);
+    await f.controller.tickRuns();
+    const entry = "tests/ui-calendar-page.test.tsx > (suite failed): Cannot bundle Node.js built-in node:sqlite";
+    const check = (await f.store.listRuns(id)).find((r) => r.kind === "merge-check")!;
+    expect(check.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", failing_tests: [entry] } });
+    const change = (await f.store.listStateChanges(id)).find((c) => c.reason === "merge_check_failed")!;
+    expect(JSON.parse(String(change.detail?.failing_tests))).toEqual([entry]);
+    const before = f.runner.specs.length;
+    expect(await f.worker.tick()).toBe(true);
+    const prompt = f.runner.specs.slice(before).find((s) => s.role === "implement")!.prompt;
+    expect(prompt).toContain(`- ${entry}\n`);
   });
 
   it("with no test names, the reason and the state change name the command and its exit text", async () => {
@@ -233,3 +271,64 @@ describe("merge queue: a merged result that fails its checks sends the item back
     expect(await refusedBodies(f, id)).toEqual([]);
   });
 });
+
+describe("factory merge at max_loops after a failed merge check (design 04-spec-gate-commands, 2026-11-23)", { timeout: 120_000 }, () => {
+  it("the owner's merge records one state change back to merge_pending and queues a merge check; when it passes, the item merges", async () => {
+    const f = await factory({ max_loops: 1 });
+    const id = await f.stoppedRed();
+    const mainBefore = git(f.repo, "rev-parse", "main");
+
+    await f.cli({ action: "command", command: "merge", id, text: "" });
+    await f.controller.tickIntake();
+    const changes = await f.store.listStateChanges(id);
+    const stop = changes.findIndex((c) => c.reason === "max_loops");
+    const again = changes.findIndex((c) => c.reason === "merge_check_again");
+    expect(again).toBeGreaterThan(stop);
+    expect(changes.filter((c) => c.reason === "merge_check_again")).toHaveLength(1);
+    expect(changes[again]).toMatchObject({ actor: { kind: "user", id: ME }, changes: { blocked_reason: { from: "max_loops", to: "merge_pending" } } });
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", loop_count: 0 });
+    const queue = await f.controller.unit("merge-queue");
+    expect((await queue.entries(id)).map((e) => e.state)).toEqual(["removed", "checking"]);
+    const checks = (await f.store.listRuns(id)).filter((r) => r.kind === "merge-check");
+    expect(checks.map((r) => r.status)).toEqual(["succeeded", "queued"]);
+
+    f.fixMain();
+    await f.step();
+    const item = (await f.store.getWorkItem(id))!;
+    expect(item).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+    expect(item.merge_sha).not.toBeNull();
+    expect(git(f.repo, "rev-parse", "main")).not.toBe(mainBefore);
+    expect((await queue.entries(id)).map((e) => e.state)).toEqual(["removed", "merged"]);
+  });
+
+  it("a second failed check stops it at max_loops again, with no implement run", async () => {
+    const f = await factory({ max_loops: 1 });
+    const id = await f.stoppedRed();
+    await f.cli({ action: "command", command: "merge", id, text: "" });
+    await f.step();
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops", loop_count: 0 });
+    expect((await f.store.listRuns(id)).filter((r) => r.kind === "implement")).toHaveLength(1);
+    expect((await f.store.listStateChanges(id)).at(-1)?.reason).not.toBe("merge_check_again");
+    expect((await refusedBodies(f, id)).at(-1)).toContain("a human needs to decide");
+  });
+
+  it("/retry is refused there, and the refusal and /help name `factory merge` as a choice", async () => {
+    const f = await factory({ max_loops: 1 });
+    const id = await f.stoppedRed();
+    await f.cli({ action: "command", command: "retry", id, text: "" });
+    await f.controller.tickIntake();
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "max_loops" });
+    const refusal = (await refusedBodies(f, id)).at(-1)!;
+    expect(refusal).toContain("`/retry` was not applied");
+    expect(refusal).toContain("there is no failed run to retry");
+    expect(refusal).toContain(`\`factory merge ${id}\``);
+
+    const commands = await f.controller.unit("commands");
+    const state = await commands.stateOf((await f.store.getWorkItem(id))!);
+    expect(state).toMatchObject({ phase: "max_loops", merge_check: true });
+    const help = helpReply(state);
+    expect(help).toContain("- `factory merge <id>` **(now)**:");
+    expect(help).not.toContain("- `/retry` **(now)**");
+  });
+});
+

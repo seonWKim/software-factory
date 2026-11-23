@@ -265,12 +265,12 @@ describe("Spend page: the daily chart", () => {
 });
 
 describe("Settings page: dollar budgets", () => {
-  it("Advanced links the Runners and Data pages, which the sidebar no longer shows", async () => {
+  it("Advanced links the Data page, which the sidebar does not show, and no longer Runners (a Health tab)", async () => {
     history.replaceState(null, "", "/app/settings?tab=advanced");
     show(SettingsPage);
-    const runners = await screen.findByRole("link", { name: "Runners" });
-    expect(runners.getAttribute("href")).toBe("/app/runners");
-    expect(screen.getByRole("link", { name: "Data" }).getAttribute("href")).toBe("/app/data");
+    expect((await screen.findByRole("link", { name: "Data" })).getAttribute("href")).toBe("/app/data");
+    expect(screen.queryByRole("link", { name: "Runners" })).toBeNull();
+    expect(document.querySelector('a[href="/app/runners"]')).toBeNull();
   });
 
   it("an unset budget shows an empty number field that takes a fraction such as 12.50, and saves it", async () => {

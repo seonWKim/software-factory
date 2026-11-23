@@ -1,5 +1,7 @@
 import type { FactoryConfig } from "./config.js";
 import type { Floor } from "./settings.js";
+// Type only: a value import of stats.ts would close an import cycle back to this file (phase.ts reads its constants).
+import type { TierRuleResult } from "./stats.js";
 import { RECURRING_FAILURE, type Run, type RunKind, type RunOutcome, type StateChangeDetail, type Tier, type Timestamp, type WorkItem } from "./types.js";
 
 // Deterministic gate rules (control plane). Same input, same output.
@@ -23,9 +25,12 @@ export function needsSpecApproval(tier: Tier, dials: FactoryConfig["dials"]): bo
   return tier >= dials.spec_gate_min_tier;
 }
 
-/** Never for an incomplete PR, one whose implementer reports missing work (issue #229), whatever its tier. */
+/**
+ * Never for an incomplete PR, one whose implementer reports missing work (issue #229), whatever its tier. The setting
+ * alone: the tier's merge record is read only at the merge itself (autoMergeStep), so this assumes it holds.
+ */
 export function canAutoMerge(tier: Tier, dials: FactoryConfig["dials"], incomplete = false): boolean {
-  return autoMergeRefusal({ tier, max_tier: dials.auto_merge_max_tier, incomplete, gate_path: null, local: true }) === null;
+  return autoMergeRefusal({ tier, max_tier: dials.auto_merge_max_tier, incomplete, gate_path: null, local: true, rule: "met", dropped_back: false }) === null;
 }
 
 /** The actor of every automatic approval, merge and stop in auto mode (design 03-risk). */
@@ -51,17 +56,33 @@ export function autoApproveRefusal(o: { tier: Tier; decisions: readonly AutoDeci
   return null;
 }
 
+/** What each result of the tier rule (tierRule; its numbers are TIER_RULE_SAMPLE and TIER_RULE_MAX_BAD) says in a refusal. */
+const RULE_REFUSAL: Record<Exclude<TierRuleResult, "met">, string> = {
+  too_few: "has fewer than 50 merges",
+  not_met: "has more than 1 reverted or fixed-forward merge, or a critical verdict, in its last 50",
+  never: "never qualifies",
+};
+
 /**
  * Why auto mode leaves a reviewed change for a person's merge (design 03-risk), or null when it merges it. Only a
  * local item merges by itself (there is no forge merge to call); tier 4 and up, a change that touches the gate list,
- * an incomplete change (issue #229) and a tier above `max_tier` (the `auto_merge_max_tier` setting) never do.
+ * an incomplete change (issue #229) and a tier above `max_tier` (the `auto_merge_max_tier` setting) never do. Under
+ * the setting, a tier merges only while its merge record holds: `dropped_back` (droppedBack: 2 of its last 20 merges
+ * reverted or fixed forward) and a `rule` (tierRule over its last 50) other than met refuse it. The setting is never written.
  */
-export function autoMergeRefusal(o: { tier: Tier; max_tier: number; incomplete: boolean; gate_path: string | null; local: boolean }): string | null {
+export function autoMergeRefusal(o: {
+  tier: Tier; max_tier: number; incomplete: boolean; gate_path: string | null; local: boolean; rule: TierRuleResult; dropped_back: boolean;
+}): string | null {
   if (!o.local) return "only a local item merges automatically; its PR waits for a person";
   if (o.tier >= AUTO_NEVER_TIER) return `a tier ${o.tier} change never merges automatically`;
   if (o.gate_path !== null) return `it touches the gate list (\`${o.gate_path}\`)`;
   if (o.incomplete) return "it is incomplete";
   if (o.tier > o.max_tier) return `its tier ${o.tier} is above auto_merge_max_tier (${o.max_tier})`;
+  if (o.dropped_back) {
+    // The numbers are DROP_BACK_BAD and DROP_BACK_SAMPLE (stats.ts).
+    return `tier ${o.tier} dropped back: 2 or more of its last 20 merges were reverted or fixed forward`;
+  }
+  if (o.rule !== "met") return `tier ${o.tier} does not meet the auto-merge rule: it ${RULE_REFUSAL[o.rule]}`;
   return null;
 }
 

@@ -30,13 +30,23 @@ export interface StandingProposalRow {
   created_at: string;
 }
 
-/** `/api/v1/standing`: the rules and the pending proposals; `csrf_token` is null when the server has no write route. */
+/**
+ * `/api/v1/standing`: the rules, the pending proposals and `waiting`, the items waiting now that the rule would approve
+ * (the dialogs' preview; absent from an older server); `csrf_token` is null when the server has no write route.
+ */
 export interface StandingView {
   as_of: string;
   csrf_token: string | null;
   rules: StandingRuleRow[];
   proposals: StandingProposalRow[];
+  waiting?: { id: string; title: string }[];
 }
+
+/** A POST /api/v1/standing body: a rule on or off (naming the proposal it answers, if any), its row removed, or the threshold changed. */
+export type StandingWriteBody =
+  | { rule: string; enabled: boolean; proposal?: string }
+  | { rule: string; action: "remove" }
+  | { rule: string; action: "edit"; threshold: number };
 
 /** One ledger entry waiting for the owner's verdict on the Rules page (issue #571). */
 export interface RuleRow {
@@ -211,10 +221,10 @@ export function useRuleEntry(id: string, enabled: boolean, round = 0) {
   return useQuery({ queryKey: [url, round], queryFn: () => getJson<RuleEntryView>(url), enabled, staleTime: Infinity, placeholderData: keepPreviousData });
 }
 
-/** POST /api/v1/standing: a rule on or off, naming the proposal it answers if any. A refusal comes back as `{ ok: false, error }`. */
+/** POST /api/v1/standing: one standing-rule change (StandingWriteBody). A refusal comes back as `{ ok: false, error }`. */
 export async function postStanding(
   token: string,
-  body: { rule: string; enabled: boolean; proposal?: string },
+  body: StandingWriteBody,
 ): Promise<{ ok: true; changed: boolean } | { ok: false; error: string }> {
   const r = await postJson<{ changed?: boolean; error?: string }>(API.standing, token, body);
   if (r.ok) return { ok: true, changed: r.value.changed === true };

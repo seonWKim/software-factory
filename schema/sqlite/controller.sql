@@ -105,7 +105,7 @@ CREATE TABLE controller_filed_patterns (
     detail       TEXT NOT NULL,
     report_id    TEXT NOT NULL REFERENCES controller_improve_reports(id),
     filed_ref    TEXT,
-    created_at   TEXT NOT NULL, outcome TEXT, outcome_at TEXT,
+    created_at   TEXT NOT NULL, outcome TEXT, outcome_at TEXT, evidence INTEGER,
     UNIQUE (project_key, pattern_key)
   );
 
@@ -280,6 +280,26 @@ CREATE TABLE controller_projects (
     created_by   TEXT NOT NULL,
     created_at   TEXT NOT NULL,
     archived_at  TEXT
+  , base_folder TEXT);
+
+CREATE TABLE controller_schedule_runs (
+    schedule_id    TEXT NOT NULL,
+    occurrence_at  TEXT NOT NULL,
+    outcome        TEXT NOT NULL,
+    recorded_at    TEXT NOT NULL,
+    PRIMARY KEY (schedule_id, occurrence_at)
+  );
+
+CREATE TABLE controller_schedules (
+    id             TEXT PRIMARY KEY,
+    title          TEXT NOT NULL,
+    cadence_kind   TEXT NOT NULL,
+    cadence_spec   TEXT NOT NULL,
+    zone           TEXT NOT NULL,
+    created_by     TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    next_due_at    TEXT,
+    running_since  TEXT
   );
 
 CREATE TABLE controller_signals (
@@ -302,6 +322,17 @@ CREATE TABLE controller_standing_proposals (
     threshold   INTEGER NOT NULL,
     created_at  TEXT NOT NULL,
     UNIQUE (gate, tier, run_length)
+  );
+
+CREATE TABLE controller_standing_rule_changes (
+    seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+    gate          TEXT NOT NULL,
+    tier          INTEGER NOT NULL,
+    action        TEXT NOT NULL,
+    before_value  TEXT,
+    after_value   TEXT,
+    actor         TEXT NOT NULL,
+    at            TEXT NOT NULL
   );
 
 CREATE TABLE controller_standing_rules (
@@ -443,6 +474,8 @@ CREATE INDEX controller_notices_undelivered ON controller_notices (delivered_at,
 CREATE INDEX controller_outbox_pending ON controller_outbox (published_at, seq);
 
 CREATE INDEX controller_pause_history_ended ON controller_pause_history (ended_at);
+
+CREATE INDEX controller_schedules_due ON controller_schedules (next_due_at);
 
 CREATE INDEX controller_signals_item ON controller_signals (work_item_id, at);
 

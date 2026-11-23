@@ -22,6 +22,7 @@ import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
 // Re-exported so a component's plugin declares its secret names without importing a legacy folder (RFC 0015 §9).
 export { secretName } from "./interfaces/secret-store.js";
+import type { ScheduleAction } from "./interfaces/schedule-action.js";
 import type { SharedStorage } from "./interfaces/shared-storage.js";
 import type { SourceAdapter } from "./interfaces/source-adapter.js";
 import type { TacitLedger } from "./interfaces/tacit-ledger.js";
@@ -60,6 +61,8 @@ export interface Instances {
   tacit: TacitLedger;
   /** A calendar the factory reads (docs/plugins/calendar-source.md); selected as a list by the top-level `calendar` key. */
   calendar: CalendarSource;
+  /** What a fired schedule occurrence runs (docs/plugins/schedule-action.md); optional, no default. */
+  schedule_action: ScheduleAction;
 }
 
 export type PluginKind = keyof Instances;
@@ -68,7 +71,7 @@ export type PluginKind = keyof Instances;
  * Kinds config may leave unselected (issue #172): no plugin is their default, and an absent value or "none"
  * selects nothing. Never a guard. `calendar` is selected as a list (`calendars` in the Selection), never one name.
  */
-export type OptionalKind = "forge" | "calendar";
+export type OptionalKind = "forge" | "calendar" | "schedule_action";
 
 /** Everything a plugin may read: the loaded config, plus the extra values a canary run adds to the scan. */
 export interface BaseContext {
@@ -118,6 +121,8 @@ export interface Contexts {
   tacit: BaseContext;
   /** `secrets`: what a provider reads its credentials from. `clock`: "now", for the provider's own window. */
   calendar: BaseContext & { secrets: SecretStore; clock: Clock };
+  /** Built for the controller only, when `plugins.schedule_action` names it. */
+  schedule_action: BaseContext;
 }
 
 /** What a plugin's setup hook gets: the forge client (no credentials), and where to print its progress lines. */

@@ -4,6 +4,7 @@
 // text from the store. An ask (an ASKS level) also gets its rank reason and whether it is held until `review_time`
 // (askReason).
 
+import { SYSTEM_ITEM } from "../core/improver.js";
 import { FAILED_PHASES, type ItemPhase, PERSON_PHASES, isClosedPhase, phaseOf } from "../core/phase.js";
 import type { BlockedOn, CloseReason, RunKind, Stage, Tier } from "../core/types.js";
 import { ITEM_STATES, type ItemState, STATES, groupStates } from "../shared/states.js";
@@ -101,6 +102,7 @@ function staleRun(i: PriorityInput, now: number, lease_ms: number): boolean {
  */
 export function levelOf(i: PriorityInput, now: Date, lease_ms: number): Level {
   const p = phaseOf(i);
+  if (i.blocked_reason === SYSTEM_ITEM) return "system";
   if (isClosedPhase(p)) return closedLevel(i);
   if (i.pending) return "queued";
   if (p === "merge_pending") return "ready_to_merge";
@@ -168,6 +170,9 @@ export function badgesOf(i: PriorityInput, level: Level, now: Date, lease_ms: nu
       break;
     case "queued":
       main = i.pending?.command === "merge" ? `merge queued (position ${i.pending.position})` : i.pending ? `queued ${i.pending.kind}` : !i.run ? "next run queued" : i.run.paused_at ? `paused ${i.run!.kind}` : `queued ${i.run!.kind}`;
+      break;
+    case "system":
+      main = "system";
       break;
     case "held":
     case "blocked_by_task":

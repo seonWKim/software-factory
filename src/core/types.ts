@@ -227,24 +227,24 @@ export interface FailureGroup {
 }
 
 /**
- * A group's filing (design §7). `filed`: a new item with the group's runs. `commented`: it matched an open filed item; one comment named `run_ids`, its runs
- * not linked there before. `linked`: it matched one, all runs linked, nothing posted. `skipped`: past a cap, the matched item closed in the last 30 days, no source
- * can file, `needs_person`, `host_sleep` (a stall after a host sleep), `pause` (every run failed in a model-stall or network pause), `in_flight` (another caller is
- * filing it) or `open_item` (a hot file with an open item of its title), all not filed. `withheld`: the egress scan flagged the body. `failed`: the call threw.
+ * A group's filing (design §7). `filed`: a new item with the group's runs. `commented`: it matched an open filed item; one comment named `run_ids`, its runs not linked there
+ * before. `linked`: it matched one, all runs linked, nothing posted. `skipped`: past a cap, the matched item closed in the last 30 days, no source can file, `needs_person`,
+ * `host_sleep` (a stall after a host sleep), `pause` (every run failed in a model-stall or network pause), `in_flight` (another caller is filing it) or `open_item` (a hot
+ * file with an open item of its title), all not filed; `count`: an `issue_cap` row's evidence. `withheld`: the egress scan flagged the body. `failed`: the call threw.
  */
 export type ImproveFiling =
   | { status: "filed" | "linked"; ref: SourceRef }
   | { status: "commented"; ref: SourceRef; run_ids: RunId[] }
-  | { status: "skipped"; reason: "issue_cap" | "comment_cap" | "recently_closed" | "no_source" | "needs_person" | "host_sleep" | "pause" | "in_flight" | "open_item" }
+  | { status: "skipped"; reason: "issue_cap" | "comment_cap" | "recently_closed" | "no_source" | "needs_person" | "host_sleep" | "pause" | "in_flight" | "open_item"; count?: number }
   | { status: "withheld"; rules: string[] }
   | { status: "failed"; reason: "error" };
 
 export type FiledPatternId = Brand<string, "FiledPatternId">;
 
 /**
- * One pattern filed from an improve report (design §7), unique per (project, pattern_key). `report_id`: the report that claimed
- * it, whose ID is in the item's marker. `filed_ref`: the item, null while the filing is claimed but not yet done (a retry looks
- * the marker up first). `outcome`: whether its fix held, set (`outcome_at`) 7 days after the item closed as completed; else null.
+ * One pattern filed from an improve report (design §7), unique per (project, pattern_key). `report_id`: the report that claimed it, whose ID is in the
+ * item's marker. `filed_ref`: the item, null while the filing is claimed but not yet done (a retry looks the marker up first). `outcome`: whether its fix
+ * held, set (`outcome_at`) 7 days after the item closed as completed; else null. `evidence`: its count at filing (runs, plus held items); null before.
  */
 export interface FiledPattern {
   id: FiledPatternId;
@@ -255,8 +255,8 @@ export interface FiledPattern {
   report_id: ImproveReportId;
   filed_ref: SourceRef | null;
   created_at: Timestamp;
-  outcome: "holds" | "regressed" | null;
-  outcome_at: Timestamp | null;
+  outcome: "holds" | "regressed" | null; outcome_at: Timestamp | null;
+  evidence: number | null;
 }
 
 /**

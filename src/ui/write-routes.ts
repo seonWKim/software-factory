@@ -3,7 +3,8 @@
 // Content-Type application/json, the per-process CSRF token in x-csrf-token, the body size, then the route. The
 // resume, stop, standing, improve, proposal verdict, migrate and supervisor routes then check the owner
 // (approve_spec), the rules, calendar, model credential and Ask routes the owner, the pack approvals route
-// approve_tool, the task routes the commands actor, the plugins import the page's factory user. The item commands
+// approve_tool, the task routes the commands actor (the project file routes, project-files.ts PROJECT_FILE_ROUTES, only to
+// set the folder and to save; their reads are POSTs too, so they pass every guard), the plugins import the page's factory user. The item commands
 // route (commands.ts) runs its own guards in the same order. A new write route adds one entry to WRITE_ROUTES (and
 // its name to POST_ONLY), not a line in server.ts.
 
@@ -17,7 +18,8 @@ import { TASK_WRITES } from "./tasks-api.js";
 import { RULE_WRITES, ownerOf } from "./rules-api.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, PROPOSAL_VERDICT_PATH, improveRunWired, runImproveNow, writeProposalVerdict } from "./improve-api.js";
 import { PLUGINS_IMPORT_PATH, writePluginsImport } from "./plugins-import-api.js";
-import { CALENDAR_CONNECT_PATH, CALENDAR_DISCONNECT_PATH, writeCalendar } from "./calendar-api.js";
+import { PROJECT_FILE_ROUTES } from "./project-files.js";
+import { CALENDAR_CONNECT_PATH, CALENDAR_DISCONNECT_PATH, CALENDAR_SYNC_PATH, writeCalendar, writeCalendarSync } from "./calendar-api.js";
 import { DATA_ASK_PATH, askData } from "./data-ask.js";
 import { MODEL_CREDENTIAL_PATH, writeModelCredential } from "./model-credential.js";
 import { MIGRATE_PATH, SUPERVISOR_PATH, postMigrate, postSupervisor } from "./migrate-api.js";
@@ -25,7 +27,7 @@ import type { ServerDeps, UiRequest } from "./server.js";
 
 /** The 405 text for a POST to any path no write route takes. */
 export const POST_ONLY =
-  "Only the settings, item commands, pause resume, standing, improve run, pack approvals, plugins import, rule verdict, rule edit, pushback dismiss, proposal verdict, task, calendar, model credential, data ask, migrate and supervisor routes take a POST.";
+  "Only the settings, item commands, pause resume, standing, improve run, pack approvals, plugins import, rule verdict, rule edit, pushback dismiss, proposal verdict, task, project file, calendar, model credential, data ask, migrate and supervisor routes take a POST.";
 
 /** One POST route: when it is wired for `path`, the CSRF token it checks, and its handler (after the guards). */
 export interface WriteRoute {
@@ -49,10 +51,11 @@ const WRITE_ROUTES: readonly WriteRoute[] = [
   { matches: (d, p) => Object.hasOwn(RULE_WRITES, p) && d.pauses !== undefined, token: pausesToken, run: (d, p, b) => RULE_WRITES[p]!(d, d.pauses!, b) },
   { matches: (d, p) => p === PROPOSAL_VERDICT_PATH && d.pauses !== undefined, token: pausesToken, run: (d, _p, b) => writeProposalVerdict(d, d.pauses!, b) },
   { matches: (d, p) => Object.hasOwn(TASK_WRITES, p) && d.commands !== undefined, token: (d) => d.commands!.token, run: (d, p, b) => TASK_WRITES[p]!(d, b) },
+  { matches: (d, p) => Object.hasOwn(PROJECT_FILE_ROUTES, p) && d.commands !== undefined, token: (d) => d.commands!.token, run: (d, p, b) => PROJECT_FILE_ROUTES[p]!.run(d, b) },
   {
-    matches: (d, p) => (p === CALENDAR_CONNECT_PATH || p === CALENDAR_DISCONNECT_PATH) && d.settings?.calendar !== undefined,
+    matches: (d, p) => (p === CALENDAR_CONNECT_PATH || p === CALENDAR_DISCONNECT_PATH || p === CALENDAR_SYNC_PATH) && d.settings?.calendar !== undefined,
     token: settingsToken,
-    run: (d, p, b) => writeCalendar(d, p, b),
+    run: (d, p, b) => (p === CALENDAR_SYNC_PATH ? writeCalendarSync(d, b) : writeCalendar(d, p, b)),
   },
   {
     matches: (d, p) => p === MODEL_CREDENTIAL_PATH && d.settings?.modelCredential !== undefined,

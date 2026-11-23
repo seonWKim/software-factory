@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
+import { fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { TasksPage, card, reset, row, s, show, teardown, view } from "./ui-tasks-fixtures.js";
+import { SLOW, TasksPage, card, reset, row, s, show, teardown, view } from "./ui-tasks-fixtures.js";
 
 void TasksPage;
 beforeEach(reset);
@@ -33,6 +34,8 @@ describe("Tasks page: due text", () => {
       projects: [{ list: null, tasks: [row("tk_done", { due_date: "2026-11-09", due_time: "09:00", done_at: "2026-11-09T10:00:00.000Z" })] }],
     });
     await show();
+    // Done is closed on load (design 02-tasks-page, 2026-11-22): open it so the done row is drawn.
+    fireEvent.click((await screen.findByText(/^\d+ done$/, undefined, SLOW)).closest("summary")!);
     expect(dueOf("tk_late")).toContain("due Nov 10, 9:00 AM");
     expect(dueOf("tk_done")).toContain("due Nov 9, 9:00 AM");
     expect(dueOf("tk_late")).not.toMatch(/\d{4}-\d{2}-\d{2}/);

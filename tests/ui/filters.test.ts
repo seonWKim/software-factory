@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { STATE_GROUPS, groupStates } from "../../src/shared/states.js";
 import {
   type FilterRow,
   NO_FILTERS,
@@ -132,6 +133,11 @@ describe("ui filters", () => {
     expect(applyFilters(finished, parse("state=merged")).map((r) => r.name)).toEqual(["merged"]);
     expect(applyFilters(finished, parse("state=rejected")).map((r) => r.name)).toEqual(["rejected"]);
     expect(facetCounts(finished, NO_FILTERS).state.finished).toBe(3);
+  });
+
+  it("system is no Work filter, and no state group lists it", () => {
+    expect(parseFilters(new URLSearchParams("state=system"))).toEqual({ ok: false, error: "Unknown state." });
+    for (const g of STATE_GROUPS) expect(groupStates(g)).not.toContain("system");
   });
 
   it("run and worker states are no Work filter", () => {

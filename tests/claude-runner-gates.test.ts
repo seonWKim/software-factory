@@ -14,7 +14,7 @@ import { ClaudeCodeRunner, buildClaudeArgs } from "../src/impl/runner/claude-cod
 import {
   GATE_HOOKS_DIR, HOOK_SCRIPT, HOOK_SPEC, PATH_REFUSAL, STOP_CHECK_MS, STOP_CHECK_TIMED_OUT, STOP_HOOK_SLACK_MS, editCovered, gateAnswerer, hookScript, runDeadline, specFile,
 } from "../src/impl/runner/gate-hooks.js";
-import type { AgentRunResult, AgentRunSpec, GateHooks } from "../src/interfaces/agent-runner.js";
+import type { AgentRunResult, AgentRunSpec, GateHooks, StopSelection } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 import { PackCheckRunner } from "../src/runtime/hooks/pack-checks.js";
@@ -104,6 +104,10 @@ class GateSandbox implements Sandbox {
   /** `git rev-list` output by argument line; default: none. */
   revLists: Record<string, string> = {};
   numstat = "";
+  /** What test selection reads: the changed files, the tracked files and `git grep`'s import lines (each `path\0line`). */
+  changed: string[] = [];
+  tracked: string[] = [];
+  imports: string[] = [];
   /** Check commands by argv joined with spaces: exit code, output and how long it takes. Default: pass at once. */
   checks: Record<string, { exit: number; out: string; ms?: number }> = {};
   /** Every non-claude command, in order. */
@@ -169,6 +173,9 @@ class GateSandbox implements Sandbox {
       const args = cmd.slice(1).join(" ");
       if (args.startsWith("rev-list")) return res(0, this.revLists[args] ?? "");
       if (args.startsWith("diff --numstat")) return res(0, this.numstat);
+      if (args.startsWith("diff --name-only")) return res(0, this.changed.map((p) => `${p}\0`).join(""));
+      if (args.startsWith("ls-files")) return res(0, this.tracked.map((p) => `${p}\0`).join(""));
+      if (args.startsWith("grep")) return res(this.imports.length > 0 ? 0 : 1, this.imports.join("\n"));
       return res(0, "");
     }
     if (o.signal?.aborted) return res(1);
@@ -239,7 +246,7 @@ function setup(role: RunKind = "implement", gates: GateHooks | null = GATES, sto
 }
 
 /** Runs the fake agent in `mode`: through the runner and its hooks, or straight against the answerer. */
-async function drive(f: ReturnType<typeof setup>, mode: Mode): Promise<Pick<AgentRunResult, "status" | "gate_blocks">> {
+async function drive(f: ReturnType<typeof setup>, mode: Mode): Promise<Pick<AgentRunResult, "status" | "gate_blocks" | "stop_selections">> {
   if (mode === "hooks") return f.runner.run(f.spec);
   const dir = join(f.configDir, GATE_HOOKS_DIR, f.spec.run_id);
   mkdirSync(dir, { recursive: true });
@@ -263,8 +270,9 @@ async function drive(f: ReturnType<typeof setup>, mode: Mode): Promise<Pick<Agen
     stop: async () => ((await ask({ event: "stop" })) as { reason?: string } | undefined)?.reason ?? null,
   });
   const blocks = await answers.blocks();
+  const selections = answers.selections();
   rmSync(dir, { recursive: true, force: true });
-  return { status: "completed", ...(blocks.length > 0 ? { gate_blocks: blocks } : {}) };
+  return { status: "completed", ...(blocks.length > 0 ? { gate_blocks: blocks } : {}), ...(selections.length > 0 ? { stop_selections: selections } : {}) };
 }
 
 /** An agent that stops until it is allowed to, at most `max` times, and keeps every block reason. */
@@ -424,6 +432,78 @@ for (const mode of MODES) describe(`gate hooks: Stop (${mode})`, () => {
     expect(reasons).toEqual([]);
     expect(result.gate_blocks).toBeUndefined();
     expect(f.sandbox.commands.filter((c) => c.startsWith("npm"))).toEqual(["npm run typecheck", "npm test"]);
+  });
+});
+
+// The Stop check's test selection (design §4): the check before push's own rule (selectedChecks) narrows the test
+// command in enforce mode; shadow runs it whole; without a selection the check list runs as it is.
+for (const mode of MODES) describe(`gate hooks: Stop test selection (${mode})`, () => {
+  const selection = (m: StopSelection["mode"]): StopSelection => ({
+    mode: m, test_command: ["npm", "test"], test_selection: { hubs: ["src/hub.ts"], always: ["tests/always.test.ts"] },
+  });
+  /** A one-file change to src/a.ts, which tests/a.test.ts imports. */
+  const oneFile = (f: ReturnType<typeof setup>) => {
+    f.sandbox.changed = ["src/a.ts"];
+    f.sandbox.tracked = ["src/a.ts", "src/hub.ts", "tests/a.test.ts", "tests/b.test.ts", "tests/always.test.ts"];
+    f.sandbox.imports = ['tests/a.test.ts\0import { a } from "../src/a.js";', 'tests/b.test.ts\0import { h } from "../src/hub.js";'];
+  };
+  const npm = (f: ReturnType<typeof setup>) => f.sandbox.commands.filter((c) => c.startsWith("npm"));
+
+  it("in enforce mode a one-file change runs only the selected test files, and the result names the selection", async () => {
+    const f = setup("implement", { ...GATES, selection: selection("enforce") });
+    oneFile(f);
+    const reasons: string[] = [];
+    f.sandbox.agent = stopper(reasons);
+    const result = await drive(f, mode);
+    expect(reasons).toEqual([]);
+    expect(npm(f)).toEqual(["npm run typecheck", "npm test -- tests/a.test.ts tests/always.test.ts"]);
+    expect(result.stop_selections).toEqual([
+      "test selection (enforce): 2 files, 1 reaching the 1 changed source and test files, plus 1 always-run: tests/a.test.ts tests/always.test.ts",
+    ]);
+  });
+
+  it("a failing selected test command is the block's check, named as it ran", async () => {
+    const f = setup("implement", { ...GATES, selection: selection("enforce") });
+    oneFile(f);
+    f.sandbox.checks["npm test -- tests/a.test.ts tests/always.test.ts"] = { exit: 1, out: "FAIL tests/a.test.ts" };
+    const reasons: string[] = [];
+    f.sandbox.agent = async (a) => void reasons.push((await a.stop())!);
+    const result = await drive(f, mode);
+    expect(reasons[0]).toContain("`npm test -- tests/a.test.ts tests/always.test.ts` failed (exited 1)");
+    expect(result.gate_blocks).toEqual([{ hook: "stop", check: "npm test -- tests/a.test.ts tests/always.test.ts", attempt: 1 }]);
+  });
+
+  for (const [file, why] of [["src/hub.ts", "full: hub file src/hub.ts changed"], ["package.json", "full: package file package.json changed"]] as const) {
+    it(`a change to ${file} runs the full test command, with the reason`, async () => {
+      const f = setup("implement", { ...GATES, selection: selection("enforce") });
+      oneFile(f);
+      f.sandbox.changed = ["src/a.ts", file];
+      f.sandbox.agent = stopper([]);
+      const result = await drive(f, mode);
+      expect(npm(f)).toEqual(["npm run typecheck", "npm test"]);
+      expect(result.stop_selections).toEqual([`test selection (enforce): ${why}`]);
+    });
+  }
+
+  it("in shadow mode the test command runs whole, and the selection is named as shadow", async () => {
+    const f = setup("implement", { ...GATES, selection: selection("shadow") });
+    oneFile(f);
+    f.sandbox.agent = stopper([]);
+    const result = await drive(f, mode);
+    expect(npm(f)).toEqual(["npm run typecheck", "npm test"]);
+    expect(result.stop_selections).toEqual([
+      "test selection (shadow): 2 files, 1 reaching the 1 changed source and test files, plus 1 always-run: tests/a.test.ts tests/always.test.ts",
+    ]);
+  });
+
+  it("with no selection the check list runs as it is and nothing is named; selection reads no git", async () => {
+    const f = setup();
+    oneFile(f);
+    f.sandbox.agent = stopper([]);
+    const result = await drive(f, mode);
+    expect(npm(f)).toEqual(["npm run typecheck", "npm test"]);
+    expect(result.stop_selections).toBeUndefined();
+    expect(f.sandbox.commands.filter((c) => c.startsWith("git diff --name-only") || c.startsWith("git ls-files") || c.startsWith("git grep"))).toEqual([]);
   });
 });
 

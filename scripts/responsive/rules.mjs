@@ -25,11 +25,13 @@
 //   button-height   a button is not 28px or 32px tall (a switch, a listbox option, a menu item and a chart's bar,
 //                   [data-chart-bar], whose height is the chart's, are not buttons).
 //   raw-name        visible text holds a snake_case name or a wi_ ID outside [data-raw] (code and pre count as raw).
+//   title-wrap      a row title ([data-row-title]: Work, Tasks and Health's Runners rows) wraps onto more than two
+//                   lines, so the ID, badge or time beside it squeezed it (design 09-dashboard-shell, 2026-11-22).
 //
 // Elements that are not painted (display:none, visibility:hidden, opacity:0, zero size) and screen-reader-only
 // boxes (1px, clipped) are skipped.
 
-export const LIMITS = { letterWrapCh: 12, maxFixedShare: 0.4, buttonHeights: [28, 32], pageWidths: ["--page-wide", "--page-read"], minTarget: 24 };
+export const LIMITS = { letterWrapCh: 12, maxFixedShare: 0.4, buttonHeights: [28, 32], pageWidths: ["--page-wide", "--page-read"], maxTitleLines: 2, minTarget: 24 };
 
 /**
  * Runs in the page: `failures` as { rule, selector, detail }, each failing element marked for the screenshot, and
@@ -228,6 +230,23 @@ export function checkLayout(limits) {
     if (!painted(b)) continue;
     const h = Math.round(b.getBoundingClientRect().height);
     if (!limits.buttonHeights.includes(h)) fail("button-height", b, `${h}px tall, not ${limits.buttonHeights.join(" or ")}px`);
+  }
+
+  // title-wrap: the lines a row title's text takes, counted from its text's line boxes (a control laid over the title,
+  // such as the Tasks title's open button, is not text of it).
+  for (const el of document.body.querySelectorAll("[data-row-title]")) {
+    if (!painted(el)) continue;
+    const tops = [];
+    const texts = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = texts.nextNode(); n; n = texts.nextNode()) {
+      if (!n.textContent.trim() || (n.parentElement !== el && n.parentElement.closest("button"))) continue;
+      const range = document.createRange();
+      range.selectNodeContents(n);
+      for (const q of range.getClientRects()) if (q.width > 0 && q.height > 0) tops.push(q.top);
+    }
+    const lineHeight = parseFloat(style(el).lineHeight) || parseFloat(style(el).fontSize) * 1.2;
+    const lines = tops.sort((a, b) => a - b).filter((top, i, all) => i === 0 || top - all[i - 1] > lineHeight / 2).length;
+    if (lines > limits.maxTitleLines) fail("title-wrap", el, `${lines} lines, more than ${limits.maxTitleLines}`);
   }
 
   // raw-name: one failure per element whose own text holds the name.

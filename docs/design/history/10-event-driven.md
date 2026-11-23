@@ -1,5 +1,8 @@
 ## History
 
+- **`failing_tests` listed failed tests only** (decision changed 2026-11-23, wi_971653ce follow-up; changes "The merge
+  queue"). Before: a vitest file that failed before its tests ran (` FAIL  <file> [ <file> ]`) was not listed, so the
+  `merge_check_failed` detail held `failing_tests: []` and the implement prompt fell back to the command and its exit text.
 - **One generated `schema/sqlite.sql`** (decision changed 2026-11-22, issue #754). Before: the snapshot of a fresh
   migration was a single file with every table and index, `schema/sqlite.sql`, and the path companions added it to
   every item that touched a migration or `src/impl/store/sqlite/schema.ts`. Now it is one file per owner prefix
