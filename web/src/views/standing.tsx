@@ -133,7 +133,7 @@ export function StandingRule({ rule, token }: { rule: StandingRuleRow; token: st
               </Fragment>
             ))}
             {hidden > 0 && (
-              <button type="button" data-recent-more className={LINK_CLASS} onClick={openDetails}>{t("standing.recentMore", { count: hidden })}</button>
+              <Button variant="ghost" size="sm" data-recent-more className={`min-h-0 px-1 ${LINK_CLASS}`} onClick={openDetails}>{t("standing.recentMore", { count: hidden })}</Button>
             )}
           </span>
         </>
