@@ -544,7 +544,7 @@ async function runRow(c: ApiCtx, r: Run) {
 async function queue(c: ApiCtx) {
   const s = c.d.store;
   const runs = await s.listQueuedInClaimOrder(LIST_LIMIT);
-  const { active, position, passedBy } = await activeRuns(s);
+  const { active, position } = await activeRuns(s);
   const items = new Map<WorkItemId, WorkItem | null>();
   for (const r of runs) if (!items.has(r.work_item_id)) items.set(r.work_item_id, await s.getWorkItem(r.work_item_id));
   const phases = await readPhases(s, [...items.values()].filter((it): it is WorkItem => it !== null));
@@ -558,7 +558,7 @@ async function queue(c: ApiCtx) {
       // The item's own active run decides its sentence (a running run wins), as on Items and the item page.
       const run = active.get(it.id) ?? r;
       const decision = await latestDecision(s, it.id, run);
-      why = await c.why(whyOf(it, run, position.get(run.id) ?? null, withTitle(decision, await holderTitles(s, [decision]), run, passedBy.get(run.id)), pauses, waitingOn(it, phases), c.now, await itemAlarms(s, open, it), await heldFailureOf(needCtx(s, c.w), it)), it);
+      why = await c.why(whyOf(it, run, position.get(run.id) ?? null, withTitle(decision, await holderTitles(s, [decision])), pauses, waitingOn(it, phases), c.now, await itemAlarms(s, open, it), await heldFailureOf(needCtx(s, c.w), it)), it);
     }
     out.push({
       position: i + 1,

@@ -38,7 +38,7 @@ import type {
   ApproveClaimHoldResult,
   RunIntent,
   BudgetCheckpointResult,
-  ClaimInput, PassedOver, QueuedRun,
+  ClaimInput,
   CliCommand,
   Alert,
   FactoryStore,
@@ -517,8 +517,8 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
     const kinds = input.kinds.filter((k) => k !== INTERACTIVE);
     if (kinds.length === 0) return null;
     const { seq } = this.db.dialect;
-    const writeKinds = placeholders(IMPLEMENT_KINDS.length), passed: PassedOver[] = []; // reported once the claim commits
-    const found = await this.db.transaction(async (tx) => {
+    const writeKinds = placeholders(IMPLEMENT_KINDS.length);
+    return this.db.transaction(async (tx) => {
       await claimLock(tx); // first: the same-item check below runs one claimer at a time
       const now = this.now();
       const reserved = await liveReservations(tx, now); // a waiting session's NEW item: its runs stay queued (05-interactive-sessions)
@@ -546,28 +546,24 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
       const busy = new Set(writing.map((r) => r.work_item_id as string));
       // Open sessions (design §5, 2026-11-01): an implement-type run waits while its item has one, or while its cost against one reaches max_cost (sessionHold, 2026-11-21).
       const sessions = await this.runningItems(tx, [INTERACTIVE]), sc = input.coordination ?? DEFAULT_COORDINATION;
-      const sessionHolder = async (itemId: string): Promise<string | null> => { // the item whose session holds it (its own, or one it overlaps), else null
-        if (sessions.length === 0 || sessions.some((x) => x.item.id === itemId)) return sessions.length > 0 ? itemId : null;
+      const overlapsSession = async (itemId: string): Promise<boolean> => {
+        if (sessions.length === 0 || sessions.some((x) => x.item.id === itemId)) return sessions.length > 0;
         const it = await this.selectItem(tx, itemId as WorkItemId);
-        return (it && sessionHold(it, sessions, await this.projectConflicts(tx, it.project, sc), sc)?.holder.work_item_id) || null;
-      };
-      // A run passed over for another item (its session, a coordination hold) stores that holder; rewritten and reported only when it changes, cleared by the claim (design §5, 2026-11-23).
-      const passOver = async (q: Row, reason: PassedOver["reason"], holder: string) => {
-        if (holder === q.work_item_id || holder === q.passed_over_by || !(await tx.run("UPDATE worker_runs SET passed_over_by = ? WHERE id = ?", [holder, q.id as string]))) return;
-        passed.push({ run_id: q.id as RunId, work_item_id: q.work_item_id as WorkItemId, kind: q.kind as RunKind, reason, holder: holder as WorkItemId });
+        return it !== null && sessionHold(it, sessions, await this.projectConflicts(tx, it.project, sc), sc) !== null;
       };
 
       // Queued runs in claim order (claimOrderSql, design §5 Coordination). not_before: a retry waits out its backoff, whichever worker looks; a held item's (05-alarms) waits for its release.
       const order = claimOrderSql(seq);
       const queued = await tx.all(
-        `SELECT r.id, r.kind, r.work_item_id, r.passed_over_by FROM worker_runs r
+        `SELECT r.id, r.kind, r.work_item_id FROM worker_runs r
          WHERE r.status = 'queued' AND r.kind IN (${placeholders(kinds.length)})
            AND (r.not_before IS NULL OR r.not_before <= ?) AND NOT EXISTS (SELECT 1 FROM controller_work_items w WHERE w.id = r.work_item_id AND w.blocked_reason = ?)
          ORDER BY ${order.sql}`,
         [...kinds, now, RECURRING_FAILURE, ...order.params],
       );
       // Coordination (design §5, 2026-11-03): read once, only when an implement run is a candidate.
-      const coord = queued.some((q) => q.kind === "implement") ? await this.coordinationContext(tx, queued, busy, sc) : null;
+      const settings = input.coordination ?? DEFAULT_COORDINATION;
+      const coord = queued.some((q) => q.kind === "implement") ? await this.coordinationContext(tx, queued, busy, settings) : null;
       const fits = input.workers ? await this.slotCheck(tx, input.workers) : () => true; // the cap: every kind waits at `workers`, a merge check gets one slot beyond
       for (const next of queued) {
         if (!fits(next.kind as RunKind) || reserved.has(next.work_item_id as string)) continue;
@@ -578,17 +574,17 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
         // A GitHub rate limit holds every kind that calls GitHub on its way (implement, update, review) until the
         // reset; triage and resolve still claim.
         if (githubPaused && (writer || next.kind === "review")) continue;
-        const session = writer ? await sessionHolder(next.work_item_id as string) : null;
-        if (session) { await passOver(next, "session", session); continue; }
+        if (writer && (await overlapsSession(next.work_item_id as string))) continue;
         // An implement run also waits for its dependencies and, before its PR exists, while its cost is too high.
-        const held = next.kind === "implement" && coord ? await this.coordinate(tx, next.id as RunId, next.work_item_id as WorkItemId, coord, sc) : null;
-        if (held !== null) { if (held) await passOver(next, "held", held); continue; }
+        if (next.kind === "implement" && coord && !(await this.coordinate(tx, next.id as RunId, next.work_item_id as WorkItemId, coord, settings))) {
+          continue;
+        }
         const id = next.id as RunId;
         // A paused run's resume adds nothing to attempt (design §5 Pause): it was not a new try.
         const claimed = await tx.run(
           `UPDATE worker_runs SET status = 'running', attempt = attempt + CASE WHEN paused_at IS NULL THEN 1 ELSE 0 END,
              lease_owner = ?, lease_token = lease_token + 1, lease_expires_at = ?, started_at = ?, updated_at = ?,
-             paused_at = NULL, paused_by = NULL, passed_over_by = NULL
+             paused_at = NULL, paused_by = NULL
            WHERE id = ? AND status = 'queued'`,
           [input.worker_id, this.after(input.lease_ms), now, now, id],
         );
@@ -600,8 +596,6 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
       }
       return null;
     });
-    for (const p of passed) input.passed?.(p);
-    return found;
   }
 
   /** The slot cap (design §5): which kinds fit, by every process's running runs (not interactive) under the claim lock. */
@@ -610,10 +604,9 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
     return (kind) => running.length < count || (count > 0 && running.length === count && EXTRA_SLOT_KINDS.includes(kind));
   }
 
-  async listQueuedInClaimOrder(limit: number): Promise<QueuedRun[]> {
+  async listQueuedInClaimOrder(limit: number): Promise<Run[]> {
     const order = claimOrderSql(this.db.dialect.seq);
-    return (await this.db.all(`SELECT r.* FROM worker_runs r WHERE r.status = 'queued' ORDER BY ${order.sql} LIMIT ?`, [...order.params, limit]))
-      .map((r) => ({ ...rowToRun(r), passed_over_by: (r.passed_over_by as WorkItemId | null) ?? null }));
+    return (await this.db.all(`SELECT r.* FROM worker_runs r WHERE r.status = 'queued' ORDER BY ${order.sql} LIMIT ?`, [...order.params, limit])).map(rowToRun);
   }
 
   async runNext(id: WorkItemId): Promise<Run[]> {
@@ -681,20 +674,19 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
   }
 
   /**
-   * What holds queued implement run `runId` now (design §5, 2026-11-03): null when it may be claimed, else the holder's
-   * work item ("" for a dependency or a holder with no item). Writes the run's claim decision when the cost rule decided
-   * it and the decision changed. A `held` run then follows `hold_policy` (issue #314), timed from `held_since`: the start
-   * of the hold, kept while the run stays held. Oldest held first (design 05-dependencies, 2026-11-23): a run already
-   * held is held only by running items and open PRs that were ahead of it (`aheadOf`), and an older queued run that is
-   * held holds it too.
+   * Whether queued implement run `runId` may be claimed now (design §5, 2026-11-03). Writes the run's claim
+   * decision when the cost rule decided it and the decision changed. A `held` run then follows `hold_policy`
+   * (issue #314), timed from `held_since`: the start of the hold, kept while the run stays held. Oldest held first
+   * (design 05-dependencies, 2026-11-23): a run already held is held only by running items and open PRs that were
+   * ahead of it (`aheadOf`), and an older queued run that is held holds it too.
    */
   private async coordinate(
     tx: SqlExecutor, runId: RunId, itemId: WorkItemId, c: CoordContext, s: CoordinationSettings,
-  ): Promise<string | null> {
-    if (c.depHeld(itemId)) return "";
+  ): Promise<boolean> {
+    if (c.depHeld(itemId)) return false;
     const it = c.items.get(itemId);
     // A review fix or retry on an item with a PR: its conflicts are the PR's, handled at merge.
-    if (!it || it.change_ref !== null) return null;
+    if (!it || it.change_ref !== null) return true;
     const existing = c.decisions.get(runId) ?? null;
     const now = this.now();
     // A hold goes on across its named holder closing (`released`): the start stays, and so does the order rule.
@@ -715,21 +707,21 @@ export class SqlFactoryStore extends SqlSkillEvalStore implements FactoryStore {
     const holds = holdsOn({ work_item_id: it.id, project: it.project, files: it.files_to_change ?? it.allowed_paths }, holders,
       c.conflicts.get(it.project) ?? new Map(), s);
     const verdict = claimDecision(holds);
-    if (verdict === "free") return null;
+    if (verdict === "free") return true;
     const write = (decision: ClaimDecision["decision"]) =>
       writeClaimDecision(tx, (sql, params) => this.insertOnce(tx, sql, params), now, { it, runId, decision, hold: holds[0]!, threshold: s.max_cost, existing, held_since: since });
     if (existing?.approved_by) {
       await write("approved");
-      return null;
+      return true;
     }
     if (verdict === "deadlock") {
       await write("deadlock");
-      return null;
+      return true;
     }
     const outcome = holdOutcome(holds, s, Date.parse(now) - Date.parse(since));
     await write(outcome);
     c.held.set(itemId, outcome === "held"); // newer runs in this claim wait behind it (rule 2)
-    return outcome === "held" ? (holds[0]!.holder.work_item_id ?? "") : null;
+    return outcome !== "held";
   }
 
   private refFor(c: CoordContext, holderId: string, self: WorkItem): string {

@@ -17,5 +17,4 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   "worker_runs.outcome": "JSON result of the run; usage.cost_usd is its cost in dollars.",
   "worker_runs.finished_at": "When the run ended (UTC); Spend counts a run on this day.",
   "worker_runs.run_next_seq": "Set by the owner's Run next on a queued run: it starts first, the highest number first; empty for every other run.",
-  "worker_runs.passed_over_by": "The work item a queued run was last passed over for (a session it overlaps, a coordination hold); empty when none or once claimed.",
 };
