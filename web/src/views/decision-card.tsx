@@ -29,8 +29,9 @@ import { summaryOf, threadOrder } from "./thread.js";
 // buttons built from the item API's `commands`. The primary comes first (Merge, else the command that allows a
 // permission ask's paths, else Approve, Answer or Retry: primaryOf), then the verdict's Good and Bad (one tap each,
 // oneTapNote) and Feedback (the note box's text), the other commands (Revise, …) in the API's order, and the "…" menu
-// with Reject and Verdict (their dialogs). Every button and menu item carries `data-action`, its command's name, and
-// sends that command through the item commands route; one the API marks not allowed is disabled with the controller's
+// with Reject and Verdict (their dialogs). Every button and menu item carries `data-action`, its CLI command's name,
+// and `data-item`, the item's ID (Good, Bad and Feedback are `verdict` with `data-choice`), and sends that command
+// through the item commands route; one the API marks not allowed is disabled with the controller's
 // reason under the row (in the menu, in its label). The command help (every command, how to type it) is behind ? and
 // ⌘K, never in the card.
 
@@ -118,7 +119,7 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
   const feedback = oneTapNote("feedback", note);
   const rest = commands.filter((c) => c !== primary && !MENU.includes(c.name));
   // Verdict and Reject: in the "…" menu, one the viewer may not send disabled with its reason.
-  const menuItems = commands.filter((c) => MENU.includes(c.name)).map((c) => menuEntry(c, !enabled || busy, () => setOpen(c.name as FormName)));
+  const menuItems = commands.filter((c) => MENU.includes(c.name)).map((c) => menuEntry(id, c, !enabled || busy, () => setOpen(c.name as FormName)));
   const actions = useRef<HTMLDivElement>(null);
   // The OverflowMenu owns its button, so a menu dialog hands focus back to it by looking it up when it closes.
   const moreButton = { get current() { return actions.current?.querySelector<HTMLElement>("[aria-haspopup=menu]") ?? null; } } as RefObject<HTMLElement | null>;
@@ -134,10 +135,11 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
     const outcome = c.allowed ? commandOutcome(replies, c.name, sent) : notAllowed(c);
     const disabled = !enabled || busy || !c.allowed || (!!sent && "label" in sent && !!sent.label && outcome?.text === sent.label);
     return (
-      <span key={c.name} data-command={c.name} className="inline-flex">
+      <span key={c.name} className="inline-flex">
         <Button
           variant={c === primary ? "primary" : "secondary"}
           data-action={c.name}
+          data-item={id}
           disabled={disabled}
           title={c.description}
           {...(opensDialog ? { "aria-haspopup": "dialog" as const } : {})}
@@ -197,12 +199,12 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
           className="mb-3 block w-full max-w-xl"
         />
         <div ref={actions} data-decision-actions className="flex flex-wrap items-center gap-2">
-          {showMerge ? <span data-command="merge" className="inline-flex"><MergeButton id={id} source={detail?.source.type} merge={merge} replies={replies} returned={mergeReturned(data)} /></span> : primary && button(primary)}
+          {showMerge ? <span className="inline-flex"><MergeButton id={id} source={detail?.source.type} merge={merge} replies={replies} returned={mergeReturned(data)} /></span> : primary && button(primary)}
           {verdict && (
             <span data-verdict className="inline-flex">
               <SegmentedControl<OneTapChoice | "">
                 label={t("commands.verdict")}
-                options={[{ id: "good", label: t("commands.good"), action: "verdict" }, { id: "bad", label: t("commands.bad"), action: "verdict" }]}
+                options={(["good", "bad"] as const).map((choice) => ({ id: choice, label: t(`commands.${choice}`), data: { "data-action": "verdict", "data-item": id, "data-choice": choice } }))}
                 value=""
                 onChange={(choice) => choice !== "" && tap(choice)}
               />
@@ -212,7 +214,8 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
             <Button
               variant="secondary"
               data-action="verdict"
-              data-verdict-tap="feedback"
+              data-item={id}
+              data-choice="feedback"
               disabled={verdictOff || feedback === null}
               title={`${verdict.description}${t("commands.needFeedback")}`}
               onClick={() => feedback !== null && tap("feedback")}

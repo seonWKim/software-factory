@@ -33,3 +33,24 @@ export function SideLinks({ label, pages, current, badges = {} }: { label: strin
     </nav>
   );
 }
+
+/**
+ * The sidebar footer's quiet "? Shortcuts" link (design 09-dashboard-shell): opens the shortcut list (HelpDialog), as `?`
+ * does. A narrow sidebar shows only the `?`.
+ */
+export function ShortcutsLink({ onOpen }: { onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label={t("keys.footerLink")}
+      aria-haspopup="dialog"
+      aria-keyshortcuts="?"
+      title={t("keys.footerLink")}
+      onClick={onOpen}
+      className={cn(LINK_ROW, "min-h-6 w-full rounded-control text-xs text-text-2 hover:bg-surface-2 hover:text-text-1")}
+    >
+      <span className="max-lg:hidden">{t("keys.footerLink")}</span>
+      <span aria-hidden className="lg:hidden">?</span>
+    </button>
+  );
+}

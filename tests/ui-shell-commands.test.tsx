@@ -35,7 +35,7 @@ const typeNote = (text: string) => fireEvent.change(screen.getByRole("textbox", 
 describe("item commands", () => {
   it("shows one button per command, labelled with its name: the primary first (approve before retry), the rest in the API's order, each with data-action", () => {
     mountCommands(["retry", "approve", "budget"].map(cmd));
-    const buttons = [...document.querySelectorAll<HTMLButtonElement>("[data-command] > button")];
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>("[data-decision-actions] > span > button[data-action]")];
     expect(buttons.map((b) => b.textContent)).toEqual(["Approve", "Retry", "Budget"]);
     expect(buttons.map((b) => b.dataset.action)).toEqual(["approve", "retry", "budget"]);
   });
@@ -86,7 +86,7 @@ describe("item commands", () => {
   it("with no command that applies (a running item), says so and offers no note box or button", () => {
     mountCommands([], [], SESSION, "factory");
     expect(document.querySelector("[data-commands-none]")?.textContent).toContain("No command applies now");
-    expect(document.querySelectorAll("[data-command] > button")).toHaveLength(0);
+    expect(document.querySelectorAll("[data-decision-actions] button[data-action]")).toHaveLength(0);
     expect(screen.queryByRole("textbox", { name: "Note" })).toBeNull();
   });
 
@@ -208,7 +208,7 @@ describe("item commands", () => {
   it("with commands off every button is disabled and the page says so", () => {
     mountCommands(undefined, [], { ...SESSION, commands_enabled: false, actor: null, actor_source: null });
     typeNote("some text");
-    for (const b of document.querySelectorAll("[data-command] > button")) expect((b as HTMLButtonElement).disabled).toBe(true);
+    for (const b of document.querySelectorAll("[data-decision-actions] > span > button[data-action]")) expect((b as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/Commands are off/)).toBeTruthy();
     // The notice links to the Settings page's section that says what to set.
     expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/app/settings#page-commands");
