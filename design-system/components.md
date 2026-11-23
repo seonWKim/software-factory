@@ -38,6 +38,10 @@ One cell of a `Tr`; in a card it wraps and drops width classes. Data attributes 
 
 A `Table` built from `columns` and `rows`, on `Table`, `Tr` and `Td`. A column is `{ key, header, render?, numeric?, className? }` (`className` is added to the column's cells). With `dataKey` each row carries `data-key` set to its `rowKey`, for links and tests that find a row by it. States: number columns right-aligned in `tabular-nums` (header too); a column empty in every row left out; cards below `SM_PX`; no rows shows `empty`.
 
+## Chart
+
+A small bar chart from plain elements on token colours (`chart.tsx`), as Efficiency's mini charts: `points` (`key`, `value`, `caption`, `text`) and a `label` naming its list. One bar (`bg-accent`, `rounded-t-control`) per point in a 96 px high row, its height `value` over `max` (default: the largest value; a rate passes `max={1}`); the first and last `caption` sit under it in `text-xs text-text-2`. Every point is also text: its `text` is in the bar's `title` and in a screen-reader line, so the chart is a list of sentences too. Not interactive; use a Button bar (Efficiency) when a bar must pick something. One size. States: with points, no points (draws nothing: the page shows an `EmptyState`).
+
 ## Badge
 
 The one pill (`badge.tsx`): a short text as a pill with a dot, `text-xs` medium, in the tone of `level`, a key of the one state table (`src/shared/states.ts`); `TONE_CLASS` maps each tone to the pill tokens (`ok`, `warn`, `bad`, `info`) or neutral (`surface-2` with `text`), and an unknown or missing level is neutral. Carries `data-level`. For any pill that is not an item, run or worker state (plugins, settings, calendar, a task's overdue, a transcript, a thread). One size. `tests/design-system.test.ts` checks every tone it draws at 4.5:1 in both themes.

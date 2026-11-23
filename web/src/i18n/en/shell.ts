@@ -48,6 +48,7 @@ export const shell = {
   "keys.primary": "Run the selected row's main action (not Merge)",
   "topbar.updateFailed": "update failed",
   "topbar.refresh": "Refresh",
+  "topbar.more": "More",
   "topbar.modeAuto": "Auto",
   "topbar.modeAutoTier": "Auto · merges ≤ tier {tier}",
   "topbar.modeManual": "Manual",
