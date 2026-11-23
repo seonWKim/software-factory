@@ -112,7 +112,20 @@ export function checkLayout(limits) {
   if (sw > W + 1) fail("page-scroll", document.documentElement, `scrollWidth ${sw}px > viewport ${W}px`);
   // The app scrolls inside its content column, so the document can fit while the column scrolls sideways.
   const root = document.querySelector("[data-scroll-root]");
-  if (root && root.scrollWidth > root.clientWidth + 1) fail("page-scroll", root, `scroll root scrollWidth ${root.scrollWidth}px > clientWidth ${root.clientWidth}px`);
+  if (root && root.scrollWidth > root.clientWidth + 1) {
+    // The widest element that no ancestor clips, so the next run shows which one makes the column scroll.
+    let widest = null;
+    for (const el of root.querySelectorAll?.("*") ?? []) {
+      if (!painted(el)) continue;
+      let clipped = false;
+      for (let a = el.parentElement; a && a !== root; a = a.parentElement) if (style(a).overflowX !== "visible") clipped = true;
+      if (clipped) continue;
+      const w = el.getBoundingClientRect().right - root.getBoundingClientRect().left;
+      if (!widest || w > widest.w) widest = { el, w };
+    }
+    const named = widest ? `; widest unclipped element ${selector(widest.el)} ends ${Math.round(widest.w)}px from the column's left` : "";
+    fail("page-scroll", root, `scroll root scrollWidth ${root.scrollWidth}px > clientWidth ${root.clientWidth}px${named}`);
+  }
 
   // unreachable
   const sh = document.documentElement.scrollHeight;

@@ -84,3 +84,17 @@ describe("check:responsive small-target", () => {
     expect(small([element("button", { width: 200, height: 20 })])).toHaveLength(1);
   });
 });
+
+describe("check:responsive page-scroll culprit", () => {
+  it("names the widest element no ancestor clips", () => {
+    const wide = { ...element("p", { width: 568, height: 20 }), getAttribute: (n: string) => (n === "data-testid" ? "wide-row" : null) };
+    pageWith({ scrollWidth: 568, clientWidth: 334 });
+    const doc = (globalThis as unknown as { document: { querySelector: (q: string) => Record<string, unknown> | null } }).document;
+    const root = doc.querySelector("[data-scroll-root]")!;
+    root.querySelectorAll = () => [element("p", { width: 100, height: 20 }), wide];
+    root.getBoundingClientRect = () => ({ left: 0, top: 0, right: 334, bottom: 800, width: 334, height: 800 });
+    const f = checkLayout(LIMITS).failures.filter((x) => x.rule === "page-scroll");
+    expect(f).toHaveLength(1);
+    expect(f[0]!.detail).toContain('[data-testid="wide-row"]');
+  });
+});
