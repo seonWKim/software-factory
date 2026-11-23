@@ -8,7 +8,6 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "idle-agents": "node scripts/idle-agents.mjs",
     "build:tokens": "node scripts/build-tokens.mjs",
     "i18n:catalog": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/i18n-catalog.ts",
     "build:icons": "node scripts/build-icons.mjs",
