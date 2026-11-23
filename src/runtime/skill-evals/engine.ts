@@ -65,20 +65,20 @@ export interface SkillEvalOutcome {
 }
 
 /** A case's rubric checks: `expected` as a list of check texts, or `{ checks: [...] }`; null when it is neither. */
-export function rubricChecks(expected: unknown): string[] | null {
+function rubricChecks(expected: unknown): string[] | null {
   const list = Array.isArray(expected) ? expected : typeof expected === "object" && expected !== null ? (expected as { checks?: unknown }).checks : null;
   if (!Array.isArray(list) || list.length === 0 || !list.every((c) => typeof c === "string" && c.trim() !== "")) return null;
   return list as string[];
 }
 
 /** A case's input as the replay's prompt: text as it is, any other value as JSON. */
-export const caseInput = (input: unknown): string => (typeof input === "string" ? input : JSON.stringify(input));
+const caseInput = (input: unknown): string => (typeof input === "string" ? input : JSON.stringify(input));
 
 /** `pass` only when every answer is yes; one no fails the case. */
-export const verdictOf = (answers: readonly CheckAnswer[]): CaseVerdict => (answers.every((a) => a.answer === "yes") ? "pass" : "fail");
+const verdictOf = (answers: readonly CheckAnswer[]): CaseVerdict => (answers.every((a) => a.answer === "yes") ? "pass" : "fail");
 
 /** The run's status from its verdicts: `failed` on one failed case, else `errored` on one errored case or none at all, else `passed`. */
-export function runStatus(verdicts: readonly string[]): RunStatus {
+function runStatus(verdicts: readonly string[]): RunStatus {
   if (verdicts.includes("fail")) return "failed";
   return verdicts.length === 0 || verdicts.some((v) => v !== "pass") ? "errored" : "passed";
 }

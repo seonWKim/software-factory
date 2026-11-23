@@ -10,6 +10,6 @@ export { ensureDiscoveredTopicTables } from "./registry/topic-tables.js";
 export { loadDescriptors } from "./registry/registry.js";
 export { replayInSandbox, type ReplayRequest, type ReplayRunSpec, type ReplayRunner, type ReplaySandbox } from "./skill-evals/replay.js";
 export {
-  caseInput, rubricChecks, runSkillEval, runStatus, skillEvalReplay, verdictOf,
+  runSkillEval, skillEvalReplay,
   type CaseVerdict, type SkillEvalEngineDeps, type SkillEvalEngineStore, type SkillEvalOutcome, type SkillEvalRunInput, type SkillJudgeFn, type SkillReplay,
 } from "./skill-evals/engine.js";
