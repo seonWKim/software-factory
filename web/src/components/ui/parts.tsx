@@ -9,7 +9,7 @@ import { cn } from "../../lib/cn.js";
 export const SM_PX = 640;
 
 /** True at `sm` and up; follows the window's width as it changes. */
-function useWide(): boolean {
+export function useWide(): boolean {
   const read = () => typeof window === "undefined" || window.innerWidth >= SM_PX;
   const [wide, setWide] = useState(read);
   useEffect(() => {
