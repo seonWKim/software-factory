@@ -4,10 +4,12 @@
 import { PHASE_MARKER } from "../../../core/split.js";
 import { type SourceEvent, taskOfferMarker } from "../../../interfaces/source-adapter.js";
 import { scanClean } from "../commands/scan.js";
+import { SYSTEM } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
 type ItemRequested = Extract<SourceEvent, { kind: "item_requested" }>;
+type NewItem = Parameters<Ctx["k"]["d"]["store"]["createWorkItem"]>[0];
 
 /** The reply to an empty top-level mention: nothing to offer as a task. */
 const EMPTY_TEXT = "I couldn't read that.";
@@ -64,6 +66,34 @@ export class IntakeUnit {
     await this.c.unit("outbox").markSeen(e.source, null);
     // Every delivery re-checks the link, so a re-polled issue finishes a link a crash interrupted.
     await this.c.unit("verdicts").linkFixForward(item.id, `${e.title}\n${e.body}`);
+  }
+
+  /**
+   * A base push that conflicts with origin's `base_ref` at `remote` (design 05-sources, Base reconcile): one local
+   * reconcile item, keyed on that sha by its source id, so a second conflict on it files nothing. It skips triage and
+   * spec approval: it starts at its resolve run, keyed on the item and the sha. Safe to run twice: the source id makes
+   * one item, and only an item still at NEW with no hold moves, so a crash between the two finishes on the replay.
+   */
+  async fileReconcile(base_ref: string, remote: string, conflicts: readonly string[], source_id: string): Promise<void> {
+    const short = remote.slice(0, 12);
+    const { item, created } = await this.c.k.d.store.createWorkItem({
+      source: { type: "local", id: source_id, link: "" },
+      title: `Reconcile local ${base_ref} with origin/${base_ref} at ${short}`,
+      requester_id: SYSTEM.id as NewItem["requester_id"],
+      project: this.c.k.project(),
+      problem: [
+        `The push of local \`${base_ref}\` to origin conflicts with origin/\`${base_ref}\` at \`${remote}\`${conflicts.length > 0 ? ` in ${conflicts.map((f) => `\`${f}\``).join(", ")}` : ""}.`,
+        `A resolve run merges origin/${base_ref} as fetched into this item's branch, made from local \`${base_ref}\`, resolves the conflicts and runs the checks; a green result lands through the merge queue, and the base push follows.`,
+      ].join("\n\n"),
+      resources: [],
+    }, SYSTEM);
+    if (created) this.c.k.d.log.info("base reconcile filed", { work_item_id: item.id, base_ref, remote });
+    await this.c.unit("transitions").decide(item.id, (it) => (it.stage === "NEW" && it.blocked_on === "none"
+      ? {
+          patch: { stage: "RUNNING" }, actor: SYSTEM, reason: "reconcile_started", detail: { base_ref, remote },
+          enqueue: { kind: "resolve", idempotency_key: `${item.id}:reconcile:${remote}`, input: { notes: "" } },
+        }
+      : null));
   }
 
   /**
