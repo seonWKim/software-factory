@@ -35,6 +35,9 @@ import { summaryOf, threadOrder } from "./thread.js";
 // reason under the row (in the menu, in its label). The command help (every command, how to type it) is behind ? and
 // ⌘K, never in the card.
 
+/** The sub-group heading type (SUB_TITLE) in the warn fill's own fg, which passes 4.5:1 there where text-2 does not. */
+const PANEL_SUB_TITLE = SUB_TITLE.replace(/text-text-\d/, "text-pill-warn-fg");
+
 /** The newest factory message's anchor, shown in the thread (which opens to it). */
 function showInThread(e: MouseEvent<HTMLAnchorElement>, anchor: string) {
   const el = document.getElementById(anchor);
@@ -162,7 +165,7 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
         {question}
       </div>
       <div data-decision-evidence className="space-y-2">
-        <h3 className={SUB_TITLE}>{t("decide.evidence")}</h3>
+        <h3 className={PANEL_SUB_TITLE}>{t("decide.evidence")}</h3>
         <ThreadContext thread={data?.thread} />
         <InShort spec={data?.spec} />
         <AskedPaths paths={asked} />
@@ -170,7 +173,7 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
       </div>
       <section aria-label={t("commands.label")}>
         {off && (
-          <p role="status" data-commands-off className="mb-2 text-sm text-pretty text-text-2">
+          <p role="status" data-commands-off className="mb-2 text-sm text-pretty text-pill-warn-fg">
             {t("commands.offBefore")}
             <Link href={PAGE_COMMANDS_PATH} className={LINK_CLASS}>
               {t("commands.offSettings")}
@@ -179,7 +182,7 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
           </p>
         )}
         {enabled && session.data?.actor && (
-          <p data-commands-actor className="mb-2 text-xs text-pretty text-text-2">
+          <p data-commands-actor className="mb-2 text-xs text-pretty text-pill-warn-fg">
             {t("commands.actingAs")}<PersonName id={session.data.actor} viewer={session.data.actor} />{t("commands.actorFrom", { source: session.data.actor_source === "config" ? t("commands.sourceConfig") : t("commands.sourceEnv") })}
           </p>
         )}
