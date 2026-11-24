@@ -24,10 +24,11 @@ import { FakeAuth } from "./helpers/fakes/runner.js";
 import { FakeSlackPollSource, FakeSource } from "./helpers/fakes/source.js";
 import { alice, cleanScanner, config, issueRef, silent, slackRef, triageSpec } from "./helpers/fakes/config.js";
 import { pipeline } from "./helpers/harness.js";
-import { ROUTINE_CAP, addRoutine, carrierSource, holdSource } from "../src/core/routines.js";
+import { ROUTINE_CAP, addRoutine, carrierSource, holdSource, queueRoutineRun } from "../src/core/routines.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { tickAt } from "../src/shared/ticks/tick-generator.js";
+import { scheduledAction } from "../src/core/controller-deps.js";
 import { newStore, PROJECT_KEY, system, w1 } from "./helpers/store.js";
 
 describe("parseComment", () => {
@@ -1122,15 +1123,14 @@ describe("/approve and /reject at a routine's daily cap", () => {
   async function harness() {
     const clock = new FakeClock("2026-11-23T08:59:00.000Z");
     const { store } = await newStore(clock);
-    const controller = new ControllerRole({ store, sources: [new LocalSource(store)], auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, sources: [new LocalSource(store)], auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner , schedule_action: scheduledAction(store, { run: async (s, at) => void (await queueRoutineRun(store, config.project.key, s.id, at)) }, silent, config.project.key) });
     const added = await addRoutine(store, {
       id: "rt_1", name: "License", instruction: "Check the license.", url: null, schedule: { kind: "interval", spec: "60" }, zone: "UTC", trigger: null,
       run_cap_usd: null, daily_cap_usd: 1, created_by: OWNER,
     }, clock.now());
     if (!added.ok) throw new Error(added.problem);
     const tick = async () => {
-      const u = await controller.unit("routines");
-      await controller.kernel.commit(u.decide(await u.load(controller.kernel.reader, tickAt("tick", 1, clock.now().getTime()))));
+      await (await controller.unit("schedule")).scheduleStep(tickAt("tick", 1, clock.now().getTime()));
     };
     const runs = async () => {
       const carrier = await store.getWorkItemBySource("local", carrierSource("rt_1").id);

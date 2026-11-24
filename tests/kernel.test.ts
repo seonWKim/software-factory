@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ControllerDeps } from "../src/core/controller-deps.js";
 import { Kernel } from "../src/controller/units/kernel.js";
+import routinesUnit from "../src/controller/units/routines/routines.unit.js";
+import scheduleUnit from "../src/controller/units/schedule/schedule.unit.js";
 import { FakeForge } from "./helpers/fakes/forge.js";
 import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
@@ -88,5 +90,13 @@ describe("Kernel commitItem: an entry into an owner state is an ask (design 06-e
     expect(detail("triaged")?.ask_reason).toBeUndefined();
     expect(detail("run_failed")).toEqual({ run_id: "r1", ask_reason: "run_failed", ask_tier: 2 });
     expect(detail("max_loops")).toEqual({ ask_reason: "max_loops", ask_tier: 4 });
+  });
+});
+
+describe("Kernel: routine runs are planned only by the schedule path", () => {
+  it("the reader plans no routine and the routines unit runs no step; the schedule unit's step claims Check a page rows", () => {
+    expect("routinePlans" in kernel(null).reader).toBe(false);
+    expect(routinesUnit.steps ?? []).toEqual([]);
+    expect((scheduleUnit.steps ?? []).map((s) => s.name)).toContain("schedules");
   });
 });
