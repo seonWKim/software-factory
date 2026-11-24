@@ -37,6 +37,14 @@ export interface SkillEvalRun {
   created_by: UserId;
   /** The SHA-256 of the skill folder the run replayed (capabilities skillVersion); null on a run stored before it. */
   skill_version: string | null;
+  /**
+   * What the run was measured against, written when it starts; each null on a run stored before them (no backfill).
+   * suite_version: its suite's version then (one more on each case add, edit or delete); judge_version: the SHA-256 of
+   * the judge's prompt; factory_version: the factory revision that ran it (`dev` unsupervised).
+   */
+  suite_version: number | null;
+  judge_version: string | null;
+  factory_version: string | null;
   /** The figures (SkillEvalRunFigures) once recorded; each null on a run stored before them or not recorded yet. */
   model_class: string | null;
   judge_model_class: string | null;
@@ -44,6 +52,9 @@ export interface SkillEvalRun {
   pass_rate: number | null;
   errored: number | null;
 }
+
+/** A run as it starts: which suite, who started it, and the versions it runs on (each absent: null). */
+export type SkillEvalRunStart = Pick<SkillEvalRun, "id" | "suite_id" | "created_by"> & Partial<Pick<SkillEvalRun, "skill_version" | "judge_version" | "factory_version">>;
 
 /** A finished run's figures, written once after the engine finishes. */
 export interface SkillEvalRunFigures {
@@ -86,7 +97,7 @@ export interface SkillEvalStore {
   /** Idempotent on the id: a second call returns the stored suite. */
   createSkillEvalSuite(s: Omit<SkillEvalSuite, "created_at">): Promise<SkillEvalSuite>;
   listSkillEvalSuites(): Promise<SkillEvalSuite[]>;
-  /** Idempotent on the id. */
+  /** Idempotent on the id. A new case gives its suite the next version, in the same transaction. */
   addSkillEvalCase(c: Omit<SkillEvalCase, "created_at">): Promise<SkillEvalCase>;
   listSkillEvalCases(suite_id: string): Promise<SkillEvalCase[]>;
   /** Sets a suite's title; null when the suite is unknown. */
@@ -97,12 +108,15 @@ export interface SkillEvalStore {
    */
   deleteSkillEvalSuite(id: string): Promise<"deleted" | "running" | "unknown">;
   getSkillEvalCase(id: string): Promise<SkillEvalCase | null>;
-  /** Sets a case's input and expected; null when the case is unknown. */
+  /** Sets a case's input and expected, and gives its suite the next version; null when the case is unknown. */
   updateSkillEvalCase(id: string, c: Pick<SkillEvalCase, "input" | "expected">): Promise<SkillEvalCase | null>;
-  /** False when the case is unknown. */
+  /** Deletes the case and gives its suite the next version; false when the case is unknown. */
   deleteSkillEvalCase(id: string): Promise<boolean>;
-  /** Idempotent on the id: starts the run as `running`, with its skill version (absent: null). */
-  startSkillEvalRun(r: Pick<SkillEvalRun, "id" | "suite_id" | "created_by"> & { skill_version?: string | null }): Promise<SkillEvalRun>;
+  /**
+   * Idempotent on the id: starts the run as `running`, with its suite's version as it is now, and its skill, judge and
+   * factory versions (each absent: null).
+   */
+  startSkillEvalRun(r: SkillEvalRunStart): Promise<SkillEvalRun>;
   /** Sets the final status once; false when the run is unknown or already finished. */
   finishSkillEvalRun(id: string, status: Exclude<SkillEvalRunStatus, "running">): Promise<boolean>;
   /** One verdict per run and case; a second record for the pair keeps the first. */

@@ -8,9 +8,10 @@
 // handler imports no root or legacy module. The composition root builds the improve run's skill improvement wiring
 // here (skillImproveWiring, design 07-self-improvement): the scratch run, the re-run after a promote, and SKILL.md I/O.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { codeVersion } from "./config-values.js";
 import { capabilitiesConfig, skillImproveConfig } from "./core/config.js";
 import type { SkillImproveWiring } from "./core/skill-improve.js";
 import type { UserId } from "./core/types.js";
@@ -21,6 +22,7 @@ import { MODEL_CLASSES, type ModelClass } from "./core/model-choice.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
+import { CODE_VERSION_ENV } from "./interfaces/updater.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SkillEvalRun, SkillEvalRunFigures, SkillEvalStore } from "./interfaces/skill-eval-store.js";
 import { skillFolderPath, skillVersion } from "./runtime/capabilities/capabilities.js";
@@ -67,6 +69,23 @@ export interface SkillEvalWiring {
   deny_paths: readonly string[];
   timeout_ms: number;
   newId(): string;
+  /** The factory revision stored on each run (SF_CODE_VERSION); absent: `dev`, as the worker stamps runs. */
+  factory_version?: string;
+}
+
+/** The judge's version: the SHA-256 of its system prompt, so a run judged by another prompt is told apart. */
+export const judgeVersion = (prompt: string): string => createHash("sha256").update(prompt).digest("hex");
+
+/** The engine's store with the run's judge and factory versions added to its start (the suite version the store reads). */
+function versionedStore(store: SkillEvalWiring["store"], v: { judge_version: string; factory_version: string }): SkillEvalEngineDeps["store"] {
+  return {
+    // The engine passes the run's created_by as text; it is the request's user or agent ID.
+    startSkillEvalRun: (r) => store.startSkillEvalRun({ ...r, created_by: r.created_by as UserId, skill_version: r.skill_version ?? null, ...v }),
+    listSkillEvalCases: (id) => store.listSkillEvalCases(id),
+    listSkillEvalReplays: (id) => store.listSkillEvalReplays(id),
+    recordSkillEvalReplay: (r) => store.recordSkillEvalReplay(r),
+    finishSkillEvalRun: (id, status) => store.finishSkillEvalRun(id, status),
+  };
 }
 
 /** A run's figures from its verdicts: one replay per case, pass verdicts ÷ replays (null with none), errored cases. */
@@ -96,17 +115,20 @@ export function runClass(r: Pick<SkillEvalRequest, "model_class" | "judge_model_
 }
 
 /** The engine's replay (with `system_prompt` as the skill's system prompt), judge and scan on `model_class`. */
-async function engineOf(d: SkillEvalWiring, system_prompt: string, model_class: ModelClass): Promise<Omit<SkillEvalEngineDeps, "store">> {
+async function engineOf(d: SkillEvalWiring, system_prompt: string, model_class: ModelClass): Promise<Engine> {
   const [p, system] = await Promise.all([d.plugins(), d.judgePrompt()]);
   const replay = skillEvalReplay(p, {
     repo: d.repo, role: REPLAY_ROLE, system_prompt, env_allowlist: {}, deny_paths: d.deny_paths, model_class, timeout_ms: d.timeout_ms,
   });
   const scan = async (text: string) => (await p.scanner.scan("log", text)).clean;
-  return { replay, judge: skillJudge(p.llm, system, model_class), scan };
+  return { replay, judge: skillJudge(p.llm, system, model_class), scan, judge_version: judgeVersion(system) };
 }
 
+/** The engine's replay, judge and scan, and the judge's version a run stores. */
+type Engine = Omit<SkillEvalEngineDeps, "store"> & { judge_version: string };
+
 /** The engine's parts for `skill`'s SKILL.md as it is now on `model_class`, or why they cannot be built (its SKILL.md is unreadable). */
-async function engineParts(d: SkillEvalWiring, skill: string, model_class: ModelClass): Promise<{ engine: Omit<SkillEvalEngineDeps, "store">; skill_version: string } | { refused: string }> {
+async function engineParts(d: SkillEvalWiring, skill: string, model_class: ModelClass): Promise<{ engine: Engine; skill_version: string } | { refused: string }> {
   const folder = skillFolderPath(skill, d.root);
   const [skill_text, skill_version] = await Promise.all([readFile(join(folder, "SKILL.md"), "utf8").catch(() => null), skillVersion(folder).catch(() => null)]);
   if (skill_text === null || skill_version === null) return { refused: `cannot read ${skill}/SKILL.md: nothing run` };
@@ -115,9 +137,11 @@ async function engineParts(d: SkillEvalWiring, skill: string, model_class: Model
 
 /** Runs the suite through the engine as run `id`, records its figures and returns the stored run. */
 async function runAndRecord(
-  d: SkillEvalWiring, engine: Omit<SkillEvalEngineDeps, "store">, r: { id: string; suite_id: string; created_by: string; skill_version: string; model_class: ModelClass }, signal: AbortSignal,
+  d: SkillEvalWiring, engine: Engine, r: { id: string; suite_id: string; created_by: string; skill_version: string; model_class: ModelClass }, signal: AbortSignal,
 ): Promise<SkillEvalRun> {
-  const outcome = await runSkillEval({ store: d.store, ...engine }, { id: r.id, suite_id: r.suite_id, created_by: r.created_by, skill_version: r.skill_version }, signal);
+  const { judge_version, ...parts } = engine;
+  const store = versionedStore(d.store, { judge_version, factory_version: d.factory_version ?? "dev" });
+  const outcome = await runSkillEval({ store, ...parts }, { id: r.id, suite_id: r.suite_id, created_by: r.created_by, skill_version: r.skill_version }, signal);
   if (outcome.status !== null) await d.store.recordSkillEvalRunFigures(r.id, runFigures(r.model_class, outcome.verdicts));
   const run = await d.store.getSkillEvalRun(r.id);
   if (!run) throw new Error(`skill eval run ${r.id} was not stored`);
@@ -188,7 +212,8 @@ export async function tryCaseFor(d: SkillEvalWiring, r: SkillEvalTryRequest): Pr
   if (!suite) return { refused: `no skill eval suite for case ${r.case_id}` };
   const parts = await engineParts(d, suite.skill_ref, model_class);
   if ("refused" in parts) return parts;
-  return tryCase({ store: d.store, ...parts.engine }, r.case_id, r.signal);
+  const { judge_version: _unused, ...engine } = parts.engine;
+  return tryCase({ store: d.store, ...engine }, r.case_id, r.signal);
 }
 
 /**
@@ -213,6 +238,7 @@ function wiringOf(store: SkillEvalWiring["store"], loaded: Loaded): SkillEvalWir
   return {
     store, root: loaded.root, plugins, judgePrompt: () => readFile(join(loaded.codeRoot, "prompts", "skill-judge.md"), "utf8"),
     repo: loaded.config.repo, deny_paths: loaded.config.deny_paths, timeout_ms: loaded.config.run_timeout_ms, newId: () => randomUUID(),
+    ...(() => { const v = codeVersion(process.env[CODE_VERSION_ENV]).code_version; return v ? { factory_version: v } : {}; })(),
   };
 }
 
