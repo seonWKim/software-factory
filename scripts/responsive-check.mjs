@@ -10,6 +10,8 @@
 // A console error or a failed request (scripts/responsive/console.mjs) at a page/viewport/theme fails it too.
 // Then the same pages and rules in headless WebKit at 1280 and 390 wide, light and dark (scripts/responsive/webkit.mjs),
 // the engine the owner reads the dashboard in; skipped with a note when WebKit is not installed (npm run setup:webkit).
+// Last, on macOS, the "popover-" pages in the Mac's own WebKit (scripts/responsive/system-webkit.mjs), which drew the
+// calendar popover's body 24px tall where the playwright WebKit build did not.
 //
 // Usage: npm run check:responsive [-- --page settings]   (needs `npm run build` first; the npm script builds)
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -18,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { findChrome, launch } from "./responsive/cdp.mjs";
 import { startFixture } from "./responsive/fixture.mjs";
 import { LIMITS, checkLayout } from "./responsive/rules.mjs";
+import { SYSTEM_WEBKIT_VIEWPORTS, systemWebkitPass } from "./responsive/system-webkit.mjs";
 import { WEBKIT_VIEWPORTS, webkitPass } from "./responsive/webkit.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -41,13 +44,34 @@ async function sidebarPages() {
   return [...src.matchAll(/\{\s*path:\s*"([^"]*)",\s*label:\s*"([^"]+)"/g)].map((m) => ({ name: m[1] || "floor", path: m[1] }));
 }
 
+/**
+ * Opens a Calendar popover: Month first when `month`, then presses the first painted element matching `target` (an
+ * event chip, or a month cell's "+N more") and waits for its dialog, so overlay-bounds and panel-collapsed check it.
+ */
+const openCalendar = (month, target) => `(async () => {
+  // Up to 3 seconds by the clock (a hidden WebKit view slows its timers to one a second).
+  const wait = async (find) => { for (const end = Date.now() + 3000; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) { const el = find(); if (el) return el; } return null; };
+  if (${month}) [...document.querySelectorAll("[role=radio]")].find((b) => b.textContent.trim() === "Month" && b.getAttribute("aria-checked") !== "true")?.click();
+  const el = await wait(() => [...document.querySelectorAll(${JSON.stringify(target)})].find((b) => b.getClientRects().length > 0 && (!${month} || b.closest("[role=table], [data-selected-day]"))));
+  if (!el) return;
+  el.scrollIntoView({ block: "center" });
+  el.click();
+  await wait(() => document.querySelector("dialog[open]"));
+  // A timer, not requestAnimationFrame: an offscreen WebKit view (system-webkit.swift) draws no frames.
+  await new Promise((r) => setTimeout(r, 150));
+})()`;
+
 // Clicks that show more of a page without writing anything: Data's work_items table, then every <details>.
 // The two "menu-" entries open a ⋯ menu (the top bar's More, the first Routines row's), so overlay-bounds and small-target
-// check the open menu at every viewport.
+// check the open menu at every viewport. The "popover-" entries open the Calendar's event popover in Week and Month
+// and a month day's "+N more" list (owner #92: the popover's body drew 24px tall in WebKit).
 const PREPARE = {
   data: `[...document.querySelectorAll('nav[aria-label="Tables"] button')].find((b) => b.textContent.startsWith("work_items"))?.click()`,
   "menu-top": `document.querySelector('header [aria-haspopup="menu"]')?.click()`,
   "menu-row": `document.querySelector('main [aria-haspopup="menu"]')?.click()`,
+  "popover-week": openCalendar(false, '[data-capture-open="calendar-event"]'),
+  "popover-month": openCalendar(true, '[data-capture-open="calendar-event"]'),
+  "popover-more": openCalendar(true, "[data-more]"),
 };
 const OPEN_DETAILS = `document.querySelectorAll("details").forEach((d) => (d.open = true))`;
 
@@ -75,6 +99,9 @@ async function main() {
     { name: "transcript", path: `items/${enc(fixture.pages.item)}/runs/${enc(fixture.pages.run)}` },
     { name: "menu-top", path: "routines" },
     { name: "menu-row", path: "routines" },
+    { name: "popover-week", path: "calendar" },
+    { name: "popover-month", path: "calendar" },
+    { name: "popover-more", path: "calendar" },
   ].filter((p) => only === null || p.name === only);
 
   await rm(SHOTS, { recursive: true, force: true });
@@ -102,9 +129,9 @@ async function main() {
         for (const vp of VIEWPORTS) {
           await page.send("Emulation.setDeviceMetricsOverride", { ...vp, deviceScaleFactor: 1, mobile: false });
           await page.eval(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))`);
-          // An open menu measures its side when it opens: close and open it again at this size.
-          if (p.name.startsWith("menu-")) {
-            await page.eval(`document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')?.click()`);
+          // An open menu or popover measures its side when it opens: close and open it again at this size.
+          if (p.name.startsWith("menu-") || p.name.startsWith("popover-")) {
+            await page.eval(`document.querySelector('[aria-haspopup="menu"][aria-expanded="true"], [aria-haspopup="dialog"][aria-expanded="true"]')?.click()`);
             await page.eval(PREPARE[p.name]);
             await page.eval(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))`);
           }
@@ -140,21 +167,25 @@ async function main() {
   const chromeSecs = ((Date.now() - started) / 1000).toFixed(1);
   const webkitStarted = Date.now();
   let webkit;
+  let system;
+  let webkitSecs;
   try {
     webkit = await webkitPass({ url: fixture.url, pages, prepare: (name) => PREPARE[name], openDetails: OPEN_DETAILS, shots: SHOTS });
+    webkitSecs = ((Date.now() - webkitStarted) / 1000).toFixed(1);
+    system = await systemWebkitPass({ url: fixture.url, pages: pages.filter((p) => p.name.startsWith("popover-")), prepare: (name) => PREPARE[name] });
   } finally {
     await fixture.close();
   }
-  failures.push(...webkit.failures);
-  warnings.push(...webkit.warnings);
-  const webkitSecs = ((Date.now() - webkitStarted) / 1000).toFixed(1);
+  failures.push(...webkit.failures, ...system.failures);
+  warnings.push(...webkit.warnings, ...system.warnings);
   if (webkit.skipped) console.log(`check:responsive: WebKit pass skipped: ${webkit.skipped}`);
+  if (system.skipped) console.log(`check:responsive: system WebKit pass skipped: ${system.skipped}`);
 
   const secs = ((Date.now() - started) / 1000).toFixed(1);
   for (const line of warnings) console.log(`warn  ${line}`);
   if (warnings.length > 0) console.log(`check:responsive: ${warnings.length} warning(s) from ${LIMITS.warnOnly.join(", ")} (not failing)`);
   for (const line of failures) console.log(line);
-  const summary = `${pages.length} pages x ${VIEWPORTS.length} viewports x ${THEMES.length} themes = ${checks} checks in ${chromeSecs}s, WebKit ${WEBKIT_VIEWPORTS.length} viewports x ${THEMES.length} themes = ${webkit.checks} checks in ${webkitSecs}s, ${secs}s in all`;
+  const summary = `${pages.length} pages x ${VIEWPORTS.length} viewports x ${THEMES.length} themes = ${checks} checks in ${chromeSecs}s, WebKit ${WEBKIT_VIEWPORTS.length} viewports x ${THEMES.length} themes = ${webkit.checks} checks in ${webkitSecs}s, system WebKit ${SYSTEM_WEBKIT_VIEWPORTS.length} viewports = ${system.checks} checks, ${secs}s in all`;
   if (failures.length === 0) {
     console.log(`check:responsive: ok (${summary})`);
     return 0;

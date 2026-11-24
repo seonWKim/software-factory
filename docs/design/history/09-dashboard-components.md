@@ -1,5 +1,7 @@
 ## History
 
+- **The Popover's body was `flex-1`, and a Popover with no room beside its anchor was only clamped under it** (decision changed 2026-11-24, the Popover sizing decision at the top of 09-dashboard-components.md, owner #92). Before: the body grew from a zero basis, so WebKit drew it 24px tall under a scrollbar; and under a wide chip near the window's bottom the panel was pushed up over the chip instead of flipping above it.
+
 - **A toolbar mixed 28px and 32px controls; the decision card, card intros and stat tiles each had their own spacing** (decision changed 2026-11-24, the toolbar height decision at the top of 09-dashboard-components.md). Before: Work's toolbar put 28px `sm` Buttons beside the 32px search and switch; the item page's decision card padded 12px and sat 12px under the card above (Cards pad 24px, 24px apart); card intros were `mb-4` at 75ch (Settings, Evals) or `mb-3` (Host sleeps); Work's Last 24 hours tiles were `rounded-control` with 8 by 12px padding while Spend and Efficiency were `rounded-box` with 12px.
 
 - **The calendar grid's chip titles used `Clamp`** (until 2026-11-24, the Popover decision at the top of 09-dashboard-components.md). Before: a Week event chip's title was a `Clamp` with its own "Show more" button; now the chip is a button that opens the event's details, so its title is cut with `CHIP_TITLE`.

@@ -90,4 +90,19 @@ describe("Popover placement", () => {
     // A chip on the 23rd, near the bottom (the calendar popover review, 2026-11-24).
     expect(place(rect(200, 740, 200, 24), { width: 320, height: 512 }, win)).toEqual({ left: 408, top: 252 });
   });
+
+  it("with no room beside a wide chip, opens under it, and flips over it near the window's bottom (owner #92: it opened down past the card)", () => {
+    const narrow = { width: 740, height: 800 };
+    // A full-width chip (Week's stacked days at 740px): no side has 320px.
+    expect(place(rect(100, 200, 560, 36), { width: 320, height: 200 }, narrow)).toEqual({ left: 100, top: 244 });
+    expect(place(rect(100, 700, 560, 36), { width: 320, height: 200 }, narrow)).toEqual({ left: 100, top: 492 });
+  });
+
+  it("stays whole inside the window: a panel taller than the room on either side of the chip shifts inside, never past an edge", () => {
+    const short = { width: 740, height: 500 };
+    const { left, top } = place(rect(100, 240, 560, 36), { width: 320, height: 400 }, short);
+    expect(left).toBe(100);
+    expect(top).toBeGreaterThanOrEqual(8);
+    expect(top + 400).toBeLessThanOrEqual(500 - 8);
+  });
 });

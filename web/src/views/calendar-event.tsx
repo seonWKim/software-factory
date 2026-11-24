@@ -13,20 +13,17 @@ import { linkParts, plainText } from "../lib/plain-text.js";
 // a link to the event's own page. Every text is shown as text: notes written as HTML are turned into plain text with
 // their http(s) addresses as links (lib/plain-text.ts), never put on the page as HTML.
 
-/** The existing token colours an event's strip is chosen from, by its source's name. */
-const STRIPS = ["bg-kind-triage", "bg-kind-implement", "bg-kind-review", "bg-kind-resolve", "bg-kind-merge-check"] as const;
-/** A source's strip colour: a stable hash of its name, so the same source keeps its colour across reads. */
-function stripFor(source: string): string {
+/** The existing token colours an event's calendar colour is chosen from, by its source's name. */
+const COLOURS = ["bg-kind-triage", "bg-kind-implement", "bg-kind-review", "bg-kind-resolve", "bg-kind-merge-check"] as const;
+/** A source's colour (a `bg-kind-*` class): a stable hash of its name, so the same source keeps its colour across reads. */
+export function colourOf(source: string): string {
   let h = 0;
   for (const ch of source) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return STRIPS[h % STRIPS.length]!;
+  return COLOURS[h % COLOURS.length]!;
 }
-export const Strip = ({ source, className }: { source: string; className?: string }) => (
-  <span aria-hidden data-strip className={cn("w-1 shrink-0 self-stretch rounded-pill", stripFor(source), className)} />
-);
 
 /** An event's name in its button and its panel's heading; an event with no title says so. */
-const titleOf = (e: CalendarEvent) => (e.title.trim() === "" ? t("calendarPage.untitled") : e.title);
+export const titleOf = (e: CalendarEvent) => (e.title.trim() === "" ? t("calendarPage.untitled") : e.title);
 
 /**
  * An event chip as a button (ChipButton) that opens its details in a Popover; pressing it again, Esc or the close
@@ -37,7 +34,7 @@ export function EventButton({ event, showSource, className, children }: { event:
   const ref = useRef<HTMLButtonElement>(null);
   return (
     <>
-      <ChipButton ref={ref} open={open} data-event={`${event.source}:${event.id}`} data-capture-open="calendar-event" onClick={() => setOpen((o) => !o)} className={className}>
+      <ChipButton ref={ref} open={open} data-event={`${event.source}:${event.id}`} {...(event.all_day ? { "data-all-day": "" } : {})} data-capture-open="calendar-event" onClick={() => setOpen((o) => !o)} className={className}>
         {children}
       </ChipButton>
       {open && (
@@ -163,7 +160,7 @@ export function EventDetail({ event, showSource }: { event: CalendarEvent; showS
         </Row>
         <Row icon={CalendarDays} term={t("calendarPage.eventCalendar")}>
           <p className="flex items-center gap-2">
-            <span aria-hidden data-strip className={cn("size-2 shrink-0 rounded-pill", stripFor(event.source))} />
+            <span aria-hidden data-colour className={cn("size-2 shrink-0 rounded-pill", colourOf(event.source))} />
             <span data-raw className="min-w-0 wrap-anywhere">{calendar}</span>
           </p>
           {showSource && calendar !== event.source && <p data-raw className="text-xs text-text-2">{event.source}</p>}

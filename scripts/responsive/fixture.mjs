@@ -402,9 +402,11 @@ async function seedCalendar(store, clock) {
   const ok = { events: async (w) => list.filter((e) => e.starts_at < w.to && e.ends_at > w.from) };
   await syncCalendars(db, [{ name: connected, source: ok }], before);
   const day = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
-  const first = new Date(Math.min(monday.getTime(), new Date(now.getFullYear(), now.getMonth(), 1).getTime()));
-  const last = new Date(Math.max(monday.getTime() + 6 * 86_400_000, new Date(now.getFullYear(), now.getMonth() + 1, 0).getTime()));
+  // The Month view's whole weeks (they hold this week): the Monday before the month's first day to the Sunday after its last.
+  const mondayOf = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7));
+  const first = mondayOf(new Date(now.getFullYear(), now.getMonth(), 1));
+  const end = mondayOf(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+  const last = new Date(end.getFullYear(), end.getMonth(), end.getDate() + 6);
   await requestCalendarSync(db, { from: day(first), to: day(last), by: OWNER, nowMs: before });
   await runSyncRequests(db, [{ name: connected, source: ok }], before);
   const failing = { events: async () => { throw new Error(`token refresh failed: invalid_grant for ${LONG_WORD} ${"while reading the calendar list ".repeat(4)}`); } };
@@ -423,7 +425,7 @@ async function seedCalendar(store, clock) {
 
 /**
  * This week's events: first (Monday 09:00) one with a long title, a place, notes written as HTML with a link, a video
- * link, an organizer and attendees; then an all-day event and short ones, two on today.
+ * link, an organizer and attendees; then an all-day event and short ones, five on today (its Month cell shows "+N more").
  */
 function calendarEvents(now) {
   const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
@@ -448,5 +450,10 @@ function calendarEvents(now) {
     { id: "offsite", title: "Team offsite", starts_at: at(2, 0), ends_at: at(3, 0), all_day: true, updated_at: null },
     { id: "one-on-one", title: "Alex Kim <> Mentor", starts_at: at(today, 11, 30), ends_at: at(today, 12), all_day: false, updated_at: null },
     { id: "review", title: "Design review", starts_at: at(today, 17), ends_at: at(today, 18), all_day: false, updated_at: null },
+    // Three more on today, so its Month cell overflows into "+N more" (owner #92: a short meeting with a mixed-script title).
+    { id: "short-meeting", title: "15 min meeting between Yeongjun Kim and 김선우", starts_at: at(today, 9, 15), ends_at: at(today, 9, 30), all_day: false, updated_at: null,
+      details: { calendar: "Work and interviews", location: null, description: null, organizer: null, attendees: [], conference_url: null, link: "https://calendar.google.com/calendar/event?eid=short", time_zone: null } },
+    { id: "lunch", title: "Lunch", starts_at: at(today, 12, 30), ends_at: at(today, 13, 30), all_day: false, updated_at: null },
+    { id: "focus", title: "Focus time", starts_at: at(today, 14), ends_at: at(today, 16), all_day: false, updated_at: null },
   ];
 }

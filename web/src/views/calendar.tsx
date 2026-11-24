@@ -19,7 +19,7 @@ import { MonthGrid, WeekDays } from "./calendar-grid.js";
 // switch, Previous / Today / Next (icon buttons round Today), the period ("Nov 23 – 29, 2026", the page's one h2) and a
 // quiet Sync icon button at the end. The Card holds the week or month grid (calendar-grid.tsx) with no title of its own.
 // Previous and next move by one week or month; Today returns to the period holding today in the browser's time zone.
-// Each event has a colour strip chosen from its source's name and names its source only when several calendars are
+// The month shows its whole weeks, the days outside it faint (read with them). Each event has a colour chosen from its source's name and names its source only when several calendars are
 // connected. A day the last syncs did not cover is shaded, never drawn empty, and one note above the grid names those
 // days; an empty synced day shows no text. A source whose last sync failed is named with its last sync time, and its
 // stored events stay listed. A connected calendar that has not synced yet is named with "Not synced yet". The read
@@ -44,10 +44,15 @@ const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), 
 const monday = (d: Date) => addDays(d, -((d.getDay() + 6) % 7));
 const monthName = (d: Date, month: "short" | "long") => d.toLocaleDateString(undefined, { month });
 
-/** The first and last day shown for `view` around `focus`: its Monday-to-Sunday week, or its month. */
+/** The first and last day of `view` around `focus`: its Monday-to-Sunday week, or its month. */
 function period(view: View, focus: Date): { from: Date; to: Date } {
   if (view === "week") return { from: monday(focus), to: addDays(monday(focus), 6) };
   return { from: new Date(focus.getFullYear(), focus.getMonth(), 1), to: new Date(focus.getFullYear(), focus.getMonth() + 1, 0) };
+}
+
+/** The days on screen: the week, or the month's whole weeks (Monday before its first day to Sunday after its last). */
+function shownDays(view: View, p: { from: Date; to: Date }): { from: Date; to: Date } {
+  return view === "week" ? p : { from: monday(p.from), to: addDays(monday(p.to), 6) };
 }
 
 /** `focus` moved by one period: a week, or a month (to its first day, so no month is skipped). */
@@ -162,7 +167,7 @@ function SyncIconButton({ s }: { s: SyncDays }) {
   );
 }
 
-function Events({ v, view, label, s }: { v: CalendarEvents; view: View; label: string; s: SyncDays }) {
+function Events({ v, view, label, month, s }: { v: CalendarEvents; view: View; label: string; month: string; s: SyncDays }) {
   if (v.calendar.length === 0) {
     return <EmptyState icon={CalendarDays} title={t("calendarPage.emptyNone")} action={<Link href={CONNECT_PATH} className={cn(LINK_CLASS, "text-sm")}>{t("calendarPage.connect")}</Link>} />;
   }
@@ -182,7 +187,7 @@ function Events({ v, view, label, s }: { v: CalendarEvents; view: View; label: s
           </div>
         </Notice>
       )}
-      {view === "week" ? <WeekDays label={label} days={v.days} today={today} showSource={showSource} /> : <MonthGrid label={label} days={v.days} today={today} showSource={showSource} />}
+      {view === "week" ? <WeekDays label={label} days={v.days} today={today} showSource={showSource} /> : <MonthGrid key={month} label={label} days={v.days} today={today} showSource={showSource} month={month} />}
     </div>
   );
 }
@@ -190,8 +195,8 @@ function Events({ v, view, label, s }: { v: CalendarEvents; view: View; label: s
 export function CalendarPage() {
   const [view, setView] = useState<View>("week");
   const [focus, setFocus] = useState(() => new Date());
-  const shown = period(view, focus);
-  const label = heading(view, shown);
+  const label = heading(view, period(view, focus));
+  const shown = shownDays(view, period(view, focus));
   const q = useCalendarEvents(iso(shown.from), iso(shown.to));
   const v = q.data;
   const s = useSyncDays(iso(shown.from), iso(shown.to), v, q.refetch);
@@ -218,7 +223,7 @@ export function CalendarPage() {
     </PageToolbar>
     {/* The week or month, named by the period for assistive tech; the toolbar holds its visible title. */}
     <Card label={label}>
-      {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} label="loading.calendar" onRetry={() => void q.refetch()} /> : <Events v={v} view={view} label={label} s={s} />}
+      {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} label="loading.calendar" onRetry={() => void q.refetch()} /> : <Events v={v} view={view} label={label} month={iso(focus).slice(0, 7)} s={s} />}
     </Card>
     </>
   );

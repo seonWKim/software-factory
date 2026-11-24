@@ -120,7 +120,7 @@ describe("Calendar page", () => {
     expect(toolbar.closest("section")).toBeNull();
   });
 
-  it("Week shows Monday to Sunday of the current week, each day's events all-day first, then timed by time, with time or 'all day' and source", async () => {
+  it("Week shows Monday to Sunday of the current week, each day's events all-day first (a filled pill), then timed by time (a dot, the time, the title)", async () => {
     show();
     await shownRange("2026-11-09", "2026-11-15");
     expect(heading()).toBe("Nov 9 – 15, 2026");
@@ -136,9 +136,14 @@ describe("Calendar page", () => {
     const friday = document.querySelector<HTMLElement>('[data-day="2026-11-13"]')!;
     expect(entries(friday)).toEqual(["google-calendar:holiday", "work:standup", "google-calendar:lunch"]);
     const holiday = friday.querySelector<HTMLElement>('[data-event="google-calendar:holiday"]')!;
-    expect(holiday.textContent).toContain("all day");
-    expect(holiday.textContent).not.toContain("google-calendar");
-    expect(friday.querySelector('[data-event="work:standup"]')!.textContent).toContain("09:30");
+    // All day: the pill is filled in the calendar's colour and holds the title only; timed: a dot, then the time.
+    expect(holiday.hasAttribute("data-all-day")).toBe(true);
+    expect(holiday.className).toMatch(/\bbg-kind-[a-z-]+\b/);
+    expect(holiday.textContent).toBe("event holiday");
+    const standup = friday.querySelector<HTMLElement>('[data-event="work:standup"]')!;
+    expect(standup.hasAttribute("data-all-day")).toBe(false);
+    expect(standup.querySelector("[data-colour]")!.className).toMatch(/\bbg-kind-/);
+    expect(standup.textContent).toBe("09:30event standup");
     expect(within(holiday).queryByRole("button")).toBeNull();
     // Days before the synced window are shaded and carry no text; a synced day with no event shows no text line.
     const unsynced = document.querySelector<HTMLElement>('[data-day="2026-11-09"]')!;
@@ -161,7 +166,7 @@ describe("Calendar page", () => {
     const card = screen.getByRole("region", { name: "Nov 9 – 15, 2026" });
     expect(card.querySelector("h2")).toBeNull();
     press("Month");
-    await shownRange("2026-11-01", "2026-11-30");
+    await shownRange("2026-10-26", "2026-12-06");
     expect(heading()).toBe("November 2026");
     expect(screen.getByRole("region", { name: "November 2026" })).toBeTruthy();
   });
@@ -175,22 +180,24 @@ describe("Calendar page", () => {
     expect(dot).not.toMatch(/outline|accent/);
     expect(document.querySelector("[data-today]")!.textContent).toBe("12");
     press("Month");
-    await shownRange("2026-11-01", "2026-11-30");
+    await shownRange("2026-10-26", "2026-12-06");
     const today = [...document.querySelectorAll<HTMLElement>("[data-today]")];
     expect(today.map((e) => e.closest("[data-day]")!.getAttribute("data-day"))).toEqual(["2026-11-12"]);
     expect(today[0]!.textContent).toBe("12");
   });
 
-  it("each event has a colour strip from a token, the same for one source across reads", async () => {
+  it("each event has a colour from a token (the all-day pill's fill, the timed event's dot), the same for one source across reads", async () => {
     show();
     await shownRange("2026-11-09", "2026-11-15");
-    // The strip's colour class (the month's strip adds layout classes of its own at phone width).
-    const strip = (id: string) => document.querySelector(`[data-event="${id}"] [data-strip]`)!.className.match(/bg-kind-[a-z-]+/)?.[0];
+    const strip = (id: string) => {
+      const chip = document.querySelector<HTMLElement>(`[data-event="${id}"]`)!;
+      return (chip.querySelector("[data-colour]") ?? chip).className.match(/bg-kind-[a-z-]+/)?.[0];
+    };
     expect(strip("google-calendar:holiday")).toMatch(/bg-kind-/);
     expect(strip("google-calendar:holiday")).toBe(strip("google-calendar:lunch"));
     const before = strip("google-calendar:lunch");
     press("Month");
-    await shownRange("2026-11-01", "2026-11-30");
+    await shownRange("2026-10-26", "2026-12-06");
     expect(strip("google-calendar:lunch")).toBe(before);
   });
 
@@ -202,27 +209,84 @@ describe("Calendar page", () => {
     expect(document.querySelector('[data-event="google-calendar:lunch"]')!.textContent).toContain("google-calendar");
   });
 
-  it("Month shows a Monday-first grid of the month: up to 3 events a cell, then '+N more', empty cells outside the month", async () => {
+  it("Month shows the month's whole weeks, Monday first, the days outside it faint; every cell the same height, the day's number at its top right", async () => {
     show();
     await shownRange("2026-11-09", "2026-11-15");
     press("Month");
-    await shownRange("2026-11-01", "2026-11-30");
+    await shownRange("2026-10-26", "2026-12-06");
     expect(heading()).toBe("November 2026");
     const grid = screen.getByRole("table", { name: "November 2026" });
     const heads = within(grid).getAllByRole("columnheader").map((h) => h.textContent);
     expect(heads[0]).toBe(new Date(2026, 10, 9).toLocaleDateString(undefined, { weekday: "short" }));
     const cells = within(grid).getAllByRole("cell");
-    // 2026-11-01 is a Sunday: six empty cells before it, and the grid ends on a Sunday (the 30th is a Monday).
-    expect(cells.slice(0, 7).map((c) => c.dataset.day ?? "")).toEqual(["", "", "", "", "", "", "2026-11-01"]);
-    expect(cells.slice(0, 6).every((c) => c.textContent === "")).toBe(true);
-    expect(cells.length % 7).toBe(0);
-    expect(cells.filter((c) => c.dataset.day).map((c) => c.dataset.day)).toHaveLength(30);
-    const busy = grid.querySelector<HTMLElement>('[data-day="2026-11-20"]')!;
-    expect(entries(busy)).toEqual(["google-calendar:a", "google-calendar:b", "google-calendar:c"]);
-    expect(busy.textContent).toContain("+2 more");
+    // 2026-11-01 is a Sunday and the 30th a Monday: six weeks, Oct 26 to Dec 6.
+    expect(cells.map((c) => c.dataset.day)).toHaveLength(42);
+    expect([cells[0]!.dataset.day, cells.at(-1)!.dataset.day]).toEqual(["2026-10-26", "2026-12-06"]);
+    expect(cells.filter((c) => c.hasAttribute("data-outside")).map((c) => c.dataset.day)).toEqual([
+      "2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30", "2026-10-31",
+      "2026-12-01", "2026-12-02", "2026-12-03", "2026-12-04", "2026-12-05", "2026-12-06",
+    ]);
+    const number = (date: string) => grid.querySelector(`[data-day="${date}"] [aria-hidden]`)!;
+    expect(number("2026-10-26").className).toContain("text-text-3");
+    expect(number("2026-11-14").className).toContain("text-text-2");
+    expect(number("2026-11-13").className).toContain("text-text-1");
+    // One fixed height for every cell (so a busy day does not grow its week), the number at the top right.
+    expect(new Set(cells.map((c) => c.className.split(/\s+/).find((k) => /^h-\d+$/.test(k))))).toEqual(new Set(["h-28"]));
+    expect(number("2026-11-13").parentElement!.className).toContain("justify-end");
     const unsynced = grid.querySelector('[data-day="2026-11-05"]')!;
     expect(unsynced.hasAttribute("data-not-synced")).toBe(true);
-    expect(unsynced.textContent).toBe("5");
+    expect(unsynced.querySelector("[data-event]")).toBeNull();
+  });
+
+  it("a month cell shows all its events up to 3; with more, 2 and '+N more', which opens the day's whole list, each event opening its details over it", async () => {
+    events["2026-11-19"] = [ev("x", "08:00"), ev("y", "09:00"), ev("z", "10:00")];
+    show();
+    await shownRange("2026-11-09", "2026-11-15");
+    press("Month");
+    await shownRange("2026-10-26", "2026-12-06");
+    const grid = screen.getByRole("table", { name: "November 2026" });
+    const full = grid.querySelector<HTMLElement>('[data-day="2026-11-19"]')!;
+    expect(entries(full)).toEqual(["google-calendar:x", "google-calendar:y", "google-calendar:z"]);
+    expect(full.querySelector("[data-more]")).toBeNull();
+    const busy = grid.querySelector<HTMLElement>('[data-day="2026-11-20"]')!;
+    expect(entries(busy)).toEqual(["google-calendar:a", "google-calendar:b"]);
+    const more = busy.querySelector<HTMLElement>("[data-more]")!;
+    expect(more.textContent).toBe("+3 more");
+    expect(more.getAttribute("aria-label")).toBe("+3 more on Fri, Nov 20");
+    fireEvent.click(more);
+    const list = document.querySelector<HTMLElement>("dialog[open][data-popover]")!;
+    expect(list.querySelector("h2")!.textContent).toBe(new Date(2026, 10, 20).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }));
+    expect(entries(list)).toEqual(["google-calendar:a", "google-calendar:b", "google-calendar:c", "google-calendar:d", "google-calendar:e"]);
+    // An event in the list opens its details over the list; a press inside them keeps the list open; Esc closes the top one only.
+    fireEvent.click(list.querySelector<HTMLElement>('[data-event="google-calendar:d"]')!);
+    const open = () => [...document.querySelectorAll<HTMLElement>("dialog[open][data-popover]")];
+    expect(open().map((d) => d.querySelector("h2")!.textContent)).toEqual([list.querySelector("h2")!.textContent, "event d"]);
+    fireEvent.pointerDown(open()[1]!.querySelector("[data-panel-body]")!);
+    expect(open()).toHaveLength(2);
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(open().map((d) => d.querySelector("h2")!.textContent)).toEqual([list.querySelector("h2")!.textContent]));
+    fireEvent.pointerDown(document.body);
+    await waitFor(() => expect(open()).toHaveLength(0));
+  });
+
+  it("below sm Month is a compact grid of numbers and dots, with the selected day's events under it (today's on load)", async () => {
+    vi.stubGlobal("innerWidth", 390);
+    show();
+    await shownRange("2026-11-09", "2026-11-15");
+    press("Month");
+    await shownRange("2026-10-26", "2026-12-06");
+    const grid = screen.getByRole("table", { name: "November 2026" });
+    // No event chip inside the grid: a day is a button with its number and up to 3 dots, named with its count.
+    expect(grid.querySelector("[data-event]")).toBeNull();
+    const friday = within(grid).getByRole("button", { name: "Fri, Nov 20, 5 events" });
+    expect(friday.querySelectorAll("[data-colour]")).toHaveLength(3);
+    expect(within(grid).getByRole("button", { name: "Thu, Nov 12, no events" }).getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelector("[data-selected-day]")!.getAttribute("data-selected-day")).toBe("2026-11-12");
+    expect(document.querySelector("[data-selected-day]")!.textContent).toContain("No events");
+    fireEvent.click(friday);
+    expect(friday.getAttribute("aria-pressed")).toBe("true");
+    const day = document.querySelector<HTMLElement>('[data-selected-day="2026-11-20"]')!;
+    expect(entries(day)).toEqual(["google-calendar:a", "google-calendar:b", "google-calendar:c", "google-calendar:d", "google-calendar:e"]);
   });
 
   it("Week: previous and next move by one week, Today returns to the current week; the heading and the read follow", async () => {
@@ -248,19 +312,19 @@ describe("Calendar page", () => {
     show();
     await shownRange("2026-11-09", "2026-11-15");
     press("Month");
-    await shownRange("2026-11-01", "2026-11-30");
+    await shownRange("2026-10-26", "2026-12-06");
     press("Previous month");
-    await shownRange("2026-10-01", "2026-10-31");
+    await shownRange("2026-09-28", "2026-11-01");
     expect(heading()).toBe("October 2026");
     press("Next month");
     press("Next month");
-    await shownRange("2026-12-01", "2026-12-31");
+    await shownRange("2026-11-30", "2027-01-03");
     expect(heading()).toBe("December 2026");
     press("Next month");
-    await shownRange("2027-01-01", "2027-01-31");
+    await shownRange("2026-12-28", "2027-01-31");
     expect(heading()).toBe("January 2027");
     press("Today");
-    await shownRange("2026-11-01", "2026-11-30");
+    await shownRange("2026-10-26", "2026-12-06");
     expect(heading()).toBe("November 2026");
   });
 
@@ -331,18 +395,18 @@ describe("Calendar page", () => {
     expect(syncPosts).toHaveLength(1);
   });
 
-  it("in Month, Sync posts the month's first and last day; Sync these days posts the same range", async () => {
+  it("in Month, Sync posts the first and last day on screen (the month's whole weeks); Sync these days posts the same range", async () => {
     show();
     await shownRange("2026-11-09", "2026-11-15");
     press("Month");
-    await shownRange("2026-11-01", "2026-11-30");
+    await shownRange("2026-10-26", "2026-12-06");
     fireEvent.click(await within(screen.getByRole("status")).findByRole("button", { name: "Sync these days" }, SLOW));
-    await waitFor(() => expect(syncPosts.map((p) => p.body)).toEqual([{ from: "2026-11-01", to: "2026-11-30" }]), SLOW);
+    await waitFor(() => expect(syncPosts.map((p) => p.body)).toEqual([{ from: "2026-10-26", to: "2026-12-06" }]), SLOW);
     pending = null;
     press("Previous month");
-    await shownRange("2026-10-01", "2026-10-31");
+    await shownRange("2026-09-28", "2026-11-01");
     fireEvent.click(await screen.findByRole("button", { name: "Sync" }, SLOW));
-    await waitFor(() => expect(syncPosts.map((p) => p.body).at(-1)).toEqual({ from: "2026-10-01", to: "2026-10-31" }), SLOW);
+    await waitFor(() => expect(syncPosts.map((p) => p.body).at(-1)).toEqual({ from: "2026-09-28", to: "2026-11-01" }), SLOW);
   });
 
   it("a refused Sync shows the server's reason and the buttons can be pressed again", async () => {
@@ -375,6 +439,22 @@ describe("Calendar page: event details", () => {
     await shownRange("2026-11-09", "2026-11-15");
     return document.querySelector<HTMLButtonElement>('[data-event="google-calendar:interview"]')!;
   };
+
+  it("the popover's body keeps its content height: no box from the panel to its body grows from a zero flex basis, which Safari and the cmux browser drew 24px tall (owner #92)", async () => {
+    events = { "2026-11-13": [full()] };
+    show();
+    fireEvent.click(await chip());
+    const p = panel()!;
+    expect(p.hasAttribute("data-popover")).toBe(true);
+    const body = p.querySelector<HTMLElement>("[data-panel-body]")!;
+    expect(body.querySelector("[data-event-detail]")).not.toBeNull();
+    for (let el: HTMLElement | null = body; el && el !== p; el = el.parentElement) {
+      // flex-1 is flex: 1 1 0%; WebKit sized the body from that 0 (check:responsive's panel-collapsed checks the result in the Mac's WebKit).
+      expect(el.className.split(/\s+/)).not.toEqual(expect.arrayContaining([expect.stringMatching(/^(flex-1|basis-0|grow)$/)]));
+      expect(el.className.split(/\s+/)).toContain("min-h-0");
+    }
+    expect(p.className).toMatch(/max-h-\[/);
+  });
 
   it("pressing a truncated event opens beside it its full title, day and time range with the zone, calendar, place, video link, people and the event's page; Esc closes it and focus returns to the event", async () => {
     events = { "2026-11-13": [full()] };
@@ -438,7 +518,9 @@ describe("Calendar page: event details", () => {
     show();
     await shownRange("2026-11-09", "2026-11-15");
     press("Month");
-    await shownRange("2026-11-01", "2026-11-30");
+    await shownRange("2026-10-26", "2026-12-06");
+    // The compact month lists the selected day's events under the grid.
+    fireEvent.click(screen.getByRole("button", { name: "Fri, Nov 13, 1 event" }));
     fireEvent.click(document.querySelector<HTMLElement>('[data-event="google-calendar:interview"]')!);
     const p = panel()!;
     expect(p.hasAttribute("data-popover")).toBe(false);
