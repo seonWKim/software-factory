@@ -22,6 +22,12 @@ export interface SkillEvalCase {
   suite_id: string;
   input: unknown;
   expected: unknown;
+  /**
+   * The case's seed folder, copied into its replay's clean sandbox, and the approved MCP servers its replay gets, by
+   * name (design 06-measurement, clean replays). Read back only when set; absent or null: none.
+   */
+  seed?: string | null;
+  mcp?: readonly string[] | null;
   created_at: Timestamp;
 }
 
@@ -75,6 +81,17 @@ export interface SkillEvalReplay {
   case_id: string;
   verdict: string;
   detail: unknown;
+  /**
+   * What the replay's agent run gave (design 06-measurement, clean replays): its transcript and final answer (each
+   * null when the egress scan flagged it, the rule names then in `detail.withheld`), its tokens, its cost (null when
+   * the runner reports none) and its wall time. Written absent: null; null on a replay stored before them (no backfill).
+   */
+  transcript?: string | null;
+  answer?: string | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cost_usd?: number | null;
+  wall_ms?: number | null;
   recorded_at: Timestamp;
 }
 
@@ -97,7 +114,7 @@ export interface SkillEvalStore {
   /** Idempotent on the id: a second call returns the stored suite. */
   createSkillEvalSuite(s: Omit<SkillEvalSuite, "created_at">): Promise<SkillEvalSuite>;
   listSkillEvalSuites(): Promise<SkillEvalSuite[]>;
-  /** Idempotent on the id. A new case gives its suite the next version, in the same transaction. */
+  /** Idempotent on the id, with its seed and MCP servers when given. A new case gives its suite the next version, in the same transaction. */
   addSkillEvalCase(c: Omit<SkillEvalCase, "created_at">): Promise<SkillEvalCase>;
   listSkillEvalCases(suite_id: string): Promise<SkillEvalCase[]>;
   /** Sets a suite's title; null when the suite is unknown. */
@@ -119,7 +136,7 @@ export interface SkillEvalStore {
   startSkillEvalRun(r: SkillEvalRunStart): Promise<SkillEvalRun>;
   /** Sets the final status once; false when the run is unknown or already finished. */
   finishSkillEvalRun(id: string, status: Exclude<SkillEvalRunStatus, "running">): Promise<boolean>;
-  /** One verdict per run and case; a second record for the pair keeps the first. */
+  /** One verdict per run and case, with what its replay gave; a second record for the pair keeps the first. */
   recordSkillEvalReplay(r: Omit<SkillEvalReplay, "recorded_at">): Promise<SkillEvalReplay>;
   listSkillEvalReplays(run_id: string): Promise<SkillEvalReplay[]>;
   /** The runs of every suite of `skill_ref`, newest first (start time, then id). */

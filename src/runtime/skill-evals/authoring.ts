@@ -86,7 +86,7 @@ export interface TriedCase {
   verdict: CaseVerdict;
   /** One line per check; empty when the case errored. */
   checks: { check: string; answer: "yes" | "no"; reason: string }[];
-  /** Why it errored (`no_rubric`, `replay_failed`, `judge_failed`), else null. */
+  /** Why it errored (`no_rubric`, `replay_failed`, `judge_failed`, or a refusal: `noop_tools_refused`, `tool_not_served`, `mcp_not_served`), else null. */
   error: string | null;
 }
 
