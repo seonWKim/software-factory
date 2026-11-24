@@ -15,10 +15,16 @@ export const TONE_CLASS: Readonly<Record<Tone, string>> = {
   neutral: "bg-surface-2 text-text-1",
 };
 
+/**
+ * The neutral fill is `surface-2`, the selected row's fill (Tr `current`, `aria-current="true"`), so inside that row the
+ * neutral pill takes `surface` and stays a pill instead of reading as a bare dot and text.
+ */
+export const NEUTRAL_IN_CURRENT = "[[aria-current=true]_&]:bg-surface";
+
 /** The pill: a dot and the text, in a tone. */
 function Pill({ tone, children, ...data }: { tone: Tone; children: ReactNode; "data-level"?: string | undefined; "data-status"?: string }) {
   return (
-    <span {...data} className={cn("inline-flex items-center gap-1 rounded-pill px-2 py-0.5 text-xs font-medium whitespace-nowrap", TONE_CLASS[tone])}>
+    <span {...data} className={cn("inline-flex items-center gap-1 rounded-pill px-2 py-0.5 text-xs font-medium whitespace-nowrap", TONE_CLASS[tone], tone === "neutral" && NEUTRAL_IN_CURRENT)}>
       <span aria-hidden className="size-1.5 rounded-pill bg-current" />
       {children}
     </span>

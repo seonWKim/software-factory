@@ -12,10 +12,12 @@ import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
 import { t } from "../i18n/index.js";
 import { ScheduleDialog, newScheduleId } from "./schedules/form.js";
-import { ACTION_TEXT, CADENCE_TEXT, OUTCOME_TEXT, STATE_TEXT } from "./schedules/labels.js";
+import { repeatsText } from "../lib/repeats.js";
+import { ACTION_TEXT, OUTCOME_TEXT, STATE_TEXT } from "./schedules/labels.js";
 
 // The Schedules page (design 09-dashboard-schedules, over 08-schedules): every schedule in a DataTable inside a Card,
-// read through GET /api/v1/schedules. Each row's Switch is on while the schedule has a next run and off while it is
+// read through GET /api/v1/schedules. Repeats reads in plain words through the shared formatter (lib/repeats.ts, as on
+// Routines); a paused schedule's Next run says Paused. Each row's Switch is on while the schedule has a next run and off while it is
 // paused (pause clears the next run), and posts pause or resume; its "⋯" menu holds Run now (off while paused) and Edit.
 // Pressing a row's title (DataTable's `select`) marks the row as current and shows its runs in a second Card
 // (GET /api/v1/schedules/runs). New schedule, the page's one primary action, and Edit open one Dialog
@@ -71,8 +73,8 @@ function RunsTable({ id }: { id: string }) {
 function ScheduleRows({ rows, selected, onSelect, onEdit, w }: { rows: readonly ScheduleRow[]; selected: string | null; onSelect: (id: string) => void; onEdit: (s: ScheduleRow, opener: HTMLElement | null) => void; w: Writes }) {
   const columns: Column<ScheduleRow>[] = [
     { key: "title", header: t("schedules.col.title") },
-    { key: "cadence", header: t("schedules.col.cadence"), render: (s) => t(CADENCE_TEXT[s.cadence.kind], { spec: s.cadence.spec }) },
-    { key: "next", header: t("schedules.col.next"), render: (s) => (s.next_due_at === null ? "" : when(s.next_due_at)) },
+    { key: "cadence", header: t("schedules.col.cadence"), render: (s) => repeatsText(s.cadence), className: "whitespace-nowrap" },
+    { key: "next", header: t("schedules.col.next"), render: (s) => (s.next_due_at === null ? t("schedules.nextPaused") : when(s.next_due_at)) },
     { key: "status", header: t("schedules.col.status"), render: (s) => <Badge level={stateOf(s)}>{t(STATE_TEXT[stateOf(s)])}</Badge> },
     { key: "action", header: t("schedules.col.action"), render: (s) => (s.action === null ? t("schedules.actionNone") : t(ACTION_TEXT[s.action.kind])) },
     {

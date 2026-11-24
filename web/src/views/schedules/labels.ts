@@ -3,13 +3,6 @@ import { type MessageKey } from "../../i18n/en.js";
 
 // The catalog key of each schedule word, written out so each key stays a quoted literal in the source.
 
-export const CADENCE_TEXT: Record<CadenceKind, MessageKey> = {
-  interval: "schedules.cadence.interval",
-  daily: "schedules.cadence.daily",
-  weekly: "schedules.cadence.weekly",
-  cron: "schedules.cadence.cron",
-};
-
 export const CADENCE_CHOICE: Record<CadenceKind, MessageKey> = {
   interval: "schedules.form.cadence.interval",
   daily: "schedules.form.cadence.daily",

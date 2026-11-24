@@ -12,6 +12,7 @@ import { PAGES } from "../web/src/pages.js";
 // loaded by a specifier the node check skips (as tests/ui-calendar-page.test.tsx does).
 const PAGE_MODULE = "../web/src/views/schedules.js";
 const { SchedulesPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { SchedulesPage: FunctionComponent };
+const BADGE_MODULE = "../web/src/components/ui/badge.js";
 
 // The Schedules page over a faked server (design 09-dashboard-schedules): a table of schedules with a Switch and a
 // "⋯" menu per row, the selected schedule's runs, and New schedule and Edit in one Dialog. The routes themselves are
@@ -78,7 +79,7 @@ describe("Schedules page", () => {
     const on = within(await row("Nightly docs check")).getByRole("switch");
     const off = within(await row("Weekly review")).getByRole("switch");
     expect([on.getAttribute("aria-checked"), off.getAttribute("aria-checked")]).toEqual(["true", "false"]);
-    expect(within(await row("Weekly review")).getByText("Paused")).toBeTruthy();
+    expect(within(await row("Weekly review")).getAllByText("Paused")).toHaveLength(2);
     expect(within(await row("Nightly docs check")).getByText("Every day at 09:00")).toBeTruthy();
   });
 
@@ -150,6 +151,34 @@ describe("Schedules page", () => {
     expect(title.getAttribute("aria-pressed")).toBe("true");
     expect((await row("Weekly review")).getAttribute("aria-current")).toBeNull();
     expect(title.className).not.toMatch(/aria-pressed:bg-surface-2/);
+  });
+
+  it("Repeats reads in the Routines page's plain words: capitalised day names and the time after at", async () => {
+    show();
+    const repeats = async (title: string) => (await row(title)).querySelectorAll("td")[1]!.textContent;
+    expect(await repeats("Nightly docs check")).toBe("Every day at 09:00");
+    expect(await repeats("Weekly review")).toBe("Weekly on Mon at 09:00");
+  });
+
+  it("a paused schedule's Next run says Paused, not an empty cell", async () => {
+    show();
+    expect((await row("Weekly review")).querySelectorAll("td")[2]!.textContent).toBe("Paused");
+  });
+
+  it("every State is the shared Badge pill, and a neutral one in the selected row keeps a fill of its own", async () => {
+    const { NEUTRAL_IN_CURRENT } = (await import(/* @vite-ignore */ BADGE_MODULE)) as { NEUTRAL_IN_CURRENT: string };
+    schedules.push(schedule("sch_cccc3333", "Running one", { running_since: "2026-11-24T08:00:00.000Z" }));
+    show();
+    await ready();
+    const pill = async (title: string) => (await row(title)).querySelectorAll("td")[3]!.querySelector("[data-level]") as HTMLElement;
+    expect((await pill("Nightly docs check")).dataset["level"]).toBe("waiting");
+    expect((await pill("Weekly review")).dataset["level"]).toBe("paused");
+    expect((await pill("Running one")).dataset["level"]).toBe("running");
+    // The neutral pill's fill is surface-2, the current row's fill too: without its own fill there it reads as a bare dot.
+    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "Show runs of Nightly docs check" }));
+    await waitFor(async () => expect((await row("Nightly docs check")).getAttribute("aria-current")).toBe("true"), SLOW);
+    expect((await pill("Nightly docs check")).className).toContain(NEUTRAL_IN_CURRENT);
+    expect((await pill("Running one")).className).not.toContain(NEUTRAL_IN_CURRENT);
   });
 
   it("New schedule opens a Dialog with the CLI's fields and posts them with a title-made ID that is not shown", async () => {
