@@ -12,6 +12,8 @@ export const muted = "text-xs text-pretty break-keep text-text-2";
 export const RULE_STATE: Readonly<Record<string, string>> = { open: "running", pending: "needs_approval", held: "held" };
 /** The reading width of description prose (a group's line, How this works). */
 export const PROSE = "max-w-prose";
+/** A bordered list of rows. */
+export const LIST = "divide-y divide-border rounded-control border border-border";
 /** A row's padding, reduced below `sm` so a phone keeps its width for text. */
 export const ROW_PAD = "max-sm:p-2";
 /** A KeyValue's labels above their values below `sm` (as `stacked`), two columns from `sm` up. */

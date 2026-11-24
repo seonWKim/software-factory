@@ -307,6 +307,9 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
     const line = li.querySelector<HTMLElement>("[data-recent]")!;
     expect(line.textContent).toBe("4 items in the last 7 days: A, B, +2 more");
     expect(within(line).getAllByRole("link").map((a) => a.textContent)).toEqual(["A", "B"]);
+    // Each comma sits in its title's box, so a wrap never leaves it alone on a line; the full title shows on hover.
+    expect([...line.querySelectorAll("[data-recent-item]")].map((n) => n.textContent)).toEqual(["A, ", "B, "]);
+    expect(within(line).getAllByRole("link").map((a) => a.getAttribute("title"))).toEqual(["A", "B"]);
     expect(li.querySelector("[data-fired]")!.textContent).toBe("last fired 20h ago");
     expect(li.querySelector("[data-details]")!.textContent).not.toMatch(/(^|\s)on(\s|$)/);
     const summary = li.querySelector<HTMLElement>("details[data-raw] > summary")!;

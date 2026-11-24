@@ -1,5 +1,6 @@
 // The dependencies the dashboard's JSON API reads through, and the token count of a run.
 
+import type { SkillImproveWiring, holdSkillDraft, promoteSkillDraft, rejectSkillDraft } from "../core/skill-improve.js";
 import { type Run, outcomeTokens } from "../core/types.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
@@ -52,6 +53,19 @@ export interface UiDeps {
   changes?: UiChanges;
   /** The Rules page's tacit ledger (rules-api.ts, issue #571), read and judged only through it. Absent: the plugin `none`. */
   tacit?: UiTacit;
+  /** A skill draft's verdicts on the Rules page (rules-api.ts writeSkillVerdict): compose.ts buildUiParts. Absent: each is refused. */
+  skillImprove?: UiSkillImprove;
+}
+
+/**
+ * The skill draft verdicts (src/core/skill-improve.ts), passed in by the composition root as the eval functions are,
+ * so no route imports the core, and Promote's wiring: undefined without capabilities.skill_folders or a model.
+ */
+export interface UiSkillImprove {
+  hold: typeof holdSkillDraft;
+  reject: typeof rejectSkillDraft;
+  promote: typeof promoteSkillDraft;
+  wiring: SkillImproveWiring | undefined;
 }
 
 /**
