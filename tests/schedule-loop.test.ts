@@ -113,7 +113,18 @@ describe("runDueSchedules", () => {
     const { fired, refused } = await runDueSchedules(store, clock.now());
     expect([...fired, ...refused].map((r) => r.schedule_id)).toEqual(["sch_daily"]);
     expect(await store.listScheduleRuns("rt_docs")).toEqual([]);
-    expect((await store.listSchedules()).find((s) => s.id === "rt_docs")?.next_due_at).toBe("2026-11-23T00:00:00.000Z");
+    expect(await driver.all("SELECT next_due_at FROM controller_schedules WHERE id = 'rt_docs'")).toEqual([{ next_due_at: "2026-11-23T00:00:00.000Z" }]);
+    await store.close();
+  });
+
+  it("listSchedules leaves out Check a page rows, so the Schedules page, API and CLI do not show them yet", async () => {
+    const { clock, driver, store } = await setup();
+    await addSchedule(store, DAILY, clock.now());
+    await driver.run(`INSERT INTO controller_schedules (id, title, cadence_kind, cadence_spec, zone, created_by, created_at, next_due_at, action_kind)
+      VALUES ('rt_docs', 'Docs check', 'daily', '09:00', 'Asia/Seoul', ?, '2026-11-20T00:00:00.000Z', '2026-11-23T00:00:00.000Z', 'check_page')`, [ME]);
+    const ids = (await store.listSchedules()).map((s) => s.id);
+    expect(ids).toContain("sch_daily");
+    expect(ids).not.toContain("rt_docs");
     await store.close();
   });
 

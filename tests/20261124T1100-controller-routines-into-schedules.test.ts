@@ -72,6 +72,9 @@ describe("20261124T1100-controller-routines-into-schedules on an existing SQLite
     await migration.up(mdb(db));
     expect(await db.all("SELECT * FROM controller_schedules ORDER BY id")).toEqual(schedules);
     expect(await db.all("SELECT * FROM controller_schedule_suggestions ORDER BY id")).toEqual(suggestions);
+
+    // The copies are hidden from the schedule list until a later phase gives them a page and API view.
+    expect((await store.listSchedules()).map((s) => s.id)).not.toContain("rt_docs");
   });
 
   it("a rerun after a routine edit does not overwrite the copy", async () => {
