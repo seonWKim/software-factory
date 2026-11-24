@@ -726,7 +726,7 @@ export class Worker {
     handle: SandboxHandle,
     signal: AbortSignal,
     role: Pick<AgentRunSpec, "prompt" | "model_class" | "output_schema"> &
-      Partial<Pick<AgentRunSpec, "writable_paths" | "env_allowlist" | "role" | "gate_hooks" | "images">>,
+      Partial<Pick<AgentRunSpec, "writable_paths" | "env_allowlist" | "role" | "gate_hooks" | "images" | "on_context">>,
     /** Second agent step in one run (the conflict resolution): its own transcript, `<run>.<step>.json`. */
     step?: string,
     /**

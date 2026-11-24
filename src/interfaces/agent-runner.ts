@@ -109,6 +109,12 @@ export interface AgentRunSpec {
    */
   on_output?: () => void;
   /**
+   * Context of each model call (design 05-restarts, context ceiling): a runner that reads its stream calls this once per
+   * model call with that call's context, its input plus cache read plus cache write tokens. Synchronous and cheap; it
+   * never throws. Absent, or a runner that does not read its stream: nothing is reported and no ceiling applies.
+   */
+  on_context?: (tokens: number) => void;
+  /**
    * The agent session (design §5 Pause). Kept only for the roles in SESSION_ROLES and only when given: `id` names
    * a new session, or with `resume` the stored one this call continues. Absent, or another role: the runner
    * keeps no session, so nothing is left behind and nothing can be resumed.
