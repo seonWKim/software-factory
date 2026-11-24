@@ -1,28 +1,34 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useRef, useState } from "react";
 import { useApi } from "../api/client.js";
-import { type EvalComparison, type EvalRun, type EvalRunSummary, postEvalRun, useEvalCompare, useEvalGrid, useEvalRuns } from "../api/evals.js";
+import { type EvalRun, type EvalRunSummary, type SkillVersionRow, postEvalRun, useEvalGrid, useEvalRuns, useSkillDiff, useSkillVersions } from "../api/evals.js";
 import type { Session } from "../api/overview.js";
 import { API } from "../api/routes.js";
 import { Badge } from "../components/ui/badge.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { Card } from "../components/ui/card.js";
 import { Chart } from "../components/ui/chart.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
-import { Dialog } from "../components/ui/dialog.js";
+import { Dialog, ModalPanel } from "../components/ui/dialog.js";
+import { DiffView } from "../components/ui/diff-view.js";
+import { Disclosure } from "../components/ui/disclosure.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
+import { KeyValue } from "../components/ui/key-value.js";
+import { ROW_TITLE, ListRow } from "../components/ui/list-row.js";
 import { EmptyState, PageHeader } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Select } from "../components/ui/select.js";
 import { t } from "../i18n/index.js";
 import { localDateTime, localShortDate } from "../lib/format.js";
 
-// The evals page at evals/<skill> (design 09-dashboard-evals): three read-only Cards in one column, Trend (pass rate by
-// run date), Grid (the newest run of each skill version and model class) and Compare (two runs, the gap and the noise
-// band). Plain words only: the skill's name, run dates, model classes and pass rates; no run, suite or skill ID shows.
-// The header's one action, Run now, opens a Dialog that starts one run (POST /api/v1/evals/<skill>/runs) with a model
-// class, its judge class and a replay count; the server's refusal (403 owner check, 409 refused run) shows in it.
+// The evals page at evals/<skill> (design 09-dashboard-evals): the header (title and Run now, the one primary Button), the
+// Versions Card (a ListRow per version, newest first, the current one with a Badge), a ButtonRow with Compare (opens a
+// ModalPanel: two version Selects, the unified DiffView of their SKILL.md texts and each case's result), the Grid Card
+// (the case results: the newest run per version and model class) and the Trend Card. Plain words only: folder hashes
+// and run IDs show only inside a version row's Details. Run now opens a Dialog that starts one run
+// (POST /api/v1/evals/<skill>/runs); the server's refusal (403 owner check, 409 refused run) shows in it.
 
 /** The skill's name from its skill_ref (`skills/review/SKILL.md` → "review"): the last part, not the file's name. */
 export function skillName(ref: string): string {
@@ -33,7 +39,7 @@ export function skillName(ref: string): string {
 
 const percent = (rate: number): string => `${Math.round(rate * 100)}%`;
 const rateText = (rate: number | null): string => (rate === null ? t("evals.noRate") : percent(rate));
-const points = (n: number, key: "evals.points" | "evals.band"): string => t(key, { sign: n < 0 ? "−" : "+", n: Math.abs(Math.round(n * 100)) });
+const points = (n: number): string => t("evals.points", { sign: n < 0 ? "−" : "+", n: Math.abs(Math.round(n * 100)) });
 
 /** A run's state as the state table's key: a finished run passed or failed, an errored one failed. */
 const levelOf = (status: string): string => (status === "passed" ? "succeeded" : status === "errored" ? "failed" : status);
@@ -113,70 +119,117 @@ function Grid({ rows, runs }: { rows: readonly EvalRunSummary[]; runs: readonly 
   );
 }
 
-interface CompareRow {
+/** The change since the previous version as +N points or −N points; a version with no change to show says so. */
+const changeText = (change: number | null): string => (change === null ? t("evals.noChange") : t("evals.changeOf", { change: points(change) }));
+
+/** One version: Version N, a Badge on the current one, its pass rate, change and date; hash and run ID under Details. */
+function VersionRow({ v }: { v: SkillVersionRow }) {
+  return (
+    <ListRow
+      data-version={v.version}
+      title={<span className="flex items-center gap-2"><span className={ROW_TITLE}>{t("evals.versionN", { n: v.version })}</span>{v.current && <Badge level="succeeded">{t("evals.current")}</Badge>}</span>}
+      details={<><span>{t("evals.rateOf", { rate: rateText(v.pass_rate) })}</span><span>{changeText(v.change)}</span><span>{t("evals.versionDate", { date: localShortDate(v.created_at) })}</span></>}
+    >
+      <Disclosure summary={t("evals.details")} lazy>
+        <KeyValue items={[
+          { key: "hash", term: t("evals.folderHash"), value: <span className="font-mono break-all">{v.folder_hash}</span> },
+          { key: "run", term: t("evals.runId"), value: v.run_id === null ? t("evals.noRunLinked") : <span className="font-mono break-all">{v.run_id}</span> },
+        ]} />
+      </Disclosure>
+    </ListRow>
+  );
+}
+
+/** The skill's versions, newest first, in one bordered list. */
+function Versions({ versions }: { versions: ReturnType<typeof useSkillVersions> }) {
+  return (
+    <Card title={t("evals.versions")}>
+      {versions.isError ? (
+        <ErrorNote error={new Error(t("evals.versionsFailed"))} />
+      ) : !versions.data ? (
+        <Loading rows={3} label="loading.evalRuns" onRetry={() => void versions.refetch()} />
+      ) : versions.data.versions.length === 0 ? (
+        <EmptyState title={t("evals.versionsEmpty")} />
+      ) : (
+        <ul aria-label={t("evals.versionsLabel")} className="divide-y divide-border rounded-box border border-border">
+          {versions.data.versions.map((v) => <VersionRow key={v.folder_hash} v={v} />)}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+interface CaseRow {
   key: string;
-  figure: string;
-  a?: string;
-  b?: string;
-  diff?: string;
+  name: string;
+  a: string;
+  b: string;
 }
 
-/** The comparison's figures as rows; the gap and the noise band are under Difference. */
-function compareRows(c: EvalComparison): CompareRow[] {
-  const model = (r: EvalRunSummary) => r.model_class ?? t("evals.modelUnknown");
-  const rows: CompareRow[] = [
-    { key: "date", figure: t("evals.runDate"), a: localDateTime(c.a.started_at), b: localDateTime(c.b.started_at) },
-    { key: "model", figure: t("evals.modelClass"), a: model(c.a), b: model(c.b) },
-    { key: "rate", figure: t("evals.passRate"), a: rateText(c.a.pass_rate), b: rateText(c.b.pass_rate), ...(c.gap !== null && { diff: points(c.gap, "evals.points") }) },
-  ];
-  if (c.noise_band === null || c.within_noise === null) return [...rows, { key: "none", figure: t("evals.withinNoise"), diff: t("evals.noGap") }];
-  return [...rows, { key: "band", figure: t("evals.noiseBand"), diff: points(c.noise_band, "evals.band") }, { key: "within", figure: t("evals.withinNoise"), diff: t(c.within_noise ? "evals.yes" : "evals.no") }];
-}
+const VERDICT: Readonly<Record<string, "evals.verdictPass" | "evals.verdictFail" | "evals.verdictErrored">> = { pass: "evals.verdictPass", fail: "evals.verdictFail", errored: "evals.verdictErrored" };
+const verdictText = (v: string | null): string => {
+  const key = v === null ? undefined : VERDICT[v];
+  return v === null ? t("evals.noResult") : key ? t(key) : v;
+};
 
-/** Two run pickers and a table of both runs, the gap, the noise band and whether the gap is within noise. */
-function Compare({ skill, runs }: { skill: string; runs: readonly EvalRun[] }) {
-  // The runs with a pass rate, newest first: the first run starts as the older of the two newest, the second as the newest.
-  const rated = runs.filter((r) => r.pass_rate !== null);
+/** The Compare panel's body: two version Selects (the two newest to start), the SKILL.md diff, each case's result in each. */
+function ComparePanel({ skill, versions }: { skill: string; versions: readonly SkillVersionRow[] }) {
   const [picked, setPicked] = useState<{ a?: string; b?: string }>({});
-  const a = picked.a ?? rated[1]?.id ?? null;
-  const b = picked.b ?? rated[0]?.id ?? null;
-  const comparison = useEvalCompare(skill, a, b);
-  const options = rated.map((r) => (
-    <option key={r.id} value={r.id}>{t("evals.pick", { date: localDateTime(r.started_at), model: r.model_class ?? t("evals.modelUnknown"), rate: percent(r.pass_rate!) })}</option>
-  ));
-  const columns: Column<CompareRow>[] = [
-    { key: "figure", header: t("evals.figure") },
+  const a = picked.a ?? versions[1]?.folder_hash ?? null;
+  const b = picked.b ?? versions[0]?.folder_hash ?? null;
+  const diff = useSkillDiff(skill, a, b);
+  const options = versions.map((v) => <option key={v.folder_hash} value={v.folder_hash}>{t("evals.versionN", { n: v.version })}</option>);
+  const columns: Column<CaseRow>[] = [
+    { key: "name", header: t("evals.caseColumn") },
     { key: "a", header: t("evals.first") },
     { key: "b", header: t("evals.second") },
-    { key: "diff", header: t("evals.difference") },
   ];
-  if (rated.length < 2) {
-    return (
-      <Card title={t("evals.compare")}>
-        <EmptyState title={t("evals.compareEmpty")} />
-      </Card>
-    );
-  }
   return (
-    <Card title={t("evals.compare")}>
-      <div className="flex flex-col gap-4">
-        <div className="flex flex-wrap gap-4">
-          <Field label={t("evals.first")} htmlFor="evals-first">
-            <Select id="evals-first" value={a ?? ""} wrapperClassName="w-72 max-w-full" onChange={(e) => setPicked({ ...picked, a: e.target.value })}>{options}</Select>
-          </Field>
-          <Field label={t("evals.second")} htmlFor="evals-second">
-            <Select id="evals-second" value={b ?? ""} wrapperClassName="w-72 max-w-full" onChange={(e) => setPicked({ ...picked, b: e.target.value })}>{options}</Select>
-          </Field>
-        </div>
-        {comparison.isError ? (
-          <ErrorNote error={new Error(t("evals.loadFailed"))} />
-        ) : comparison.data ? (
-          <DataTable label={t("evals.compare")} columns={columns} rows={compareRows(comparison.data)} rowKey={(r) => r.key} empty={t("evals.compareEmpty")} />
-        ) : (
-          <Loading rows={3} label="loading.evalCompare" onRetry={() => void comparison.refetch()} />
-        )}
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap gap-4">
+        <Field label={t("evals.first")} htmlFor="evals-first">
+          <Select id="evals-first" value={a ?? ""} wrapperClassName="w-48 max-w-full" onChange={(e) => setPicked({ ...picked, a: e.target.value })}>{options}</Select>
+        </Field>
+        <Field label={t("evals.second")} htmlFor="evals-second">
+          <Select id="evals-second" value={b ?? ""} wrapperClassName="w-48 max-w-full" onChange={(e) => setPicked({ ...picked, b: e.target.value })}>{options}</Select>
+        </Field>
       </div>
-    </Card>
+      {diff.isError ? (
+        <ErrorNote error={new Error(t("evals.compareFailed"))} />
+      ) : diff.data ? (
+        <>
+          <DiffView label={t("evals.diffLabel")} empty={t("evals.diffEmpty")} lines={diff.data.lines} />
+          <DataTable
+            label={t("evals.caseResults")}
+            columns={columns}
+            rows={diff.data.cases.map((c, i): CaseRow => ({ key: c.case_id, name: t("evals.caseN", { n: i + 1 }), a: verdictText(c.a), b: verdictText(c.b) }))}
+            rowKey={(r) => r.key}
+            empty={t("evals.noCases")}
+          />
+        </>
+      ) : (
+        <Loading rows={3} label="loading.evalCompare" onRetry={() => void diff.refetch()} />
+      )}
+    </div>
+  );
+}
+
+/** The Compare Button (secondary, in a ButtonRow under the versions): opens the ModalPanel; needs two versions. */
+function CompareVersions({ skill, versions }: { skill: string; versions: readonly SkillVersionRow[] }) {
+  const [open, setOpen] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
+  const enough = versions.length >= 2;
+  return (
+    <>
+      <ButtonRow>
+        <Button ref={button} disabled={!enough} title={enough ? undefined : t("evals.compareNeeds")} onClick={() => setOpen(true)}>{t("evals.compare")}</Button>
+      </ButtonRow>
+      {open && (
+        <ModalPanel title={t("evals.compare")} onClose={() => setOpen(false)} returnFocusTo={button}>
+          <ComparePanel skill={skill} versions={versions} />
+        </ModalPanel>
+      )}
+    </>
   );
 }
 
@@ -244,10 +297,11 @@ function RunNow({ skill }: { skill: string }) {
   );
 }
 
-/** The evals page of one skill (`skill` is its skill_ref): Run now in the header, then Trend, Grid, Compare. */
+/** The evals page of one skill (`skill` is its skill_ref): Run now in the header, then Versions, Compare, Grid, Trend. */
 export function EvalsPage({ skill }: { skill: string }) {
   const runs = useEvalRuns(skill);
   const grid = useEvalGrid(skill);
+  const versions = useSkillVersions(skill);
   const header = <PageHeader title={skillName(skill)} description={t("evals.description")} actions={<RunNow skill={skill} />} />;
   if (runs.isError || grid.isError) return <>{header}<ErrorNote error={new Error(t("evals.loadFailed"))} /></>;
   if (!runs.data || !grid.data) return <>{header}<Loading label="loading.evalRuns" onRetry={() => { void runs.refetch(); void grid.refetch(); }} /></>;
@@ -256,9 +310,10 @@ export function EvalsPage({ skill }: { skill: string }) {
     <>
       {header}
       <div className="flex flex-col gap-6">
-        <Trend runs={runs.data.runs} />
+        <Versions versions={versions} />
+        <CompareVersions skill={skill} versions={versions.data?.versions ?? []} />
         <Grid rows={grid.data.rows} runs={runs.data.runs} />
-        <Compare skill={skill} runs={runs.data.runs} />
+        <Trend runs={runs.data.runs} />
       </div>
     </>
   );
