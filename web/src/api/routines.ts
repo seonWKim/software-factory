@@ -1,5 +1,5 @@
 // The Routines page: GET /api/v1/routines (useRoutines) and the writes under /api/v1/routines (postRoutine: add, edit,
-// pause, resume and delete), as src/ui/routines-api.ts answers them (design 08-routines, 09-dashboard-routines).
+// pause, resume, delete and run), as src/ui/routines-api.ts answers them (design 08-routines, 09-dashboard-routines).
 
 import { t } from "../i18n/index.js";
 import { postJson, useApi } from "./client.js";

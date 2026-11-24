@@ -12,6 +12,7 @@ export const routines = {
   "routines.select": "Show details of {name}",
   "routines.switch": "Run {name}",
   "routines.more": "More for {name}",
+  "routines.run": "Run now",
   "routines.edit": "Edit",
   "routines.delete": "Delete",
   "routines.cadence.interval": "Every {spec} minutes",
