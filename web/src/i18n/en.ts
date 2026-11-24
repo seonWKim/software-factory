@@ -7,6 +7,7 @@ import { health } from "./en/health.js";
 import { item } from "./en/item.js";
 import { plugins } from "./en/plugins.js";
 import { proposals } from "./en/proposals.js";
+import { routines } from "./en/routines.js";
 import { rules } from "./en/rules.js";
 import { schedules } from "./en/schedules.js";
 import { settings } from "./en/settings.js";
@@ -24,6 +25,7 @@ export const en = {
   ...item,
   ...plugins,
   ...proposals,
+  ...routines,
   ...rules,
   ...schedules,
   ...settings,
