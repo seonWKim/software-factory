@@ -2356,6 +2356,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
       "ext_skill_refs", // imported skill references (design 11-plugin-import): src/state/migrations/20261115T1200-state-ext-skill-refs
       "ext_mcp_tool_lists", // tool listings of imported MCP servers (design 11-plugin-import): src/state/migrations/20261116T1200-state-ext-mcp-tool-lists
+      "ext_skill_versions", // imported skills' versions (design 11-plugin-import): src/state/migrations/20261124T1001-state-ext-skill-versions
       "runtime_config_file_changes", // file-only key edits (design 08-settings): src/state/migrations/20261113T1200-state-config-file-changes
       "calendar_events", // the calendar component: src/calendar/migrations/20261112T1700-calendar-events
       "calendar_sync_state",
