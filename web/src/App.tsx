@@ -4,7 +4,7 @@ import { type JSX, useEffect, useState } from "react";
 import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
 import { Brand } from "./components/ui/brand.js";
 import { Button } from "./components/ui/button.js";
-import { OverflowMenu, Tooltip } from "./components/ui/menu.js";
+import { Tooltip } from "./components/ui/menu.js";
 import { t } from "./i18n/index.js";
 import { useShortcuts } from "./keys.js";
 import { Link, NavProvider, useLocationPath } from "./nav.js";
@@ -12,19 +12,18 @@ import { BASE, evalsRoute, pagesIn, redirectFor, routeFor } from "./pages.js";
 import { HelpDialog, SearchDialog } from "./search.js";
 import { ShortcutsLink, SideLinks, pageLabel } from "./shell/sidebar.js";
 import { ModeChip } from "./shell/mode-chip.js";
+import { MoreMenu } from "./shell/more-menu.js";
 import { startTheme } from "./theme.js";
 import { DataPage } from "./views/data.js";
 import { EvalsPage, skillName } from "./views/evals.js";
 import { HealthPage, ItemPage, ItemsPage } from "./views/pages.js";
 import { PluginsPage } from "./views/plugins.js";
 import { SettingsPage } from "./views/settings.js";
-import { APPEARANCE_ANCHOR } from "./views/settings/appearance.js";
 import { FactoryRevision, RevisionBanner, StopAllAgents, UnpushedMerges, UpdateNote } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { RulesPage } from "./views/rules.js";
 import { ProposalsPage } from "./views/proposals.js";
 import { CalendarPage } from "./views/calendar.js";
-import { RoutinesPage } from "./views/routines.js";
 import { SchedulesPage } from "./views/schedules.js";
 import { TasksPage } from "./views/tasks.js";
 import { WorkersPage } from "./views/workers.js";
@@ -34,7 +33,6 @@ const VIEWS: Record<string, () => JSX.Element> = {
   tasks: TasksPage,
   calendar: CalendarPage,
   schedules: SchedulesPage,
-  routines: RoutinesPage,
   workers: WorkersPage,
   health: HealthPage,
   rules: RulesPage,
@@ -61,7 +59,7 @@ export function App() {
   useEffect(() => startTheme(), []);
   const [path, navigate] = useLocationPath();
   const [dialog, setDialog] = useState<"search" | "help" | null>(null);
-  useShortcuts({ navigate, openSearch: () => setDialog("search"), openHelp: () => setDialog("help"), path });
+  useShortcuts({ navigate, openSearch: () => setDialog("search"), openHelp: () => setDialog("help"), refresh: () => void client.invalidateQueries(), path });
   const route = routeFor(path);
   // An old page path (/app/queue) swaps itself for its new one in the address bar, keeping its query.
   const moved = redirectFor(path, location.search);
@@ -99,7 +97,7 @@ export function App() {
             <div className="border-t border-border pt-3">
               <SideLinks label={t("nav.setup")} pages={pagesIn("bottom")} current={current} />
             </div>
-            <div className="mt-3">
+            <div className="mt-1">
               <ShortcutsLink onOpen={() => setDialog("help")} />
             </div>
             <div className="mt-2">
@@ -121,14 +119,8 @@ export function App() {
                 <Search aria-hidden className="size-4" />
               </Button>
             </Tooltip>
-            {/* Refresh is for the pages that do not poll (Data, Plugins); Appearance opens Settings' theme card. */}
-            <OverflowMenu
-              label={t("topbar.more")}
-              items={[
-                { label: t("topbar.refresh"), action: "refresh", onSelect: () => void client.invalidateQueries() },
-                { label: t("theme.title"), action: "appearance", onSelect: () => navigate(`${BASE}settings#${APPEARANCE_ANCHOR}`) },
-              ]}
-            />
+            {/* Refresh is for the pages that do not poll (Data, Plugins); Appearance picks the theme in place, as Settings does. */}
+            <MoreMenu />
           </header>
           <RevisionBanner server={overview.data?.server_rev} web={WEB_REV} />
           <UnpushedMerges count={overview.data?.unpushed_merges} />

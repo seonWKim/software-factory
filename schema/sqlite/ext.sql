@@ -54,3 +54,13 @@ CREATE TABLE ext_skill_refs (
     updated_at  TEXT NOT NULL,
     UNIQUE (source, path)
   );
+
+CREATE TABLE ext_skill_versions (
+    ref_id       TEXT NOT NULL,
+    version      INTEGER NOT NULL,
+    folder_hash  TEXT NOT NULL,
+    text         TEXT NOT NULL,
+    source       TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    PRIMARY KEY (ref_id, version)
+  );

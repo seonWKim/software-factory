@@ -109,9 +109,11 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
 
   return (
     <li data-calendar={plugin.name} className={cn(SETTINGS_ROW, "flex flex-col gap-2")}>
-      {/* One row at desktop: the name, its state and last sync, then the actions at the right end; below it wraps. */}
-      <div data-calendar-head className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <div className="flex min-w-0 grow basis-64 flex-wrap items-center gap-2">
+      {/* One row at desktop: the name, its state and last sync, then the actions at the right end; below it wraps. The
+          actions sit on the name's line, not the middle of the group: the group is 6px down, so its first 20px line is
+          centred on the 32px buttons when the last sync wraps under the name (the responsive check's row-align). */}
+      <div data-calendar-head data-row className="flex flex-wrap items-start gap-x-4 gap-y-2">
+        <div className="flex min-w-0 grow basis-64 flex-wrap items-center gap-x-2 gap-y-1 py-1.5">
           <span data-raw className="font-medium wrap-anywhere">{plugin.name}</span>
           <Badge level={plugin.connected ? "ready_to_merge" : undefined}>{plugin.connected ? t("calendar.connected") : t("calendar.notConnected")}</Badge>
           <span className="text-xs text-text-2 tabular-nums">
@@ -204,7 +206,7 @@ function ConnectNote({ open: start }: { open: boolean }) {
   const id = useId();
   return (
     <div data-calendar-note>
-      <Button variant="ghost" size="sm" aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)} className={LINK_CLASS}>
+      <Button variant="ghost" size="sm" flush aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)} className={LINK_CLASS}>
         {t("calendar.noteToggle")}
       </Button>
       <div id={id} hidden={!open} className="mt-1 space-y-1 text-xs text-pretty text-text-2">

@@ -587,6 +587,24 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
     answer = { status: 200, body: { ok: true, lines: ["filed"], item: "wi_9", branch: "factory/wi_9" } };
   };
 
+  it("use=runner:fake (the Plugins page's Models menu) opens the runner row's confirm with fake picked, writes plugins.runner only, and leaves the address", async () => {
+    filedAnswer();
+    history.replaceState(null, "", "/app/settings?tab=advanced&use=runner%3Afake");
+    await show(null);
+    const dialog = await waitFor(() => document.querySelector<HTMLElement>("dialog[data-dialog]")!);
+    expect(dialog.querySelector("[data-new-value]")!.textContent).toContain('"runner": "fake"');
+    expect(location.search).toBe("?tab=advanced");
+    await confirm();
+    expect(sent(0)).toMatchObject({ action: "edit-file", key: "plugins" });
+    expect(JSON.parse(sent(0).value)).toEqual({ secrets: "env-file", runner: "fake", source: ["local", "slack"] });
+  });
+
+  it("use= naming a plugin the kind does not register opens nothing", async () => {
+    history.replaceState(null, "", "/app/settings?tab=advanced&use=runner%3Anope");
+    await show(null);
+    expect(document.querySelector("dialog[data-dialog]")).toBeNull();
+  });
+
   it("names each file key and read-only key by its label, with the key name behind Details, and Save names the label", async () => {
     const section = await form();
     for (const { key } of view.file_keys!.editable.filter((e) => e.key !== "plugins")) {

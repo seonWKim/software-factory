@@ -301,6 +301,24 @@ describe("items tree", () => {
     expect(tree.innerHTML.replace(/motion-safe:transition-(colors|transform)|motion-safe:duration-150|motion-safe:ease-out/g, "")).not.toMatch(/animate-|transition/);
   });
 
+  // Owner feedback 2026-11-24 (#86): an empty 32px gutter before every badge, though no row could expand.
+  it("keeps the chevron's column only when some top-level row can expand", async () => {
+    let tree = await mount();
+    expect(rowOf(tree, "Spec waiting").querySelector("span.w-8[aria-hidden]")).not.toBeNull();
+    cleanup();
+    itemsBody.items = ROWS.filter((r) => r.parent_id === null && !["wi_10", "wi_30"].includes(r.id));
+    tree = await mount();
+    expect(rowOf(tree, "Spec waiting").querySelector("span.w-8[aria-hidden]")).toBeNull();
+  });
+
+  // Owner feedback 2026-11-24 (#86): "3m 8s 458ms" on a running row; from a minute on, the clock stops at seconds.
+  it("shows a running row's time to the second", async () => {
+    itemsBody.items = ROWS.map((r) => (r.id === "wi_11" ? { ...r, run: { ...r.run!, started_at: new Date(NOW - 188_458).toISOString() } } : r));
+    const tree = await mount();
+    expect(rowOf(tree, "Phase one").querySelector("[data-run]")!.textContent).toContain("· 3m 8s");
+    expect(rowOf(tree, "Phase one").querySelector("[data-run]")!.textContent).not.toMatch(/ms/);
+  });
+
   it("an expandable row's toggle is the design system's 32px icon button holding the Disclosure chevron, turned down when open", async () => {
     const tree = await mount();
     const toggle = tree.querySelector("[data-chevron]")!.closest("button")!;

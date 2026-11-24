@@ -13,12 +13,13 @@ export type ShortcutGroup = (typeof SHORTCUT_GROUPS)[number];
 export interface Shortcut {
   keys: string;
   group: ShortcutGroup;
-  what: "keys.search" | "keys.help" | "keys.goWork" | "keys.next" | "keys.prev" | "keys.open" | "keys.primary" | "keys.addTask" | "keys.editTask" | "keys.deleteTask" | "keys.undoDone";
+  what: "keys.search" | "keys.help" | "keys.refresh" | "keys.goWork" | "keys.next" | "keys.prev" | "keys.open" | "keys.primary" | "keys.addTask" | "keys.editTask" | "keys.deleteTask" | "keys.undoDone";
 }
 
 export const SHORTCUTS: readonly Shortcut[] = [
   { keys: "⌘K", group: "general", what: "keys.search" },
   { keys: "?", group: "general", what: "keys.help" },
+  { keys: "r", group: "general", what: "keys.refresh" },
   { keys: "g w", group: "navigation", what: "keys.goWork" },
   { keys: "g a", group: "navigation", what: "keys.goWork" },
   { keys: "j", group: "rows", what: "keys.next" },
@@ -122,10 +123,10 @@ function pressPrimary(): boolean {
 }
 
 /** Installs the shortcuts. `path` clears the row selection on a page change. */
-export function useShortcuts({ navigate, openSearch, openHelp, path }: { navigate: (to: string) => void; openSearch: () => void; openHelp: () => void; path: string }): void {
+export function useShortcuts({ navigate, openSearch, openHelp, refresh, path }: { navigate: (to: string) => void; openSearch: () => void; openHelp: () => void; refresh: () => void; path: string }): void {
   const g = useRef(0);
-  const handlers = useRef({ navigate, openSearch, openHelp });
-  handlers.current = { navigate, openSearch, openHelp };
+  const handlers = useRef({ navigate, openSearch, openHelp, refresh });
+  handlers.current = { navigate, openSearch, openHelp, refresh };
   useEffect(() => {
     for (const r of document.querySelectorAll<HTMLElement>(ROWS)) clearRow(r);
   }, [path]);
@@ -151,6 +152,7 @@ export function useShortcuts({ navigate, openSearch, openHelp, path }: { navigat
       }
       if (e.key === "g") g.current = Date.now();
       else if (e.key === "?") h.openHelp();
+      else if (e.key === "r") h.refresh();
       else if (e.key === "q") {
         const field = document.querySelector<HTMLElement>(`[${QUICK_ADD_ATTR}]`);
         if (field) {

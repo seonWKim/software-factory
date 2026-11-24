@@ -226,6 +226,7 @@ export const work = {
   "item.phase": "Phase {phase} of",
   "item.splitParent": "its split parent",
   "item.source": "Source",
+  "item.facts": "Facts",
   "item.tier": "Tier",
   "item.specComment": "Plan",
   "item.specCommentLink": "Open the posted plan",

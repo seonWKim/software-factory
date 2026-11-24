@@ -67,6 +67,26 @@ describe("form controls", () => {
     expect(screen.queryByText("Shown to you")).toBeNull();
   });
 
+  it("Field with no single control is a group named by its label, with its hint under the control", () => {
+    render(<Field label="Notice when" help="Each switch is one kind"><span>switches</span></Field>);
+    const group = screen.getByRole("group", { name: "Notice when" });
+    // A <label> for no control names nothing: the label would be lost to a screen reader.
+    expect(group.querySelector("label")).toBeNull();
+    expect(group.lastElementChild!.textContent).toBe("Each switch is one kind");
+  });
+
+  it.each([["md", "px-3", "-ms-3"], ["sm", "px-2", "-ms-2"]] as const)("a flush %s Button pulls its start back by its padding, so its label sits on the text edge", (size, pad, pull) => {
+    render(<Button variant="ghost" size={size} flush>Show result</Button>);
+    const classes = screen.getByRole("button", { name: "Show result" }).className.split(" ");
+    expect(classes).toEqual(expect.arrayContaining([pad, pull]));
+  });
+
+  it("a Button that is not flush keeps its margin, and an icon Button is never flush", () => {
+    render(<><Button variant="ghost">Plain</Button><Button size="icon" flush aria-label="More">⋯</Button></>);
+    expect(screen.getByRole("button", { name: "Plain" }).className).not.toMatch(/-ms-/);
+    expect(screen.getByRole("button", { name: "More" }).className).not.toMatch(/-ms-/);
+  });
+
   it("Radio is checked, unchecked or disabled", () => {
     const onChange = vi.fn();
     render(<><Radio name="g" checked onChange={onChange}>On</Radio><Radio name="g" checked={false} onChange={onChange}>Off</Radio><Radio name="g" disabled>Dis</Radio></>);
@@ -216,14 +236,16 @@ describe("OverflowMenu and Tooltip", () => {
     expect(button.textContent).not.toContain("⋯");
     expect(button.querySelector("[data-testid=ic]")).toBeTruthy();
     fireEvent.click(button);
-    expect(screen.getAllByRole("menuitem").map((i) => i.getAttribute("aria-checked"))).toEqual(["true", "false"]);
+    // A pick list's items are menuitemradio: aria-checked is not valid on a plain menuitem.
+    expect(screen.getAllByRole("menuitemradio").map((i) => i.getAttribute("aria-checked"))).toEqual(["true", "false"]);
   });
 
   it("closes on Esc and on a click outside", () => {
     render(<OverflowMenu label="More" items={[{ label: "Edit", onSelect: vi.fn() }]} />);
     fireEvent.click(screen.getByRole("button", { name: "More" }));
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "More" }));
     fireEvent.click(screen.getByRole("button", { name: "More" }));
     fireEvent.mouseDown(document.body);
     expect(screen.queryByRole("menu")).toBeNull();
@@ -418,11 +440,11 @@ describe("DataTable", () => {
     setWidth(SM_PX);
     render(table());
     expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Name", "Count", "Id"]);
-    const cell = screen.getByText("22");
+    const cell = screen.getByText("22").closest("td")!;
     expect(cell.className).toContain("tabular-nums");
     expect(cell.className).toContain("sm:text-right");
     expect(screen.getByText("Count").className).toContain("text-right");
-    expect(screen.getByText("x1").className).not.toContain("text-right");
+    expect(screen.getByText("x1").closest("td")!.className).not.toContain("text-right");
   });
 
   it("keeps a column that has one value", () => {
@@ -501,7 +523,11 @@ describe("ListRow", () => {
     const row = screen.getByTestId("row");
     expect(row.tagName).toBe("LI");
     const parts = [...row.children];
-    expect(parts[0]!.tagName).toBe("INPUT");
+    // The leading control and the menu are both pulled up 6px, so their 32px boxes centre on the title's 20px line.
+    expect(parts[0]!.matches("[data-row-leading]")).toBe(true);
+    expect(parts[0]!.firstElementChild!.tagName).toBe("INPUT");
+    expect(parts[0]!.className).toContain("-mt-1.5");
+    expect(parts[2]!.className).toContain("-mt-1.5");
     expect(parts[1]!.textContent).toBe("Full title2 itemsextra");
     expect(parts[1]!.querySelector("[data-details]")!.textContent).toBe("2 items");
     expect(parts[2]!.matches("[data-row-menu]")).toBe(true);

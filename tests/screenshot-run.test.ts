@@ -136,7 +136,7 @@ describe("the capture set", () => {
     expect(["settings-general", "plugins-mcp", "health-overview"].some((n) => named.has(n))).toBe(false);
     expect(named.get("plugins-skills-evals")).toEqual({ name: "plugins-skills-evals", path: "plugins?tab=skills", open: "evals" });
     // A dialog on a page with no tabs is named <page>-<dialog> and opened from the page's default URL.
-    expect(named.get("routines-new-routine")).toEqual({ name: "routines-new-routine", path: "routines", open: "new-routine" });
+    expect(named.get("schedules-new-schedule")).toEqual({ name: "schedules-new-schedule", path: "schedules", open: "new-schedule" });
     expect(pages.at(-1)?.name).toBe("plugins-skills-evals");
     // A checkout whose sidebar lacks a tabbed page has none of its tabs; a page with no tabs gains nothing.
     expect(capturePages(PAGES_TS).map((p) => p.name).filter((n) => n.startsWith("plugins") || n.startsWith("health"))).toEqual([]);
@@ -165,8 +165,8 @@ describe("the capture set", () => {
     expect(script.indexOf("openDialog(page, shoot.open)")).toBeLessThan(script.indexOf("page.eval(FULL_HEIGHT)"));
     const real = await readFile(join(import.meta.dirname, "..", "web", "src", "views", "plugins.tsx"), "utf8");
     expect(real).toContain('data-capture-open="evals"');
-    const routines = await readFile(join(import.meta.dirname, "..", "web", "src", "views", "routines.tsx"), "utf8");
-    expect(routines).toContain('data-capture-open="new-routine"');
+    const schedules = await readFile(join(import.meta.dirname, "..", "web", "src", "views", "schedules.tsx"), "utf8");
+    expect(schedules).toContain('data-capture-open="new-schedule"');
   });
 
   it("the fixture seeds one imported skill with a SKILL.md and an eval suite, so the Skills tab has a row with Evals", async () => {
@@ -176,12 +176,15 @@ describe("the capture set", () => {
     expect(fixture).toMatch(/createSkillEvalSuite\(/);
   });
 
-  it("the fixture seeds routines (a long name, a paused one, one on the merge trigger), so the Routines table and its menus are drawn", async () => {
+  it("the fixture seeds schedules, so the Schedules rows have the ⋯ menu check:responsive opens as menu-row", async () => {
     const fixture = await readFile(join(import.meta.dirname, "..", "scripts", "responsive", "fixture.mjs"), "utf8");
-    expect(fixture).toMatch(/await seedRoutines\(store\)/);
-    expect(fixture).toMatch(/writeRoutine\(store, "add"/);
-    expect(fixture).toMatch(/writeRoutine\(store, "pause"/);
-    expect(fixture).toMatch(/trigger: "merge"/);
+    expect(fixture).toMatch(/await seedSchedules\(store\)/);
+    expect(fixture).toMatch(/writeSchedule\(store, "add"/);
+    const check = await readFile(join(import.meta.dirname, "..", "scripts", "responsive-check.mjs"), "utf8");
+    expect(check).toContain('{ name: "menu-row", path: "schedules" }');
+    // The Routines page is gone (design 09-dashboard-routines): neither the fixture nor the check open it.
+    expect(fixture).not.toMatch(/seedRoutines|writeRoutine/);
+    expect(check).not.toContain('path: "routines"');
   });
 });
 
@@ -258,11 +261,11 @@ describe("the Chrome browser", () => {
     };
     const out = await captureAll(chromeBrowser(), new MemoryStorage(), { item_id: "i", run_id: "r", exec, signal });
     const sent = stdin.trim().split("\n").map((l) => (JSON.parse(l) as { shoot: { path: string; open?: string } }).shoot);
-    expect(sent.filter((x) => x.open).map((x) => `${x.path}:${x.open}`)).toEqual([...Array(4).fill("routines:new-routine"), ...Array(4).fill("plugins?tab=skills:evals")]);
+    expect(sent.filter((x) => x.open).map((x) => `${x.path}:${x.open}`)).toEqual([...Array(4).fill("schedules:new-schedule"), ...Array(4).fill("plugins?tab=skills:evals")]);
     expect(sent.filter((x) => !x.open).every((x) => !("open" in x))).toBe(true);
     expect(out.reason).toBe("the capture of plugins-skills-evals at 390px, light failed: the evals dialog did not open");
     expect(out.captures.map((c) => c.page)).toContain("plugins-skills");
-    expect(out.captures.map((c) => c.page)).toContain("routines-new-routine");
+    expect(out.captures.map((c) => c.page)).toContain("schedules-new-schedule");
     expect(out.captures.map((c) => c.page)).not.toContain("plugins-skills-evals");
   });
 

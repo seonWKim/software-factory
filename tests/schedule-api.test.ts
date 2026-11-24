@@ -126,6 +126,29 @@ describe("POST /api/v1/schedules/…", () => {
     expect((await send("add", ADD, { csrfToken: "wrong" })).status).toBe(403);
     expect(await store.listSchedules()).toEqual([]);
     expect(POST_ONLY).toContain("schedule");
-    expect((await send("delete", { id: "sch_fb" })).status).toBe(405);
+    expect((await send("remove", { id: "sch_fb" })).status).toBe(405);
+  });
+
+  it("delete goes through the same guards: a wrong CSRF token or anyone but the owner is refused and the schedule stays", async () => {
+    const { store, send } = await setup();
+    await send("add", ADD);
+    expect((await send("delete", { id: "sch_fb" }, { csrfToken: "wrong" })).status).toBe(403);
+    expect((await send("delete", { id: "sch_fb", title: "x" })).status).toBe(400);
+    expect((await store.listSchedules()).map((s) => s.id)).toEqual(["sch_fb"]);
+    const guest = await setup("local:guest@example.com" as UserId);
+    await guest.store.addSchedule({ id: "sch_fb", title: "F", cadence: { kind: "daily", spec: "09:00" }, zone: "UTC", created_by: OWNER, created_at: "2026-11-22T12:00:00.000Z" as never, next_due_at: FIRST as never });
+    expect(await guest.send("delete", { id: "sch_fb" })).toMatchObject({ status: 403, value: { error: expect.stringContaining("Only the owner manages schedules") } });
+    expect(await guest.store.listSchedules()).toHaveLength(1);
+  });
+
+  it("delete removes the schedule and answers it as it was; its runs stay readable; an unknown ID is a 404", async () => {
+    const { clock, store, send, get } = await setup();
+    await send("add", ADD);
+    clock.advance(12 * HOUR);
+    await runDueSchedules(store, clock.now());
+    expect(await send("delete", { id: "sch_fb" })).toMatchObject({ status: 200, value: { schedule: { id: "sch_fb", title: "Feedback" } } });
+    expect((await get("/api/v1/schedules")).value.schedules).toEqual([]);
+    expect(await store.listScheduleRuns("sch_fb")).toMatchObject([{ occurrence_at: FIRST, outcome: "fired" }]);
+    expect(await send("delete", { id: "sch_fb" })).toEqual({ status: 404, value: { error: "no schedule sch_fb" } });
   });
 });

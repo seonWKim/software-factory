@@ -121,7 +121,7 @@ describe("Dialog", () => {
     const dialog = screen.getByRole("dialog");
     const body = dialog.querySelector<HTMLElement>("[data-dialog-body]")!;
     const footer = dialog.querySelector<HTMLElement>("[data-dialog-footer]")!;
-    expect(body.className.split(/\s+/)).toEqual(expect.arrayContaining(["overflow-y-auto", "min-h-0", "flex-1"]));
+    expect(body.className.split(/\s+/)).toEqual(expect.arrayContaining(["overflow-y-auto", "min-h-0"]));
     expect(body.contains(screen.getByRole("textbox", { name: "Field" }))).toBe(true);
     expect(body.contains(footer)).toBe(false);
     expect(within(footer).getAllByRole("button").map((b) => b.textContent)).toEqual(["Cancel", "Do it"]);
@@ -129,6 +129,25 @@ describe("Dialog", () => {
     // The dialog itself does not scroll, else the footer scrolls away with the body.
     expect(dialog.className).not.toMatch(/\boverflow-y-auto\b/);
     expect(dialog.className).toContain("overflow-hidden");
+  });
+
+  it("sizes to its content: no box between the dialog and its fields grows from a zero basis, which WebKit draws as a 2px line (owner #82)", () => {
+    render(<><Host onConfirm={() => {}} /><PanelHost /></>);
+    fireEvent.click(screen.getByRole("button", { name: "open it" }));
+    fireEvent.click(screen.getByRole("button", { name: "open panel" }));
+    for (const dialog of screen.getAllByRole("dialog")) {
+      // Every box from the dialog down to the body that holds the content: the form, the Dialog body, the panel body.
+      const body = dialog.querySelector<HTMLElement>("[data-dialog-body], [data-panel-body]")!;
+      const chain: HTMLElement[] = [];
+      for (let el: HTMLElement | null = body; el && el !== dialog; el = el.parentElement) chain.push(el);
+      expect(chain.length).toBeGreaterThan(0);
+      for (const el of chain) {
+        // flex-1 is flex: 1 1 0%; Safari and the cmux browser size a fit-content <dialog> from that 0 basis.
+        expect(el.className.split(/\s+/)).not.toEqual(expect.arrayContaining([expect.stringMatching(/^(flex-1|basis-0|grow)$/)]));
+        // It still shrinks to the dialog's max height, so only the body scrolls.
+        expect(el.className.split(/\s+/)).toContain("min-h-0");
+      }
+    }
   });
 
   it("the dialog and the stylesheet carry no hard-coded colours, and the dialog fills a phone with a 16 px gutter", () => {

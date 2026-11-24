@@ -14,13 +14,18 @@
 //                   Only the outermost such element of a chain is reported.
 //   letter-wrap     text in a box narrower than 12ch breaks a word across lines (the old model_by column, PR #530,
 //                   was 9ch wide).
-//   tall-fixed      a position:fixed or sticky element covers more than 40% of the viewport's height.
+//   tall-fixed      a position:fixed or sticky element covers more than 40% of the viewport's height (an open
+//                   dialog or popover is an overlay the owner opened and closes, so it is left to overlay-bounds).
 //   overlay-bounds  an open dialog, popover, menu, listbox or tooltip extends past the viewport.
 //   small-target    a painted interactive element (button, link, input, select, textarea, summary, or a role of
 //                   button, menuitem, checkbox, radio, switch, tab) is smaller than 24x24 CSS px; links in running
 //                   text count too. An input inside a <label> is measured by the label's box, which clicks it (the
 //                   Checkbox's 16px box sits in a 32px label).
 //   unreachable     the page is taller than the viewport but html or body hides vertical overflow.
+//   panel-collapsed an open dialog's or popover's body ([data-panel-body], [data-dialog-body]) is under
+//                   `minPanelBodyPx` (60px) tall while its content is taller: Safari and the cmux browser drew the
+//                   calendar event popover's body 24px tall under a scrollbar (owner #92) when it grew from a zero
+//                   flex basis. Headless WebKit lays that case out right, so the rule guards the outcome in every engine.
 //
 // The page template's structure (docs/design/09-dashboard-shell.md, design-system/patterns.md), one rule each:
 //
@@ -28,16 +33,52 @@
 //   heading-size    an h1 or h2 is not the font size of the page's first one; responsive-check.mjs also compares each
 //                   page's sizes with the first page's at the same viewport and theme.
 //   page-width      <main>'s max-width is neither --page-wide nor --page-read (PageHeader's width prop picks one).
-//   button-height   a button is not 28px or 32px tall (a switch, a listbox option, a menu item and a chart's bar,
-//                   [data-chart-bar], whose height is the chart's, are not buttons).
+//   button-height   a button is not 28px or 32px tall (a switch, a listbox option, a menu item, a chart's bar,
+//                   [data-chart-bar], whose height is the chart's, and a content chip, [data-chip] (a calendar event),
+//                   whose height is its text's, are not checked; small-target still holds the chip to 24px).
 //   raw-name        visible text holds a snake_case name or a wi_ ID outside [data-raw] (code and pre count as raw).
 //   title-wrap      a row title ([data-row-title]: Work, Tasks and Health's Runners rows) wraps onto more than two
 //                   lines, so the ID, badge or time beside it squeezed it (design 09-dashboard-shell, 2026-11-22).
 //
+// Alignment (design 09-dashboard-components, 2026-11-24, the owner's "vertical and horizontal alignments are all wrong"):
+//
+//   row-align       in a row (a table body's <tr>, [data-row], [data-list-row], [data-item-row], [role=row], a table
+//                   card's <li>), a control or badge (button, link, input, select, switch, checkbox, combobox,
+//                   [data-level], [data-status]) that sits on the row's first text line has its vertical centre more
+//                   than `rowAlignPx` (3px) from that line's centre. The line is the row's first painted text outside a
+//                   control or badge; a control on a later line (a details line) is not compared, and a nested row's
+//                   controls belong to the nested row. A control that wraps onto lines of its own is measured by its
+//                   first line. A 28px button in a top-aligned table cell is 5px low; a 32px "⋯" is 7px low.
+//                   An open menu, listbox, dialog or popover inside the row is an overlay and is not compared.
+//   toolbar-height  in a toolbar ([role=toolbar], or PageToolbar's control row [data-toolbar]), the controls (buttons,
+//                   inputs, selects, comboboxes; a SegmentedControl as one) are not all one height: a 28px sm Button
+//                   beside the 32px search Input (Work, until 2026-11-24).
+//
+//   disclosure-align a Disclosure (<details>) right under a bordered box (its previous sibling has a left border: a
+//                   bordered list, a table) has its chevron ([data-chevron], else its summary) more than 1px from that
+//                   box's left edge, so the toggle no longer reads as belonging to the list (the audit's "Details"
+//                   13px in from the Host sleeps list, 2026-11-24).
+//
+// `[data-align-skip]` on an element, or on an ancestor inside the row or toolbar, leaves it out of both (a control that
+// is meant to sit off the line, such as a tall preview). Rules in `limits.warnOnly` are reported as warnings: they
+// print but do not fail the check (see LIMITS).
+//
 // Elements that are not painted (display:none, visibility:hidden, opacity:0, zero size) and screen-reader-only
 // boxes (1px, clipped) are skipped.
 
-export const LIMITS = { letterWrapCh: 12, maxFixedShare: 0.4, buttonHeights: [28, 32], pageWidths: ["--page-wide", "--page-read"], maxTitleLines: 2, minTarget: 24 };
+export const LIMITS = {
+  letterWrapCh: 12,
+  maxFixedShare: 0.4,
+  buttonHeights: [28, 32],
+  pageWidths: ["--page-wide", "--page-read"],
+  maxTitleLines: 2,
+  minTarget: 24,
+  rowAlignPx: 3,
+  minPanelBodyPx: 60,
+  // Rules that print but do not fail: a new rule lands here while the fix it waits on is in progress, named in a
+  // comment. row-align was here until the table and row centring (9a4c1d07) reached main, 2026-11-24.
+  warnOnly: [],
+};
 
 /**
  * Runs in the page: `failures` as { rule, selector, detail }, each failing element marked for the screenshot, and
@@ -87,7 +128,7 @@ export function checkLayout(limits) {
 
   const fail = (rule, el, detail) => {
     el.setAttribute("data-responsive-fail", rule);
-    out.push({ rule, selector: selector(el), detail });
+    out.push({ rule, selector: selector(el), detail, ...(limits.warnOnly?.includes(rule) ? { warn: true } : {}) });
   };
 
   const painted = (el) => {
@@ -202,8 +243,8 @@ export function checkLayout(limits) {
       }
     }
 
-    // tall-fixed
-    if (s.position === "fixed" || s.position === "sticky") {
+    // tall-fixed (an open dialog or popover is an overlay, held by overlay-bounds instead)
+    if ((s.position === "fixed" || s.position === "sticky") && !el.matches("dialog[open]")) {
       const shown = Math.min(r.bottom, H) - Math.max(r.top, 0);
       if (shown > H * limits.maxFixedShare) {
         fail("tall-fixed", el, `${s.position} element covers ${Math.round(shown)}px of a ${H}px viewport (> ${limits.maxFixedShare * 100}%)`);
@@ -261,7 +302,7 @@ export function checkLayout(limits) {
   }
 
   // button-height
-  for (const b of document.body.querySelectorAll("button:not([role=switch], [role=option], [role=menuitem], [data-chart-bar])")) {
+  for (const b of document.body.querySelectorAll("button:not([role=switch], [role=option], [role=menuitem], [data-chart-bar], [data-chip])")) {
     if (!painted(b)) continue;
     const h = Math.round(b.getBoundingClientRect().height);
     if (!limits.buttonHeights.includes(h)) fail("button-height", b, `${h}px tall, not ${limits.buttonHeights.join(" or ")}px`);
@@ -296,5 +337,91 @@ export function checkLayout(limits) {
     named.add(el);
     fail("raw-name", el, `"${m[0].slice(0, 40)}" outside [data-raw]`);
   }
+  // row-align
+  const ROWS = "tbody > tr, [data-row], [data-list-row], [data-item-row], [role=row], ul[data-cards] > li";
+  const ALIGNED = "button, a[href], input:not([type=hidden]), select, [role=switch], [role=checkbox], [role=combobox], [data-level], [data-status]";
+  // An open menu, listbox, dialog or popover floats over the row (OverflowMenu's list is `fixed` but stays the row's
+  // DOM descendant): an overlay, not row content, so neither its items nor its text are measured against the row.
+  const OVERLAY = "[role=menu], [role=listbox], [role=dialog], dialog, [data-popover]";
+  const skipped = (el, within) => {
+    for (let e = el; e; e = e.parentElement) {
+      if (e.getAttribute("data-align-skip") !== null) return true;
+      if (e === within) return false;
+      if (e.matches(OVERLAY)) return true;
+    }
+    return false;
+  };
+  /** The first line box of `el`'s first painted text: [top, bottom], or null. */
+  const firstLine = (el, accept) => {
+    const texts = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = texts.nextNode(); n; n = texts.nextNode()) {
+      if (!n.textContent.trim() || !accept(n.parentElement)) continue;
+      const range = document.createRange();
+      range.selectNodeContents(n);
+      const q = [...range.getClientRects()].find((x) => x.width > 0 && x.height > 0);
+      if (q) return [q.top, q.bottom];
+    }
+    return null;
+  };
+  for (const row of document.body.querySelectorAll(ROWS)) {
+    if (!painted(row) || row.getAttribute("data-align-skip") !== null) continue;
+    const own = (el) => el.closest(ROWS) === row && !skipped(el, row);
+    const line = firstLine(row, (p) => own(p) && painted(p) && !p.closest(ALIGNED));
+    if (!line) continue;
+    const centre = (line[0] + line[1]) / 2;
+    const seen = [];
+    for (const el of row.querySelectorAll(ALIGNED)) {
+      if (!own(el) || !painted(el) || seen.some((s) => s.contains(el))) continue;
+      seen.push(el);
+      let [top, bottom] = [el.getBoundingClientRect().top, el.getBoundingClientRect().bottom];
+      if (bottom <= line[0] || top >= line[1]) continue; // on another line of the row
+      // A control whose text wraps (a long title link) is measured by its first line.
+      const lh = parseFloat(style(el).lineHeight) || parseFloat(style(el).fontSize) * 1.2;
+      if (bottom - top > lh * 1.5 && bottom - top > 40) {
+        const first = firstLine(el, () => true);
+        if (first) [top, bottom] = first;
+      }
+      const off = (top + bottom) / 2 - centre;
+      if (Math.abs(off) > limits.rowAlignPx) {
+        fail("row-align", el, `centre ${off > 0 ? "+" : ""}${Math.round(off * 10) / 10}px from the row's first text line (${Math.round(bottom - top)}px tall), over ${limits.rowAlignPx}px`);
+      }
+    }
+  }
+
+  // toolbar-height
+  for (const bar of document.body.querySelectorAll("[role=toolbar], [data-toolbar]")) {
+    if (!painted(bar)) continue;
+    const controls = [...bar.querySelectorAll("button, input:not([type=hidden], [type=checkbox], [type=radio]), select, [role=radiogroup], [role=combobox]")].filter(
+      (el) => painted(el) && !skipped(el, bar) && !el.closest("[role=tablist], [role=menu], [role=listbox], dialog") && !(el.parentElement?.closest("[role=radiogroup]") && el.getAttribute("role") !== "radiogroup"),
+    );
+    const heights = controls.map((el) => Math.round(el.getBoundingClientRect().height));
+    const counts = new Map();
+    for (const h of heights) counts.set(h, (counts.get(h) ?? 0) + 1);
+    if (counts.size < 2) continue;
+    // The height most controls have; on a tie, the taller (the 32px control height).
+    const main = [...counts].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+    controls.forEach((el, i) => {
+      if (heights[i] !== main) fail("toolbar-height", el, `${heights[i]}px tall in a toolbar of ${main}px controls`);
+    });
+  }
+
+  // disclosure-align
+  for (const d of document.body.querySelectorAll("details")) {
+    const box = d.previousElementSibling;
+    if (!box || !painted(d) || !painted(box) || parseFloat(style(box).borderLeftWidth) === 0) continue;
+    const summary = d.querySelector(":scope > summary");
+    const mark = summary?.querySelector("[data-chevron]") ?? summary;
+    if (!mark || !painted(mark)) continue;
+    const off = mark.getBoundingClientRect().left - box.getBoundingClientRect().left;
+    if (Math.abs(off) > 1) fail("disclosure-align", summary, `chevron ${off > 0 ? "+" : ""}${Math.round(off)}px from the left edge of the bordered box above it`);
+  }
+
+  // panel-collapsed
+  for (const body of document.body.querySelectorAll("dialog[open] [data-panel-body], dialog[open] [data-dialog-body]")) {
+    if (!painted(body)) continue;
+    const [shown, full] = [body.clientHeight, body.scrollHeight];
+    if (shown < Math.min(limits.minPanelBodyPx, full) - 1) fail("panel-collapsed", body, `${shown}px tall showing ${full}px of content, under ${limits.minPanelBodyPx}px`);
+  }
+
   return { failures: out, sizes };
 }

@@ -25,11 +25,11 @@ export interface RowSelect<Row> {
 }
 
 /**
- * A selectable row's first cell: a plain text button, 28px tall (the small Button height) and pulled up 4px, so its
- * text sits on the line of the other cells and the row keeps its height. It underlines on hover; the row, not the
- * button, shows the selection.
+ * A selectable row's first cell: a plain text button, 32px tall, the cell's whole first line (Td's CELL_LINE), so its
+ * text sits on the centre line of the other cells and the row keeps its height. It underlines on hover; the row, not
+ * the button, shows the selection.
  */
-const SELECT_BUTTON = `-my-1 inline-flex min-h-7 max-w-full items-center rounded-control text-left font-medium hover:underline ${FOCUS}`;
+const SELECT_BUTTON = `inline-flex min-h-8 max-w-full items-center rounded-control text-left font-medium hover:underline ${FOCUS}`;
 
 /**
  * A Table built from columns and rows. Number cells are right-aligned in tabular-nums; a column that is empty in

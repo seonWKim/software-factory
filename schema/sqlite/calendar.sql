@@ -8,7 +8,7 @@ CREATE TABLE calendar_events (
     ends_at     TEXT NOT NULL,
     all_day     INTEGER NOT NULL,
     updated_at  TEXT,
-    synced_at   TEXT NOT NULL,
+    synced_at   TEXT NOT NULL, details TEXT,
     PRIMARY KEY (source, event_id)
   );
 

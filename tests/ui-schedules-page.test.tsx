@@ -63,8 +63,8 @@ afterEach(() => {
 });
 
 const show = () => render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(SchedulesPage)));
-/** The row of a schedule by its title. */
-const row = async (title: string) => (await screen.findByText(title, undefined, SLOW)).closest("tr")!;
+/** The row of a schedule by its title (the selected one's detail Card shows the title too). */
+const row = async (title: string) => (await screen.findAllByText(title, undefined, SLOW)).map((e) => e.closest("tr")).find((r) => r !== null)!;
 const ready = async () => {
   await row("Nightly docs check");
   await waitFor(() => expect((screen.getByRole("button", { name: "New schedule" }) as HTMLButtonElement).disabled).toBe(false), SLOW);
@@ -109,16 +109,58 @@ describe("Schedules page", () => {
     expect(posts[1]).toEqual({ path: "resume", body: { id: "sch_bbbb2222" }, token: TOKEN });
   });
 
-  it("the row menu holds Run now and Edit; Run now posts run, and is off while the schedule is paused", async () => {
+  it("the row menu holds Run now, Edit, Pause or Resume, a separator and Delete; Run now posts run, and is off while the schedule is paused", async () => {
     show();
     await ready();
     fireEvent.click(within(await row("Weekly review")).getByRole("button", { name: "More for Weekly review" }));
-    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Run now", "Edit"]);
+    const menu = screen.getByRole("menu");
+    expect(within(menu).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Run now", "Edit", "Resume", "Delete"]);
+    expect([...menu.children].map((li) => (li.getAttribute("role") === "separator" ? "|" : li.textContent))).toEqual(["Run now", "Edit", "Resume", "|", "Delete"]);
+    const del = screen.getByRole("menuitem", { name: "Delete" });
+    expect(del.className).toContain("text-pill-bad-fg");
+    expect(del.querySelector("svg")).toBeTruthy();
     expect((screen.getByRole("menuitem", { name: "Run now" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.keyDown(window, { key: "Escape" });
     fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "More for Nightly docs check" }));
+    expect(screen.getByRole("menuitem", { name: "Pause" })).toBeTruthy();
     fireEvent.click(screen.getByRole("menuitem", { name: "Run now" }));
     await waitFor(() => expect(posts).toEqual([{ path: "run", body: { id: "sch_aaaa1111" }, token: TOKEN }]), SLOW);
+  });
+
+  it("Delete asks in a danger Dialog; confirming posts once, the row goes, the detail Card closes and the focus goes to the table", async () => {
+    show();
+    await ready();
+    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "Show what Nightly docs check does and its runs" }));
+    await screen.findByRole("region", { name: "About Nightly docs check" }, SLOW);
+    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "More for Nightly docs check" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog", undefined, SLOW);
+    expect(within(dialog).getByRole("heading").textContent).toBe("Delete Nightly docs check?");
+    expect(dialog.textContent).toContain("It stops running. Past runs stay in Work.");
+    expect(posts).toEqual([]);
+    // The server forgets it once the delete lands, so the reread has one row.
+    schedules = schedules.filter((s) => s.id !== "sch_aaaa1111");
+    const confirm = within(dialog).getByRole("button", { name: "Delete schedule" });
+    expect(confirm.className).toContain("bg-failed");
+    fireEvent.click(confirm);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), SLOW);
+    expect(posts).toEqual([{ path: "delete", body: { id: "sch_aaaa1111" }, token: TOKEN }]);
+    await waitFor(() => expect(screen.queryAllByText("Nightly docs check")).toHaveLength(0), SLOW);
+    expect(screen.queryByRole("region", { name: "About Nightly docs check" })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(document.querySelector("[data-schedules-table]")), SLOW);
+  });
+
+  it("Cancel in the delete Dialog posts nothing; the detail Card's Delete opens the same Dialog", async () => {
+    show();
+    await ready();
+    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "Show what Nightly docs check does and its runs" }));
+    const card = await screen.findByRole("region", { name: "About Nightly docs check" }, SLOW);
+    fireEvent.click(within(card).getByRole("button", { name: "Delete Nightly docs check" }));
+    const dialog = await screen.findByRole("dialog", undefined, SLOW);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), SLOW);
+    expect(posts).toEqual([]);
+    expect(await row("Nightly docs check")).toBeTruthy();
   });
 
   it("shows the server's refusal of a write in a Notice", async () => {
@@ -132,8 +174,8 @@ describe("Schedules page", () => {
   it("selecting a row shows its runs in a second Card: started, result, cost and output, newest first", async () => {
     show();
     await ready();
-    expect(screen.getByText("Select a schedule to see its runs.")).toBeTruthy();
-    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "Show runs of Nightly docs check" }));
+    expect(screen.getByText("Select a schedule to see what it does and its runs.")).toBeTruthy();
+    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "Show what Nightly docs check does and its runs" }));
     const table = await screen.findByRole("table", { name: "Runs" }, SLOW);
     expect(table.closest("section")).not.toBe(screen.getByRole("table", { name: "Schedules" }).closest("section"));
     expect([...table.querySelectorAll("th")].map((h) => h.textContent)).toEqual(["Started", "Result", "Cost", "Output"]);
@@ -142,10 +184,63 @@ describe("Schedules page", () => {
     expect(body[1]?.slice(1)).toEqual(["Ran", "$0.0123", "Found two stale pages."]);
   });
 
+  it("each title has one muted line under it saying what the schedule does: its text's first sentence, else what its action does (owner #84)", async () => {
+    schedules.push(
+      schedule("sch_persona", "Daily design check", { action: { kind: "feedback", settings: { prompt: "Once a day, an agent playing a designer files tasks. It reads the code.\nYou are the gongbang-designer persona." } } }),
+      schedule("sch_blank", "Empty build", { action: { kind: "build", settings: {} } }),
+    );
+    show();
+    const summary = async (title: string) => (await row(title)).querySelector<HTMLElement>("[data-summary]")!;
+    expect((await summary("Daily design check")).textContent).toBe("Once a day, an agent playing a designer files tasks.");
+    // Cut to one line with the whole sentence in its tooltip, so every row keeps one height.
+    expect((await summary("Daily design check")).title).toBe("Once a day, an agent playing a designer files tasks.");
+    expect((await summary("Daily design check")).className.split(/\s+/)).toEqual(expect.arrayContaining(["truncate", "text-text-2"]));
+    expect((await summary("Empty build")).textContent).toBe("Files a task with this text, and the factory builds it like any other task");
+    // The line sits inside the title cell; the row's other cells are unchanged.
+    expect((await row("Daily design check")).querySelectorAll("td")[0]!.contains(await summary("Daily design check"))).toBe(true);
+    // Does says what a persona schedule does, not "Reviews feedback".
+    expect((await row("Daily design check")).textContent).toContain("Gives feedback as tasks");
+  });
+
+  it("selecting a schedule shows what it does above its runs: its whole text behind Show more, the action, repeats, zone, busy rule, token limit, last and next run", async () => {
+    schedules[0] = schedule("sch_aaaa1111", "Nightly docs check", { token_cap: 50_000, skip_when_busy: true, action: { kind: "feedback", settings: { prompt: "Once a day, check the docs.\nYou are the docs persona." } } });
+    show();
+    await ready();
+    expect(document.querySelector("[data-schedule-detail]")).toBeNull();
+    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "Show what Nightly docs check does and its runs" }));
+    const detail = await screen.findByRole("region", { name: "About Nightly docs check" }, SLOW);
+    const runsCard = (await screen.findByRole("table", { name: "Runs" }, SLOW)).closest("section")!;
+    // The detail Card comes before the Runs Card.
+    expect(detail.compareDocumentPosition(runsCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const dl = detail.querySelector("dl")!;
+    expect(dl.className).toContain("grid-cols-[max-content_minmax(0,1fr)]");
+    const pairs = Object.fromEntries([...dl.querySelectorAll("dt")].map((dt) => [dt.textContent, dt.nextElementSibling!.textContent]));
+    expect(pairs["What it does"]).toContain("Once a day, check the docs.\nYou are the docs persona.");
+    expect(pairs["Does"]).toBe("Gives feedback as tasks. An agent takes the role this text describes, reads the code and files up to 3 tasks, each with evidence");
+    expect(pairs["Repeats"]).toBe("Every day at 09:00");
+    expect(pairs["Time zone"]).toBe("Europe/Paris");
+    expect(pairs["While the factory is busy"]).toBe("Skips the run");
+    expect(pairs["Token limit"]).toBe("50,000");
+    await waitFor(() => expect(Object.fromEntries([...dl.querySelectorAll("dt")].map((dt) => [dt.textContent, dt.nextElementSibling!.textContent]))["Last run"]).not.toBe(""), SLOW);
+    expect([...dl.querySelectorAll("dd")].every((dd) => dd.className.includes("min-w-0") && dd.className.includes("wrap-anywhere"))).toBe(true);
+    // The text is clamped to two lines (the shared Clamp), not cut by the page.
+    expect(dl.querySelector("dd p")!.className).toContain("line-clamp-2");
+  });
+
+  it("a schedule with no token limit shows the default, and one that has not run says so", async () => {
+    show();
+    await ready();
+    fireEvent.click(within(await row("Weekly review")).getByRole("button", { name: "Show what Weekly review does and its runs" }));
+    const detail = await screen.findByRole("region", { name: "About Weekly review" }, SLOW);
+    await waitFor(() => expect(detail.textContent).toContain("Not run yet"), SLOW);
+    expect(detail.textContent).toContain("Default (200,000)");
+    expect(detail.textContent).toContain("Runs anyway");
+  });
+
   it("the selected schedule's row is marked current, not its title drawn as a pressed pill", async () => {
     show();
     await ready();
-    const title = within(await row("Nightly docs check")).getByRole("button", { name: "Show runs of Nightly docs check" });
+    const title = within(await row("Nightly docs check")).getByRole("button", { name: "Show what Nightly docs check does and its runs" });
     fireEvent.click(title);
     await waitFor(() => expect((title.closest("tr") as HTMLElement).getAttribute("aria-current")).toBe("true"), SLOW);
     expect(title.getAttribute("aria-pressed")).toBe("true");
@@ -175,7 +270,7 @@ describe("Schedules page", () => {
     expect((await pill("Weekly review")).dataset["level"]).toBe("paused");
     expect((await pill("Running one")).dataset["level"]).toBe("running");
     // The neutral pill's fill is surface-2, the current row's fill too: without its own fill there it reads as a bare dot.
-    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "Show runs of Nightly docs check" }));
+    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "Show what Nightly docs check does and its runs" }));
     await waitFor(async () => expect((await row("Nightly docs check")).getAttribute("aria-current")).toBe("true"), SLOW);
     expect((await pill("Nightly docs check")).className).toContain(NEUTRAL_IN_CURRENT);
     expect((await pill("Running one")).className).not.toContain(NEUTRAL_IN_CURRENT);

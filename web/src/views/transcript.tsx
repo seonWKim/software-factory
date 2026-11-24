@@ -59,7 +59,7 @@ const PRE = "font-mono text-xs whitespace-pre-wrap break-words [overflow-wrap:an
 
 function Toggle({ open, onClick, children }: { open: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <Button variant="ghost" size="sm" aria-expanded={open} onClick={onClick} className={cn("mt-1", LINK_CLASS)}>
+    <Button variant="ghost" size="sm" flush aria-expanded={open} onClick={onClick} className={cn("mt-1", LINK_CLASS)}>
       {children}
     </Button>
   );

@@ -2,7 +2,7 @@
 
 What it does: reads the owner's calendars, so the factory keeps a copy of their events beside the tasks (design [02-tasks.md](../design/02-tasks.md), calendar). A source only reads: the factory never creates, edits or deletes an event.
 
-The interface (`src/interfaces/calendar-source.ts`) has one call, `events({ from, to })`: every event that overlaps the window, each with `id` (the source's own, stable and unique within the source), `title`, `starts_at`, `ends_at` (ISO 8601 instants), `all_day` and `updated_at` (null when the source reports none). A throw is that sync's error.
+The interface (`src/interfaces/calendar-source.ts`) has one call, `events({ from, to })`: every event that overlaps the window, each with `id` (the source's own, stable and unique within the source), `title`, `starts_at`, `ends_at` (ISO 8601 instants), `all_day`, `updated_at` (null when the source reports none) and optional `details`: the calendar's name, `location`, `description` (as written, possibly HTML; the dashboard shows it as text), `organizer` and `attendees` (name, address, answer), `conference_url` and `link` (the event's own page; http(s) only), `time_zone` (design 09-dashboard-tasks-calendar, event details). A source fills `details` only from the read it already makes. A throw is that sync's error.
 
 **Config.** The top-level key `calendar` is a list of CalendarSource plugin names, in order, never a `plugins` key:
 

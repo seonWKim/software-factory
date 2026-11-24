@@ -10,6 +10,13 @@ export const LINK_CLASS = "inline-block min-h-6 text-text-1 underline";
 /** LINK_CLASS for a link that is a block (a row or cell title, often `truncate`). */
 export const BLOCK_LINK_CLASS = "block min-h-6 text-text-1 underline";
 
+/**
+ * The title link of a list row (ItemRow's list layout: Tasks, Needs you): a block, text-1, underlined on hover only.
+ * It stands alone on its row, never inside a sentence, so the underline at rest (LINK_CLASS) is not needed to tell it
+ * apart; at rest it reads as the row's title, as the DataTable's selectable first cell does.
+ */
+export const ROW_LINK_CLASS = "block min-h-6 text-text-1 hover:underline";
+
 /** An ID (an item or source ID, linked or not): text-3 in mono, underlined on hover when it is a link. */
 export const ID_CLASS = "inline-block min-h-6 font-mono text-text-3 hover:underline";
 

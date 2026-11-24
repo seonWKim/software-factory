@@ -56,13 +56,47 @@ describe("ItemRow", () => {
     expect(write).toHaveBeenCalledWith("wi_1");
   });
 
-  it("puts the slots in the row order: badge, title, why, project, worker, age, action, then the menu", () => {
+  // Owner feedback 2026-11-24 (#81): the Checkbox (a 32px hit area) sat 7px below a 24px title whose text hugged the
+  // row's top. The list title is one 32px line with its text centred, so the Checkbox, the badge, the title and the
+  // menu share one centre line; at rest it is the row title (font-medium), not an underlined link.
+  it("gives a list row's title, badge line and Checkbox the same 32px line, the title not underlined at rest", () => {
+    const li = listRow({ badge: <span>Running</span>, lead: <Checkbox aria-label="Complete A title" /> });
+    const title = li.querySelector("[data-row-title]")!;
+    const box = li.querySelector("label")!;
+    for (const el of [title, box, li.querySelector("[data-row-badge]")!]) expect(classes(el).has("min-h-8"), el.outerHTML).toBe(true);
+    expect(classes(title).has("leading-8")).toBe(true);
+    expect(classes(title).has("font-medium")).toBe(true);
+    expect(classes(title).has("underline")).toBe(false);
+    expect(classes(title).has("hover:underline")).toBe(true);
+  });
+
+  // The title first, so a list's titles share one left edge whatever badge a row has (owner alignment review, 2026-11-24).
+  it("puts the slots in the row order: title, badge, why, project, worker, age, action, then the menu", () => {
     const li = listRow({
       badge: <span data-slot="badge">B</span>, why: <span data-slot="why">W</span>, project: <span data-slot="project">P</span>,
       worker: <span data-slot="worker">K</span>, age: <span data-slot="age">A</span>, action: <button type="button" data-slot="action">Go</button>, menuItems: [{ label: "Other", onSelect: () => undefined }],
     });
     const order = [...li.querySelectorAll("[data-slot], [data-row-title], [data-row-menu]")].map((e) => e.getAttribute("data-slot") ?? (e.hasAttribute("data-row-title") ? "title" : "menu"));
-    expect(order).toEqual(["badge", "title", "why", "project", "worker", "age", "action", "menu"]);
+    expect(order).toEqual(["title", "badge", "why", "project", "worker", "age", "action", "menu"]);
+  });
+
+  it("a tree row puts the title first and the age last before the menu, the PR link on a 24px centred line", () => {
+    const row = render(
+      <ItemRow layout="tree" variant="compact" itemId="wi_1" title="T" href="/x" badge={<span data-slot="badge">B</span>} why={<span data-slot="why">W</span>}
+        age={<span data-slot="age">A</span>} action={<a href="/pr" data-slot="action">PR #1</a>} menuItems={[{ label: "Other", onSelect: () => undefined }]} />,
+    ).container;
+    const order = [...row.querySelectorAll("[data-slot], [data-row-title], [data-row-menu]")].map((e) => e.getAttribute("data-slot") ?? (e.hasAttribute("data-row-title") ? "title" : "menu"));
+    expect(order).toEqual(["title", "badge", "why", "action", "age", "menu"]);
+    expect(classes(row.querySelector("[data-row-action]")!).has("leading-6")).toBe(true);
+  });
+
+  it("below sm sizes the title by its text, so a short one keeps its line with the badge, and the details start a new line", () => {
+    const li = listRow({ badge: <span>B</span>, why: <span>W</span> });
+    const title = li.querySelector("[data-row-title]")!;
+    expect(classes(title).has("basis-auto")).toBe(true);
+    expect(classes(title).has("sm:basis-40")).toBe(true);
+    const badge = li.querySelector("[data-row-badge]")!;
+    expect(classes(badge.nextElementSibling!).has("basis-full")).toBe(true);
   });
 
   it("shows a second line only when one is given (held behind X, or an error)", () => {

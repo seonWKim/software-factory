@@ -1,4 +1,4 @@
-import { CalendarCheck } from "lucide-react";
+import { CalendarCheck, Trash2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { API, type ItemRow, type ProjectChoice, type TaskRow, type TasksView, postTaskAction, useItems, useTasks } from "../api.js";
@@ -200,7 +200,7 @@ export function TasksPage() {
                 +
               </Button>
               {selected !== null && token !== null && (
-                <OverflowMenu label={t("tasks.projectMore", { name: selected.name })} items={[{ label: t("tasks.delete"), danger: true, onSelect: () => setDeleting(selected) }]} />
+                <OverflowMenu label={t("tasks.projectMore", { name: selected.name })} items={[{ label: t("tasks.delete"), icon: Trash2, danger: true, onSelect: () => setDeleting(selected) }]} />
               )}
               {project !== null && (
                 <Button variant="ghost" size="sm" aria-pressed={files} className="ml-auto" onClick={() => setView(files ? null : "files")}>
