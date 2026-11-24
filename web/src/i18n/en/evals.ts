@@ -46,7 +46,6 @@ export const evals = {
   "evals.runFailed": "The run could not start. Try again.",
   "evals.cardTitle": "Evals: {name}",
   "evals.cardIntro": "Test cases for this skill: what it is given and the checks its answer must meet.",
-  "evals.cardClose": "Close",
   "evals.cardNoSuite": "This skill has no test cases yet. Add a test set to start.",
   "evals.cardSuite": "Test set: {title}",
   "evals.cardNoCases": "No test cases yet",

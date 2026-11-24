@@ -4,7 +4,6 @@ import { type EvalCase, type EvalWrite, type EvalWritten, type TriedCase, postEv
 import { Badge } from "../components/ui/badge.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
-import { Card } from "../components/ui/card.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
@@ -16,8 +15,8 @@ import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { skillName } from "./evals.js";
 
-// The Plugins page's Evals card (design 09-dashboard-settings, 2026-11-24): under the Skills table, for one skill's
-// SKILL.md path. It reads GET /api/v1/evals/<path>/suite (the suite and its cases) and /runs (how many runs keep their
+// The Plugins page's Evals content (design 09-dashboard-settings, 2026-11-24): the body of the ModalPanel a Skills row's
+// Evals button opens (plugins.tsx, which owns the title and the close icon), for one skill's SKILL.md path. It reads GET /api/v1/evals/<path>/suite (the suite and its cases) and /runs (how many runs keep their
 // history after a delete), and writes each op through POST /api/v1/evals/write with GET /api/v1/pauses's csrf_token.
 // Every input, each delete and each try result opens in the shared Dialog, so no row changes height; a refusal (409)
 // stays in the open Dialog and nothing else changes. Labels are plain words: no suite, case or run ID is shown.
@@ -154,7 +153,7 @@ function TryDialog({ write, of, onClose }: { write: Write; of: EvalCase; onClose
       consequence={t("evals.tryConsequence")}
       confirmLabel={write.busy ? t("evals.trying") : t(tried ? "evals.tryAgain" : "evals.tryCase")}
       confirmDisabled={write.busy}
-      {...(tried ? { cancelLabel: t("evals.cardClose") } : {})}
+      {...(tried ? { cancelLabel: t("common.close") } : {})}
       error={write.error}
       onConfirm={() => void confirm()}
       onClose={onClose}
@@ -194,7 +193,7 @@ function ImportDialog({ path, write, onClose }: { path: string; write: Write; on
       consequence={t("evals.importConsequence")}
       confirmLabel={t("evals.import")}
       confirmDisabled={write.busy || done !== null}
-      {...(done ? { cancelLabel: t("evals.cardClose") } : {})}
+      {...(done ? { cancelLabel: t("common.close") } : {})}
       error={write.error}
       onConfirm={() => void confirm()}
       onClose={onClose}
@@ -208,8 +207,8 @@ type Open =
   | { kind: "suite.add" | "suite.rename" | "suite.delete" | "case.add" | "import" }
   | { kind: "case.edit" | "case.delete" | "case.try"; of: EvalCase };
 
-/** The Evals card for one skill's SKILL.md path: its test set and cases, each change in a Dialog. */
-export function EvalsCard({ path, onClose }: { path: string; onClose: () => void }) {
+/** The Evals content for one skill's SKILL.md path: its test set and cases, each change in a Dialog. */
+export function EvalsCard({ path }: { path: string }) {
   const q = useEvalSuite(path);
   const token = useEvalsToken().data?.csrf_token ?? null;
   const write = useEvalWrite(path, token);
@@ -241,7 +240,7 @@ export function EvalsCard({ path, onClose }: { path: string; onClose: () => void
   ];
   const name = skillName(path);
   return (
-    <Card title={t("evals.cardTitle", { name })} action={<Button size="sm" onClick={onClose}>{t("evals.cardClose")}</Button>}>
+    <>
       <p className="mb-4 max-w-[75ch] text-sm text-pretty text-text-2">{t("evals.cardIntro")}</p>
       {q.isError ? (
         <ErrorNote error={q.error} onRetry={() => void q.refetch()} />
@@ -276,6 +275,6 @@ export function EvalsCard({ path, onClose }: { path: string; onClose: () => void
       {open?.kind === "case.edit" && <CaseDialog path={path} write={write} edit={open.of} onClose={close} />}
       {open?.kind === "case.try" && <TryDialog write={write} of={open.of} onClose={close} />}
       {open?.kind === "import" && <ImportDialog path={path} write={write} onClose={close} />}
-    </Card>
+    </>
   );
 }
