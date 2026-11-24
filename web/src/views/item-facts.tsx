@@ -88,7 +88,7 @@ export function ItemFacts({ item, now }: { item: Item; now: number }) {
     [t("item.updated"), <When at={item.updated_at} now={now} />, true],
   ];
   return (
-    <dl data-item-facts className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
+    <dl data-item-facts className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
       {facts.filter(([, , has]) => has || !closed).map(([k, v]) => (
         <div key={k} className="min-w-0">
           <dt className="text-xs text-text-2">{k}</dt>

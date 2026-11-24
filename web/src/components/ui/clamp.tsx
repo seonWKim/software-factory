@@ -29,7 +29,7 @@ export function Clamp({ className, children, ...rest }: ComponentProps<"p">) {
     <div className="flex min-w-0 flex-col items-start">
       <p ref={ref} {...rest} className={cn("max-w-full text-pretty wrap-anywhere", !open && "line-clamp-2", className)}>{children}</p>
       {(cut || open) && (
-        <Button variant="ghost" size="sm" aria-expanded={open} onClick={() => setOpen(!open)} className="-ml-2">
+        <Button variant="ghost" size="sm" aria-expanded={open} onClick={() => setOpen(!open)} flush>
           {t(open ? "clamp.less" : "clamp.more")}
         </Button>
       )}

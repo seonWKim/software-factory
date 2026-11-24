@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "../../lib/cn.js";
 import { InToolbar } from "./button.js";
+import { READ_WIDTH } from "./card.js";
 
 // Message pieces: Notice, EmptyState, Kbd, PageHeader and PageToolbar. Colours come from the pill tokens; the badge is badge.tsx.
 
@@ -33,7 +34,7 @@ export function EmptyState({ icon: Icon, title, description, action }: { icon?: 
     <div data-empty className={EMPTY_BOX}>
       {Icon && <Icon aria-hidden className="mb-3 size-6 text-text-3" />}
       <p className="text-sm font-semibold text-pretty">{title}</p>
-      {description && <p className="mt-1 max-w-prose text-sm text-pretty text-text-2">{description}</p>}
+      {description && <p className={cn("mt-1 text-sm text-pretty text-text-2", READ_WIDTH)}>{description}</p>}
       {action && <div className="mt-4 flex justify-center">{action}</div>}
     </div>
   );
@@ -70,7 +71,7 @@ export function PageHeader({ title, badge, description, actions, width = "wide" 
         ) : (
           <h1 className="text-balance text-xl font-semibold">{title}</h1>
         )}
-        {description && <p className="mt-1 max-w-prose text-sm text-pretty text-text-2">{description}</p>}
+        {description && <p className={cn("mt-1 text-sm text-pretty text-text-2", READ_WIDTH)}>{description}</p>}
       </div>
       {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
     </header>
