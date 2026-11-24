@@ -294,9 +294,9 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
     }
     await evaluations.onMergeTransition(tx, current, item, input.actor.id, now); // a merge stores its evaluation once (design §6)
     // A closed item (its PR merged or closed: the merge path's transition) holds nothing from this commit on (releaseHolder); the next claim records
-    // what holds the runs it held (design §5). Only a completed close completes linked tasks (design 02-tasks).
+    // what holds the runs it held (design §5). A completed close completes linked tasks; a rejected one moves them to its replacement (design 02-tasks-build).
     if (current.stage !== "CLOSED" && item.stage === "CLOSED") {
-      if (item.close_reason === "completed") await tasks.completeLinkedTasks(this.db, tx, input.id, now);
+      if (item.close_reason === "completed" || item.close_reason === "rejected") await tasks.onItemClosed(this.db, tx, item, now);
       await releaseHolder(tx, input.id);
     }
     return { ok: true, item, state_change, enqueued, cancelled };

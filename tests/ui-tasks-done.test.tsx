@@ -88,6 +88,30 @@ describe("done tasks stay, in text-2 (design 02-tasks, done tasks stay)", () => 
     for (const id of ["tk_merged", "tk_open"]) for (const reason of ["Rejected", "Not planned", "Closed"]) expect(within(card(id)).queryByText(reason)).toBeNull();
   });
 
+  it("an open task whose item was rejected with no replacement says Not built and why; a moved task shows its note (design 02-tasks-build)", async () => {
+    // reject_reason and link_note are the Tasks read's fields for a rejected item's task.
+    const followed = (id: string, over: Partial<TaskRow> & { reject_reason?: string | null; link_note?: string | null }) => row(id, over as Partial<TaskRow>);
+    s.current = view({
+      projects: [{
+        list: null,
+        tasks: [
+          followed("tk_unbuilt", { work_item_id: "wi_r", close_reason: "rejected", reject_reason: "the API already does this" }),
+          followed("tk_moved", { work_item_id: "wi_b", link_note: "Moved from wi_a" }),
+          row("tk_open"),
+        ],
+      }],
+    });
+    await show();
+    const unbuilt = card("tk_unbuilt");
+    expect(within(unbuilt).getByText("Not built: the API already does this")).toBeTruthy();
+    // Not a bare rejected row: the plain Rejected label gives way to the reason; the task stays open for the owner.
+    expect(within(unbuilt).queryByText("Rejected")).toBeNull();
+    expect(within(unbuilt).getByRole("checkbox", { name: "Complete: tk_unbuilt" })).toBeTruthy();
+    expect(within(card("tk_moved")).getByText("Moved from wi_a")).toBeTruthy();
+    expect(card("tk_open").textContent).not.toContain("Not built");
+    expect(card("tk_open").textContent).not.toContain("Moved from");
+  });
+
   it("Reopen posts { id } to the reopen route with the token; the row shows open again", async () => {
     s.current = withNow(done("tk_now", { due_date: "2026-11-12" }));
     await show();
