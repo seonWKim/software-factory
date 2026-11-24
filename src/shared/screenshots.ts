@@ -10,10 +10,14 @@ export const SCREENSHOT_SIZES = [{ width: 390, height: 844 }, { width: 1280, hei
 export const SCREENSHOT_THEMES = ["light", "dark"] as const;
 export type ScreenshotTheme = (typeof SCREENSHOT_THEMES)[number];
 
-/** One dashboard page to capture: its name in the key and its path under the app (`/app/<path>`). */
+/**
+ * One dashboard page to capture: its name in the key and its path under the app (`/app/<path>`, a tab's `?tab=` included).
+ * `open`: the value of the `data-capture-open` attribute of the button the script clicks once the page is drawn, to open a dialog.
+ */
 export interface ScreenshotPage {
   readonly name: string;
   readonly path: string;
+  readonly open?: string;
 }
 
 /** One stored screenshot: its page, width and theme, and its shared-storage key. */
@@ -83,13 +87,31 @@ const FIXTURE_ITEM = ":item";
 const FIXTURE_RUN = ":run";
 
 /**
- * The pages a screenshot run captures: every sidebar page `web/src/pages.ts` lists (as check:responsive reads it), then
- * the fixture's item page and its run's transcript page (their IDs as FIXTURE_ITEM and FIXTURE_RUN).
+ * The non-default tabs of the tabbed pages, each captured as `<page>-<tab>` (design 04-screenshots, 2026-11-24). The list is
+ * fixed: the run starts before the screenshot review, so it cannot read which tab a change touches. A page the checkout's
+ * sidebar does not list has none. The item page's Changes tab is not here.
+ */
+const TABS: Readonly<Record<string, readonly string[]>> = {
+  settings: ["integrations", "advanced"],
+  plugins: ["skills", "tools", "models"],
+  health: ["runs", "cost", "review"],
+};
+
+/** The dialog captures: `<page>-<tab>-<dialog>`, the page's tab with the button marked `data-capture-open="<dialog>"` clicked. Evals only. */
+const DIALOGS: readonly { page: string; tab: string; dialog: string }[] = [{ page: "plugins", tab: "skills", dialog: "evals" }];
+
+/**
+ * The pages a screenshot run captures: every sidebar page `web/src/pages.ts` lists (as check:responsive reads it) at its
+ * default URL, the fixture's item page and its run's transcript page (their IDs as FIXTURE_ITEM and FIXTURE_RUN), then
+ * the non-default tabs (TABS) of the tabbed pages, then the dialogs (DIALOGS), last.
  */
 export function capturePages(pagesTs: string): ScreenshotPage[] {
   const sidebar = [...pagesTs.matchAll(/\{\s*path:\s*"([^"]*)",\s*label:\s*"([^"]+)"/g)].map((m) => ({ name: m[1] || "floor", path: m[1]! }));
   const item = `items/${FIXTURE_ITEM}`;
-  return [...sidebar, { name: "item", path: item }, { name: "transcript", path: `${item}/runs/${FIXTURE_RUN}` }];
+  const listed = new Set(sidebar.map((p) => p.name));
+  const tabs = Object.entries(TABS).filter(([page]) => listed.has(page)).flatMap(([page, ids]) => ids.map((tab) => ({ name: `${page}-${tab}`, path: `${page}?tab=${tab}` })));
+  const dialogs = DIALOGS.filter((d) => listed.has(d.page)).map((d) => ({ name: `${d.page}-${d.tab}-${d.dialog}`, path: `${d.page}?tab=${d.tab}`, open: d.dialog }));
+  return [...sidebar, { name: "item", path: item }, { name: "transcript", path: `${item}/runs/${FIXTURE_RUN}` }, ...tabs, ...dialogs];
 }
 
 /** One shot: a page at a size and theme. */
