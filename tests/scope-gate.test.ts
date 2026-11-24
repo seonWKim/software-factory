@@ -208,12 +208,12 @@ describe.skipIf(process.env.SF_RATCHET_UPDATE === "1")("the architecture ratchet
     JSON.parse(readFileSync(join(import.meta.dirname, "architecture", "known-violations", `${name}.json`), "utf8")) as T;
 
   it("a count above its budget, or a budget raised above the count, fails file-budget", () => {
-    const budget = known<Record<string, number>>("file-budget");
+    const budget = known<Record<string, number>>("file-budget-core");
     const [file, n] = Object.entries(budget)[0]!;
-    expect(countDrift("file-budget", { ...budget, [file]: n + 1 }).grew).toEqual([`${file}: ${n} → ${n + 1}`]);
+    expect(countDrift("file-budget-core", { ...budget, [file]: n + 1 }).grew).toEqual([`${file}: ${n} → ${n + 1}`]);
     // Raising the JSON's count above the code's is the same drift seen from the list: the list no longer matches.
-    expect(countDrift("file-budget", { ...budget, [file]: n - 1 }).fell_but_list_not_lowered).toEqual([`${file}: ${n} → ${n - 1}`]);
-    expect(countDrift("file-budget", budget)).toEqual({ grew: [], fell_but_list_not_lowered: [] });
+    expect(countDrift("file-budget-core", { ...budget, [file]: n - 1 }).fell_but_list_not_lowered).toEqual([`${file}: ${n} → ${n - 1}`]);
+    expect(countDrift("file-budget-core", budget)).toEqual({ grew: [], fell_but_list_not_lowered: [] });
   });
 
   it("a name added to a name list, or a new violation, fails the ratchet", () => {

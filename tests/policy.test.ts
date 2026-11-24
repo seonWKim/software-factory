@@ -258,7 +258,7 @@ describe("isCovered: a later same-slug migration", () => {
 // covers the ratchet lists. Their growth is refused by tests/architecture/, and they stay on the gate list.
 describe("isCovered: the ratchet lists", () => {
   it("covers each *.json directly in tests/architecture/known-violations/, whatever allowed_paths says", () => {
-    for (const f of ["file-budget.json", "dependency-direction.json", "unit-purity.json", "new-rule.json"]) {
+    for (const f of ["file-budget-core.json", "dependency-direction.json", "unit-purity.json", "new-rule.json"]) {
       expect(isCovered(`tests/architecture/known-violations/${f}`, []), f).toBe(true);
     }
   });
@@ -273,8 +273,8 @@ describe("isCovered: the ratchet lists", () => {
       "tests/architecture/lib.ts",
       "tests/architecture/file-budget.test.ts",
       "tests/architecture/known-violations-x/a.json",
-      "./tests/architecture/known-violations/file-budget.json",
-      "src/tests/architecture/known-violations/file-budget.json",
+      "./tests/architecture/known-violations/file-budget-core.json",
+      "src/tests/architecture/known-violations/file-budget-core.json",
       "src/core/policy.ts",
     ]) {
       expect(isCovered(p, []), p).toBe(false);
@@ -283,7 +283,7 @@ describe("isCovered: the ratchet lists", () => {
   });
 
   it("does not make a ratchet list overlap other paths, and leaves it on the gate list", () => {
-    const list = "tests/architecture/known-violations/file-budget.json";
+    const list = "tests/architecture/known-violations/file-budget-core.json";
     expect(pathsOverlap([list], ["src/core/policy.ts"])).toEqual([]);
     expect(pathsOverlap([list], ["tests/architecture/"])).toEqual([list]);
     expect(gatePathTouched([list])).toBe(list);
