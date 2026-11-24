@@ -19,16 +19,23 @@
 // The tools of an approved imported MCP server (design 11-plugin-import, phase 3) are read from `ext_mcp_tool_lists`:
 // GET /api/v1/plugins asks for a listing when the server's current description has none (a store row, as the page's
 // factory user); a worker starts the server and stores the names. This process never starts a server.
+// Skill versions under the evals path (design 06-measurement, 2026-11-25): GET /api/v1/evals/<skill>/versions and
+// /diff read the imported skill's `ext_skill_versions` rows, linked to the skill's eval runs by folder hash
+// (skillVersionsOf); src/skill-evals.ts re-runs a version through the same lookup.
 
 import type { SettingsBase } from "../core/settings.js";
-import { storeSql } from "../impl/store/sql/store-sql.js";
+import type * as Compare from "../core/skill-eval-compare.js";
+import type { SkillEvalStore, SkillVersion } from "../interfaces/skill-eval-store.js";
+import type { FactoryStore } from "../interfaces/factory-store.js";
+import { storeSql, storeSqlOrNull } from "../impl/store/sql/store-sql.js";
 import { McpToolListsStore, approvedImportedServers, requestMcpToolLists } from "../import/mcp-tool-lists.js";
 import { PackEntriesStore } from "../packs/pack-entries.store.js";
 import type { SkillRefSource, SkillState } from "../runtime/capabilities/capabilities.js";
 import { BackgroundSnapshot } from "./background-refresh.js";
 import { HEALTH_MIN_INTERVAL_MS } from "./health.js";
 import { type CapabilityDeps, type UiCapabilitySources, capabilityRows, settingsSources } from "./capabilities-api.js";
-import type { ApiDeps, ApiResult } from "./api.js";
+import { type ApiDeps, type ApiResult, apiError } from "./api.js";
+import type { skillOf } from "./evals-api.js";
 import type { UiSettings } from "./settings-api.js";
 import { Withholder } from "./withhold.js";
 
@@ -236,4 +243,57 @@ export function pluginLines(rows: PluginRows, kind: PluginKind): string[] {
   if (kind === "mcp") return rows.mcp.map((m) => [m.name, m.status, m.source, or(m.description)].join("  "));
   if (kind === "skill") return rows.skills.map((s) => [s.name, s.folder, or(s.description), roles(s.roles), or(s.last_used)].join("  "));
   return rows.tools.map((t) => [t.name, t.origin, t.read_only ? "read-only" : "writes", roles(t.roles), or(t.last_used), or(t.description)].join("  "));
+}
+
+/** /api/v1/evals/<skill>/versions and /diff, with the URL-encoded skill_ref and the read as its groups. */
+export const EVALS_VERSIONS_PATH = /^\/api\/v1\/evals\/([^/]+)\/(versions|diff)$/;
+
+/**
+ * The versions (oldest first) of the imported skill that holds one of `hashes` (folder hashes, the first that one
+ * holds wins): every `ext_skill_versions` row of that ref. A run is linked to a version only by this hash; [] when
+ * none holds one, or the store is not a SQL store.
+ */
+export async function skillVersionsOf(store: Pick<SkillEvalStore, "listSkillVersions">, hashes: readonly (string | null)[]): Promise<SkillVersion[]> {
+  const db = storeSqlOrNull(store as FactoryStore);
+  const wanted = [...new Set(hashes.filter((h): h is string => h !== null && h !== ""))];
+  if (db === null || wanted.length === 0) return [];
+  const hits = await db.all(`SELECT ref_id, folder_hash FROM ext_skill_versions WHERE folder_hash IN (${wanted.map(() => "?").join(", ")}) ORDER BY ref_id`, wanted);
+  const ref = wanted.map((h) => hits.find((r) => r.folder_hash === h)).find((r) => r !== undefined);
+  return ref ? store.listSkillVersions(String(ref.ref_id)) : [];
+}
+
+/** src/core/skill-eval-compare.ts's version reads and evals-api.ts skillOf, passed in by the route table (read-routes.ts). */
+export type SkillVersionReads = Pick<typeof Compare, "skillVersionRows" | "unlinkedRuns" | "latestLinkedRun" | "lineDiff" | "caseResults"> & { skillOf: typeof skillOf };
+
+type VersionsDeps = { store: Pick<FactoryStore, "listSkillEvalRuns" | "listSkillEvalReplays" | "listSkillVersions">; scanner: ApiDeps["scanner"] };
+
+/**
+ * GET /api/v1/evals/<skill>/versions: { versions, unlinked }, one row per version of the skill (skillVersionRows:
+ * latest pass rate, change since the previous version, current mark), newest first, and the ids of the skill's runs
+ * linked to no version. GET /api/v1/evals/<skill>/diff?a=<hash>&b=<hash>: each version's row, the unified line diff
+ * of their SKILL.md texts and the per-case results of each one's latest linked run; 404 when a hash is no version of
+ * the skill. Every string leaves through the Withholder; the reads write nothing.
+ */
+export async function readSkillVersions(d: VersionsDeps, f: SkillVersionReads, url: URL): Promise<ApiResult> {
+  const [, encoded, read] = EVALS_VERSIONS_PATH.exec(url.pathname) ?? [];
+  const skill = f.skillOf(encoded);
+  if (typeof skill !== "string") return skill;
+  const w = new Withholder(d.scanner);
+  const text = async (v: string) => (await w.plain(v)).text;
+  const runs = await d.store.listSkillEvalRuns(skill);
+  const versions = await skillVersionsOf(d.store, runs.map((r) => r.skill_version));
+  const rows = await Promise.all(f.skillVersionRows(versions, runs).map(async (r) => ({ ...r, folder_hash: await text(r.folder_hash), run_id: r.run_id === null ? null : await text(r.run_id) })));
+  if (read === "versions") return { status: 200, value: { versions: rows, unlinked: await Promise.all(f.unlinkedRuns(versions, runs).map((r) => text(r.id))) } };
+  const a = url.searchParams.get("a"), b = url.searchParams.get("b");
+  if (!a || !b) return apiError(400, "Name both versions: ?a=<hash>&b=<hash>.");
+  const va = versions.find((v) => v.folder_hash === a), vb = versions.find((v) => v.folder_hash === b);
+  if (!va || !vb) return apiError(404, "No such version of this skill.");
+  const replays = async (hash: string) => {
+    const run = f.latestLinkedRun(runs, hash);
+    return run ? d.store.listSkillEvalReplays(run.id) : [];
+  };
+  const lines = await Promise.all(f.lineDiff(va.text, vb.text).map(async (l) => ({ op: l.op, text: await text(l.text) })));
+  const cases = await Promise.all(f.caseResults(await replays(a), await replays(b)).map(async (c) => ({ ...c, case_id: await text(c.case_id) })));
+  const row = (v: SkillVersion) => rows.find((r) => r.version === v.version)!;
+  return { status: 200, value: { a: row(va), b: row(vb), lines, cases } };
 }

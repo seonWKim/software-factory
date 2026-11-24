@@ -12,6 +12,18 @@ CREATE TABLE calendar_events (
     PRIMARY KEY (source, event_id)
   );
 
+CREATE TABLE calendar_local_events (
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    starts_at   TEXT NOT NULL,
+    ends_at     TEXT NOT NULL,
+    all_day     INTEGER NOT NULL,
+    repeats     TEXT NOT NULL,
+    created_by  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+  );
+
 CREATE TABLE calendar_sync_requests (
     id            TEXT PRIMARY KEY,
     from_date     TEXT NOT NULL,
@@ -41,5 +53,7 @@ CREATE TABLE calendar_synced_ranges (
   );
 
 CREATE INDEX calendar_events_starts ON calendar_events (starts_at);
+
+CREATE INDEX calendar_local_events_starts ON calendar_local_events (starts_at);
 
 CREATE UNIQUE INDEX calendar_sync_requests_pending ON calendar_sync_requests (pending_key);

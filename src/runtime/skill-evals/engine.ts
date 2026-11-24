@@ -53,7 +53,10 @@ export interface SkillEvalRunInput {
   suite_id: string;
   /** A user or agent ID, never a display name. */
   created_by: string;
-  /** The skill folder's version (capabilities skillVersion) when the run starts. */
+  /**
+   * The folder hash of the skill version the run replays (capabilities skillVersion): the folder's now, or a stored
+   * version's on a re-run (src/skill-evals.ts). It links the run to that `ext_skill_versions` row (design 06-measurement).
+   */
   skill_version: string;
 }
 
