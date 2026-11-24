@@ -341,14 +341,14 @@ function FilterForm({
   );
 }
 
-/** One cell: NULL muted, markers emphasised, item and run ids linked, long text cut with "Show all". */
+/** One cell: NULL muted, markers emphasised, item and run ids linked (`data-id`: cut to one line in a card, the full ID in `title`), long text cut with "Show all". */
 function CellView({ value, runItems, open, onOpen }: { value: DataCell; runItems: Record<string, string>; open: boolean; onOpen: () => void }) {
   if (value === null) return <span className="text-text-3">{t("data.null")}</span>;
   if (typeof value === "number") return <span className="tabular-nums">{value}</span>;
   if (value === "[hidden]" || value.startsWith("[withheld: ")) return <em className="text-pill-warn-fg">{value}</em>;
-  if (/^wi_[A-Za-z0-9]+$/.test(value)) return <Link href={itemPath(value)} className={LINK_CLASS}>{value}</Link>;
+  if (/^wi_[A-Za-z0-9]+$/.test(value)) return <Link href={itemPath(value)} data-id title={value} className={LINK_CLASS}>{value}</Link>;
   const owner = /^run_[A-Za-z0-9]+$/.test(value) ? runItems[value] : undefined;
-  if (owner) return <Link href={itemPath(owner)} title={t("data.runOf", { owner })} className={LINK_CLASS}>{value}</Link>;
+  if (owner) return <Link href={itemPath(owner)} data-id title={`${value}: ${t("data.runOf", { owner })}`} className={LINK_CLASS}>{value}</Link>;
   if (value.length <= CELL_MAX || open) return <>{value}</>;
   return (
     <>

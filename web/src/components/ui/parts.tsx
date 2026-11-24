@@ -77,7 +77,7 @@ export function Tr({ children, current = false, ...attrs }: { children: ReactNod
   const [under, ...rest] = cells;
   return (
     <li {...attrs} {...mark} className={cn("min-w-0 px-3 py-2 text-sm", current && CURRENT_LI)}>
-      <div className="min-w-0 font-medium break-words">{title}</div>
+      <div className="min-w-0 font-medium wrap-anywhere">{title}</div>
       {under !== undefined && <div className="mt-1 min-w-0">{under}</div>}
       {rest.length > 0 && (
         <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
@@ -96,10 +96,18 @@ export function Tr({ children, current = false, ...attrs }: { children: ReactNod
   );
 }
 
+/**
+ * A card cell (design 09-dashboard-components, 2026-11-24): it may shrink below its content (`min-w-0`), prose wraps
+ * anywhere so a long word cannot widen it (`wrap-anywhere`; `break-words` leaves an inline-block link as wide as its
+ * longest word), no link is wider than the cell, and an identifier link (`a[data-id]`, its full value in its text and
+ * `title`) stays on one line cut with an ellipsis.
+ */
+export const CARD_CELL = "min-w-0 wrap-anywhere [&_a]:max-w-full [&_a[data-id]]:truncate [&_a[data-id]]:align-bottom";
+
 export function Td({ children, className, ...attrs }: { children?: ReactNode; className?: string } & { [data: `data-${string}`]: string | undefined }) {
   const { cards } = useContext(TableMode);
-  // In a card the cell wraps: the table's column widths and no-wrap are dropped.
-  if (cards) return <div {...attrs} className={cn("min-w-0 break-words", className?.split(/\s+/).filter((c) => !/^((min-|max-)?w-|whitespace-nowrap$)/.test(c)).join(" "))}>{children}</div>;
+  // In a card the cell wraps: the table's column widths, no-wrap and break-words (CARD_CELL's wrap-anywhere wins) are dropped.
+  if (cards) return <div {...attrs} className={cn(CARD_CELL, className?.split(/\s+/).filter((c) => !/^((min-|max-)?w-|whitespace-nowrap$|break-words$)/.test(c)).join(" "))}>{children}</div>;
   return <td {...attrs} className={cn("px-3 py-2 align-top", className)}>{children}</td>;
 }
 

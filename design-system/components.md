@@ -36,11 +36,11 @@ One row of a `Table`: a `<tr>`, or a card below `sm` (first cell the title, the 
 
 ## Td
 
-One cell of a `Tr`; in a card it wraps and drops width classes. Data attributes pass through to the `<td>` or the card's `<div>`.
+One cell of a `Tr`; in a card it is `CARD_CELL`: it shrinks (`min-w-0`), wraps anywhere (`wrap-anywhere`), caps every link at its width and cuts an ID link (`a[data-id]`, full value in `title`) to one line with an ellipsis; it drops the column's width classes, `whitespace-nowrap` and `break-words`. Data attributes pass through to the `<td>` or the card's `<div>`.
 
 ## DataTable
 
-A `Table` built from `columns` and `rows`, on `Table`, `Tr` and `Td`. A column is `{ key, header, render?, numeric?, className? }` (`className` is added to the column's cells). With `dataKey` each row carries `data-key` set to its `rowKey`, for links and tests that find a row by it. With `select` (`{ key, onSelect, label }`) the rows are selectable: the first cell is a plain text button (`font-medium`, underlined on hover, 28 px tall and pulled up 4 px so its text sits on the other cells' line, the shared `FOCUS` ring, `aria-pressed`, named by `label(row)`) that calls `onSelect` with the row's key, and the row whose key is `select.key` is `current` (Tr). Never a ghost Button in the cell: its pressed fill is a pill and it sits below the other cells. States: number columns right-aligned in `tabular-nums` (header too); a column empty in every row left out; cards below `SM_PX`; no rows shows `empty`; with `select`, one row or none current.
+A `Table` built from `columns` and `rows`, on `Table`, `Tr` and `Td`. A column is `{ key, header, render?, numeric?, className? }` (`className` is added to the column's cells). With `dataKey` each row carries `data-key` set to its `rowKey`, for links and tests that find a row by it. With `select` (`{ key, onSelect, label }`) the rows are selectable: the first cell is a plain text button (`font-medium`, underlined on hover, 28 px tall and pulled up 4 px so its text sits on the other cells' line, the shared `FOCUS` ring, `aria-pressed`, named by `label(row)`) that calls `onSelect` with the row's key, and the row whose key is `select.key` is `current` (Tr). Never a ghost Button in the cell: its pressed fill is a pill and it sits below the other cells. States: number columns right-aligned in `tabular-nums` (header too); a column empty in every row left out; cards below `SM_PX`, where long text and links stay inside the card (prose wraps anywhere, a link marked `data-id` with its full value in `title` is cut with an ellipsis; give an ID link both); no rows shows `empty`; with `select`, one row or none current.
 
 ## Chart
 

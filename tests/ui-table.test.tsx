@@ -175,3 +175,41 @@ describe("DataTable select", () => {
     expect(beta.className).not.toMatch(/aria-pressed:bg/);
   });
 });
+
+describe("DataTable cards keep long values inside the card", () => {
+  const id = `wi_${"a".repeat(60)}`;
+  const prose = `${"x".repeat(80)} and more words`;
+  const rows = [{ k: "r", copy: "Copy", id, note: prose }];
+  const columns = [
+    { key: "copy", header: "Copy" },
+    { key: "state", header: "State", render: () => "on" },
+    { key: "id", header: "work_item_id", className: "max-w-md font-mono break-words", render: (r) => <a href={`/items/${r.id}`} data-id title={r.id}>{r.id}</a> },
+    { key: "note", header: "note", className: "max-w-md font-mono break-words whitespace-pre-wrap" },
+  ];
+
+  // The Data page's work_item_id link ran past the card's right edge at 390px (2026-11-24): `break-words` does not
+  // shrink an inline-block link below its longest word, and nothing capped the link at the cell's width.
+  it("below sm a value cell shrinks and wraps anywhere, its links fit the cell and an ID link is cut with its full value kept; at sm the table is unchanged", () => {
+    width(390);
+    render(<DataTable label="T" columns={columns} rows={rows} rowKey={(r) => r.k} empty="None" />);
+    const values = [...document.querySelectorAll("dd > div")] as HTMLElement[];
+    expect(values).toHaveLength(2);
+    for (const cell of values) {
+      const classes = cell.className.split(/\s+/);
+      expect(classes).toEqual(expect.arrayContaining(["min-w-0", "wrap-anywhere", "[&_a]:max-w-full", "[&_a[data-id]]:truncate"]));
+      // The column's break-words would undo wrap-anywhere, and its width cap is the table's.
+      expect(classes).not.toContain("break-words");
+      expect(classes).not.toContain("max-w-md");
+    }
+    const link = screen.getByRole("link", { name: id });
+    expect(link.getAttribute("title")).toBe(id);
+    expect(link.parentElement).toBe(values[0]);
+    expect(document.querySelector("li > div")!.className.split(/\s+/)).toContain("wrap-anywhere");
+    cleanup();
+    // At sm and up the table keeps its column classes and gets none of the card's.
+    width(SM_PX);
+    render(<DataTable label="T" columns={columns} rows={rows} rowKey={(r) => r.k} empty="None" />);
+    for (const td of document.querySelectorAll("td")) expect(td.className).not.toMatch(/wrap-anywhere|\[&_a/);
+    expect(document.querySelectorAll("td")[2]!.className).toContain("max-w-md font-mono break-words");
+  });
+});
