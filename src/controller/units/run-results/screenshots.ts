@@ -3,7 +3,7 @@
 // blocked_reason, holds the item or touches the merge gate:
 // - a passing review of a change whose pr_files touch a `repo.ui_check` path queues one screenshot run;
 // - a finished screenshot run, captured or not, queues one screenshot review on what it stored, or its reason;
-// - a finished screenshot review posts one comment with its findings and unverified lines.
+// - a finished screenshot review posts one comment with its findings, its result per changed page and unverified lines.
 // The runs are queued by a plain transition (no stage or blocked change; only the acked run's tokens), not through `decide`: a screenshot review is a short
 // look at stored images, never the budget checkpoint or the Rule of Two's hold, which would block the item.
 
@@ -99,9 +99,12 @@ async function screenshotsTaken(c: Ctx, run: Run, spent: number): Promise<void> 
   });
 }
 
-/** The screenshot review's one comment: its findings, then what it could not verify; a failed review says so. */
+/**
+ * The screenshot review's one comment: its findings, then each changed page with whether its changed section appeared,
+ * then what it could not verify; a failed review says so.
+ */
 function screenshotReviewComment(run: Run): string {
-  const head = "**Screenshot review** of the changed pages against `design-system/patterns.md` (390px and 1280px, light and dark; the seeded fixture store). It changes no state: the screenshots are on the item page's Changes tab.";
+  const head = "**Screenshot review** of the changed pages against `design-system/patterns.md` (full pages at 390px and 1280px, light and dark; the seeded fixture store). It changes no state: the screenshots are on the item page's Changes tab.";
   const r = run.outcome?.status === "succeeded" ? parseScreenshotReview(run.outcome.data.screenshot_review) : null;
   if (!r) {
     const input = parseScreenshotOutcome(run.input?.screenshots);
@@ -112,6 +115,7 @@ function screenshotReviewComment(run: Run): string {
     head,
     "",
     r.findings.length === 0 ? "No broken layout rule found." : ["Findings:", ...r.findings.map((f) => `- ${f.text}`)].join("\n"),
+    ...(r.pages.length > 0 ? ["", "Changed pages:", ...r.pages.map((p) => `- ${p.page}: ${p.section}: ${p.shown ? "shown" : "not shown"} in the screenshots`)] : []),
     ...(r.unverified.length > 0 ? ["", "Not verified:", ...r.unverified.map((u) => `- ${u}`)] : []),
     ...(r.summary ? ["", r.summary] : []),
   ].join("\n");

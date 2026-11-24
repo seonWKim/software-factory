@@ -15,7 +15,9 @@ import { type ResumePlan, RunFailure, ciResults, fenced, gitIdentity, hasTool, l
 import type { Worker } from "../../runner.js";
 import { decisionsSection } from "../../../shared/command-notes.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
-import { type Capture, SCREENSHOT_REVIEW, type ScreenshotReview, notCapturedLine, parseScreenshotOutcome } from "../../../shared/screenshots.js";
+import {
+  CHANGED_PAGES_SCHEMA, type Capture, SCREENSHOT_REVIEW, type ScreenshotReview, changedPagesOf, notCapturedLine, parseScreenshotOutcome, sectionNotShownLine,
+} from "../../../shared/screenshots.js";
 
 async function review(
   w: Worker,
@@ -97,13 +99,18 @@ async function review(
   return { review: v, head_sha };
 }
 
+/** The screenshot review's answer: the review's, plus its result per changed page. */
+const SCREENSHOT_REVIEW_SCHEMA = { ...REVIEW_SCHEMA, properties: { ...REVIEW_SCHEMA.properties, changed_pages: CHANGED_PAGES_SCHEMA } };
+
 /** Where, inside the run folder, the screenshot review's images are copied for the reviewer to read. */
 const SCREENSHOTS_DIR = ".factory-screenshots";
 
 /**
  * The screenshot review (design 04-screenshots): a review run queued after the screenshot run, with its captures or
  * the reason it took none. The stored images are copied into the run folder and the reviewer checks each against
- * `design-system/patterns.md`; each broken rule is a finding of kind `code` naming the rule by its number. A capture
+ * `design-system/patterns.md`; each broken rule is a finding of kind `code` naming the rule by its number. For each
+ * page the change touches it says whether the changed section appeared (`changed_pages`, stored as `pages`); a section
+ * that did not is the unverified line `changed section not in the screenshots: <page>: <section>`. A capture
  * that did not happen is the unverified line `screenshots not captured: <reason>` and starts no agent. Nothing here
  * changes the item: the controller posts the result as one comment. Its data is `screenshot_review`, never `review`,
  * so no verdict, unchanged-head check or merge gate reads it.
@@ -115,26 +122,30 @@ async function screenshotReview(w: Worker, run: Run, item: WorkItem, handle: San
     const attached = await attachScreenshots(w, handle, shots.captures);
     const missing = shots.captures.length - attached.length;
     const unread = missing > 0 ? [notCapturedLine(`${missing} stored screenshot(s) could not be read`)] : [];
-    if (attached.length === 0) return { review: null, unread };
+    if (attached.length === 0) return { review: null, unread, pages: [] };
     const result = await w.agent(run, item, handle, signal, {
       prompt: [renderWorkItem(item, { includeSpec: true }), screenshotsSection(attached, [...notCaptured, ...unread])].join("\n\n"),
       model_class: model,
-      output_schema: REVIEW_SCHEMA,
+      output_schema: SCREENSHOT_REVIEW_SCHEMA,
       env_allowlist: gitIdentity(w.cfg.agent_git_identity),
     });
     const parsed = parseReview(result.output);
     if (!parsed.ok) throw new RunFailure("invalid_output", parsed.error, false, { output_tail: tail(result.transcript) });
-    return { review: parsed.value, unread };
+    return { review: parsed.value, unread, pages: changedPagesOf((result.output as { changed_pages?: unknown } | null)?.changed_pages) };
   });
   const r = looked.review;
+  const pages = looked.pages ?? [];
+  const notShown = pages.filter((p) => !p.shown).map(sectionNotShownLine);
+  const own = (u: string) => u.startsWith("screenshots not captured") || notShown.includes(u);
   const out: ScreenshotReview = {
     findings: (r?.findings ?? []).map((f) => ({ kind: "code", text: f.text })),
-    unverified: [...notCaptured, ...looked.unread, ...(r ? unverifiedOf(r).filter((u) => !u.startsWith("screenshots not captured")) : [])],
+    unverified: [...notCaptured, ...looked.unread, ...notShown, ...(r ? unverifiedOf(r).filter((u) => !own(u)) : [])],
     summary: r?.summary ?? "",
+    pages,
   };
   // Scanned before it is stored or posted (issue #222): a flagged text is withheld whole, with only the rule names.
-  const scan = await w.d.scanner.scan("comment", [...out.findings.map((f) => f.text), ...out.unverified, out.summary].join("\n"));
-  if (!scan.clean) return { screenshot_review: { findings: [], unverified: [], summary: `The screenshot review's text was withheld (${[...new Set(scan.findings.map((f) => f.rule))].join(", ")}).` } };
+  const scan = await w.d.scanner.scan("comment", [...out.findings.map((f) => f.text), ...out.unverified, ...pages.map((p) => `${p.page}: ${p.section}`), out.summary].join("\n"));
+  if (!scan.clean) return { screenshot_review: { findings: [], unverified: [], pages: [], summary: `The screenshot review's text was withheld (${[...new Set(scan.findings.map((f) => f.rule))].join(", ")}).` } };
   return { screenshot_review: { ...out, verdict: r?.verdict ?? null } };
 }
 
@@ -162,7 +173,7 @@ function screenshotsSection(attached: readonly { file: string; capture: Capture 
   return [
     "## Screenshots",
     "",
-    "This is the screenshot review (step 7): the factory captured these dashboard pages from the seeded fixture store after the review passed. Open each image file and check it against `design-system/patterns.md`. Each broken rule is a finding of kind `code` that names the rule by its number and the page, width and theme. Your verdict and findings change no state: they are posted on the item.",
+    "This is the screenshot review (step 7): the factory captured these dashboard pages, each as the full page, from the seeded fixture store after the review passed. Open each image file and check it against `design-system/patterns.md`. Each broken rule is a finding of kind `code` that names the rule by its number and the page, width and theme. In `changed_pages`, list each page the change touches once, with the section it changes and `shown`: whether that section appears in at least one of its images. Your verdict and findings change no state: they are posted on the item.",
     "",
     ...attached.map((a) => `- \`${a.file}\`: page ${a.capture.page}, ${a.capture.width}px, ${a.capture.theme}`),
     ...(notCaptured.length > 0 ? ["", "Not captured (list each under `unverified` as it is written):", ...notCaptured.map((l) => `- ${l}`)] : []),
