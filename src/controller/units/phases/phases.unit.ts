@@ -66,7 +66,7 @@ export class PhasesUnit {
    */
   async approvedByParent(it: WorkItem, spec: TriageOutput): Promise<boolean> {
     if (this.c.k.cfg.phases_auto_approve !== true || it.parent_id === null) return false;
-    if (spec.phases || atSizeCheckpoint(spec, sizeCaps(it, this.c.k.settings(it.project)))) return false;
+    if (spec.phases || atSizeCheckpoint(spec, sizeCaps(await this.c.k.reader.listStateChanges(it.id), this.c.k.settings(it.project)))) return false;
     const parent = await this.c.k.d.store.getWorkItem(it.parent_id);
     return parent !== null && splitOpen(parent);
   }

@@ -561,7 +561,7 @@ export class CommandsUnit {
     if (this.c.unit("routines").holds(it)) return this.c.unit("routines").answerCap(e.kind, it, actor);
     if (e.kind === "spec_approved") {
       if (this.c.unit("phases").waitsOnGoal(it)) return this.c.unit("phases").approveGoal(it, actor);
-      const runs = await this.c.k.reader.listRuns(it.id), noFiles = noFilesRefusal(it, runs), over = overCap(it, runs, latestSpec(runs), this.c.k.settings(it.project)), tooLarge = over !== null && "at" in over && over.at === "too_large";
+      const runs = await this.c.k.reader.listRuns(it.id), noFiles = noFilesRefusal(it, runs), over = overCap(it, runs, await this.c.k.reader.listStateChanges(it.id), latestSpec(runs), this.c.k.settings(it.project)), tooLarge = over !== null && "at" in over && over.at === "too_large";
       const a = tooLarge ? retry(it, actor, "implement", note, paths.length > 0 ? this.widen(it, paths) : null, (k) => this.c.unit("run-results").kindLabel(k)) : noFiles ? { refuse: noFiles } : await approveCheck(this.c.k.reader, it, { actor, note, paths, comment_id: e.comment_id, tag, widen: (p) => this.widen(it, p), answers: NOTE_ANSWERS });
       return a && "split" in a ? this.c.unit("phases").approveSplit(it, a.split, actor, a.note, e.comment_id, a.tag) : overCapApproval(over, actor, note, a);
     }

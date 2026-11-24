@@ -1,6 +1,6 @@
 import type { TriagePhase } from "./outputs.js";
 import type { Run, SourceRef, StateChangeDetail, WorkItem, WorkItemId } from "./types.js";
-import { sizeCaps } from "./size-cap.js";
+import { type SizeCapChanges, sizeCaps } from "./size-cap.js";
 export { sizeCaps }; // an item's size caps, for the size readers that import the split rule
 
 // Split specs (design 2026-11-01): when triage estimates a change near the size caps, it proposes 2 to 4
@@ -134,13 +134,13 @@ export interface OverCap {
  * Whether an `/approve` on `it` approves a change over its size caps (design 04-split-specs, 2026-11-24): at `too_large`,
  * the blocked diff's size from its run's failure detail (`{ sizes: null }` when the run recorded none); at the spec gate,
  * a spec at its size checkpoint (`spec`, the latest), its estimate. Null for any other approval. `settings` holds the
- * project's caps; the caps in force are the item's (`sizeCaps`).
+ * project's caps; the caps in force are the item's (`sizeCaps` over its state changes, `changes`).
  */
 export function overCap(
-  it: Pick<WorkItem, "project" | "stage" | "blocked_reason" | "size_cap">, runs: readonly Run[],
+  it: Pick<WorkItem, "stage" | "blocked_reason">, runs: readonly Run[], changes: SizeCapChanges,
   spec: (SizeEstimate & { phases?: readonly unknown[] }) | null, settings: SplitLimits,
 ): OverCap | { sizes: null } | null {
-  const caps = sizeCaps(it, settings), project_cap = sizeCaps({ project: it.project }, settings);
+  const caps = sizeCaps(changes, settings), project_cap = sizeCaps([], settings);
   const over = (at: OverCap["at"], sizes: Sizes): OverCap =>
     ({ at, sizes, caps, project_cap, one_time_cap: at === "spec" ? estimateCap(sizes, caps) : proposedCap(sizes, caps) });
   if (it.blocked_reason === TOO_LARGE) {
