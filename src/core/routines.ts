@@ -93,7 +93,7 @@ export type SuggestionDecision =
   | { to: "dismissed"; by: string }
   | { to: "snoozed"; by: string; snooze_ms: number };
 
-/** The routine tables' store (`controller_routines`, `controller_routine_suggestions`); times from the store's Clock. */
+/** The routine store, on the Check a page rows of `controller_schedules` and `controller_schedule_suggestions`; times from the store's Clock. */
 export interface RoutineStore {
   /** Stores `r`; an ID already stored returns the stored routine unchanged. */
   addRoutine(r: NewRoutine): Promise<Routine>;

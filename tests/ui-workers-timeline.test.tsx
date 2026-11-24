@@ -130,7 +130,7 @@ describe("tooltips", () => {
     const lines = runTipLines({ ...base, status: "failed", started_at: "2026-11-20T10:00:00.000Z", finished_at: "2026-11-20T11:30:00.000Z", error_code: "checks_failed", model: "opus", cost_usd: 0.5 }, now);
     expect(lines[0]).toBe("Add the page");
     expect(lines[1]).toBe("wi_1");
-    expect(lines[2]).toBe("implement, Failed");
+    expect(lines[2]).toBe("Implement, Failed");
     expect(lines.some((l) => l.startsWith("Started "))).toBe(true);
     expect(lines.some((l) => l.startsWith("Finished "))).toBe(true);
     expect(lines).toContain("Took 1h 30m");

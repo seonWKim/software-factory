@@ -12,6 +12,7 @@
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { overBudget } from "./budget.js";
 import { type Cadence, type CadenceKind, cadenceProblem, nextDue } from "./schedule-cadence.js";
+import type { RoutineTrigger } from "./routines.js";
 import type { Actor, Timestamp, UserId, WorkItem } from "./types.js";
 
 /** What a claim made of a due occurrence: fired to run, refused (still running), skipped (busy) or held at a checkpoint (over its token cap). */
@@ -46,7 +47,8 @@ export const SCHEDULE_TOKEN_CAP = 200_000;
 export interface Schedule {
   id: string;
   title: string;
-  cadence: Cadence;
+  /** Null for a Check a page row with a trigger instead (a routine's trigger form). */
+  cadence: Cadence | null;
   /** IANA zone name: the cadence's wall clock. */
   zone: string;
   /** The owner's user ID, never a display name. */
@@ -62,10 +64,23 @@ export interface Schedule {
   action: ScheduleActionSpec | null;
   /** Tokens its runs may use in total; null: SCHEDULE_TOKEN_CAP. */
   token_cap: number | null;
+  /** A Check a page row's trigger form (a routine's); null with a cadence. */
+  trigger: RoutineTrigger | null;
+  /** The most one run may cost in USD; null for no cap. */
+  run_cap_usd: number | null;
+  /** The most its runs may cost in one UTC day, in USD; null for no cap. */
+  daily_cap_usd: number | null;
+  /** What `/approve` added to the daily cap, on `day`, and the hold item it answered. */
+  cap_raise: { usd: number; day: string; hold_key: string } | null;
+  /** Paused by a run over its run cap (a Check a page row); a schedule's pause clears `next_due_at` instead. */
+  paused: boolean;
+  /** When it last fired or skipped a slot; null before its first. */
+  last_run_at: Timestamp | null;
 }
 
-export type NewSchedule = Omit<Schedule, "running_since" | "skip_when_busy" | "action" | "token_cap"> &
-  { skip_when_busy?: boolean; action?: ScheduleActionSpec | null; token_cap?: number | null };
+/** The fields a new row may leave out: each defaults to off, none or null. */
+type Defaulted = "running_since" | "skip_when_busy" | "action" | "token_cap" | "trigger" | "run_cap_usd" | "daily_cap_usd" | "cap_raise" | "paused" | "last_run_at";
+export type NewSchedule = Omit<Schedule, Defaulted | "cadence"> & { cadence: Cadence } & Partial<Pick<Schedule, Exclude<Defaulted, "running_since">>>;
 
 /** One row per claimed occurrence, unique per (schedule_id, occurrence_at). */
 export interface ScheduleRun {
@@ -150,9 +165,9 @@ export interface ScheduleStore {
 }
 
 /** The fields an edit, pause, resume or run may change. */
-export type SchedulePatch = Partial<Pick<Schedule, "title" | "cadence" | "zone" | "next_due_at" | "skip_when_busy" | "action" | "token_cap">>;
+export type SchedulePatch = Partial<Pick<NewSchedule, "title" | "cadence" | "zone" | "next_due_at" | "skip_when_busy" | "action" | "token_cap">>;
 
-export type AddScheduleInput = Pick<Schedule, "id" | "title" | "cadence" | "zone" | "created_by"> &
+export type AddScheduleInput = Pick<NewSchedule, "id" | "title" | "cadence" | "zone" | "created_by"> &
   { skip_when_busy?: boolean; action?: ScheduleActionSpec | null; token_cap?: number | null };
 
 /** A write's result: the schedule as stored, or why nothing was stored. */
@@ -197,7 +212,7 @@ export async function runDueSchedules(
   const runs: Record<ClaimOutcome, ScheduleRun[]> = { fired: [], refused: [], skipped: [], checkpoint: [] };
   let queued: number | undefined;
   for (const s of await store.listDueSchedules(now.toISOString() as Timestamp)) {
-    const next = nextDue(s.cadence, s.zone, now, new Date(s.created_at));
+    const next = s.cadence && nextDue(s.cadence, s.zone, now, new Date(s.created_at));
     let outcome: ClaimOutcome = s.running_since === null ? "fired" : "refused";
     if (outcome === "fired" && s.skip_when_busy && (queued ??= await store.countQueuedImplementRuns()) >= busy_threshold) outcome = "skipped";
     if (outcome === "fired" && (await overCap(store, s))) outcome = "checkpoint";
@@ -305,8 +320,8 @@ export function scheduleActionOf(kind: string, body: string | undefined): Schedu
 const refused = (problem: string): ScheduleResult => ({ ok: false, problem });
 const findSchedule = async (store: ScheduleAdminStore, id: string): Promise<Schedule | null> => (await store.listSchedules()).find((s) => s.id === id) ?? null;
 /** The first slot of `c` in `zone` after `now`, an interval counted from the schedule's creation (as the claim counts it). */
-function firstSlot(c: Cadence, zone: string, now: Date, created_at: Timestamp): Timestamp | null {
-  const next = nextDue(c, zone, now, new Date(created_at));
+function firstSlot(c: Cadence | null, zone: string, now: Date, created_at: Timestamp): Timestamp | null {
+  const next = c && nextDue(c, zone, now, new Date(created_at));
   return next === null ? null : (next.toISOString() as Timestamp);
 }
 
@@ -377,7 +392,7 @@ export async function editSchedule(store: ScheduleAdminStore, id: string, f: Sch
       patch.title = f.title.trim();
     }
     if (f.cadence !== undefined || f.spec !== undefined || f.zone !== undefined) {
-      const cadence = { kind: (f.cadence?.trim() ?? s.cadence.kind) as CadenceKind, spec: f.spec?.trim() ?? s.cadence.spec };
+      const cadence = { kind: (f.cadence?.trim() ?? s.cadence?.kind ?? "") as CadenceKind, spec: f.spec?.trim() ?? s.cadence?.spec ?? "" };
       const zone = f.zone?.trim() ?? s.zone;
       const problem = cadenceProblem(cadence, zone);
       if (problem) return problem;
@@ -414,7 +429,7 @@ export function writeSchedule(store: ScheduleAdminStore, w: ScheduleWrite, id: s
   return { pause: pauseSchedule, resume: resumeSchedule, run: runSchedule, delete: deleteSchedule }[w](store, id, now);
 }
 
-// `factory schedule …` (src/core/local-cli.ts hands the word here, as it stays within its size budget).
+// `factory schedule …` (src/core/local-cli-parse.ts hands the word here, as it stays within its size budget).
 
 export type ScheduleCommand = { verb: "list" } | { verb: "runs"; id: string } | { verb: ScheduleWrite; id: string; fields: ScheduleFields };
 

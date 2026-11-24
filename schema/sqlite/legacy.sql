@@ -106,6 +106,18 @@ CREATE TABLE "legacy_command_inbox" (
     created_at   TEXT NOT NULL
   , mirror INTEGER NOT NULL DEFAULT 0, mirrored_at TEXT);
 
+CREATE TABLE "legacy_controller_schedules" (
+    id             TEXT PRIMARY KEY,
+    title          TEXT NOT NULL,
+    cadence_kind   TEXT NOT NULL,
+    cadence_spec   TEXT NOT NULL,
+    zone           TEXT NOT NULL,
+    created_by     TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    next_due_at    TEXT,
+    running_since  TEXT
+  , skip_when_busy INTEGER, action_kind TEXT, action_settings TEXT, token_cap INTEGER, instruction TEXT, url TEXT, paused INTEGER, run_cap_usd REAL, daily_cap_usd REAL, cap_raise_usd REAL, cap_raise_day TEXT, cap_hold_key TEXT, last_run_at TEXT);
+
 CREATE TABLE "legacy_controller_unreviewed_merges" (
     id          TEXT PRIMARY KEY,
     project     TEXT NOT NULL,

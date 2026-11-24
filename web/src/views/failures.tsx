@@ -10,7 +10,7 @@ import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { RawDetails, When, WorkerName, useNow } from "./common.js";
+import { RawDetails, When, WorkerName, tryOf, useNow } from "./common.js";
 import { Card, CardSection } from "../components/ui/card.js";
 import { EmptyState } from "../components/ui/notice.js";
 import { AddModelCredential } from "./model-credential-dialog.js";
@@ -67,7 +67,7 @@ export function FailureGroupView({ group, now, titles }: { group: FailureGroup; 
   const copy = copyOf(group.code);
   const columns: Column<FailureRun>[] = [
     { key: "item", header: t("col.item"), render: (r) => <Link href={itemPath(r.work_item_id)} data-raw className={LINK_CLASS}>{titles.get(r.work_item_id) ?? r.work_item_id}</Link> },
-    { key: "attempt", header: t("col.attempt"), numeric: false, className: "tabular-nums" },
+    { key: "attempt", header: t("col.attempt"), numeric: false, className: "tabular-nums", render: (r) => tryOf(r.attempt) },
     { key: "detail", header: t("col.detail"), className: "max-w-md text-xs break-words", render: (r) => (r.detail ? <span data-raw>{r.detail}</span> : "–") },
     { key: "worker", header: t("col.worker"), render: (r) => <WorkerName id={r.worker} /> },
     { key: "when", header: t("col.when"), className: "tabular-nums whitespace-nowrap", render: (r) => <When at={r.finished_at} now={now} /> },
