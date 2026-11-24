@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { API, type RoutineFields, type RoutineRow, type RoutineSuggestionRow, type RoutineVerb, type Session, postRoutine, useApi, useRoutineSuggestions, useRoutines } from "../api.js";
 import { Button } from "../components/ui/button.js";
-import { Card } from "../components/ui/card.js";
+import { Card, CardSection } from "../components/ui/card.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { OverflowMenu } from "../components/ui/menu.js";
 import { Notice, PageHeader } from "../components/ui/notice.js";
@@ -134,8 +134,9 @@ function Detail({ r }: { r: RoutineRow }) {
           </div>
         ))}
       </dl>
-      <h3 className="text-sm font-semibold">{t("routines.detail.suggestions")}</h3>
-      <Suggestions id={r.id} />
+      <CardSection title={t("routines.detail.suggestions")}>
+        <Suggestions id={r.id} />
+      </CardSection>
     </div>
   );
 }
