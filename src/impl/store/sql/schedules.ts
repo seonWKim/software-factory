@@ -5,6 +5,9 @@
 // A held checkpoint is resumed or rejected by UPDATEs conditional on its run row still being held. An edit, pause,
 // resume or run is one UPDATE conditional on the `next_due_at` it read, so it and a claim never both apply. A delete
 // removes the schedule row and ends its held checkpoints as `rejected` in one transaction; its other run rows stay.
+// The schedule list and the due list leave out Check a page rows (action_kind 'check_page', routines copied by the
+// 20261124T1100-controller-routines-into-schedules migration): they have no run behaviour and no page or API view
+// yet, so they never fire and the Schedules page, API and CLI do not show them.
 
 import type { CadenceKind } from "../../../core/schedule-cadence.js";
 import type {
@@ -21,6 +24,8 @@ const CLAIM_STATE: Readonly<Record<ClaimOutcome, string>> = {
   fired: "running_since IS NULL", refused: "running_since IS NOT NULL", skipped: "running_since IS NULL", checkpoint: "running_since IS NULL",
 };
 const HELD = "outcome = 'checkpoint'";
+/** Leaves out Check a page rows, which have no run behaviour and no page or API view yet. */
+const NOT_CHECK_PAGE = "COALESCE(action_kind, '') <> 'check_page'";
 
 const time = (v: unknown) => (v == null ? null : (String(v) as Timestamp));
 
@@ -62,11 +67,11 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
   }
 
   async listSchedules(): Promise<Schedule[]> {
-    return (await this.db.all(`SELECT ${COLUMNS} FROM controller_schedules ORDER BY created_at, id`)).map(rowToSchedule);
+    return (await this.db.all(`SELECT ${COLUMNS} FROM controller_schedules WHERE ${NOT_CHECK_PAGE} ORDER BY created_at, id`)).map(rowToSchedule);
   }
 
   async listDueSchedules(due_by: Timestamp): Promise<Schedule[]> {
-    const rows = await this.db.all(`SELECT ${COLUMNS} FROM controller_schedules WHERE next_due_at IS NOT NULL AND next_due_at <= ? ORDER BY next_due_at, id`, [due_by]);
+    const rows = await this.db.all(`SELECT ${COLUMNS} FROM controller_schedules WHERE next_due_at IS NOT NULL AND next_due_at <= ? AND ${NOT_CHECK_PAGE} ORDER BY next_due_at, id`, [due_by]);
     return rows.map(rowToSchedule);
   }
 

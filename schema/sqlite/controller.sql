@@ -348,6 +348,23 @@ CREATE TABLE controller_schedule_runs (
     PRIMARY KEY (schedule_id, occurrence_at)
   );
 
+CREATE TABLE controller_schedule_suggestions (
+    id             TEXT PRIMARY KEY,
+    schedule_id    TEXT NOT NULL,
+    run_id         TEXT NOT NULL,
+    fingerprint    TEXT NOT NULL,
+    text           TEXT NOT NULL,
+    state          TEXT NOT NULL,
+    duplicates     INTEGER NOT NULL,
+    last_run_id    TEXT NOT NULL,
+    snoozed_until  TEXT,
+    filed_ref      TEXT,
+    decided_by     TEXT,
+    decided_at     TEXT,
+    created_at     TEXT NOT NULL,
+    UNIQUE (schedule_id, fingerprint)
+  );
+
 CREATE TABLE controller_schedules (
     id             TEXT PRIMARY KEY,
     title          TEXT NOT NULL,
@@ -358,7 +375,7 @@ CREATE TABLE controller_schedules (
     created_at     TEXT NOT NULL,
     next_due_at    TEXT,
     running_since  TEXT
-  , skip_when_busy INTEGER, action_kind TEXT, action_settings TEXT, token_cap INTEGER);
+  , skip_when_busy INTEGER, action_kind TEXT, action_settings TEXT, token_cap INTEGER, instruction TEXT, url TEXT, paused INTEGER, run_cap_usd REAL, daily_cap_usd REAL, cap_raise_usd REAL, cap_raise_day TEXT, cap_hold_key TEXT, last_run_at TEXT);
 
 CREATE TABLE controller_signals (
     id            TEXT PRIMARY KEY,
