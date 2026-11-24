@@ -1,8 +1,8 @@
 import { type MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 
-// What a timed cadence repeats on, in plain words. The one formatter for the Routines and Schedules pages' Repeats
-// column (design 09-dashboard-routines, 09-dashboard-schedules); its words are the shared `repeats.*` catalog keys.
+// What a timed cadence repeats on, in plain words. The one formatter for the Schedules page's Repeats
+// column (design 09-dashboard-schedules); its words are the shared `repeats.*` catalog keys.
 
 /** A timed cadence as the API sends it: a kind and its spec (minutes, "09:00", "mon,fri 09:00" or a cron rule). */
 export interface Cadence {
