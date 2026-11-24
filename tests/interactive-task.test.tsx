@@ -35,7 +35,7 @@ const workRow = (n: number, r: ReturnType<typeof run> | null): ItemRow => ({ ...
 describe("interactive tasks (a person handles the item in their own session)", () => {
   it("an interactive run reads as an interactive task; other run kinds keep their names", () => {
     expect(runKindLabel("interactive")).toBe(BADGE);
-    expect(runKindLabel("implement")).toBe("implement");
+    expect(runKindLabel("implement")).toBe("Implement");
   });
 
   it("a run shows the badge only while it is a running interactive run", () => {

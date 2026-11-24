@@ -429,7 +429,7 @@ export function writeSchedule(store: ScheduleAdminStore, w: ScheduleWrite, id: s
   return { pause: pauseSchedule, resume: resumeSchedule, run: runSchedule, delete: deleteSchedule }[w](store, id, now);
 }
 
-// `factory schedule …` (src/core/local-cli.ts hands the word here, as it stays within its size budget).
+// `factory schedule …` (src/core/local-cli-parse.ts hands the word here, as it stays within its size budget).
 
 export type ScheduleCommand = { verb: "list" } | { verb: "runs"; id: string } | { verb: ScheduleWrite; id: string; fields: ScheduleFields };
 
