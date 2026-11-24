@@ -7,7 +7,7 @@ export { learnFromReport } from "./learned-settings.js"; export { type DesignLea
 export { FLAKY_TEST, PUSHBACK, type Pushback, groupFailures, normalizeDetail } from "./failure-groups.js";
 export { NO_SCORER, type Grade, type GradeSubject, type Scorer, improvePrompts, scoreRun, scorerFor } from "./scorer.js";
 export { type SkillImproveResult, improveSkills } from "./skill-improve.js"; // skill drafts (design 07-self-improvement)
-export { IMPROVER_DEFAULTS, type GoldenEvidence, type Proposal, fileProposals, parseProposalVerdict, proposeChanges, proposesIn } from "./proposals.js"; // entity proposals
+export { IMPROVER_DEFAULTS, type GoldenEvidence, type Proposal, dailyTriggerOn, fileProposals, parseProposalVerdict, proposeChanges, proposesIn } from "./proposals.js"; // entity proposals
 import { cyrb53 } from "./hash.js";
 import { PUSHBACK, flakyTests, groupFailures, pushbacksIn, reviewable } from "./failure-groups.js";
 import { type MergeGit, hotspotBody, hotspotSince, hotspotsIn, isHotspot, ofProject } from "./hotspots.js";
@@ -85,12 +85,13 @@ export interface ImproveTriggerInput {
 /**
  * Queues one improve run on the project's system work item (made on first use). `daily`: the current UTC day's
  * slot, a no-op when it is already queued. `manual`: a run of its own. A trigger (`ImproveTriggerInput`): the
- * slot after the last improve run, reporting the failures since it. The window goes into the run's input.
+ * slot after the last improve run, reporting the failures since it. `{ slot }`: the daily slot of `slot`'s UTC day,
+ * as an improve schedule's occurrence queues it (design 08-schedules). The window goes into the run's input.
  */
 export async function enqueueImprove(
   d: { store: ImproveStore; clock: Clock },
   project: string,
-  trigger: "daily" | "manual" | ImproveTriggerInput,
+  trigger: "daily" | "manual" | { slot: string } | ImproveTriggerInput,
 ): Promise<{ run: Run; created: boolean }> {
   const now = d.clock.now();
   const { item } = await d.store.createWorkItem(
@@ -105,9 +106,11 @@ export async function enqueueImprove(
     },
     IMPROVER,
   );
+  const daily = (at: Date) => [dailyImproveKey(project, utcDay(at)), dailyWindow(utcDay(at))] as const;
   const [idempotency_key, improve] =
-    trigger === "daily" ? [dailyImproveKey(project, utcDay(now)), dailyWindow(utcDay(now))]
+    trigger === "daily" ? daily(now)
     : trigger === "manual" ? [manualImproveKey(project, now), manualWindow(now)]
+    : "slot" in trigger ? daily(new Date(trigger.slot))
     : [triggerImproveKey(project, trigger.after), { window_start: trigger.since, window_end: now.toISOString() as Timestamp }];
   return d.store.enqueueRun({ work_item_id: item.id, kind: "improve", idempotency_key, input: { improve } });
 }

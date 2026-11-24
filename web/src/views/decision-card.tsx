@@ -15,11 +15,12 @@ import { OutcomeText, PendingProposals, SENTENCE } from "./command-box.js";
 import { PersonName } from "./common.js";
 import {
   CommandDialog, DIALOGS, type FormName, ItemCommands, MENU, menuEntry, type OneTapChoice, QueuedFeedbackList, oneTapNote, pathsOf,
-  primaryLabel, primaryOf, withPaths,
+  pendingFeedback, primaryLabel, primaryOf, withPaths,
 } from "./item-commands.js";
 import { commandOutcome, notAllowed, useCommandSend } from "./command-send.js";
 import { MergeButton } from "./merge-button.js";
 import { ApproveDialog, type DecisionChoice, DecisionsPanel, InShort, approvePhase, chosenAnswers, commandLabel, initialChoices } from "./item-decisions.js";
+import { ModelCredentialDialog } from "./model-credential-dialog.js";
 import { summaryOf, threadOrder } from "./thread.js";
 
 // The item page's DecisionCard (design 09-dashboard-item-commands): shown first on the page, and only while the item
@@ -50,10 +51,19 @@ function showInThread(e: MouseEvent<HTMLAnchorElement>, anchor: string) {
   setTimeout(() => el.scrollIntoView?.({ block: "start" }), 0);
 }
 
+/** The why reason code while the model_credential claim pause holds: the item waits for the owner to add a credential. */
+const CREDENTIAL_PAUSE = "paused_model_credential";
+
+/** A reply to a refused command (marker `factory:refused:`): it answers the command, so it is no evidence for a wait. */
+const isRefusal = (m: ThreadEntry) => m.kind === "refused" || m.body.includes(" was not applied");
+
+/** The newest factory message that is not a command refusal: the thread's evidence for the wait. */
+function latestEvidence(thread: readonly ThreadEntry[] | undefined): ThreadEntry | undefined {
+  return threadOrder(thread ?? []).find((m) => m.role === "factory" && !isRefusal(m));
+}
+
 /** The newest factory message of the thread, as evidence: its one-line summary and its anchor. */
-function ThreadContext({ thread }: { thread: readonly ThreadEntry[] | undefined }) {
-  const latest = threadOrder(thread ?? []).find((m) => m.role === "factory");
-  if (!latest) return null;
+function ThreadContext({ latest }: { latest: ThreadEntry }) {
   return (
     <div data-decide-context className="text-sm text-pretty text-text-1">
       <Clamp className="break-words">{summaryOf(latest.body)}</Clamp>
@@ -90,6 +100,7 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
   const { session, on: enabled, busy, local, send: post } = useCommandSend(id);
   const [note, setNote] = useState("");
   const [open, setOpen] = useState<FormName | "approve" | null>(null);
+  const [credentialOpen, setCredentialOpen] = useState(false);
   const opener = useRef<HTMLElement | null>(null);
   const [picked, setPicked] = useState<DecisionChoice[] | null>(null);
   // The page's own item query (same key and options), read here for its `merge`, its thread and its waiting spec.
@@ -104,8 +115,12 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
   const answers = chosenAnswers(decisions, choices);
   const off = session.isError || session.data?.commands_enabled === false;
   const itemTitle = detail?.title ?? id;
-  const primary = showMerge ? undefined : primaryOf(commands);
+  // The credential pause has no spec or run to judge: its one primary action is adding the credential (Good, Bad, Feedback hide).
+  const credentialPause = detail?.why?.reason_code === CREDENTIAL_PAUSE;
+  const primary = showMerge || credentialPause ? undefined : primaryOf(commands);
   const asked = commands.map(pathsOf).find((p) => p.length > 0) ?? [];
+  const latest = latestEvidence(data?.thread);
+  const hasEvidence = !!latest || !!data?.spec?.in_short || asked.length > 0 || pendingFeedback(data?.timeline ?? []).length > 0;
 
   /** Sends `command` with `text`; once sent, empties the note box (`fromBox`: the text is the box's) or closes the dialog. */
   const send = async (command: string, text: string, fromBox: boolean) => {
@@ -165,13 +180,15 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
         <h2 className={cn("mb-1", CARD_TITLE)}>{t("decide.title")}</h2>
         {question}
       </div>
-      <div data-decision-evidence className="space-y-2">
-        <h3 className={PANEL_SUB_TITLE}>{t("decide.evidence")}</h3>
-        <ThreadContext thread={data?.thread} />
-        <InShort spec={data?.spec} />
-        <AskedPaths paths={asked} />
-        <QueuedFeedbackList timeline={data?.timeline} />
-      </div>
+      {hasEvidence && (
+        <div data-decision-evidence className="space-y-2">
+          <h3 className={PANEL_SUB_TITLE}>{t("decide.evidence")}</h3>
+          {latest && <ThreadContext latest={latest} />}
+          <InShort spec={data?.spec} />
+          <AskedPaths paths={asked} />
+          <QueuedFeedbackList timeline={data?.timeline} />
+        </div>
+      )}
       <section aria-label={t("commands.label")}>
         {off && (
           <p role="status" data-commands-off className="mb-2 text-sm text-pretty text-pill-warn-fg">
@@ -203,8 +220,13 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
           className="mb-3 block w-full max-w-xl"
         />
         <div ref={actions} data-decision-actions className="flex flex-wrap items-center gap-2">
+          {credentialPause && (
+            <Button variant="primary" data-action="add_model_credential" aria-haspopup="dialog" onClick={() => setCredentialOpen(true)}>
+              {t("needs.addCredential")}
+            </Button>
+          )}
           {showMerge ? <span className="inline-flex"><MergeButton id={id} source={detail?.source.type} merge={merge} replies={replies} returned={mergeReturned(data)} /></span> : primary && button(primary)}
-          {verdict && (
+          {verdict && !credentialPause && (
             <span data-verdict className="inline-flex">
               {/* Good and Bad send a verdict at once: actions, not a choice, so two Buttons in one named group. */}
               <ButtonRow role="group" aria-label={t("commands.verdict")}>
@@ -216,7 +238,7 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
               </ButtonRow>
             </span>
           )}
-          {verdict && (
+          {verdict && !credentialPause && (
             <Button
               variant="secondary"
               data-action="verdict"
@@ -236,6 +258,7 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
           {outcomes.map((o) => <div key={o.name} data-outcome-of={o.name}><OutcomeText outcome={o.outcome} /></div>)}
         </div>
         <PendingProposals proposals={data?.proposals ?? []} enabled={enabled} busy={busy} outcomes={(proposal) => commandOutcome([], proposal, local[proposal])} send={post} />
+        {credentialOpen && <ModelCredentialDialog onClose={() => setCredentialOpen(false)} />}
         {open === "approve" && phase !== null && (
           <ApproveDialog
             title={`${commandLabel("approve")} ${itemTitle}`}

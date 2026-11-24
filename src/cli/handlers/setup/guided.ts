@@ -7,7 +7,7 @@
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type CliIdentity, type Loaded, Plugins, buildStatsStore, settingsBase } from "../../../compose.js";
+import { type CliIdentity, type FactoryStore, type Loaded, Plugins, addSchedule, buildStatsStore, dailyTriggerOn, settingsBase } from "../../../compose.js";
 import { AUTO_MERGE_TIER_MAX, MODES, type Mode, resolveSettings } from "../../../core/settings.js";
 import { ProfileStore, checkDisplayName } from "../../../identity/index.js";
 import { storeSql } from "../../../impl/store/sql/store-sql.js";
@@ -340,6 +340,55 @@ const modeStep: SetupStep<GuidedState> = {
   },
 };
 
+/** The schedule setup adds when `improver.daily_trigger` is off (design 08-schedules): it owns the daily improve run. */
+export const IMPROVE_SCHEDULE = { id: "improve-daily", title: "Daily improve run", cadence: { kind: "daily", spec: "09:00" } } as const;
+
+export interface ImproveScheduleDeps {
+  store: Pick<FactoryStore, "listSchedules" | "addSchedule" | "getOwner">;
+  config: Pick<Loaded["config"], "improver">;
+  plugins: Pick<Loaded["plugins"], "schedule_action">;
+  /** The machine's IANA zone: the schedule's 09:00 is its wall clock. */
+  zone: string;
+  now: Date;
+  print(line: string): void;
+}
+
+/**
+ * Adds the Daily improve run schedule (ID `improve-daily`, action `improve`, daily at 09:00 in `zone`, created by the
+ * owner) once, when `improver.daily_trigger` is off; nothing when the flag is on or the ID is stored. A schedule
+ * runs only when `plugins.schedule_action` is routed, so with none it warns and still adds it.
+ */
+export async function addImproveSchedule(d: ImproveScheduleDeps): Promise<StepResult> {
+  if (dailyTriggerOn(d.config.improver)) return { ok: true, line: "improver.daily_trigger is on: the controller queues the daily improve run, no schedule added" };
+  if ((await d.store.listSchedules()).some((x) => x.id === IMPROVE_SCHEDULE.id)) return { ok: true, line: `schedule ${IMPROVE_SCHEDULE.id} is already stored` };
+  const owner = await d.store.getOwner();
+  if (owner === null) return { ok: false, line: "no owner yet: register in the You step, then run npm run setup again" };
+  if (d.plugins.schedule_action !== "routed") {
+    d.print(`   warning: plugins.schedule_action is not "routed", so no schedule runs and no daily improve run is queued until it is`);
+  }
+  const r = await addSchedule(d.store, { ...IMPROVE_SCHEDULE, zone: d.zone, created_by: owner, action: { kind: "improve", settings: {} } }, d.now);
+  return r.ok ? { ok: true, line: `added schedule ${IMPROVE_SCHEDULE.id} (${IMPROVE_SCHEDULE.title}, daily at 09:00 ${d.zone})` } : { ok: false, line: `schedule not added: ${r.problem}` };
+}
+
+const improveScheduleStep: SetupStep<GuidedState> = {
+  name: "improve-schedule",
+  title: "Daily improve run",
+  why: "With improver.daily_trigger off, a schedule queues the daily improve run instead of the controller.",
+  async run(s, io) {
+    if (!(await io.ask.yesNo("   Check the daily improve run schedule now?", true))) return { ok: false, line: "not checked (run npm run setup again)" };
+    const store = await openStore(s.loaded, io.print);
+    if (!store) return { ok: false, line: "skipped: the store is not ready" };
+    try {
+      return await addImproveSchedule({
+        store, config: s.loaded.config, plugins: s.loaded.plugins, print: io.print,
+        zone: Intl.DateTimeFormat().resolvedOptions().timeZone, now: (await new Plugins(s.loaded).clock()).now(),
+      });
+    } finally {
+      await store.close();
+    }
+  },
+};
+
 /** Every step of `npm run setup`, in order. A step's number is its place here, so it is the same on every run. */
 export const SETUP_STEPS: readonly SetupStep<GuidedState>[] = [
   pluginsStep,
@@ -348,6 +397,7 @@ export const SETUP_STEPS: readonly SetupStep<GuidedState>[] = [
   databaseStep,
   youStep,
   modeStep,
+  improveScheduleStep,
   pluginSetupStep,
   checksStep,
   canaryStep,

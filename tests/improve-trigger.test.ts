@@ -3,6 +3,7 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {
   TRIGGER_AGE_MS, TRIGGER_FAILURES, TRIGGER_WINDOW_MS, dailyImproveKey, enqueueImprove, improveTriggerDue, listImproveRuns, triggerImprove, triggerImproveKey,
 } from "../src/core/improver.js";
+import { IMPROVER_DEFAULTS } from "../src/core/proposals.js";
 import type { Run, RunId, RunKind, Timestamp, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -13,8 +14,9 @@ import { PROJECT, cleanScanner, config, silent } from "./helpers/fakes/config.js
 const DAY = 86_400_000;
 
 /** A controller with no source plugin (solo, local store): the improve step needs only the store. */
-function controller(store: FactoryStore, clock: FakeClock): ControllerRole {
-  return new ControllerRole({ store, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+function controller(store: FactoryStore, clock: FakeClock, daily_trigger?: boolean): ControllerRole {
+  const cfg = daily_trigger === undefined ? config : { ...config, improver: { ...IMPROVER_DEFAULTS, daily_trigger } };
+  return new ControllerRole({ store, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
 }
 
 let n = 0;
@@ -167,5 +169,43 @@ describe("improve trigger: age", () => {
     expect(r!.run.idempotency_key).toBe(triggerImproveKey(PROJECT.key, null));
     expect(await triggerImprove({ store, clock }, PROJECT.key)).toBeNull();
     expect((await triggered(store)).map((x) => x.id)).toEqual([r!.run.id]);
+  });
+});
+
+describe("improver.daily_trigger: the controller's daily step", () => {
+  const daily = async (store: FactoryStore) => (await listImproveRuns(store, PROJECT.key)).filter((r) => r.idempotency_key?.includes(":daily:"));
+
+  it("off: the daily step queues no improve run, on any day", async () => {
+    const clock = new FakeClock("2026-03-04T08:00:00.000Z");
+    const { store } = await newStore(clock);
+    const c = controller(store, clock, false);
+    await c.tickImprove();
+    clock.advance(DAY);
+    await c.tickImprove();
+    expect(await listImproveRuns(store, PROJECT.key)).toEqual([]);
+  });
+
+  it("unset or on: one improve run per UTC day, as before", async () => {
+    for (const flag of [undefined, true]) {
+      const clock = new FakeClock("2026-03-04T08:00:00.000Z");
+      const { store } = await newStore(clock);
+      const c = controller(store, clock, flag);
+      await c.tickImprove();
+      await c.tickImprove();
+      clock.advance(DAY);
+      await c.tickImprove();
+      expect((await daily(store)).map((r) => r.idempotency_key), String(flag)).toEqual([
+        dailyImproveKey(PROJECT.key, "2026-03-04"), dailyImproveKey(PROJECT.key, "2026-03-05"),
+      ]);
+    }
+  });
+
+  it("off: the failure-count trigger still queues its run", async () => {
+    const clock = new FakeClock("2026-03-04T08:00:00.000Z");
+    const { store } = await newStore(clock);
+    await failMany(store, clock, TRIGGER_FAILURES);
+    await controller(store, clock, false).tickImprove();
+    const runs = await listImproveRuns(store, PROJECT.key);
+    expect(runs.map((r) => r.idempotency_key)).toEqual([triggerImproveKey(PROJECT.key, null)]);
   });
 });

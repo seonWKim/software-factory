@@ -39,8 +39,14 @@ export interface ActionPorts {
   record(r: { output: string; tokens: number; cost_usd: number | null }): Promise<void>;
 }
 
+/**
+ * Queues the daily improve run of the UTC day of the slot `occurrence_at`, keyed `improve:<project>:daily:<day>` as
+ * the controller's daily step keys it, so a second call for that day queues none. Compose binds it to the store.
+ */
+export type DailyImproveQueue = (occurrence_at: string) => Promise<{ run: { id: string; idempotency_key: string }; created: boolean }>;
+
 /** One action: runs a fired occurrence of `schedule`, due at `occurrence_at`. Safe to run twice for one occurrence. */
 export type ScheduleActionRoute = (schedule: ActionSchedule, occurrence_at: string, ports: ActionPorts) => Promise<void>;
 
 /** One route per action kind (src/core/schedule.ts ScheduleActionKind). */
-export type ScheduleActionRoutes = Readonly<Record<"build" | "agent" | "feedback", ScheduleActionRoute>>;
+export type ScheduleActionRoutes = Readonly<Record<"build" | "agent" | "feedback" | "improve", ScheduleActionRoute>>;
