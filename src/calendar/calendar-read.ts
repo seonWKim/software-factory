@@ -3,6 +3,7 @@
 // request works the same while a source is down. The SQL of the component's tables stays in this component.
 
 import type { SqlDriver } from "../state/index.js";
+import { type EventDetails, readDetails } from "./event-details.js";
 
 /**
  * The SQL store's driver, read by the global key the SQL store marks itself with (impl/store/sql/store-sql.ts
@@ -23,6 +24,8 @@ export interface StoredEvent {
   readonly starts_at: string;
   readonly ends_at: string;
   readonly all_day: boolean;
+  /** What the source said beyond the title and times; null when it said nothing more. */
+  readonly details: EventDetails | null;
 }
 
 /** A source's last sync: when it last succeeded (null: never) and whether its last read failed. */
@@ -52,7 +55,7 @@ export interface StoredCalendar {
  * syncs covered and the pending sync requests. Four reads, no write.
  */
 export async function readCalendar(db: SqlDriver): Promise<StoredCalendar> {
-  const events = await db.all("SELECT source, event_id, title, starts_at, ends_at, all_day FROM calendar_events ORDER BY starts_at, source, event_id");
+  const events = await db.all("SELECT source, event_id, title, starts_at, ends_at, all_day, details FROM calendar_events ORDER BY starts_at, source, event_id");
   const sources = await db.all("SELECT source, synced_at, error_at FROM calendar_sync_state ORDER BY source");
   const ranges = await db.all("SELECT source, from_at, to_at FROM calendar_synced_ranges ORDER BY source, from_at");
   const pending = await db.all("SELECT from_date, to_date FROM calendar_sync_requests WHERE done_at IS NULL ORDER BY requested_at");
@@ -60,7 +63,7 @@ export async function readCalendar(db: SqlDriver): Promise<StoredCalendar> {
     ranges: ranges.map((r) => ({ source: String(r.source), from: String(r.from_at), to: String(r.to_at) })),
     pending: pending.map((r) => ({ from: String(r.from_date), to: String(r.to_date) })),
     events: events.map((r) => ({
-      source: String(r.source), id: String(r.event_id), title: String(r.title), starts_at: String(r.starts_at), ends_at: String(r.ends_at), all_day: Number(r.all_day) === 1,
+      source: String(r.source), id: String(r.event_id), title: String(r.title), starts_at: String(r.starts_at), ends_at: String(r.ends_at), all_day: Number(r.all_day) === 1, details: readDetails(r.details),
     })),
     sources: sources.map((r) => ({ source: String(r.source), synced_at: r.synced_at == null ? null : String(r.synced_at), failed: r.error_at != null })),
   };

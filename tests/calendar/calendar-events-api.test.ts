@@ -54,7 +54,8 @@ async function harness(calendar: { name: string; source: CalendarSource }[], con
     const r = await respond(d, { method: "GET", url: `${CALENDAR_EVENTS_PATH}${query}`, host: "127.0.0.1:4310" });
     return { status: r.status, body: JSON.parse(r.body) as Record<string, unknown> };
   };
-  return { clock, db, sync, get, connect };
+  const raw = async (url: string) => (await respond(d, { method: "GET", url, host: "127.0.0.1:4310" })).body;
+  return { clock, db, sync, get, connect, raw };
 }
 
 interface Day {
@@ -106,6 +107,35 @@ describe("GET /api/v1/calendar/events", () => {
     ]);
     expect(days[1]!.events[0]).toMatchObject({ kind: "event", source: "work", title: "event holiday", all_day: true });
     expect(r.body.calendar).toEqual([{ source: "work", synced_at: NOW.toISOString(), failed: false }]);
+  });
+
+  it("answers each event's instants and the details its source gave, each text through the egress scan as the title; an event without details has null", async () => {
+    const KEY = "AKIA" + "ABCDEFGHIJKLMNOP";
+    const details = {
+      calendar: "Work", location: "Room 1", description: `<b>Agenda</b> key ${KEY}`,
+      organizer: { name: "Org", email: "org@example.com", response: null }, attendees: [{ name: `bot ${KEY}`, email: "a@example.com", response: "waiting" as const }],
+      conference_url: "https://meet.example.com/abc", link: "https://calendar.example.com/e/1", time_zone: "Asia/Seoul",
+    };
+    const source = new FakeCalendarSource([calendarEvent("full", { starts_at: at(11, 13, 9), ends_at: at(11, 13, 10), details }), calendarEvent("plain", { starts_at: at(11, 13, 11), ends_at: at(11, 13, 12) })]);
+    const { sync, get } = await harness([{ name: "work", source }]);
+    await sync();
+    const day = (((await get("?from=2026-11-13&to=2026-11-13")).body.days as Day[])[0]!.events) as unknown as Record<string, unknown>[];
+    expect(day.map((e) => e.id)).toEqual(["full", "plain"]);
+    expect(day[0]).toMatchObject({ starts_at: at(11, 13, 9), ends_at: at(11, 13, 10) });
+    expect(day[0]!.details).toEqual({
+      ...details, description: "[withheld: aws_access_key]", attendees: [{ name: "[withheld: aws_access_key]", email: "a@example.com", response: "waiting" }],
+    });
+    expect(day[1]!.details).toBeNull();
+    expect(JSON.stringify(day)).not.toContain(KEY);
+  });
+
+  it("the Tasks read lists the same event without its details, which only the Calendar read scans and shows", async () => {
+    const source = new FakeCalendarSource([calendarEvent("full", { starts_at: at(11, 12, 15), ends_at: at(11, 12, 16), details: { calendar: "Work", location: "Room 1", description: "notes", organizer: null, attendees: [], conference_url: null, link: null, time_zone: null } })]);
+    const { sync, raw } = await harness([{ name: "work", source }]);
+    await sync();
+    const body = await raw("/api/v1/tasks");
+    expect(body).toContain('"id":"full"');
+    expect(body).not.toContain("details");
   });
 
   it("a day is synced only inside the window of every source's last successful sync, the window the sync asks for", async () => {

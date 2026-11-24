@@ -16,6 +16,7 @@ Pick the component by the need, before drawing anything by hand. A UI spec names
 | a row of a list of work items | `ItemRow` (`web/src/views/item-row.tsx`) | Tasks, Needs you, Work (table and tree), Runners' running runs, the item page's Runs: title (the link) · StatusBadge · why · project · worker · age · one primary action · ⋯ menu (the tree: the PR link before the age); Copy ID in the menu, never an ID in the text. Design 09-dashboard-tasks. |
 | any other row in a bordered list | `ListRow` | Leading control, one-line title with ellipsis, details line, every action in its ⋯ menu. |
 | a reference list or a search over the page, with no confirm | `ModalPanel` | Header with the title (or the search field) and a close icon button; the body scrolls. Never a hand-made overlay `div`. |
+| the whole details of one thing on a page (a calendar event), opened from it | `Popover`, opened by a `ChipButton` | Beside the chip from `sm` up, a sheet below; never a hand-made floating `div` or a tooltip for content the owner must read. |
 | input inside a list row | `Dialog` | A field a row action needs opens in a Dialog; the row's height never changes. |
 
 ## Card
@@ -174,6 +175,14 @@ The native modal `<dialog>`, opened on mount and closed on unmount, rendered int
 ## ModalPanel
 
 A modal with no confirm, for a reference list (the shortcut list) or a search: the same native `<dialog>` as Dialog (showModal, so the page behind is inert and Tab stays inside; rendered into `document.body`). A header row (12 px top and bottom, 20 px left, a bottom `border`) holds the `text-base` semibold title, or `header` in its place (the search field; the title stays as a hidden heading), and a ghost icon Button with an X (Close) at its right; under it the body (20 px across, 16 px down, `text-sm`) keeps its content height, shrinks to the panel's max height and scrolls by itself, so the header stays put. Radius `card`, `shadow-lg`, the Dialog's backdrop. Sizes: `lg` (42rem, default) and `md` (32rem); both leave a 16 px gutter on a phone. Placement: `center` (default) or `top` (10% down, at most 80% of the window high, so a list that filters as you type does not move it). Esc, a click on the backdrop and the close button close it; a press that starts inside and ends on the backdrop does not. Focus goes to its first field, else its body, and back to `returnFocusTo`, else the element focused when it opened, without scrolling the page.
+
+## Popover
+
+The details of one thing, anchored beside it (`popover.tsx`): a non-modal native `<dialog>` opened with `show()`, rendered into `document.body`, so the page stays usable. From `sm` up it sits right of its `anchor`, else left of it, else under it, 8 px from the anchor and at least 8 px inside the window (a measured check when it opens and on scroll, resize and its own size change; no positioning library). 20rem wide (`w-80`), at most the window's height less 8 px each side, radius `box`, 1 px `border`, `surface`, `shadow-lg`. A header (a bottom `border`; 8 px top and bottom, 16 px left) holds the whole `title` (`text-base` semibold, wraps, never cut; the h2) and a ghost icon Button with an X (Close); the body (16 px across, 12 px down, `text-sm`) scrolls by itself. Below `sm` it is a `ModalPanel` (`md`) with the same body and the title wrapped whole in its header. Esc, the close button and a press outside it (not on the anchor) close it; focus goes to its body and back to the anchor, unless the owner moved it to another control. One size, no variants. States: beside (right, left or under its anchor), sheet (below `sm`).
+
+## ChipButton
+
+A content chip that opens a `Popover` (`popover.tsx`), such as a calendar event: a plain `<button>` as tall as its content (at least 24 px, `min-h-6`), full width, text left-aligned, radius `control`, the shared `FOCUS` ring, `aria-haspopup="dialog"` and `aria-expanded` from `open`. The caller gives its fill and hover (`surface-2` chips take `hover:bg-border`). Marked `data-chip`: check:responsive's `button-height` rule (28 or 32 px) is for controls, not for content whose height is its text's; `small-target` still holds it to 24 px. `CHIP_TITLE` cuts its title at 2 lines with no `Clamp`, because the chip opens the whole text. States: closed, open (`aria-expanded`), hover, focus-visible.
 
 ## CopyButton
 

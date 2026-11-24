@@ -1,27 +1,17 @@
-import type { CalendarDay, EventRow } from "../api.js";
-import { Clamp } from "../components/ui/clamp.js";
+import type { CalendarDay, CalendarEvent } from "../api.js";
 import { SUB_TITLE } from "../components/ui/card.js";
+import { CHIP_TITLE } from "../components/ui/popover.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
+import { EventButton, Strip } from "./calendar-event.js";
 import { dayLabel } from "./tasks/groups.js";
 
 // The Calendar page's week and month (design 09-dashboard-tasks-calendar): plain grids inside the page's one Card,
-// split by 1px `border` lines, with no box of their own and no card inside the card. Read-only.
+// split by 1px `border` lines, with no box of their own and no card inside the card. Read-only; each event is a button
+// that opens its whole details (calendar-event.tsx).
 
 /** The events a month cell lists before "+N more". */
 const CELL_EVENTS = 3;
-
-/** The existing token colours an event's strip is chosen from, by its source's name. */
-const STRIPS = ["bg-kind-triage", "bg-kind-implement", "bg-kind-review", "bg-kind-resolve", "bg-kind-merge-check"] as const;
-/** A source's strip colour: a stable hash of its name, so the same source keeps its colour across reads. */
-function stripFor(source: string): string {
-  let h = 0;
-  for (const ch of source) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return STRIPS[h % STRIPS.length]!;
-}
-const Strip = ({ source, className }: { source: string; className?: string }) => (
-  <span aria-hidden data-strip className={cn("w-1 shrink-0 self-stretch rounded-pill", stripFor(source), className)} />
-);
 
 /** Today's date number: a small filled circle in the ink colour (neutral, never accent), as a macOS calendar marks it. */
 const TODAY_DOT = "inline-flex size-6 items-center justify-center rounded-pill bg-text-1 text-bg";
@@ -33,8 +23,6 @@ const weekday = (date: string) => {
   return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "short" });
 };
 const todayMark = (date: string, today: string) => (date === today ? { "data-today": "" } : {});
-/** An event's full text for its tooltip: time, title and, with several calendars, its source. */
-const fullText = (e: EventRow, showSource: boolean) => `${e.time ?? t("calendarPage.allDay")} ${e.title}${showSource ? ` (${e.source})` : ""}`;
 
 interface GridProps {
   label: string;
@@ -44,38 +32,40 @@ interface GridProps {
 }
 
 /**
- * A compact event chip on `surface-2`: a colour strip, then its time first ("all day" else, and its source when several
- * calendars are connected), then its title cut at 2 lines; the full text is its tooltip.
+ * A compact event chip on `surface-2`, a button that opens the event's details: a colour strip, then its time first
+ * ("all day" else, and its source when several calendars are connected), then its title cut at 2 lines.
  */
-function EventChip({ event, showSource }: { event: EventRow; showSource: boolean }) {
+function EventChip({ event, showSource }: { event: CalendarEvent; showSource: boolean }) {
   return (
-    <li data-event={`${event.source}:${event.id}`} title={fullText(event, showSource)} className="flex min-w-0 gap-1.5 rounded-control bg-surface-2 px-1.5 py-1">
-      <Strip source={event.source} />
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-xs text-text-2">
-          <span className="tabular-nums">{event.time ?? t("calendarPage.allDay")}</span>
-          {showSource && <span data-raw> · {event.source}</span>}
-        </p>
-        <Clamp className="text-xs font-medium break-words text-text-1">{event.title}</Clamp>
-      </div>
+    <li className="min-w-0">
+      <EventButton event={event} showSource={showSource} className="gap-1.5 bg-surface-2 px-1.5 py-1 hover:bg-border aria-expanded:bg-border">
+        <Strip source={event.source} />
+        <span className="block min-w-0 flex-1">
+          <span className="block truncate text-xs text-text-2">
+            <span className="tabular-nums">{event.time ?? t("calendarPage.allDay")}</span>
+            {showSource && <span data-raw> · {event.source}</span>}
+          </span>
+          <span data-raw className={cn(CHIP_TITLE, "text-xs font-medium text-text-1")}>{event.title}</span>
+        </span>
+      </EventButton>
     </li>
   );
 }
 
 /**
- * Week: Monday to Sunday as seven flexible columns split by 1px lines from `lg` up, so the week fits the card with no
- * sideways scroll; below `lg` the days stack as a list, one under the other. A day's heading is its weekday and date
+ * Week: Monday to Sunday as seven flexible columns split by 1px lines from `xl` up, so the week fits the card with no
+ * sideways scroll; below `xl` the days stack as a list, one under the other. A day's heading is its weekday and date
  * number (today's on the ink dot); an unsynced day is shaded.
  */
 export function WeekDays({ label, days, today, showSource }: GridProps) {
   return (
-    <ol aria-label={label} className="grid grid-cols-1 divide-y divide-border lg:grid-cols-7 lg:divide-x lg:divide-y-0">
+    <ol aria-label={label} className="grid grid-cols-1 divide-y divide-border xl:grid-cols-7 xl:divide-x xl:divide-y-0">
       {days.map((d) => (
         <li
           key={d.date}
           data-day={d.date}
           {...(d.synced ? {} : { "data-not-synced": "" })}
-          className={cn("flex min-w-0 flex-col gap-2 px-2 py-3 lg:min-h-48 lg:py-1", !d.synced && SHADED)}
+          className={cn("flex min-w-0 flex-col gap-2 px-2 py-3 xl:min-h-48 xl:py-1", !d.synced && SHADED)}
         >
           <h3 className={cn(SUB_TITLE, "flex items-center gap-1.5")}>
             <span className="sr-only">{dayLabel(d.date)}</span>
@@ -111,13 +101,15 @@ function MonthCell({ day, today, showSource }: { day: CalendarDay; today: string
       </p>
       <ul className="space-y-0.5">
         {shown.map((e) => (
-          <li key={`${e.source}:${e.id}`} data-event={`${e.source}:${e.id}`} title={fullText(e, showSource)} className="flex min-w-0 items-center gap-1 text-xs sm:h-4">
-            {/* Below sm the strip is a short horizontal bar across the cell, the event's only visible mark. */}
-            <Strip source={e.source} className="max-sm:h-1 max-sm:w-full max-sm:self-auto" />
-            <span className="truncate max-sm:sr-only">
-              {e.time !== null && <span className="tabular-nums text-text-2">{e.time} </span>}
-              {e.title}
-            </span>
+          <li key={`${e.source}:${e.id}`} className="min-w-0">
+            <EventButton event={e} showSource={showSource} className="items-center gap-1 px-0.5 text-xs hover:bg-surface-2 aria-expanded:bg-surface-2">
+              {/* Below sm the strip is a short horizontal bar across the cell, the event's only visible mark. */}
+              <Strip source={e.source} className="max-sm:h-1 max-sm:w-full max-sm:self-auto sm:h-4" />
+              <span className="truncate max-sm:sr-only">
+                {e.time !== null && <span className="tabular-nums text-text-2">{e.time} </span>}
+                <span data-raw>{e.title}</span>
+              </span>
+            </EventButton>
           </li>
         ))}
         {more > 0 && <li className="truncate text-xs text-text-2">{t("calendarPage.more", { n: more })}</li>}

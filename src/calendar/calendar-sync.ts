@@ -8,6 +8,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { SqlDriver, SqlExecutor } from "../state/index.js";
+import type { EventDetails } from "./event-details.js";
 
 /** How often each source syncs. */
 export const CALENDAR_SYNC_MS = 5 * 60_000;
@@ -30,6 +31,8 @@ export interface FeedEvent {
   readonly ends_at: string;
   readonly all_day: boolean;
   readonly updated_at: string | null;
+  /** Its calendar, place, notes, people and links (event-details.ts); absent when the source answers none. */
+  readonly details?: EventDetails;
 }
 
 /** What the sync calls on a source: CalendarSource's one read. */
@@ -239,8 +242,8 @@ async function replaceEvents(tx: SqlExecutor, source: string, events: readonly F
   }
   for (const e of events) {
     await tx.run(
-      "INSERT INTO calendar_events (source, event_id, title, starts_at, ends_at, all_day, updated_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      [source, e.id, e.title, e.starts_at, e.ends_at, e.all_day ? 1 : 0, e.updated_at, now],
+      "INSERT INTO calendar_events (source, event_id, title, starts_at, ends_at, all_day, updated_at, synced_at, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [source, e.id, e.title, e.starts_at, e.ends_at, e.all_day ? 1 : 0, e.updated_at, now, e.details === undefined ? null : JSON.stringify(e.details)],
     );
   }
 }
