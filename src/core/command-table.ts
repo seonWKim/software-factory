@@ -218,7 +218,7 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
   ...scheduleCommands(),
 ];
 
-/** `factory schedule …` (design 08-schedules): list, add, edit, pause, resume, run, runs and delete, in that order; the writes are the owner's only. */
+/** `factory schedule …` (design 08-schedules): list, add, edit, pause, resume, run, runs, delete, draft and improve, in that order; the writes are the owner's only. */
 function scheduleCommands(): TableCommand[] {
   const optional = "[--body <text>] [--skip-when-busy on|off] [--token-cap <n>]";
   const one = (name: string, args: string, chat: string, chat_args: ChatArgs, does: string, prints: string): TableCommand => ({
@@ -247,6 +247,25 @@ function scheduleCommands(): TableCommand[] {
       "Remove the schedule, so none of its slots fire again; a run in flight finishes, its past runs and their items stay; refused for an unknown ID",
       "the deleted schedule's line",
     ),
+    // Draft and improve ask y/N on the terminal before they write (src/core/schedule-draft.ts), so they have no chat form.
+    {
+      ...one(
+        "draft", "<words…> [--yes]", "", "no_chat",
+        "Draft a schedule from your words with the configured model (plugins.llm), then ask y/N before adding it; `--yes`, the last word, adds it " +
+          "without asking; refused with no model, no terminal and no `--yes`, a failed model call, or a cadence, zone or action the checks of `schedule add` refuse",
+        "the proposed schedule, then the added schedule's line, or that nothing was stored",
+      ),
+      chat: "",
+    },
+    {
+      ...one(
+        "improve", "<id> [--yes]", "", "no_chat",
+        "Have the configured model revise the schedule's text (a build's body, an agent's or feedback's prompt), then ask y/N before writing it; " +
+          "`--yes`, the last word, writes it without asking; refused with no model, no terminal and no `--yes`, or a failed model call",
+        "the old and the new text, then the edited schedule's line, or that nothing was stored",
+      ),
+      chat: "",
+    },
   ];
 }
 
