@@ -16,8 +16,15 @@
 // synced, never as an empty one. `sync_pending` says whether a sync request for exactly `from` through `to` waits.
 // Each event carries its `starts_at`, `ends_at` and `details` (src/calendar/event-details.ts) for the page's detail
 // view; every text in them passes the egress scan as the title does.
+//
+// The owner's own events (design 02-tasks-calendar, local events) are added to each day whether or not a calendar is
+// connected, each repeat expanded inside the range (src/calendar/calendar-local.ts), with source `local` and their
+// `repeats`; a day's `synced` still reflects only the calendar sources. `time_zone` is this process's zone, the one
+// every local day here is counted in.
 
-import { type EventDetails, type EventPerson, type SourceSync, type SyncedRange, rangeError, readCalendar, syncWindow } from "../calendar/index.js";
+import {
+  type EventDetails, type EventPerson, type SourceSync, type SyncedRange, expandLocalEvents, processTimeZone, rangeError, readCalendar, readLocalEvents, syncWindow,
+} from "../calendar/index.js";
 import { calendarDays, dayBounds } from "../core/tasks.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import type { ApiResult } from "./api.js";
@@ -51,18 +58,20 @@ async function shownDetails(w: Withholder, d: EventDetails | null): Promise<Even
   };
 }
 
-/** GET /api/v1/calendar/events: 400 with the reason for a bad range; else 200 with each day's events and synced flag. */
+/** GET /api/v1/calendar/events: 400 with the reason for a bad range; else 200 with each day's events (local ones too) and synced flag, and the time zone. */
 export async function readCalendarEvents(d: UiDeps, from: string | null, to: string | null): Promise<ApiResult> {
   const error = rangeError(from, to);
   if (error !== null) return { status: 400, value: { error } };
   const connected = await connectedCalendars(d);
-  const stored = await readCalendar(storeSql(d.store));
+  const db = storeSql(d.store);
+  const stored = await readCalendar(db);
   const rows = new Map(stored.sources.map((s) => [s.source, s]));
   const sources = [...connected].sort().map((source) => rows.get(source) ?? { source, synced_at: null, failed: false });
   const w = new Withholder(d.scanner);
-  const kept = stored.events.filter((e) => connected.has(e.source));
+  const local = expandLocalEvents(await readLocalEvents(db, from!, to!), from!, to!);
+  const kept = [...stored.events.filter((e) => connected.has(e.source)), ...local];
   const events = await Promise.all(kept.map(async (e) => ({ ...e, title: (await w.plain(e.title)).text, details: await shownDetails(w, e.details) })));
   const days = calendarDays(events, from!, to!).map((day) => ({ ...day, synced: synced(sources, stored.ranges, day.date) }));
   const pending = stored.pending.some((p) => p.from === from && p.to === to);
-  return { status: 200, value: { from, to, days, calendar: sources, sync_pending: pending } };
+  return { status: 200, value: { from, to, time_zone: processTimeZone(), days, calendar: sources, sync_pending: pending } };
 }
