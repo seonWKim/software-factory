@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { createInterface } from "node:readline/promises";
 import { CLI_TOP_WORDS, HELP_WORD, cliName, cliUsageLines, parseLocalCliArgs, resolveItem, runLocalCli, storedProjectCaps } from "../../../core/local-cli.js";
 import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
+import type { Loaded } from "../../../load-config.js";
 import { lastRefusedLines, refusalHint } from "./refused.js";
 
 /**
@@ -28,6 +30,9 @@ export default defineCommand({
     const cli = cliName(process.env);
     return ctx.withStore(async (store, loaded) => {
       const { owner, name } = loaded.config.repo;
+      // `schedule draft` and `improve` only: the configured model (null when it cannot be built: the feature is off), the
+      // scanner, and a y/N ask while stdin is a terminal.
+      const drafting = action.action === "schedule_draft" ? await draftParts(loaded) : {};
       const resolveProject = storeProjectResolver(store, { owner, name });
       const r = await runLocalCli(
         {
@@ -39,6 +44,7 @@ export default defineCommand({
           cli,
           ui: loaded.file.ui ?? {},
           answers: { split: splitAnswers, detail: answersDetail },
+          ...drafting,
           caps: async (project) => storedProjectCaps(store, { file: {}, layers: loaded.config.settings }, `${owner}/${name}`, (await resolveProject())?.key ?? null, project),
         },
         action,
@@ -54,3 +60,21 @@ export default defineCommand({
     });
   },
 });
+
+/** The model, the egress scanner and the terminal ask `schedule draft` and `improve` take (src/core/schedule-draft.ts). */
+async function draftParts(loaded: Loaded) {
+  const { Plugins } = await import("../../../compose.js");
+  const p = new Plugins(loaded), secrets = await p.secrets();
+  const llm = await p.llm(secrets).catch(() => null);
+  return { llm, scanner: await p.scanner(secrets), ...(process.stdin.isTTY ? { ask: terminalAsk } : {}) };
+}
+
+/** A y/N question read from the terminal: only y or yes is a yes. */
+async function terminalAsk(question: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return /^y(es)?$/i.test((await rl.question(`${question} [y/N] `)).trim());
+  } finally {
+    rl.close();
+  }
+}
