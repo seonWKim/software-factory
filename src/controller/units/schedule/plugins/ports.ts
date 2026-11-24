@@ -35,6 +35,11 @@ export interface ActionPorts {
   fileItem(i: { source_id: string; title: string; body: string }): Promise<{ id: string; created: boolean } | null>;
   /** Runs one agent call on `prompt` in a fresh read-only checkout, with the output schema if given. */
   ask(i: { prompt: string; output_schema?: Readonly<Record<string, unknown>> }): Promise<AgentAnswer>;
+  /**
+   * Queues the occurrence's `routine` run (a Check a page schedule, src/core/routines.ts) on the routine's carrier
+   * item, keyed on the slot: a second call queues none and returns the same run with `created` false.
+   */
+  queueRoutine(): Promise<{ run: { id: string; idempotency_key: string }; created: boolean }>;
   /** Stores the occurrence's output and adds its tokens and cost to its run row. */
   record(r: { output: string; tokens: number; cost_usd: number | null }): Promise<void>;
 }
@@ -44,12 +49,6 @@ export interface ActionPorts {
  * the controller's daily step keys it, so a second call for that day queues none. Compose binds it to the store.
  */
 export type DailyImproveQueue = (occurrence_at: string) => Promise<{ run: { id: string; idempotency_key: string }; created: boolean }>;
-
-/**
- * Queues the routine run of the Check a page schedule `schedule_id` for the slot `occurrence_at` on its carrier item,
- * keyed on the slot, so a second call queues none. Compose binds it to the store and the project.
- */
-export type RoutineRunQueue = (schedule_id: string, occurrence_at: string) => Promise<{ run: { id: string; idempotency_key: string }; created: boolean }>;
 
 /** One action: runs a fired occurrence of `schedule`, due at `occurrence_at`. Safe to run twice for one occurrence. */
 export type ScheduleActionRoute = (schedule: ActionSchedule, occurrence_at: string, ports: ActionPorts) => Promise<void>;

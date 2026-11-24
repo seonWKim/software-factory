@@ -1,12 +1,13 @@
 // The `routed` ScheduleAction (design 08-schedules, docs/plugins/schedule-action.md): hands each fired occurrence
-// to the route of its schedule's action kind (build, agent, feedback or improve; src/controller/units/schedule/plugins/),
-// bound to ports over the store, the agent runner and the egress scanner. An agent call gets exactly the read-only
+// to the route of its schedule's action kind (build, agent, feedback, improve or check_page;
+// src/controller/units/schedule/plugins/), bound to ports over the store, the agent runner and the egress scanner. An agent call gets exactly the read-only
 // tools Read, Glob and Grep, in a fresh detached checkout, with deny_paths and no writable path; every answer is
 // scanned before it is stored or filed (G5). The token cap is the claim pass's (src/core/schedule.ts): an
 // occurrence over it never reaches this action.
 
 import type { Contexts } from "../../plugin-api.js";
 import type { ActionPorts, AgentAnswer } from "../../controller/units/schedule/plugins/ports.js";
+import { queueRoutineRun } from "../../core/routines.js";
 import type { Schedule } from "../../core/schedule.js";
 import type { ToolSpec } from "../../core/tools/types.js";
 import { type RunId, type Timestamp, type WorkItemId, usageTokens } from "../../core/types.js";
@@ -58,6 +59,7 @@ export class RoutedScheduleAction implements ScheduleAction {
         return { id: item.id, created };
       },
       ask: (i) => this.ask(schedule, occurrence_at, i),
+      queueRoutine: () => queueRoutineRun(store, project, schedule.id, occurrence_at),
       record: (r) => store.recordScheduleRunResult(schedule.id, occurrence_at, r),
     };
   }
