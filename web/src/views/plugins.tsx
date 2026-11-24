@@ -145,15 +145,16 @@ function LastUsed({ at, now, dash = false }: { at: string | null; now: number; d
 
 const PATH_KEEP = { head: 14, tail: 26 } as const;
 
-/** A path on one line, cut in the middle when long; the full value in a tooltip, with a Copy button beside it.
- *  A screen reader (and the row's text) gets the full path; the cut text is for the eye only. */
+/** A path cut in the middle when long; the full value in a tooltip, with a Copy button beside it. From `sm` up it is
+ *  one line; below it (a card) the path wraps anywhere, so Copy stays inside the card. A screen reader (and the row's
+ *  text) gets the full path; the cut text is for the eye only. */
 function PathText({ value }: { value: string }) {
   const long = value.length > PATH_KEEP.head + PATH_KEEP.tail + 1;
   const shown = long ? `${value.slice(0, PATH_KEEP.head)}…${value.slice(-PATH_KEEP.tail)}` : value;
   return (
-    <span className="flex items-center whitespace-nowrap">
-      <Tooltip text={value} align="start">
-        <span tabIndex={0} className="font-mono text-xs">
+    <span className="flex min-w-0 items-start sm:items-center sm:whitespace-nowrap">
+      <Tooltip text={value} align="start" className="min-w-0">
+        <span tabIndex={0} className="min-w-0 font-mono text-xs break-all">
           {long ? <><span aria-hidden="true">{shown}</span><span className="sr-only">{value}</span></> : value}
         </span>
       </Tooltip>

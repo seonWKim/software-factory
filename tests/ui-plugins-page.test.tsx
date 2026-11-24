@@ -237,6 +237,30 @@ describe("Plugins page", () => {
     expect(rows[1]!.textContent).not.toMatch(/missing|Changed/);
   });
 
+  it("at phone width a Skills card's path wraps with Copy beside it; the full path is in its tooltip and its Copy value", async () => {
+    vi.stubGlobal("innerWidth", 390);
+    const writeText = vi.fn(async () => {});
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    const path = "/Users/someone/projects/example/.claude/skills/humanize/SKILL.md";
+    view = { ...FULL, skills: [{ name: "humanize", folder: "/Users/someone/projects/example/.claude/skills", description: null, roles: [], last_used: null, source: "claude", path, state: "ok" }] };
+    history.replaceState(null, "", "/app/plugins?tab=skills");
+    show();
+    const cards = await screen.findByRole("list", { name: "Skills" });
+    const copy = within(cards).getByRole("button", { name: "Copy Path" });
+    const text = cards.querySelector<HTMLElement>(".font-mono")!;
+    // Copy sits in the same row as the path, and the row may wrap below `sm` (nowrap only from `sm` up).
+    const row = copy.parentElement!;
+    expect(row.contains(text)).toBe(true);
+    expect(row.className.split(/\s+/)).not.toContain("whitespace-nowrap");
+    expect(row.className.split(/\s+/)).toContain("sm:whitespace-nowrap");
+    expect(text.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-0", "break-all"]));
+    expect(text.parentElement!.className.split(/\s+/)).toContain("min-w-0");
+    fireEvent.focus(text);
+    expect(within(cards).getByRole("tooltip").textContent).toBe(path);
+    fireEvent.click(copy);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(path));
+  });
+
   it("an action's notice shows only on the tab it came from, and a tab change clears it", async () => {
     show();
     const table = await screen.findByRole("table", { name: "MCP" });

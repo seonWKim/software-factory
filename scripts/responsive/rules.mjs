@@ -5,7 +5,9 @@
 //                   [data-scroll-root] content column's scrollWidth > its clientWidth.
 //   offscreen       a visible element, or its own text, ends past the viewport's right edge, and no ancestor of it
 //                   clips or scrolls sideways (an overflow-x:auto table wrapper is fine; the wrapper itself is checked
-//                   too). Only the outermost such element of a chain is reported.
+//                   too). A control (a button or a link) past the edge is reported even inside such a box: it is out
+//                   of sight and out of reach (the Skills card's Copy Path at 390px, 2026-11-24). Only the outermost
+//                   such element of a chain is reported.
 //   letter-wrap     text in a box narrower than 12ch breaks a word across lines (the old model_by column, PR #530,
 //                   was 9ch wide).
 //   tall-fixed      a position:fixed or sticky element covers more than 40% of the viewport's height.
@@ -105,7 +107,8 @@ export function checkLayout(limits) {
     }
     return v;
   };
-  const pastRight = (el) => el.getBoundingClientRect().right > W + 1 && !insideClipX(el);
+  const control = "button, a[href]";
+  const pastRight = (el) => el.getBoundingClientRect().right > W + 1 && (el.matches(control) || !insideClipX(el));
 
   // page-scroll
   const sw = document.documentElement.scrollWidth;
