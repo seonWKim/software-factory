@@ -1,7 +1,7 @@
 // The data `npm run check:responsive` looks at: a throwaway SQLite store in a temp dir, seeded with items that
 // stress the layout (long titles, long local IDs, long thread bodies, a phase tree, failed runs, alerts, an
 // object-valued model_by, many commands, rules on with applied and waiting rules, a standing approval that approved
-// three items), served by the real UI server (dist/ui/server.js) on a free port.
+// three items, three routines: a long name, a paused one, one on the merge trigger), served by the real UI server (dist/ui/server.js) on a free port.
 // Nothing here reads factory.config.json, .factory/ or the secrets file: every dependency is built in place.
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -12,6 +12,7 @@ import { syncCalendars } from "../../dist/calendar/index.js";
 import { ALERT_DEDUPE_MS } from "../../dist/core/alarms.js";
 import { SkillRefsStore } from "../../dist/import/import-plugins.js";
 import { saveProject } from "../../dist/core/project-labels.js";
+import { writeRoutine } from "../../dist/core/routines.js";
 import { SPEC_GATE, STANDING_APPROVED, STANDING_TIER, ruleId, standingActor } from "../../dist/core/standing.js";
 import { SystemClock } from "../../dist/impl/clock/system-clock.js";
 import { PatternEgressScanner } from "../../dist/impl/egress/pattern-egress-scanner.js";
@@ -236,6 +237,7 @@ async function seed(store, storage, dir) {
 
   await seedStanding(store);
   await seedSkill(store, dir);
+  await seedRoutines(store);
 
   // Overrides: an object-valued model_by and a project-level key, with history.
   await store.setSettingOverride({ key: "model_by", project: "", value: JSON.stringify({ ...MODEL_BY, review: "strong" }), actor: OWNER });
@@ -259,6 +261,26 @@ async function seedSkill(store, dir) {
   const sha256 = createHash("sha256").update(text).digest("hex");
   await new SkillRefsStore(storeSql(store), () => new Date().toISOString()).insert({ source: "claude", kind: "skill", name, path, sha256 }, OWNER);
   await store.createSkillEvalSuite({ id: "suite_responsive_fixture", skill_ref: `${folder}/${name}`, title: "Fixture suite", created_by: OWNER });
+}
+
+/**
+ * Three routines, so the Routines page draws its table, row menus and paused Notice (and the screenshot run its New
+ * routine Dialog over them): one with a long name on a weekly schedule, one paused on an interval, one on the merge
+ * trigger. Plain text: no token-like string. Added through the same core write the API runs.
+ */
+async function seedRoutines(store) {
+  const now = new Date();
+  const routines = [
+    { id: "rtn_responsive_long", name: "Weekly review of every documentation page that mentions the dashboard, the settings or the routines and their caps", instruction: `Read each page and list the sentences that no longer match the product. ${"Name the page and the section for each one. ".repeat(4)}`, url: "https://example.com/docs/dashboard/overview", schedule: { kind: "weekly", spec: "mon,fri 09:00" }, zone: "Europe/Paris", run_cap_usd: 2, daily_cap_usd: 5 },
+    { id: "rtn_responsive_paused", name: "Stale pages check", instruction: "List the pages that have not changed in ninety days.", schedule: { kind: "interval", spec: "240" }, run_cap_usd: 1 },
+    { id: "rtn_responsive_merge", name: "After each merge", instruction: "Read the merged change and suggest one follow-up, if any.", trigger: "merge" },
+  ];
+  for (const { id, ...fields } of routines) {
+    const r = await writeRoutine(store, "add", id, fields, OWNER, now);
+    if (!r.ok) throw new Error(`fixture routine ${id} failed: ${r.problem}`);
+  }
+  const paused = await writeRoutine(store, "pause", "rtn_responsive_paused", {}, OWNER, now);
+  if (!paused.ok) throw new Error(`fixture routine pause failed: ${paused.problem}`);
 }
 
 /** How many items the standing approval approved in the last 7 days: more than the two its Rules page row names before "+N more". */

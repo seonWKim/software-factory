@@ -97,8 +97,14 @@ const TABS: Readonly<Record<string, readonly string[]>> = {
   health: ["runs", "cost", "review"],
 };
 
-/** The dialog captures: `<page>-<tab>-<dialog>`, the page's tab with the button marked `data-capture-open="<dialog>"` clicked. Evals only. */
-const DIALOGS: readonly { page: string; tab: string; dialog: string }[] = [{ page: "plugins", tab: "skills", dialog: "evals" }];
+/**
+ * The dialog captures: `<page>[-<tab>]-<dialog>`, the page (at its tab, when given) with the button marked
+ * `data-capture-open="<dialog>"` clicked. The Routines page's New routine Dialog and the Evals dialog.
+ */
+const DIALOGS: readonly { page: string; tab?: string; dialog: string }[] = [
+  { page: "routines", dialog: "new-routine" },
+  { page: "plugins", tab: "skills", dialog: "evals" },
+];
 
 /**
  * The pages a screenshot run captures: every sidebar page `web/src/pages.ts` lists (as check:responsive reads it) at its
@@ -110,7 +116,8 @@ export function capturePages(pagesTs: string): ScreenshotPage[] {
   const item = `items/${FIXTURE_ITEM}`;
   const listed = new Set(sidebar.map((p) => p.name));
   const tabs = Object.entries(TABS).filter(([page]) => listed.has(page)).flatMap(([page, ids]) => ids.map((tab) => ({ name: `${page}-${tab}`, path: `${page}?tab=${tab}` })));
-  const dialogs = DIALOGS.filter((d) => listed.has(d.page)).map((d) => ({ name: `${d.page}-${d.tab}-${d.dialog}`, path: `${d.page}?tab=${d.tab}`, open: d.dialog }));
+  const dialogs = DIALOGS.filter((d) => listed.has(d.page)).map((d) =>
+    d.tab === undefined ? { name: `${d.page}-${d.dialog}`, path: d.page, open: d.dialog } : { name: `${d.page}-${d.tab}-${d.dialog}`, path: `${d.page}?tab=${d.tab}`, open: d.dialog });
   return [...sidebar, { name: "item", path: item }, { name: "transcript", path: `${item}/runs/${FIXTURE_RUN}` }, ...tabs, ...dialogs];
 }
 

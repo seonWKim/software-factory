@@ -135,6 +135,8 @@ describe("the capture set", () => {
     // A page's default tab keeps its existing capture and gets no second one.
     expect(["settings-general", "plugins-mcp", "health-overview"].some((n) => named.has(n))).toBe(false);
     expect(named.get("plugins-skills-evals")).toEqual({ name: "plugins-skills-evals", path: "plugins?tab=skills", open: "evals" });
+    // A dialog on a page with no tabs is named <page>-<dialog> and opened from the page's default URL.
+    expect(named.get("routines-new-routine")).toEqual({ name: "routines-new-routine", path: "routines", open: "new-routine" });
     expect(pages.at(-1)?.name).toBe("plugins-skills-evals");
     // A checkout whose sidebar lacks a tabbed page has none of its tabs; a page with no tabs gains nothing.
     expect(capturePages(PAGES_TS).map((p) => p.name).filter((n) => n.startsWith("plugins") || n.startsWith("health"))).toEqual([]);
@@ -163,6 +165,8 @@ describe("the capture set", () => {
     expect(script.indexOf("openDialog(page, shoot.open)")).toBeLessThan(script.indexOf("page.eval(FULL_HEIGHT)"));
     const real = await readFile(join(import.meta.dirname, "..", "web", "src", "views", "plugins.tsx"), "utf8");
     expect(real).toContain('data-capture-open="evals"');
+    const routines = await readFile(join(import.meta.dirname, "..", "web", "src", "views", "routines.tsx"), "utf8");
+    expect(routines).toContain('data-capture-open="new-routine"');
   });
 
   it("the fixture seeds one imported skill with a SKILL.md and an eval suite, so the Skills tab has a row with Evals", async () => {
@@ -170,6 +174,14 @@ describe("the capture set", () => {
     expect(fixture).toMatch(/SKILL\.md/);
     expect(fixture).toMatch(/SkillRefsStore/);
     expect(fixture).toMatch(/createSkillEvalSuite\(/);
+  });
+
+  it("the fixture seeds routines (a long name, a paused one, one on the merge trigger), so the Routines table and its menus are drawn", async () => {
+    const fixture = await readFile(join(import.meta.dirname, "..", "scripts", "responsive", "fixture.mjs"), "utf8");
+    expect(fixture).toMatch(/await seedRoutines\(store\)/);
+    expect(fixture).toMatch(/writeRoutine\(store, "add"/);
+    expect(fixture).toMatch(/writeRoutine\(store, "pause"/);
+    expect(fixture).toMatch(/trigger: "merge"/);
   });
 });
 
@@ -240,16 +252,17 @@ describe("the Chrome browser", () => {
       stdin = o.stdin ?? "";
       const replies = stdin.trim().split("\n").map((l) => {
         const { shoot } = JSON.parse(l) as { shoot: { open?: string } };
-        return line(shoot.open ? { error: `the ${shoot.open} dialog did not open` } : { png: Buffer.from("x").toString("base64") });
+        return line(shoot.open === "evals" ? { error: `the ${shoot.open} dialog did not open` } : { png: Buffer.from("x").toString("base64") });
       });
       return { exit_code: 0, stdout: line({ ready: true }) + replies.join(""), stderr: "" };
     };
     const out = await captureAll(chromeBrowser(), new MemoryStorage(), { item_id: "i", run_id: "r", exec, signal });
     const sent = stdin.trim().split("\n").map((l) => (JSON.parse(l) as { shoot: { path: string; open?: string } }).shoot);
-    expect(sent.filter((x) => x.open).map((x) => `${x.path}:${x.open}`)).toEqual(Array(4).fill("plugins?tab=skills:evals"));
+    expect(sent.filter((x) => x.open).map((x) => `${x.path}:${x.open}`)).toEqual([...Array(4).fill("routines:new-routine"), ...Array(4).fill("plugins?tab=skills:evals")]);
     expect(sent.filter((x) => !x.open).every((x) => !("open" in x))).toBe(true);
     expect(out.reason).toBe("the capture of plugins-skills-evals at 390px, light failed: the evals dialog did not open");
     expect(out.captures.map((c) => c.page)).toContain("plugins-skills");
+    expect(out.captures.map((c) => c.page)).toContain("routines-new-routine");
     expect(out.captures.map((c) => c.page)).not.toContain("plugins-skills-evals");
   });
 
