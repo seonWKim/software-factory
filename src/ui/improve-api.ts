@@ -10,9 +10,15 @@
 // the approver check (`approve_spec` on the configured project, local grants only), then the proposal, which must be that
 // project's, and only then one conditional store write. Promote files nothing here: the controller's improve step files
 // the promoted proposal's item (fileProposals), so the verdict never waits on a sync plugin.
+//
+// The same list carries the improve run's skill drafts (design 09-dashboard-rules-waiting), `skills`: the configured
+// project's, newest first, each with its state, reason, skill path, why (the failed checks it was drafted against),
+// pass rates and the verdicts it offers (only a proposed or held draft offers any). The Rules page shows the waiting
+// ones and sends their verdicts to POST /api/v1/rules/skill-verdict (rules-api.ts writeSkillVerdict), owner only.
 
 import { type Proposal, enqueueImprove, parseProposalVerdict, pendingImprove } from "../core/improver.js";
 import type { UserId } from "../core/types.js";
+import type { SkillDraft } from "../interfaces/skill-draft-store.js";
 import type { ApiResult } from "./api.js";
 import type { PauseDeps, UiPauses } from "./pause-api.js";
 import type { UiSettings } from "./settings-api.js";
@@ -80,7 +86,26 @@ export async function readProposals(d: PauseDeps): Promise<ApiResult> {
     decided_at: p.decided_at, filed: p.filed_ref !== null, created_at: p.created_at,
   });
   const decides = d.pauses !== undefined && !("error" in (await decider(d.pauses)));
-  return { status: 200, value: { csrf_token: decides ? d.pauses!.csrfToken : null, proposals: await Promise.all(rows.map(view)) } };
+  const drafts = project ? (await d.store.listSkillDrafts(project.key)).reverse().slice(0, LIST_LIMIT) : [];
+  const skills = await Promise.all(drafts.map((s) => skillView(s, text)));
+  return { status: 200, value: { csrf_token: decides ? d.pauses!.csrfToken : null, proposals: await Promise.all(rows.map(view)), skills } };
+}
+
+/** The verdicts a skill draft in `state` offers (src/core/skill-improve.ts): promote, hold and reject when proposed; promote and reject when held. */
+export function skillVerdicts(state: SkillDraft["state"]): ("promote" | "hold" | "reject")[] {
+  return state === "proposed" ? ["promote", "hold", "reject"] : state === "held" ? ["promote", "reject"] : [];
+}
+
+/** A skill draft's row: never its draft text or old text; the skill path and check names through the Withholder. */
+async function skillView(s: SkillDraft, text: (v: string | null) => Promise<string | null>) {
+  const x = (s.detail ?? {}) as { reason?: unknown; failed_checks?: unknown; baseline_run?: { pass_rate?: unknown }; scratch_run?: { pass_rate?: unknown } };
+  const rate = (r: { pass_rate?: unknown } | undefined) => (typeof r?.pass_rate === "number" ? r.pass_rate : null);
+  const checks = Array.isArray(x.failed_checks) ? x.failed_checks.filter((c): c is string => typeof c === "string") : [];
+  return {
+    id: s.id, state: s.state, reason: typeof x.reason === "string" ? x.reason : null, skill_ref: await text(s.skill_ref),
+    why: checks.length > 0 ? await text(checks.join("; ")) : null, before: rate(x.baseline_run), after: rate(x.scratch_run),
+    created_at: s.created_at, verdicts: skillVerdicts(s.state),
+  };
 }
 
 /**
