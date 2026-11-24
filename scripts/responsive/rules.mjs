@@ -34,10 +34,38 @@
 //   title-wrap      a row title ([data-row-title]: Work, Tasks and Health's Runners rows) wraps onto more than two
 //                   lines, so the ID, badge or time beside it squeezed it (design 09-dashboard-shell, 2026-11-22).
 //
+// Alignment (design 09-dashboard-components, 2026-11-24, the owner's "vertical and horizontal alignments are all wrong"):
+//
+//   row-align       in a row (a table body's <tr>, [data-row], [data-list-row], [data-item-row], [role=row], a table
+//                   card's <li>), a control or badge (button, link, input, select, switch, checkbox, combobox,
+//                   [data-level], [data-status]) that sits on the row's first text line has its vertical centre more
+//                   than `rowAlignPx` (3px) from that line's centre. The line is the row's first painted text outside a
+//                   control or badge; a control on a later line (a details line) is not compared, and a nested row's
+//                   controls belong to the nested row. A control that wraps onto lines of its own is measured by its
+//                   first line. A 28px button in a top-aligned table cell is 5px low; a 32px "⋯" is 7px low.
+//   toolbar-height  in a toolbar ([role=toolbar], or PageToolbar's control row [data-toolbar]), the controls (buttons,
+//                   inputs, selects, comboboxes; a SegmentedControl as one) are not all one height: a 28px sm Button
+//                   beside the 32px search Input (Work, until 2026-11-24).
+//
+// `[data-align-skip]` on an element, or on an ancestor inside the row or toolbar, leaves it out of both (a control that
+// is meant to sit off the line, such as a tall preview). Rules in `limits.warnOnly` are reported as warnings: they
+// print but do not fail the check (see LIMITS).
+//
 // Elements that are not painted (display:none, visibility:hidden, opacity:0, zero size) and screen-reader-only
 // boxes (1px, clipped) are skipped.
 
-export const LIMITS = { letterWrapCh: 12, maxFixedShare: 0.4, buttonHeights: [28, 32], pageWidths: ["--page-wide", "--page-read"], maxTitleLines: 2, minTarget: 24 };
+export const LIMITS = {
+  letterWrapCh: 12,
+  maxFixedShare: 0.4,
+  buttonHeights: [28, 32],
+  pageWidths: ["--page-wide", "--page-read"],
+  maxTitleLines: 2,
+  minTarget: 24,
+  rowAlignPx: 3,
+  // row-align warns only until the shared table/list row centring lands (the DataTable cell and ItemRow baseline fix,
+  // in progress 2026-11-24): today every top-aligned table cell with a button fails it. Remove it from here then.
+  warnOnly: ["row-align"],
+};
 
 /**
  * Runs in the page: `failures` as { rule, selector, detail }, each failing element marked for the screenshot, and
@@ -87,7 +115,7 @@ export function checkLayout(limits) {
 
   const fail = (rule, el, detail) => {
     el.setAttribute("data-responsive-fail", rule);
-    out.push({ rule, selector: selector(el), detail });
+    out.push({ rule, selector: selector(el), detail, ...(limits.warnOnly?.includes(rule) ? { warn: true } : {}) });
   };
 
   const painted = (el) => {
@@ -296,5 +324,69 @@ export function checkLayout(limits) {
     named.add(el);
     fail("raw-name", el, `"${m[0].slice(0, 40)}" outside [data-raw]`);
   }
+  // row-align
+  const ROWS = "tbody > tr, [data-row], [data-list-row], [data-item-row], [role=row], ul[data-cards] > li";
+  const ALIGNED = "button, a[href], input:not([type=hidden]), select, [role=switch], [role=checkbox], [role=combobox], [data-level], [data-status]";
+  const skipped = (el, within) => {
+    for (let e = el; e; e = e.parentElement) {
+      if (e.getAttribute("data-align-skip") !== null) return true;
+      if (e === within) return false;
+    }
+    return false;
+  };
+  /** The first line box of `el`'s first painted text: [top, bottom], or null. */
+  const firstLine = (el, accept) => {
+    const texts = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = texts.nextNode(); n; n = texts.nextNode()) {
+      if (!n.textContent.trim() || !accept(n.parentElement)) continue;
+      const range = document.createRange();
+      range.selectNodeContents(n);
+      const q = [...range.getClientRects()].find((x) => x.width > 0 && x.height > 0);
+      if (q) return [q.top, q.bottom];
+    }
+    return null;
+  };
+  for (const row of document.body.querySelectorAll(ROWS)) {
+    if (!painted(row) || row.getAttribute("data-align-skip") !== null) continue;
+    const own = (el) => el.closest(ROWS) === row && !skipped(el, row);
+    const line = firstLine(row, (p) => own(p) && painted(p) && !p.closest(ALIGNED));
+    if (!line) continue;
+    const centre = (line[0] + line[1]) / 2;
+    const seen = [];
+    for (const el of row.querySelectorAll(ALIGNED)) {
+      if (!own(el) || !painted(el) || seen.some((s) => s.contains(el))) continue;
+      seen.push(el);
+      let [top, bottom] = [el.getBoundingClientRect().top, el.getBoundingClientRect().bottom];
+      if (bottom <= line[0] || top >= line[1]) continue; // on another line of the row
+      // A control whose text wraps (a long title link) is measured by its first line.
+      const lh = parseFloat(style(el).lineHeight) || parseFloat(style(el).fontSize) * 1.2;
+      if (bottom - top > lh * 1.5 && bottom - top > 40) {
+        const first = firstLine(el, () => true);
+        if (first) [top, bottom] = first;
+      }
+      const off = (top + bottom) / 2 - centre;
+      if (Math.abs(off) > limits.rowAlignPx) {
+        fail("row-align", el, `centre ${off > 0 ? "+" : ""}${Math.round(off * 10) / 10}px from the row's first text line (${Math.round(bottom - top)}px tall), over ${limits.rowAlignPx}px`);
+      }
+    }
+  }
+
+  // toolbar-height
+  for (const bar of document.body.querySelectorAll("[role=toolbar], [data-toolbar]")) {
+    if (!painted(bar)) continue;
+    const controls = [...bar.querySelectorAll("button, input:not([type=hidden], [type=checkbox], [type=radio]), select, [role=radiogroup], [role=combobox]")].filter(
+      (el) => painted(el) && !skipped(el, bar) && !el.closest("[role=tablist], [role=menu], [role=listbox], dialog") && !(el.parentElement?.closest("[role=radiogroup]") && el.getAttribute("role") !== "radiogroup"),
+    );
+    const heights = controls.map((el) => Math.round(el.getBoundingClientRect().height));
+    const counts = new Map();
+    for (const h of heights) counts.set(h, (counts.get(h) ?? 0) + 1);
+    if (counts.size < 2) continue;
+    // The height most controls have; on a tie, the taller (the 32px control height).
+    const main = [...counts].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+    controls.forEach((el, i) => {
+      if (heights[i] !== main) fail("toolbar-height", el, `${heights[i]}px tall in a toolbar of ${main}px controls`);
+    });
+  }
+
   return { failures: out, sizes };
 }

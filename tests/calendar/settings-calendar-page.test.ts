@@ -79,7 +79,7 @@ describe("Calendar section", () => {
     expect(head.className.split(" ")).toContain("flex-wrap");
     // Rows split by one divider, the intro at a readable measure.
     expect(section.querySelector("ul")!.className.split(" ")).toEqual(expect.arrayContaining(["divide-y", "divide-border"]));
-    expect(section.querySelector("p")!.className).toContain("max-w-[75ch]");
+    expect(section.querySelector("p")!.className).toContain("max-w-prose");
   });
 
   it("Connect opens the consent page at once, with no dialog", async () => {

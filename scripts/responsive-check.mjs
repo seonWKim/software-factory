@@ -71,6 +71,8 @@ async function main() {
   await rm(SHOTS, { recursive: true, force: true });
   await mkdir(SHOTS, { recursive: true });
   const failures = [];
+  /** Findings of the rules in LIMITS.warnOnly: printed, never failing the check. */
+  const warnings = [];
   /** The first page's h1 and h2 font sizes per viewport and theme: every other page must match them. */
   const headingSizes = new Map();
   let checks = 0;
@@ -106,18 +108,14 @@ async function main() {
           for (const message of page.takeConsole()) failures.push(`${where}  console  ${message}`);
           if (found.length === 0) continue;
           const shot = join(SHOTS, `${p.name}-${vp.width}x${vp.height}-${theme}.png`);
-          // Failing elements outlined in red, the first one scrolled into view.
-          await page.eval(`(() => {
-            const s = document.createElement("style");
-            s.id = "responsive-outline";
-            s.textContent = "[data-responsive-fail]{outline:2px solid red !important;outline-offset:-1px}";
-            document.head.append(s);
-            document.querySelector("body [data-responsive-fail]")?.scrollIntoView({ block: "center" });
-          })()`);
+          // Failing elements outlined in red, the first one scrolled into view. Set through the CSSOM: the page's CSP
+          // (style-src 'self') blocks an injected <style>, and the blocked style showed up as a console failure.
+          const OUTLINE = `document.querySelectorAll("[data-responsive-fail]").forEach((e) => { e.style.setProperty("outline", "2px solid red", "important"); e.style.setProperty("outline-offset", "-1px"); })`;
+          await page.eval(`${OUTLINE}; document.querySelector("body [data-responsive-fail]")?.scrollIntoView({ block: "center" })`);
           const { data } = await page.send("Page.captureScreenshot", { format: "png" });
-          await page.eval(`document.getElementById("responsive-outline")?.remove(); scrollTo(0, 0)`);
+          await page.eval(`document.querySelectorAll("[data-responsive-fail]").forEach((e) => { e.style.removeProperty("outline"); e.style.removeProperty("outline-offset"); }); scrollTo(0, 0)`);
           await writeFile(shot, Buffer.from(data, "base64"));
-          for (const f of found) failures.push(`${where}  ${f.rule}  ${f.selector}  (${f.detail})  ${shot.slice(ROOT.length)}`);
+          for (const f of found) (f.warn ? warnings : failures).push(`${where}  ${f.rule}  ${f.selector}  (${f.detail})  ${shot.slice(ROOT.length)}`);
         }
       }
     }
@@ -127,6 +125,8 @@ async function main() {
   }
 
   const secs = ((Date.now() - started) / 1000).toFixed(1);
+  for (const line of warnings) console.log(`warn  ${line}`);
+  if (warnings.length > 0) console.log(`check:responsive: ${warnings.length} warning(s) from ${LIMITS.warnOnly.join(", ")} (not failing)`);
   for (const line of failures) console.log(line);
   const summary = `${pages.length} pages x ${VIEWPORTS.length} viewports x ${THEMES.length} themes = ${checks} checks in ${secs}s`;
   if (failures.length === 0) {

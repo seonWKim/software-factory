@@ -20,7 +20,7 @@ Pick the component by the need, before drawing anything by hand. A UI spec names
 
 ## Card
 
-A block of a page (`card.tsx`): the `surface` background, a 1px `border`, the `card` radius, 24px padding (`p-6`; 16px below `sm`, so a 320px window keeps its content width) and `shadow-sm`. Optional h2 `title` in the section title role (`text-base font-semibold`, the exported `CARD_TITLE`): Card is the one owner of a page's h2 (the Calendar's period in its toolbar, in `CARD_TITLE`, is the one exception), so every h2 on every page has this one size, an optional `count` beside it and an optional `action` at the end of the title row. It is a region named by `label`, else by `title` (Data names its table Card "Table <name>" and titles it with the bare name); with neither it is a plain block. `id` gives it an anchor (`#spend`, `#failures`); `live` announces a title that changes (the calendar's period). Cards follow each other 24px apart. No variants or sizes.
+A block of a page (`card.tsx`): the `surface` background, a 1px `border`, the `card` radius, 24px padding (`p-6`; 16px below `sm`, so a 320px window keeps its content width) and `shadow-sm`. Optional h2 `title` in the section title role (`text-base font-semibold`, the exported `CARD_TITLE`): Card is the one owner of a page's h2 (the Calendar's period in its toolbar, in `CARD_TITLE`, is the one exception), so every h2 on every page has this one size, an optional `count` beside it and an optional `action` at the end of the title row. It is a region named by `label`, else by `title` (Data names its table Card "Table <name>" and titles it with the bare name); with neither it is a plain block. `id` gives it an anchor (`#spend`, `#failures`); `live` announces a title that changes (the calendar's period). Cards follow each other 24px apart. Its padding is the exported `CARD_PAD`, which any other page-level box uses too (the item page's decision card), so every block's content starts on one left edge. A card's intro paragraph under its title is `CARD_INTRO` (`text-sm` `text-2`, the reading width, 16px above the content). No variants or sizes.
 
 ## CardSection
 
@@ -80,7 +80,7 @@ The top of every page: the one h1 in the page title role (`text-xl font-semibold
 
 ## PageToolbar
 
-The slot for a page's controls, right under its `PageHeader` (`notice.tsx`): `tabs` on the first row, then the search, view switch and filters (`children`) on the second, wrapping when narrow; 24px below it. Every page with tabs, a search, a view switch or filters puts them here, never between its content blocks or inside a Card (Health's Failures window, Workers' window, Calendar's view switch and period buttons, the Transcript's step filters, the Settings Advanced and Rules searches included). A page with none renders no toolbar. States: tabs only, controls only, both.
+The slot for a page's controls, right under its `PageHeader` (`notice.tsx`): `tabs` on the first row, then the search, view switch and filters (`children`) on the second, wrapping when narrow; 24px below it. The controls row (`data-toolbar`) holds one control height, 32px (`CONTROL_HEIGHT.md` in `control.ts`): a `sm` Button in it is drawn `md` through the `InToolbar` context, level with the search Input, a Select and the SegmentedControl's track (the responsive check's `toolbar-height`). Every page with tabs, a search, a view switch or filters puts them here, never between its content blocks or inside a Card (Health's Failures window, Workers' window, Calendar's view switch and period buttons, the Transcript's step filters, the Settings Advanced and Rules searches included). A page with none renders no toolbar. States: tabs only, controls only, both.
 
 ## Input
 
@@ -128,7 +128,7 @@ A short hint on hover and keyboard focus, hidden by Esc or leaving. Variants (`p
 
 ## Button
 
-The dashboard's one button. Variants: `primary` (accent background, `on-solid` text: the one main action of a view), `secondary` (default: `border-strong` border on `surface`), `ghost` (no border, `surface-2` on hover), `danger` (`failed` text); `danger` with `solid` is filled with the failed colour, only for a confirm dialog's destructive confirm. Sizes: `md` (default, at least 32 px high), `sm` (at least 28 px), `icon` (32 px square). `buttonClass({ variant, size })` returns the same classes for a control that must be another library's button (react-aria's Tree chevron slot). States: default, hover (enabled only), focus-visible, pressed (`aria-pressed` or `aria-checked`: `surface-2` background), `disabled` (opacity 0.5). `type` defaults to `button`.
+The dashboard's one button. Variants: `primary` (accent background, `on-solid` text: the one main action of a view), `secondary` (default: `border-strong` border on `surface`), `ghost` (no border, `surface-2` on hover), `danger` (`failed` text); `danger` with `solid` is filled with the failed colour, only for a confirm dialog's destructive confirm. Sizes: `md` (default, at least 32 px high), `sm` (at least 28 px; drawn `md` inside a PageToolbar, `InToolbar`), `icon` (32 px square). `buttonClass({ variant, size })` returns the same classes for a control that must be another library's button (react-aria's Tree chevron slot). States: default, hover (enabled only), focus-visible, pressed (`aria-pressed` or `aria-checked`: `surface-2` background), `disabled` (opacity 0.5). `type` defaults to `button`.
 
 ## Checkbox
 
@@ -141,6 +141,10 @@ A `role=switch` button with `aria-checked`, 24 px high (the smallest target) aro
 ## SegmentedControl
 
 One choice among a few views, drawn like a macOS segmented control (`role=radiogroup` with an `aria-label`, each segment a `role=radio` with `aria-checked`): one 32px `surface-2` track (`rounded-control`, 2px padding) holding equal-width 28px segments (`auto-cols-fr`) in one row that never wraps, `text-sm` medium. A raised thumb (`surface`, `shadow-sm`, a 1px `border` ring; `border-strong` with no ring in dark, lighter than the track) sits under the checked segment and slides to it (150ms, motion-safe). Controlled by `value` and `onChange`; `options` gives each segment's `id`, label and optional `data-*`. Roving tabindex: only the checked segment is in the tab order (the first when none matches); ArrowRight/ArrowDown and ArrowLeft/ArrowUp move to the next and previous segment, wrapping, Home and End to the first and last, and the segment a key reaches is focused and checked at once. For a choice, never for actions that send something (use Buttons). States: checked (`text-1` on the thumb; neutral, never accent), default (`text-2`), hover (`text-1`), focus-visible, no value (no thumb).
+
+## StatTile
+
+One figure in a tile, inside a `<dl>` grid of tiles 12px apart (`stat-tile.tsx`): a `rounded-box` box with a 1px `border` on `surface` and 12px of padding, the label in meta type (`dt`, `text-xs` `text-2`), the figure 4px under it (`dd`, `text-lg` semibold, `tabular-nums`) and any further lines as children (`dd`, `STAT_NOTE`: `text-xs` `text-2`). `data-*` props go on the tile. Work's Last 24 hours and Spend's totals use it; a tile that holds more than a figure (Efficiency's charts) uses its class constants (`STAT_TILE`, `STAT_LABEL`, `STAT_VALUE`). One size. States: with or without notes; a figure may be a link.
 
 ## Link and ID
 

@@ -7,6 +7,15 @@ import { cn } from "../../lib/cn.js";
 /** The section title's type role (tokens.json `type-roles.section-title`): Card's title and a CardSection's. */
 export const CARD_TITLE = "text-balance text-base font-semibold";
 
+/** A page block's padding: 24px, 16px below `sm`. Card's, and any other page-level box's (the item page's decision card). */
+export const CARD_PAD = "p-4 sm:p-6";
+
+/**
+ * A block's intro paragraph, right under its title row (16px above it from the title row, 16px below it to the
+ * content): `text-sm` `text-2` at the reading width, the PageHeader description's type. Every card intro uses it.
+ */
+export const CARD_INTRO = "mb-4 max-w-prose text-sm text-pretty text-text-2";
+
 /** A sub-group's heading (an h3): a CardSection's title, and every other h3 on a page (a day, a group of rows). */
 export const SUB_TITLE = "text-xs font-medium text-text-2";
 
@@ -31,7 +40,7 @@ export function Card({ title, label, count, action, id, live, children }: { titl
     <section
       id={id}
       aria-label={label ?? title}
-      className="mt-6 min-w-0 rounded-card border border-border bg-surface p-4 shadow-sm first:mt-0 sm:p-6"
+      className={cn("mt-6 min-w-0 rounded-card border border-border bg-surface shadow-sm first:mt-0", CARD_PAD)}
     >
       <TitleRow as="h2" title={title} count={count} action={action} live={live} />
       {children}
