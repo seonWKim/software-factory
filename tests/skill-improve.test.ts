@@ -15,6 +15,7 @@ import type { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import type { SkillEvalRun } from "../src/interfaces/skill-eval-store.js";
+import type { TacitHandOff } from "../src/interfaces/tacit-ledger.js";
 import { systemSource } from "../src/core/improver.js";
 import type { WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -340,7 +341,7 @@ describe("the verdicts", () => {
 
 describe("the improve run", () => {
   /** One daily improve run on a worker with `skillImprove` (absent: none), after learnFromReport. */
-  async function improveRun(withWiring: boolean, o: Parameters<typeof fakeWiring>[2] = {}) {
+  async function improveRun(withWiring: boolean, o: Parameters<typeof fakeWiring>[2] = {}, tacit?: TacitHandOff) {
     const { store, clock } = await newStore();
     clock.set("2026-11-24T10:00:00.000Z");
     const f = fakeWiring(store as Store, clock, o);
@@ -350,7 +351,7 @@ describe("the improve run", () => {
     await new ControllerRole({ store, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, llm }).tickImprove();
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner: new FakeRunner({}), broker: new FakeBroker(), storage: new MemoryStorage(), llm,
-      ...(withWiring ? { skillImprove: f.wiring } : {}),
+      ...(withWiring ? { skillImprove: f.wiring } : {}), ...(tacit ? { tacit } : {}),
       clock, config, prompts, log: silent, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),
     });
     expect(await worker.tick()).toBe(true);
@@ -367,6 +368,14 @@ describe("the improve run", () => {
     });
     expect((await store.listSkillDrafts(project)).map((d) => [d.skill_ref, d.state])).toEqual([[A, "proposed"]]);
     expect(await store.listAlerts({ limit: 10 })).toEqual([expect.objectContaining({ pattern: "skill_draft_limit" })]);
+  });
+
+  it("passes the worker's tacit ledger: each proposed draft is handed to it once", async () => {
+    const proposals: string[] = [];
+    const tacit: TacitHandOff = { enabled: true, changeProposal: async (p) => void proposals.push(p.target), verdictRecord: async () => {} };
+    const { run } = await improveRun(true, {}, tacit);
+    expect(run.outcome).toMatchObject({ status: "succeeded", data: { skill_drafts: [{ skill_ref: A, state: "proposed" }, { skill_ref: B, state: "proposed" }] } });
+    expect(proposals).toEqual([`${A}/SKILL.md`, `${B}/SKILL.md`]);
   });
 
   it("past the token budget the draft is held, one question is asked, and the run still succeeds", async () => {

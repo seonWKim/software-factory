@@ -24,6 +24,7 @@ import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { ExecResult, Sandbox } from "../interfaces/sandbox.js";
 import type { SharedStorage } from "../interfaces/shared-storage.js";
+import type { TacitHandOff } from "../interfaces/tacit-ledger.js";
 import type { RunPassportIssuer, ToolBroker } from "../interfaces/tool-broker.js";
 
 /** Where a local item's runs go: the local broker (no remote, no PR) and a sandbox on the local base branch. */
@@ -212,6 +213,11 @@ export interface WorkerDeps {
    * not set): the improve run drafts no skill and asks no question.
    */
   skillImprove?: SkillImproveWiring | undefined;
+  /**
+   * The owner's tacit ledger as the skill hand-off reads it (design 07-self-improvement): the plugin the worker's live
+   * holder last built. Absent or off: a proposed skill draft stays in the store only.
+   */
+  tacit?: TacitHandOff;
   /**
    * The live settings (design 2026-11-03): refreshed before each claim and each lease renewal. A run reads the
    * values it started with, so a diff, timeout or model change applies at the next run. Absent: `config` and

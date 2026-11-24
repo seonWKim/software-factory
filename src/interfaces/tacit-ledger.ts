@@ -155,6 +155,33 @@ export interface TacitOpenPushback {
   readonly date?: string;
 }
 
+/**
+ * One change the factory proposes to the owner's ledger: a skill draft stored `proposed` (design 07-self-improvement).
+ * The ledger keeps the factory's draft ID as the proposal's ID, so a later `TacitVerdictRecord` names it.
+ */
+export interface TacitChangeProposal {
+  /** The factory's skill draft ID (`skd_…`). */
+  readonly id: string;
+  /** The file the change is for: the skill's SKILL.md. */
+  readonly target: string;
+  /** One line on the change. */
+  readonly title: string;
+  /** Why: the checks the skill failed and the scores that made the draft proposed. */
+  readonly rationale: string;
+  /** The change itself: the drafted SKILL.md text (it passed the egress scan before it was stored). */
+  readonly change: string;
+}
+
+/** The owner's verdict on a proposal the factory sent (`TacitChangeProposal`), after the factory stored it. */
+export interface TacitVerdictRecord {
+  /** The proposal's ID, as `TacitChangeProposal.id` gave it. */
+  readonly id: string;
+  readonly decision: Exclude<TacitDecision, "retire">;
+  /** The file the change is for; on promote, the file the factory wrote. */
+  readonly target: string;
+  readonly reason: string;
+}
+
 /** The verdicts a ledger takes. `retire` is for a class only. */
 export type TacitDecision = "hold" | "promote" | "reject" | "retire";
 
@@ -224,4 +251,17 @@ export interface TacitLedger {
    * ledger's verdict log. Reads only. Optional as `retired` is.
    */
   decided?(ids: readonly string[]): Promise<Readonly<Record<string, string>>>;
+  /**
+   * Hands one change proposal to the ledger (a skill draft the factory stored `proposed`); throws on a failure. The
+   * caller has stored its own copy first and only logs a failure. Optional: a plugin with no ledger (`none`) omits it.
+   */
+  changeProposal?(p: TacitChangeProposal): Promise<void>;
+  /**
+   * Records the owner's verdict on a proposal `changeProposal` sent, after the factory stored it; throws on a failure.
+   * It writes no file under the ledger's home: the factory has already acted on the verdict. Optional as `changeProposal`.
+   */
+  verdictRecord?(v: TacitVerdictRecord): Promise<void>;
 }
+
+/** What the skill hand-off (src/core/skill-improve.ts) reads of a ledger. */
+export type TacitHandOff = Pick<TacitLedger, "enabled" | "changeProposal" | "verdictRecord">;

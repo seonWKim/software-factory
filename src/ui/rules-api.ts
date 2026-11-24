@@ -51,7 +51,7 @@ import type { AskRow, ProposalRow } from "../core/owner-asks.js";
 import type { FailureGroup, ImproveReport, UserId } from "../core/types.js";
 import {
   type TacitEntryDetail, type TacitEvidence, type TacitLedger, type TacitPendingEntry, type TacitPromotion, TacitRefusal, TacitSyncFailed,
-  proposalTaskId, tacitIdKind,
+  type TacitVerdictRecord, proposalTaskId, tacitIdKind,
 } from "../interfaces/tacit-ledger.js";
 import type { ApiResult } from "./api.js";
 import { runNowButton } from "./improve-api.js";
@@ -95,7 +95,7 @@ export async function uiTacit(
   build: (name: string) => Promise<TacitLedger>,
   o: Omit<LiveOpts, "integrations" | "config"> & { config: Omit<LiveOpts["config"], "project"> },
 ): Promise<UiTacit> {
-  // The holder delegates no `show`, `retired`, `decided`, `edit`, `pushbacks` or `dismiss`: the page reaches them on the
+  // The holder delegates no `show`, `retired`, `decided`, `edit`, `pushbacks`, `dismiss` or `verdictRecord`: the page reaches them on the
   // plugin the holder last built (a failed build keeps it). `pushbacks` is there only while that plugin has it, so a
   // plugin without it shows no Pushbacks list.
   let inUse: TacitLedger | undefined;
@@ -105,14 +105,9 @@ export async function uiTacit(
     show: async (id: string) => (await inUse?.show?.(id)) ?? null,
     retired: async () => (await inUse?.retired?.()) ?? [],
     decided: async (ids: readonly string[]) => (await inUse?.decided?.(ids)) ?? {},
-    edit: async (id: string, rule: TacitPromotion) => {
-      if (!inUse?.edit) throw missing("edit a rule");
-      await inUse.edit(id, rule);
-    },
-    dismiss: async (id: string) => {
-      if (!inUse?.dismiss) throw missing("dismiss a pushback");
-      await inUse.dismiss(id);
-    },
+    edit: async (id: string, rule: TacitPromotion) => { if (!inUse?.edit) throw missing("edit a rule"); await inUse.edit(id, rule); },
+    dismiss: async (id: string) => { if (!inUse?.dismiss) throw missing("dismiss a pushback"); await inUse.dismiss(id); },
+    verdictRecord: async (v: TacitVerdictRecord) => inUse?.verdictRecord?.(v), // a skill verdict's hand-off (design 07-self-improvement)
   });
   Object.defineProperty(ledger, "pushbacks", { get: () => inUse?.pushbacks?.bind(inUse) });
   const settings = new LiveSettings({ ...o, config: { ...o.config, project: { key: "", label: "" } }, integrations: [ledger] });
@@ -561,8 +556,8 @@ function skillVerdictOf(body: unknown): { id: string; verdict: (typeof SKILL_VER
   return verdict ? { id: b.id.trim(), verdict } : `verdict must be one of ${SKILL_VERDICTS.join(", ")}`;
 }
 
-/** What a skill verdict reads: the store, the configured project and, for Promote, the skill wiring. */
-export type SkillVerdictDeps = Pick<PauseDeps, "store" | "settings" | "skillImprove">;
+/** What a skill verdict reads: the store, the configured project, for Promote the skill wiring, and the owner's ledger. */
+export type SkillVerdictDeps = Pick<PauseDeps, "store" | "settings" | "skillImprove" | "tacit">;
 
 /**
  * One verdict on a skill draft (design 09-dashboard-rules-waiting): POST /api/v1/rules/skill-verdict with `{ id, verdict }`
@@ -581,9 +576,11 @@ export async function writeSkillVerdict(d: SkillVerdictDeps, p: UiPauses, body: 
   if (!draft || project === null || draft.project_key !== project.key) return { status: 404, value: { error: "No such skill draft in this project." } };
   const s = d.skillImprove;
   if (!s) return { status: 409, value: { error: "Skill verdicts are not wired in this process: nothing written" } };
-  const r: SkillVerdict = v.verdict === "hold" ? await s.hold(d.store, v.id)
-    : v.verdict === "reject" ? await s.reject(d.store, v.id)
-    : s.wiring ? await s.promote({ store: d.store, wiring: s.wiring, signal: new AbortController().signal }, v.id, who.user)
+  await d.tacit?.settings.refresh(); // an accepted verdict also goes to the owner's ledger when it is on; a failure is only logged
+  const ledger = d.tacit ? { tacit: d.tacit.ledger, log: p.log } : undefined;
+  const r: SkillVerdict = v.verdict === "hold" ? await s.hold(d.store, v.id, ledger)
+    : v.verdict === "reject" ? await s.reject(d.store, v.id, ledger)
+    : s.wiring ? await s.promote({ store: d.store, wiring: s.wiring, signal: new AbortController().signal }, v.id, who.user, ledger)
     : { refused: "Promote needs capabilities.skill_folders and a model: no skill is wired here, nothing written" };
   if ("refused" in r) return { status: 409, value: { error: r.refused } };
   p.log.info("skill verdict", { id: v.id, verdict: v.verdict, actor: who.user, state: r.draft.state });
