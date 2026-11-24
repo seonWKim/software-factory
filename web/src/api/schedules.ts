@@ -67,3 +67,28 @@ export async function postSchedule(token: string, verb: ScheduleVerb, id: string
   const r = await postJson<{ error?: string }>(API.scheduleWrite(verb), token, { id, ...fields });
   return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
+
+/** A drafted schedule: the fields `schedule add` takes. Its `id` is not used: the form makes the ID from the title. */
+export interface ScheduleProposal {
+  id: string;
+  fields: Required<Pick<ScheduleFields, "title" | "cadence" | "spec" | "zone" | "action" | "body">>;
+}
+
+/** A stored schedule's text and the revised one. */
+export interface ScheduleImprovement {
+  id: string;
+  old: string;
+  new: string;
+}
+
+// The draft and improve paths are literals here: POST /api/v1/schedules/draft ({ words }) and /improve ({ id }).
+async function postProposal<T>(path: string, token: string, body: Record<string, string>): Promise<{ ok: true; proposal: T } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string; proposal?: T }>(path, token, body);
+  return r.ok && r.value.proposal !== undefined ? { ok: true, proposal: r.value.proposal } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** Draft a schedule from the owner's words; stores nothing. */
+export const postScheduleDraft = (token: string, words: string) => postProposal<ScheduleProposal>("/api/v1/schedules/draft", token, { words });
+
+/** Revise a stored schedule's text; stores nothing. */
+export const postScheduleImprove = (token: string, id: string) => postProposal<ScheduleImprovement>("/api/v1/schedules/improve", token, { id });

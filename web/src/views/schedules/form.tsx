@@ -1,8 +1,15 @@
 import { type RefObject, useId, useState } from "react";
-import { ACTION_KINDS, CADENCE_KINDS, type ActionKind, type CadenceKind, type ScheduleFields, type ScheduleRow, actionText, isWritableKind } from "../../api.js";
+import {
+  ACTION_KINDS, API, CADENCE_KINDS, type ActionKind, type CadenceKind, type ScheduleFields, type ScheduleImprovement, type ScheduleRow, type Session,
+  actionText, isWritableKind, postScheduleDraft, postScheduleImprove, useApi,
+} from "../../api.js";
+import { Button } from "../../components/ui/button.js";
+import { ButtonRow } from "../../components/ui/button-row.js";
 import { Dialog, announceStatus } from "../../components/ui/dialog.js";
 import { Field } from "../../components/ui/field.js";
 import { Input } from "../../components/ui/input.js";
+import { KeyValue } from "../../components/ui/key-value.js";
+import { Notice } from "../../components/ui/notice.js";
 import { Select } from "../../components/ui/select.js";
 import { Switch } from "../../components/ui/switch.js";
 import { Textarea } from "../../components/ui/textarea.js";
@@ -52,6 +59,11 @@ function fieldsOf(v: Values, was: ScheduleRow | null): ScheduleFields {
   return f;
 }
 
+/** The accent ring and `data-changed` on a control Draft or Use this just filled, until the owner edits it. */
+const changedProps = (marked: ReadonlySet<keyof Values>, k: keyof Values) => (marked.has(k) ? { "data-changed": true, className: "ring-2 ring-accent" } : {});
+/** The same mark on a Select's wrapper: Select takes no data attribute, so a block around it carries them. */
+const markedBox = (marked: ReadonlySet<keyof Values>, k: keyof Values) => (marked.has(k) ? { "data-changed": true, className: "rounded-control ring-2 ring-accent" } : {});
+
 /** An ID for a new schedule from its title, unused among `taken`: the page never shows it. */
 export function newScheduleId(title: string, taken: readonly string[]): string {
   const base = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "schedule";
@@ -72,7 +84,44 @@ export function ScheduleDialog({ schedule, busy, error, returnFocusTo, onSave, o
   const [v, setV] = useState<Values>(() => valuesOf(schedule));
   // The stored kind the form can't write (improve) stays listed, disabled, after another kind is picked.
   const stored = valuesOf(schedule).action;
-  const set = <K extends keyof Values>(k: K, x: Values[K]) => setV((old) => ({ ...old, [k]: x }));
+  const token = useApi<Session>(API.session, false).data?.csrf_token ?? null;
+  // The fields a draft or Use this changed, marked until the owner edits them.
+  const [marked, setMarked] = useState<ReadonlySet<keyof Values>>(new Set());
+  const [words, setWords] = useState("");
+  const [pending, setPending] = useState<"draft" | "improve" | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [improvement, setImprovement] = useState<ScheduleImprovement | null>(null);
+  const set = <K extends keyof Values>(k: K, x: Values[K]) => {
+    setV((old) => ({ ...old, [k]: x }));
+    setMarked((m) => (m.has(k) ? new Set([...m].filter((j) => j !== k)) : m));
+  };
+  const draft = async () => {
+    if (token === null || words.trim() === "") return;
+    setPending("draft");
+    setProblem(null);
+    const r = await postScheduleDraft(token, words);
+    setPending(null);
+    if (!r.ok) return setProblem(t("schedules.form.draftFailed", { reason: r.error }));
+    const f = r.proposal.fields;
+    const next: Partial<Values> = { title: f.title, cadence: f.cadence as CadenceKind, spec: f.spec, zone: f.zone, action: f.action as ActionKind, body: f.body };
+    setMarked(new Set((Object.keys(next) as (keyof Values)[]).filter((k) => next[k] !== v[k])));
+    setV((old) => ({ ...old, ...next }));
+  };
+  const improve = async () => {
+    if (token === null || schedule === null) return;
+    setPending("improve");
+    setProblem(null);
+    const r = await postScheduleImprove(token, schedule.id);
+    setPending(null);
+    if (!r.ok) return setProblem(t("schedules.form.improveFailed", { reason: r.error }));
+    setImprovement(r.proposal);
+  };
+  const useRevised = () => {
+    if (improvement === null) return;
+    if (improvement.new !== v.body) setMarked((m) => new Set(m).add("body"));
+    setV((old) => ({ ...old, body: improvement.new }));
+    setImprovement(null);
+  };
   const base = useId();
   const id = (name: string) => `${base}-${name}`;
   const save = async () => {
@@ -93,28 +142,60 @@ export function ScheduleDialog({ schedule, busy, error, returnFocusTo, onSave, o
       onConfirm={() => void save()}
       onClose={onClose}
     >
+      {schedule === null && (
+        <Field label={t("schedules.form.describe")} htmlFor={id("describe")} help={t("schedules.form.describeHelp")}>
+          <Textarea id={id("describe")} rows={3} value={words} onChange={(e) => setWords(e.target.value)} />
+          <ButtonRow>
+            <Button variant="secondary" disabled={pending !== null || token === null || words.trim() === ""} onClick={() => void draft()}>
+              {t(pending === "draft" ? "schedules.form.drafting" : "schedules.form.draft")}
+            </Button>
+          </ButtonRow>
+        </Field>
+      )}
+      {schedule !== null && (
+        <Field label={t("schedules.form.improveLabel")} help={t("schedules.form.improveHelp")}>
+          <ButtonRow>
+            <Button variant="secondary" disabled={pending !== null || token === null} onClick={() => void improve()}>
+              {t(pending === "improve" ? "schedules.form.improving" : "schedules.form.improve")}
+            </Button>
+          </ButtonRow>
+        </Field>
+      )}
+      {problem !== null && <Notice tone="bad">{problem}</Notice>}
+      {improvement !== null && (
+        <>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <KeyValue stacked items={[{ key: "old", term: t("schedules.form.improveOld"), value: <span className="whitespace-pre-wrap">{improvement.old}</span> }]} />
+            <KeyValue stacked items={[{ key: "new", term: t("schedules.form.improveNew"), value: <span className="whitespace-pre-wrap">{improvement.new}</span> }]} />
+          </div>
+          <ButtonRow>
+            <Button variant="ghost" onClick={() => setImprovement(null)}>{t("schedules.form.keepMine")}</Button>
+            <Button variant="secondary" onClick={useRevised}>{t("schedules.form.useThis")}</Button>
+          </ButtonRow>
+        </>
+      )}
       <Field label={t("schedules.form.title")} htmlFor={id("title")}>
-        <Input id={id("title")} value={v.title} onChange={(e) => set("title", e.target.value)} />
+        <Input id={id("title")} {...changedProps(marked, "title")} value={v.title} onChange={(e) => set("title", e.target.value)} />
       </Field>
       <Field label={t("schedules.form.cadence")} htmlFor={id("cadence")}>
-        <Select id={id("cadence")} value={v.cadence} onChange={(e) => set("cadence", e.target.value as CadenceKind)}>
+        <div {...markedBox(marked, "cadence")}><Select id={id("cadence")} value={v.cadence} onChange={(e) => set("cadence", e.target.value as CadenceKind)}>
           {CADENCE_KINDS.map((k) => <option key={k} value={k}>{t(CADENCE_CHOICE[k])}</option>)}
-        </Select>
+        </Select></div>
       </Field>
       <Field label={t("schedules.form.spec")} htmlFor={id("spec")} help={t(SPEC_HELP[v.cadence])}>
-        <Input id={id("spec")} value={v.spec} onChange={(e) => set("spec", e.target.value)} />
+        <Input id={id("spec")} {...changedProps(marked, "spec")} value={v.spec} onChange={(e) => set("spec", e.target.value)} />
       </Field>
       <Field label={t("schedules.form.zone")} htmlFor={id("zone")} help={t("schedules.form.zoneHelp")}>
-        <Input id={id("zone")} value={v.zone} onChange={(e) => set("zone", e.target.value)} />
+        <Input id={id("zone")} {...changedProps(marked, "zone")} value={v.zone} onChange={(e) => set("zone", e.target.value)} />
       </Field>
       <Field label={t("schedules.form.action")} htmlFor={id("action")}>
-        <Select id={id("action")} value={v.action} onChange={(e) => set("action", e.target.value as ActionKind)}>
+        <div {...markedBox(marked, "action")}><Select id={id("action")} value={v.action} onChange={(e) => set("action", e.target.value as ActionKind)}>
           {ACTION_KINDS.map((k) => <option key={k} value={k}>{t(ACTION_TEXT[k])}</option>)}
           {!isWritableKind(stored) && <option value={stored} disabled>{t(ACTION_TEXT[stored])}</option>}
-        </Select>
+        </Select></div>
       </Field>
       <Field label={t("schedules.form.body")} htmlFor={id("body")} help={t(!isWritableKind(v.action) ? "schedules.form.bodyNone" : v.action === "build" ? "schedules.form.bodyBuild" : "schedules.form.bodyPrompt")}>
-        <Textarea id={id("body")} rows={5} value={v.body} disabled={!isWritableKind(v.action)} onChange={(e) => set("body", e.target.value)} />
+        <Textarea id={id("body")} {...changedProps(marked, "body")} rows={5} value={v.body} disabled={!isWritableKind(v.action)} onChange={(e) => set("body", e.target.value)} />
       </Field>
       <Field label={t("schedules.form.skipWhenBusy")} htmlFor={id("skip")} help={t("schedules.form.skipHelp")}>
         <Switch id={id("skip")} checked={v.skip} onCheckedChange={(on) => set("skip", on)} />
