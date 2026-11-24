@@ -1,7 +1,7 @@
 import type { TriagePhase } from "./outputs.js";
 import type { Run, SourceRef, StateChangeDetail, WorkItem, WorkItemId } from "./types.js";
-import { type SizeCapChanges, sizeCaps } from "./size-cap.js";
-export { sizeCaps }; // an item's size caps, for the size readers that import the split rule
+import { type SizeCapChanges, itemSizeCaps, sizeCaps } from "./size-cap.js";
+export { itemSizeCaps, sizeCaps }; // an item's size caps, for the size readers that import the split rule
 
 // Split specs (design 2026-11-01): when triage estimates a change near the size caps, it proposes 2 to 4
 // ordered phases. On /approve the factory files one sub-issue per phase; each later phase is held until the

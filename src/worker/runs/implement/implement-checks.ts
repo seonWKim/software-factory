@@ -170,7 +170,7 @@ async function checksEnv(w: Worker, run: Run, item: WorkItem, failed: CheckResul
   });
 }
 
-/** The item's size caps: its one-time cap, else its project's settings (src/core/size-cap.ts). */
+/** The item's size caps: its one-time cap, else its project's settings (src/core/size-cap.ts). The worker's copy of `itemSizeCaps`: it reaches core/ only through legacy-imports.ts. */
 export const itemCaps = async (w: Worker, item: WorkItem) => sizeCaps(await w.d.store.listStateChanges(item.id), settingValues(item.project, w.cfg.settings, w.d.learned));
 
 /**

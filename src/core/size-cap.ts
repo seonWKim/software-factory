@@ -7,7 +7,7 @@ import type { OverrideSource, SettingsBase } from "./settings.js";
 // `max_diff_files`. An item may carry a one-time cap that replaces the project settings for it alone; without one,
 // the project settings apply. Only an over-cap `/approve` sets it (2026-11-24): its `size_cap_approved` record, in the
 // detail of the approving transition, holds the cap, and the item's latest record is the one in force (no column).
-// Pure but for `itemSizeCaps` and `storedProjectCaps`, which read the store: the caller passes the settings it read.
+// Pure but for `itemSizeCaps` (what the size readers call) and `storedProjectCaps`, which read the store: the caller passes the settings it read.
 
 /** What a size reader needs of an item's history: its state changes, in order (the store's `listStateChanges`). */
 export type SizeCapChanges = readonly Pick<StateChange, "detail">[];
