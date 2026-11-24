@@ -123,7 +123,7 @@ describe("approve answers the spec's decisions at intake (CLI)", () => {
   });
 
   it("core has no copy of the answer-line parser or its refusals: it calls them through LocalCliDeps.answers", () => {
-    const src = readFileSync(new URL("../src/core/local-cli.ts", import.meta.url), "utf8");
+    const src = readFileSync(new URL("../src/core/local-cli-run.ts", import.meta.url), "utf8");
     for (const w of ["names no decision", "is answered twice", "is empty; write it", "(\\d+)\\s*:"]) expect({ w, copy: src.includes(w) }).toEqual({ w, copy: false });
     expect(src).toContain("d.answers.split(");
     expect(src).toContain("d.answers.detail(");
