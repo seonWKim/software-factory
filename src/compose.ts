@@ -68,6 +68,7 @@ import { checkToolchainEnv, codeVersion, readRestarts, uiCommandsActor, uiUserId
 import { type Loaded, loadConfig, localProject, resolvedConfig } from "./load-config.js";
 import { reviewReplay } from "./golden-replay.js";
 import { skillImproveWiring } from "./skill-evals.js";
+import { holdSkillDraft, promoteSkillDraft, rejectSkillDraft } from "./core/skill-improve.js";
 import { Cleaner, type CleanupStore, agentTempRoots, cleanupConfig, hostProcesses } from "./cleanup/index.js";
 import { RUN_FOLDER } from "./setup-paths.js";
 
@@ -450,7 +451,7 @@ export interface UiParts {
   tacit: UiTacit; // the Rules page's ledger, switched by the `integrations` setting before each Rules request (design 08-settings)
   migrate: import("./ui/migrate-api.js").UiMigrate; // Migrate now, Start and Restart now (design 08-self-update): state dir, clock, run_timeout_ms, steps
   changes: import("./ui/changes.js").UiChanges | undefined; // the sandbox's readChanges on repo.path and its base: the Changes tab and Re-check (design 09-dashboard-item)
-  skillImprove: import("./core/skill-improve.js").SkillImproveWiring | undefined; // a skill draft's Promote (design 09-dashboard-rules-waiting); undefined without capabilities.skill_folders or a model
+  skillImprove: import("./ui/deps.js").UiSkillImprove; // a skill draft's verdicts and Promote's wiring (design 09-dashboard-rules-waiting)
   close(): Promise<void>;
 }
 
@@ -501,10 +502,8 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   }); // its Calendar section
   const modelCredential = modelCredentialDialog(loaded);
   if (modelCredential) settings.modelCredential = modelCredential; // the Add model credential dialog (Needs you, Failures)
-  const llm = await p.llm(secrets).catch(() => null); // the Model plugin, null when it cannot be built
-  settings.ask = { llm, log: new ConsoleLogger(clock, "ask") }; // the Data page's Ask
-  // A skill draft's Promote re-runs the suite here (design 09-dashboard-rules-waiting); a runner that cannot be built leaves it off.
-  const skillImprove = llm ? await p.runner(sbx, secrets).then((runner) => skillImproveWiring(store, loaded, { sandbox: sbx, runner, llm, scanner }), () => undefined) : undefined;
+  const llm = await p.llm(secrets).catch(() => null), wiring = llm ? await p.runner(sbx, secrets).then((runner) => skillImproveWiring(store, loaded, { sandbox: sbx, runner, llm, scanner }), () => undefined) : undefined;
+  settings.ask = { llm, log: new ConsoleLogger(clock, "ask") }; // the Data page's Ask: the Model plugin, null when it cannot be built; wiring: Promote's re-run, none without capabilities.skill_folders
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {
     // A local account linked to a factory user first, else `cli_user`: an ID, never a display name.
@@ -517,7 +516,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   const profiles = new ProfileStore(storeSql(store)), displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
   const tacit = await uiTacit(loaded.plugins.tacit, (n) => createPlugin(loaded.registry, "tacit", n, p.base), { config: loaded.config, base: settingsBase(loaded), source: store, log: new ConsoleLogger(clock, "tacit") });
   const migrate = (await import("./ui/migrate-api.js")).uiMigrate({ stateDir: loaded.stateDir, clock, runTimeoutMs: loaded.config.run_timeout_ms, githubApi: () => p.githubApi(), resolveProject }); // its GitHub client only for owner/name rows
-  return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, migrate, changes, skillImprove, close: () => identity.stop().then(() => store.close()) };
+  return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, migrate, changes, skillImprove: { hold: holdSkillDraft, reject: rejectSkillDraft, promote: promoteSkillDraft, wiring }, close: () => identity.stop().then(() => store.close()) };
 }
 
 const refusalOf = (d: AuthDecision): string | null => (d.allow ? null : d.reason);
@@ -590,6 +589,7 @@ export async function buildStatsStore(loaded: Loaded): Promise<FactoryStore> {
 export { Plugins } from "./plugin-set.js";
 export { type CleanupStore, reportLines as cleanupReport } from "./cleanup/index.js";
 export { settingsBase } from "./core/settings-base.js";
+export { writeSkillVerdict } from "./ui/rules-api.js"; // `factory improve skill`: the Rules page's skill verdict
 // Config reading moved to load-config.ts and config-values.ts (RFC 0023 step 2e); re-exported for the code that also wires.
 export {
   CHECK_COMMANDS_PLACEHOLDER, cliConfig, CONFIG_FILE, type FileConfig, fillPrompt, FORGE_PLACEHOLDER, loadConfig, type Loaded, localProject, resolvedConfig, selectsGitHub, SPLIT_PLACEHOLDERS, type StoreConfig, TOOLCHAIN_PLACEHOLDER, UI_CHECK_PLACEHOLDER, withForgeDefault,

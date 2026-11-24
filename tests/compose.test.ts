@@ -1,11 +1,12 @@
 // The dashboard process builds the skill wiring (design 09-dashboard-rules-waiting): compose.ts buildUiParts returns
-// it for the UI deps, so a skill draft's Promote runs from the Rules page; without capabilities.skill_folders it is absent.
+// it for the UI deps with the core verdicts, so Promote runs from the Rules page; without capabilities.skill_folders there is no wiring.
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildUiParts } from "../src/compose.js";
 import type { CliIdentity } from "../src/core/local-cli.js";
+import { holdSkillDraft, promoteSkillDraft, rejectSkillDraft } from "../src/core/skill-improve.js";
 import type { UserId } from "../src/core/types.js";
 import { type Loaded, loadConfig } from "../src/load-config.js";
 
@@ -29,23 +30,26 @@ async function loaded(capabilities?: Record<string, unknown>): Promise<Loaded> {
   return loadConfig(dir);
 }
 
-describe("buildUiParts: the skill wiring", () => {
+describe("buildUiParts: the skill verdicts and wiring", () => {
   it("is built over capabilities.skill_folders, so Promote can run in the dashboard process", async () => {
     const l = await loaded({ skill_folders: ["skills"] });
     const parts = await buildUiParts(l, { identity: ME });
     try {
-      expect(parts.skillImprove).toBeDefined();
-      expect(parts.skillImprove!.skill_folders).toEqual([join(l.root, "skills")]);
-      expect(parts.skillImprove!.folderOf("skills/a")).toBe(join(l.root, "skills", "a"));
+      const w = parts.skillImprove.wiring;
+      expect(w).toBeDefined();
+      expect(w!.skill_folders).toEqual([join(l.root, "skills")]);
+      expect(w!.folderOf("skills/a")).toBe(join(l.root, "skills", "a"));
+      // The verdicts are the core's own functions, the ones the CLI verb runs too.
+      expect(parts.skillImprove).toMatchObject({ hold: holdSkillDraft, reject: rejectSkillDraft, promote: promoteSkillDraft });
     } finally {
       await parts.close();
     }
   });
 
-  it("is absent without capabilities.skill_folders", async () => {
+  it("has no wiring without capabilities.skill_folders (Promote is refused; hold and reject still run)", async () => {
     const parts = await buildUiParts(await loaded(), { identity: ME });
     try {
-      expect(parts.skillImprove).toBeUndefined();
+      expect(parts.skillImprove.wiring).toBeUndefined();
     } finally {
       await parts.close();
     }

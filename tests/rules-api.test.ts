@@ -11,7 +11,7 @@ import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
 import { RULE_WRITES, SKILL_VERDICT_PATH, readRuleEntry, readRules, writeSkillVerdict } from "../src/ui/rules-api.js";
 import { readProposals } from "../src/ui/improve-api.js";
 import { SKILL_IMPROVE_DEFAULTS } from "../src/core/skill-improve-config.js";
-import type { SkillImproveWiring } from "../src/core/skill-improve.js";
+import { type SkillImproveWiring, holdSkillDraft, promoteSkillDraft, rejectSkillDraft } from "../src/core/skill-improve.js";
 import type { SkillDraftState } from "../src/interfaces/skill-draft-store.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { enqueueImprove, manualWindow } from "../src/core/improver.js";
@@ -124,7 +124,7 @@ describe("skill drafts: the proposals list and the Rules page's verdict", () => 
     const f = fakeWiring();
     const as = o.owner === false ? ("local:someone@example.com" as UserId) : OWNER;
     const pauses: UiPauses = { ...d.pauses!, principal: async () => as };
-    const sd: PauseDeps = { ...d, pauses, settings: { ...d.settings!, resolveProject: async () => PROJECT }, ...(o.wired === false ? {} : { skillImprove: f.wiring }) };
+    const sd: PauseDeps = { ...d, pauses, settings: { ...d.settings!, resolveProject: async () => PROJECT }, skillImprove: { hold: holdSkillDraft, reject: rejectSkillDraft, promote: promoteSkillDraft, wiring: o.wired === false ? undefined : f.wiring } };
     const store = sd.store as FactoryStore;
     const add = (id: string, state: SkillDraftState, skill_ref = "skills/a", project_key = PROJECT.key) => store.addSkillDraft({
       id, project_key, skill_ref, state, tokens: 10,
@@ -205,12 +205,14 @@ describe("skill drafts: the proposals list and the Rules page's verdict", () => 
     const { add, verdict, store, sd } = await setup({ wired: false });
     await add("skd_p", "proposed");
     await add("skd_x", "proposed", "skills/a", "github:other");
+    const unwired = await writeSkillVerdict({ ...sd, skillImprove: undefined } as never, sd.pauses!, { id: "skd_p", verdict: "hold" });
+    expect(unwired.status).toBe(409);
     expect((await verdict("skd_p", "retire")).status).toBe(400);
     expect((await verdict("skd_x", "hold")).status).toBe(404);
     expect((await verdict("skd_none", "hold")).status).toBe(404);
     expect((await verdict("skd_p", "promote")).status).toBe(409);
     expect((await store.getSkillDraft("skd_p"))!.state).toBe("proposed");
     expect((await store.getSkillDraft("skd_x"))!.state).toBe("proposed");
-    expect(sd.skillImprove).toBeUndefined();
+    expect(sd.skillImprove!.wiring).toBeUndefined();
   });
 });

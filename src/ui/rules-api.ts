@@ -40,8 +40,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RULE_VERDICTS, type RuleVerdict } from "../core/learned-rules.js";
-import { parseProposalVerdict } from "../core/improver.js";
-import { type SkillVerdict, holdSkillDraft, promoteSkillDraft, rejectSkillDraft } from "../core/skill-improve.js";
+import type { SkillVerdict } from "../core/skill-improve.js";
 import { isHotspot } from "../core/hotspots.js";
 import { errorText } from "../core/log.js";
 import { type RetireRule, retireSuggestions } from "../core/rule-retirement.js";
@@ -550,6 +549,18 @@ export async function writePushbackDismiss(d: PauseDeps, p: UiPauses, body: unkn
   return { status: 200, value: { id } };
 }
 
+/** The verdicts a skill draft takes (src/core/skill-improve.ts). */
+const SKILL_VERDICTS = ["promote", "hold", "reject"] as const;
+
+/** The POST body as a skill verdict, or why it is not one. */
+function skillVerdictOf(body: unknown): { id: string; verdict: (typeof SKILL_VERDICTS)[number] } | string {
+  const b = bodyOf(body, ["id", "verdict"]);
+  if (typeof b === "string") return b;
+  if (typeof b.id !== "string" || b.id.trim() === "") return "id must be a skill draft ID";
+  const verdict = SKILL_VERDICTS.find((x) => x === b.verdict);
+  return verdict ? { id: b.id.trim(), verdict } : `verdict must be one of ${SKILL_VERDICTS.join(", ")}`;
+}
+
 /** What a skill verdict reads: the store, the configured project and, for Promote, the skill wiring. */
 export type SkillVerdictDeps = Pick<PauseDeps, "store" | "settings" | "skillImprove">;
 
@@ -561,17 +572,18 @@ export type SkillVerdictDeps = Pick<PauseDeps, "store" | "settings" | "skillImpr
  * else 200 with the draft's state. Promote re-runs the skill's suite before it answers.
  */
 export async function writeSkillVerdict(d: SkillVerdictDeps, p: UiPauses, body: unknown): Promise<ApiResult> {
-  const v = parseProposalVerdict(body);
+  const v = skillVerdictOf(body);
   if (typeof v === "string") return { status: 400, value: { error: v } };
   const who = await ownerOf(d, p, "judges skill changes");
   if ("error" in who) return { status: 403, value: { error: who.error } };
   const draft = await d.store.getSkillDraft(v.id);
   const project = d.settings ? await d.settings.resolveProject() : null;
   if (!draft || project === null || draft.project_key !== project.key) return { status: 404, value: { error: "No such skill draft in this project." } };
-  const w = d.skillImprove;
-  const r: SkillVerdict = v.verdict === "hold" ? await holdSkillDraft(d.store, v.id)
-    : v.verdict === "reject" ? await rejectSkillDraft(d.store, v.id)
-    : w ? await promoteSkillDraft({ store: d.store, wiring: w, signal: new AbortController().signal }, v.id, who.user)
+  const s = d.skillImprove;
+  if (!s) return { status: 409, value: { error: "Skill verdicts are not wired in this process: nothing written" } };
+  const r: SkillVerdict = v.verdict === "hold" ? await s.hold(d.store, v.id)
+    : v.verdict === "reject" ? await s.reject(d.store, v.id)
+    : s.wiring ? await s.promote({ store: d.store, wiring: s.wiring, signal: new AbortController().signal }, v.id, who.user)
     : { refused: "Promote needs capabilities.skill_folders and a model: no skill is wired here, nothing written" };
   if ("refused" in r) return { status: 409, value: { error: r.refused } };
   p.log.info("skill verdict", { id: v.id, verdict: v.verdict, actor: who.user, state: r.draft.state });

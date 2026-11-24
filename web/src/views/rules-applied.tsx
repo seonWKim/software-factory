@@ -15,10 +15,9 @@ import { t } from "../i18n/index.js";
 import { localShortDate } from "../lib/format.js";
 import { EntryDetail } from "./rules-detail.js";
 import { EditDialog, RetireDialog } from "./rules-verdict.js";
-import { ROW_PAD, STACK_NARROW, muted, ruleName } from "./rules-shared.js";
+import { LIST, ROW_PAD, STACK_NARROW, muted, ruleName } from "./rules-shared.js";
 import type { ReactNode } from "react";
 
-const LIST = "divide-y divide-border rounded-control border border-border";
 
 // The Rules page's applied rules, inside its In effect section (since 2026-11-22): the promoted rules file in the file's
 // order, one two-line ListRow per rule (its plain sentence, the rule name else its default, with its ID in a tooltip, then one

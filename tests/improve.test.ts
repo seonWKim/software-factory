@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import improve from "../src/cli/handlers/improve/improve.command.js";
 import type { CommandContext } from "../src/cli/command.js";
 import { SKILL_IMPROVE_DEFAULTS } from "../src/core/skill-improve-config.js";
-import type { SkillImproveWiring } from "../src/core/skill-improve.js";
+import { type SkillImproveWiring, holdSkillDraft, promoteSkillDraft, rejectSkillDraft } from "../src/core/skill-improve.js";
 import type { UserId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SkillDraftState } from "../src/interfaces/skill-draft-store.js";
@@ -15,7 +15,9 @@ import { PROJECT, silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 const built = vi.hoisted(() => ({ parts: null as unknown }));
-vi.mock("../src/compose.js", () => ({ build: async () => { throw new Error("not used"); }, buildUiParts: async () => built.parts }));
+vi.mock("../src/compose.js", async () => ({
+  build: async () => { throw new Error("not used"); }, buildUiParts: async () => built.parts, writeSkillVerdict: (await import("../src/ui/rules-api.js")).writeSkillVerdict,
+}));
 
 const OWNER = "local:owner@example.com" as UserId;
 
@@ -30,12 +32,13 @@ async function parts(as: UserId = OWNER) {
   await store.claimOwner(OWNER);
   const files = new Map([["/repo/skills/a", "SKILL A"], ["/repo/other/c", "SKILL C"]]);
   const reruns: string[] = [];
-  const skillImprove: SkillImproveWiring = {
+  const wiring: SkillImproveWiring = {
     config: SKILL_IMPROVE_DEFAULTS, skill_folders: ["/repo/skills"], folderOf: (ref) => `/repo/${ref}`, prompt: async () => null,
     readSkill: async (f) => files.get(f) ?? null, writeSkill: async (f, t) => void files.set(f, t), version: async () => "v1", newId: () => "n1",
     scratch: async () => null, rerun: async (r) => (reruns.push(r.skill_ref), null),
   };
   const pauses: UiPauses = { principal: async () => as, authorize: async () => ({ allow: true }), csrfToken: "t", log: silent };
+  const skillImprove = { hold: holdSkillDraft, reject: rejectSkillDraft, promote: promoteSkillDraft, wiring };
   const p = { store, pauses, settings: { resolveProject: async () => PROJECT }, skillImprove, close: async () => {} };
   for (const [id, state, ref] of [["skd_p", "proposed", "skills/a"], ["skd_h", "held", "skills/a"], ["skd_t", "tried", "skills/a"], ["skd_out", "proposed", "other/c"]] as const) {
     await (store as FactoryStore).addSkillDraft({ id, project_key: PROJECT.key, skill_ref: ref, state: state as SkillDraftState, tokens: 1, detail: { draft: `NEW ${id}`, model_class: "standard" } });

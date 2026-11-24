@@ -1,6 +1,5 @@
-import { build, buildUiParts } from "../../../compose.js";
+import { build, buildUiParts, writeSkillVerdict } from "../../../compose.js";
 import { enqueueImprove } from "../../../core/improver.js";
-import { writeSkillVerdict } from "../../../ui/rules-api.js";
 import { type CommandContext, defineCommand } from "../../command.js";
 
 const SKILL_USAGE = "usage: factory improve skill <draft id> promote|hold|reject";
