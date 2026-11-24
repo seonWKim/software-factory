@@ -39,15 +39,18 @@ describe("parsing `factory schedule …`", () => {
     expect(parseLocalCliArgs("schedule", ["list"])).toEqual({ action: "schedule", command: { verb: "list" } });
     expect(parseLocalCliArgs("schedule", ["runs", "sch_fb"])).toEqual({ action: "schedule", command: { verb: "runs", id: "sch_fb" } });
     for (const verb of ["pause", "resume", "run", "delete"]) expect(parseLocalCliArgs("schedule", [verb, "sch_fb"])).toEqual({ action: "schedule", command: { verb, id: "sch_fb", fields: {} } });
-    expect(parseLocalCliArgs("schedule", [...ADD, "--body", "Look again", "--skip-when-busy", "on", "--token-cap", "5000"])).toEqual({
+    expect(parseLocalCliArgs("schedule", [...ADD, "--body", "Look again", "--missed", "skip", "--run-now", "on", "--token-cap", "5000"])).toEqual({
       action: "schedule",
       command: {
         verb: "add", id: "sch_fb",
-        fields: { title: "Feedback", cadence: "daily", spec: "09:00", zone: "Asia/Seoul", action: "build", body: "Look again", skip_when_busy: true, token_cap: 5000 },
+        fields: { title: "Feedback", cadence: "daily", spec: "09:00", zone: "Asia/Seoul", action: "build", body: "Look again", missed: "skip", run_now: true, token_cap: 5000 },
       },
     });
-    expect(parseLocalCliArgs("schedule", ["edit", "sch_fb", "--zone", "UTC", "--skip-when-busy", "off"])).toEqual({
-      action: "schedule", command: { verb: "edit", id: "sch_fb", fields: { zone: "UTC", skip_when_busy: false } },
+    expect(parseLocalCliArgs("schedule", [...ADD, "--missed", "catch-up", "--run-now", "off"])).toMatchObject({
+      command: { verb: "add", fields: { missed: "catch_up", run_now: false } },
+    });
+    expect(parseLocalCliArgs("schedule", ["edit", "sch_fb", "--zone", "UTC", "--missed", "catch-up"])).toEqual({
+      action: "schedule", command: { verb: "edit", id: "sch_fb", fields: { zone: "UTC", missed: "catch_up" } },
     });
     // No flag is a command too: the core refuses it with its reason.
     expect(parseLocalCliArgs("schedule", ["edit", "sch_fb"])).toEqual({ action: "schedule", command: { verb: "edit", id: "sch_fb", fields: {} } });
@@ -57,7 +60,10 @@ describe("parsing `factory schedule …`", () => {
     for (const args of [
       [], ["list", "x"], ["pause"], ["delete"], ["delete", "a", "b"], ["run", "a", "b"], ["show", "sch_fb"], ["add", "--title", "T"], ["edit"], ["edit", "--title", "T"],
       ["edit", "sch_fb", "--id", "other"], ["edit", "sch_fb", "--title"], ["edit", "sch_fb", "--label", "x"], ["edit", "sch_fb", "--title", "a", "--title", "b"],
-      ["edit", "sch_fb", "--skip-when-busy", "yes"], ["edit", "sch_fb", "--token-cap", "lots"], [...ADD, "--id", "again"],
+      ["edit", "sch_fb", "--missed", "yes"], ["edit", "sch_fb", "--missed", "catch_up"], ["edit", "sch_fb", "--missed", "constructor"], ["edit", "sch_fb", "--token-cap", "lots"],
+      [...ADD, "--id", "again"], [...ADD, "--run-now", "yes"], ["edit", "sch_fb", "--run-now", "on"],
+      // The old flag is unexpected in add and edit.
+      [...ADD, "--skip-when-busy", "on"], ["edit", "sch_fb", "--skip-when-busy", "off"],
     ]) {
       expect({ args, r: parseLocalCliArgs("schedule", args) }).toMatchObject({ r: { error: expect.stringContaining("usage:") } });
     }
@@ -70,20 +76,30 @@ describe("factory schedule add and list", () => {
     expect(await cli(["list"])).toEqual({ code: 0, lines: ["no schedules"] });
     const r = await cli([...ADD, "--body", "Check the docs"]);
     expect(r.code).toBe(0);
-    expect(r.lines[0]).toMatch(/^added sch_fb\tFeedback\t2026-11-23T00:00:00.000Z\tidle\tbuild\tskip when busy off\ttoken cap 200000$/);
+    expect(r.lines[0]).toMatch(/^added sch_fb\tFeedback\t2026-11-23T00:00:00.000Z\tidle\tbuild\tmissed catch-up\ttoken cap 200000$/);
     expect(await stored(store)).toMatchObject({
       created_by: OWNER, next_due_at: FIRST, cadence: { kind: "daily", spec: "09:00" }, zone: "Asia/Seoul", action: { kind: "build", settings: { body: "Check the docs" } }, token_cap: null,
     });
-    expect((await cli(["list"])).lines).toEqual([`sch_fb\tFeedback\t${FIRST}\tidle\tbuild\tskip when busy off\ttoken cap 200000`]);
+    expect((await cli(["list"])).lines).toEqual([`sch_fb\tFeedback\t${FIRST}\tidle\tbuild\tmissed catch-up\ttoken cap 200000`]);
+  });
+
+  it("--run-now on makes the first due time now; off keeps the next slot", async () => {
+    const { clock, store, cli } = await setup();
+    expect((await cli([...ADD, "--run-now", "on"])).code).toBe(0);
+    expect(await stored(store)).toMatchObject({ next_due_at: clock.now().toISOString(), missed_rule: "catch_up" });
+    const other = ADD.map((w) => (w === "sch_fb" ? "sch_2" : w));
+    expect((await cli([...other, "--run-now", "off"])).code).toBe(0);
+    expect((await store.listSchedules()).find((s) => s.id === "sch_2")).toMatchObject({ next_due_at: FIRST });
   });
 
   it("an agent or feedback action's body is its prompt; feedback's max_tasks is left to the action", async () => {
     const { store, cli } = await setup();
     await cli(["add", "--id", "a1", "--title", "Ask", "--cadence", "interval", "--spec", "90", "--zone", "UTC", "--action", "agent", "--body", "Summarise", "--token-cap", "9000"]);
-    await cli(["add", "--id", "f1", "--title", "Fb", "--cadence", "weekly", "--spec", "mon 09:00", "--zone", "UTC", "--action", "feedback", "--body", "Find gaps", "--skip-when-busy", "on"]);
+    await cli(["add", "--id", "f1", "--title", "Fb", "--cadence", "weekly", "--spec", "mon 09:00", "--zone", "UTC", "--action", "feedback", "--body", "Find gaps", "--missed", "skip"]);
     const all = await store.listSchedules();
     expect(all.find((s) => s.id === "a1")).toMatchObject({ action: { kind: "agent", settings: { prompt: "Summarise" } }, token_cap: 9000 });
-    expect(all.find((s) => s.id === "f1")).toMatchObject({ action: { kind: "feedback", settings: { prompt: "Find gaps" } }, skip_when_busy: true });
+    expect(all.find((s) => s.id === "f1")).toMatchObject({ action: { kind: "feedback", settings: { prompt: "Find gaps" } }, missed_rule: "skip" });
+    expect((await cli(["list"])).lines.find((l) => l.startsWith("f1\t"))).toContain("\tmissed skip\t");
     expect(all.find((s) => s.id === "f1")!.action!.settings).not.toHaveProperty("max_tasks");
   });
 
@@ -162,8 +178,8 @@ describe("factory schedule edit", () => {
     expect(await stored(store)).toMatchObject({ zone: "UTC", next_due_at: "2026-11-23T09:00:00.000Z", cadence: { spec: "09:00" } });
     await cli(["edit", "sch_fb", "--spec", "18:00"]);
     expect(await stored(store)).toMatchObject({ next_due_at: "2026-11-22T18:00:00.000Z", cadence: { kind: "daily", spec: "18:00" } });
-    await cli(["edit", "sch_fb", "--action", "agent", "--body", "Read it", "--token-cap", "100", "--skip-when-busy", "on"]);
-    expect(await stored(store)).toMatchObject({ action: { kind: "agent", settings: { prompt: "Read it" } }, token_cap: 100, skip_when_busy: true, title: "Nightly" });
+    await cli(["edit", "sch_fb", "--action", "agent", "--body", "Read it", "--token-cap", "100", "--missed", "skip"]);
+    expect(await stored(store)).toMatchObject({ action: { kind: "agent", settings: { prompt: "Read it" } }, token_cap: 100, missed_rule: "skip", title: "Nightly" });
     await cli(["edit", "sch_fb", "--body", "Read it twice"]);
     expect((await stored(store))!.action).toEqual({ kind: "agent", settings: { prompt: "Read it twice" } });
   });
