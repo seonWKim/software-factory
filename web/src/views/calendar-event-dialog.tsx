@@ -20,7 +20,7 @@ const DEFAULT_START = "09:00";
 const DEFAULT_END = "10:00";
 
 /** `date` ("YYYY-MM-DD") moved by `n` days. */
-export function addDaysTo(date: string, n: number): string {
+function addDaysTo(date: string, n: number): string {
   return new Date(Date.parse(`${date}T00:00:00Z`) + n * DAY_MS).toISOString().slice(0, 10);
 }
 
@@ -35,7 +35,7 @@ function wallMs(ms: number, zone: string): number {
 }
 
 /** The instant (ISO) at which the clock in `zone` reads `date` `time`. */
-export function instantIn(date: string, time: string, zone: string): string {
+function instantIn(date: string, time: string, zone: string): string {
   const want = Date.parse(`${date}T${time}:00Z`);
   let ms = want;
   // The zone's offset at the answer may differ from the guess's (a daylight saving change): two passes settle it.
@@ -44,7 +44,7 @@ export function instantIn(date: string, time: string, zone: string): string {
 }
 
 /** The date and time the clock in `zone` reads at the instant `iso`. */
-export function partsIn(iso: string, zone: string): { date: string; time: string } {
+function partsIn(iso: string, zone: string): { date: string; time: string } {
   const d = new Date(wallMs(Date.parse(iso), zone));
   return { date: d.toISOString().slice(0, 10), time: `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}` };
 }
