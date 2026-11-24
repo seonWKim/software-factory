@@ -80,6 +80,8 @@ describe("Routines page", () => {
     expect(within(await row("After merge")).getByRole("switch").getAttribute("aria-checked")).toBe("false");
     expect(within(await row("After merge")).getByText("On merge")).toBeTruthy();
     expect(within(await row("Docs check")).getByText("Every day at 09:00")).toBeTruthy();
+    // The Next run cell is never empty (a phone's row card shows its label anyway): a paused row says so.
+    expect(within(await row("After merge")).getByText("Paused")).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/rtn_[a-z0-9]+/);
   });
 
@@ -196,6 +198,30 @@ describe("Routines page", () => {
     await openMenu("Docs check", "Delete");
     fireEvent.click(within(await screen.findByRole("dialog", undefined, SLOW)).getByRole("button", { name: "Delete routine" }));
     await waitFor(() => expect(posts).toEqual([{ path: "delete", body: { id: "rtn_aaaa1111" }, token: TOKEN }]), SLOW);
+  });
+
+  it("a running merge routine's Next run says it waits for the next merge, not an empty cell", async () => {
+    routines = [routine("rtn_cccc3333", "Merge watch", { schedule: null, trigger: "merge", next_due_at: null })];
+    show();
+    expect(within(await row("Merge watch")).getByText("After the next merge")).toBeTruthy();
+  });
+
+  it("with no routine shows only the empty state: no detail Card asking to select one", async () => {
+    routines = [];
+    show();
+    expect(await screen.findByText(en["routines.empty"], undefined, SLOW)).toBeTruthy();
+    expect(screen.queryByText(en["routines.detailPick"])).toBeNull();
+    expect(document.querySelectorAll("section")).toHaveLength(1);
+  });
+
+  it("stacks its Cards as the other pages do, on the Card's own margin, with no flex gap added on top of it", async () => {
+    show();
+    await ready();
+    const sections = [...document.querySelectorAll("section")];
+    expect(sections).toHaveLength(2);
+    // Card carries mt-6; a flex column with gap-6 around it doubled the space between the list and the detail Card.
+    for (const s of sections) expect(s.parentElement!.className).not.toMatch(/\bgap-/);
+    expect(sections[0]!.parentElement).toBe(sections[1]!.parentElement);
   });
 
   it("shows the server's refusal of a write in a bad Notice, and a refused save stays in the Dialog", async () => {

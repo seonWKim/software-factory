@@ -15,7 +15,8 @@ import { CADENCE_TEXT } from "./routines/labels.js";
 // The Routines page (design 09-dashboard-routines, over 08-routines): every routine in a DataTable inside a Card, read
 // through GET /api/v1/routines. Each row's Switch is on while the routine is not paused and posts pause or resume; its
 // "⋯" menu holds Run now, Edit and Delete. Pressing a row's name selects it and shows its details in a second Card, with a warn
-// Notice while it is paused. New routine and Edit open one Dialog; Delete asks in a Dialog before it posts. A refusal
+// Notice while it is paused; with no routine there is no second Card, only the table's empty state. The Cards follow
+// the PageHeader as siblings, spaced by the Card's own top margin as on the other pages (no flex gap on top of it). New routine and Edit open one Dialog; Delete asks in a Dialog before it posts. A refusal
 // shows in a Notice above the table.
 
 const when = (at: string) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -64,7 +65,8 @@ function RoutineRows({ rows, selected, onSelect, onEdit, onDelete, w }: { rows: 
       ),
     },
     { key: "repeats", header: t("routines.col.repeats"), render: (r) => (r.schedule === null ? t("routines.onMerge") : t(CADENCE_TEXT[r.schedule.kind], { spec: r.schedule.spec })) },
-    { key: "next", header: t("routines.col.next"), render: (r) => (r.paused || r.next_due_at === null ? "" : when(r.next_due_at)) },
+    // Never empty: below `sm` each row is a card whose labels show even for an empty cell.
+    { key: "next", header: t("routines.col.next"), render: (r) => (r.paused ? t("routines.nextPaused") : r.next_due_at === null ? t("routines.nextOnMerge") : when(r.next_due_at)) },
     {
       key: "active",
       header: t("routines.col.active"),
@@ -137,7 +139,7 @@ export function RoutinesPage() {
       <PageHeader
         title={t("page.routines")}
         description={t("routines.description")}
-        actions={<Button ref={addButton} variant="primary" disabled={!w.ready} onClick={() => open({ kind: "edit", routine: null }, addButton.current)}>{t("routines.new")}</Button>}
+        actions={<Button ref={addButton} variant="primary" data-capture-open="new-routine" disabled={!w.ready} onClick={() => open({ kind: "edit", routine: null }, addButton.current)}>{t("routines.new")}</Button>}
       />
       {form?.kind === "edit" && (
         <RoutineDialog
@@ -163,19 +165,19 @@ export function RoutinesPage() {
           onClose={close}
         />
       )}
-      <div className="flex flex-col gap-6">
-        <Card label={t("routines.listLabel")}>
-          <div className="space-y-3">
-            {form === null && w.error !== null && <Notice tone="bad">{w.error}</Notice>}
-            {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={3} label="loading.routines" onRetry={() => void q.refetch()} /> : (
-              <RoutineRows rows={rows} selected={selected} onSelect={setSelected} onEdit={(r, el) => open({ kind: "edit", routine: r }, el)} onDelete={(r, el) => open({ kind: "delete", routine: r }, el)} w={w} />
-            )}
-          </div>
-        </Card>
+      <Card label={t("routines.listLabel")}>
+        <div className="space-y-3">
+          {form === null && w.error !== null && <Notice tone="bad">{w.error}</Notice>}
+          {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={3} label="loading.routines" onRetry={() => void q.refetch()} /> : (
+            <RoutineRows rows={rows} selected={selected} onSelect={setSelected} onEdit={(r, el) => open({ kind: "edit", routine: r }, el)} onDelete={(r, el) => open({ kind: "delete", routine: r }, el)} w={w} />
+          )}
+        </div>
+      </Card>
+      {rows.length > 0 && (
         <Card title={chosen === null ? t("routines.col.name") : chosen.name}>
           {chosen === null ? <p className="text-sm text-text-2">{t("routines.detailPick")}</p> : <Detail r={chosen} />}
         </Card>
-      </div>
+      )}
     </>
   );
 }

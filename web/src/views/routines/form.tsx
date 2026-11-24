@@ -97,25 +97,30 @@ export function RoutineDialog({ routine, busy, error, returnFocusTo, onSave, onC
       <Field label={t("routines.form.url")} htmlFor={id("url")} help={t("routines.form.urlHelp")}>
         <Input id={id("url")} value={v.url} onChange={(e) => set("url", e.target.value)} />
       </Field>
-      <Field label={t("routines.form.repeats")} htmlFor={id("repeats")}>
-        <Select id={id("repeats")} value={v.repeats} onChange={(e) => set("repeats", e.target.value as RepeatKind)}>
-          {[...ROUTINE_CADENCE_KINDS, "merge" as const].map((k) => <option key={k} value={k}>{t(REPEAT_CHOICE[k])}</option>)}
-        </Select>
-      </Field>
-      {v.repeats !== "merge" && (
-        <Field label={t("routines.form.spec")} htmlFor={id("spec")} help={t(SPEC_HELP[v.repeats])}>
-          <Input id={id("spec")} value={v.spec} onChange={(e) => set("spec", e.target.value)} />
+      {/* Paired fields share a row from `sm` up, so at a laptop height the form fits with Save in view. */}
+      <div data-field-pair className="grid items-start gap-3 sm:grid-cols-2">
+        <Field label={t("routines.form.repeats")} htmlFor={id("repeats")}>
+          <Select id={id("repeats")} value={v.repeats} onChange={(e) => set("repeats", e.target.value as RepeatKind)}>
+            {[...ROUTINE_CADENCE_KINDS, "merge" as const].map((k) => <option key={k} value={k}>{t(REPEAT_CHOICE[k])}</option>)}
+          </Select>
         </Field>
-      )}
+        {v.repeats !== "merge" && (
+          <Field label={t("routines.form.spec")} htmlFor={id("spec")} help={t(SPEC_HELP[v.repeats])}>
+            <Input id={id("spec")} value={v.spec} onChange={(e) => set("spec", e.target.value)} />
+          </Field>
+        )}
+      </div>
       <Field label={t("routines.form.zone")} htmlFor={id("zone")} help={t("routines.form.zoneHelp")}>
         <Input id={id("zone")} value={v.zone} onChange={(e) => set("zone", e.target.value)} />
       </Field>
-      <Field label={t("routines.form.runCap")} htmlFor={id("runCap")} help={t("routines.form.runCapHelp")}>
-        <Input id={id("runCap")} type="number" min={0} step="any" value={v.runCap} onChange={(e) => set("runCap", e.target.value)} />
-      </Field>
-      <Field label={t("routines.form.dailyCap")} htmlFor={id("dailyCap")} help={t("routines.form.dailyCapHelp")}>
-        <Input id={id("dailyCap")} type="number" min={0} step="any" value={v.dailyCap} onChange={(e) => set("dailyCap", e.target.value)} />
-      </Field>
+      <div data-field-pair className="grid items-start gap-3 sm:grid-cols-2">
+        <Field label={t("routines.form.runCap")} htmlFor={id("runCap")} help={t("routines.form.runCapHelp")}>
+          <Input id={id("runCap")} type="number" min={0} step="any" value={v.runCap} onChange={(e) => set("runCap", e.target.value)} />
+        </Field>
+        <Field label={t("routines.form.dailyCap")} htmlFor={id("dailyCap")} help={t("routines.form.dailyCapHelp")}>
+          <Input id={id("dailyCap")} type="number" min={0} step="any" value={v.dailyCap} onChange={(e) => set("dailyCap", e.target.value)} />
+        </Field>
+      </div>
     </Dialog>
   );
 }

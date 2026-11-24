@@ -20,6 +20,8 @@ export const routines = {
   "routines.cadence.weekly": "Weekly on {spec}",
   "routines.cadence.cron": "Cron {spec}",
   "routines.onMerge": "On merge",
+  "routines.nextPaused": "Paused",
+  "routines.nextOnMerge": "After the next merge",
   "routines.detailPick": "Select a routine to see its details.",
   "routines.paused": "This routine is paused. It runs again when you turn it on.",
   "routines.detail.instruction": "Instruction",
