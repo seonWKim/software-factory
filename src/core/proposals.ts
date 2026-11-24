@@ -13,7 +13,7 @@ import type { IssueInput } from "../interfaces/source-adapter.js";
 import type { FailureGroup, ImproveReport, Run, SourceRef, Timestamp, UserId } from "./types.js";
 
 // ---------------------------------------------------------------------------------------------------------
-// Settings: `improver.max_proposals`, `improver.schedule`, `distill.min_cases` in factory.config.json.
+// Settings: `improver.max_proposals`, `improver.schedule`, `improver.daily_trigger`, `distill.min_cases` in factory.config.json.
 
 /** When the improve run proposes: only in the daily run, in every improve run, or never (default: each proposal costs two golden replays). */
 export const IMPROVER_SCHEDULES = ["daily", "every_run", "off"] as const;
@@ -24,10 +24,15 @@ export interface ImproverConfig {
   schedule: ImproverSchedule;
   /** A group with fewer failed runs than this stays `watching`: recorded, no draft, no replay. */
   min_cases: number;
+  /**
+   * Whether the controller queues the daily improve run itself (design 07-self-improvement); unset means on. Off
+   * turns off only that daily step, so an `improve` schedule owns the daily run; the failure-count trigger stays.
+   */
+  daily_trigger?: boolean;
 }
 /** The defaults when factory.config.json sets none: no proposals (opt in with `improver.schedule`), then one per run from a pattern of 2 or more runs. */
 export const IMPROVER_DEFAULTS: ImproverConfig = { max_proposals: 1, schedule: "off", min_cases: 2 };
-export const IMPROVER_KEYS = ["max_proposals", "schedule"] as const;
+export const IMPROVER_KEYS = ["max_proposals", "schedule", "daily_trigger"] as const;
 export const DISTILL_KEYS = ["min_cases"] as const;
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -38,13 +43,17 @@ export function improverProblems(raw: unknown): string[] {
   if (!isObject(raw)) return [];
   const out: string[] = [];
   const { improver: i, distill: d } = raw;
-  if (i !== undefined && !isObject(i)) out.push("improver must be an object with max_proposals and schedule");
+  if (i !== undefined && !isObject(i)) out.push("improver must be an object with max_proposals, schedule and daily_trigger");
   if (isObject(i) && i.max_proposals !== undefined && !positiveInt(i.max_proposals)) out.push("improver.max_proposals must be an integer ≥ 1 (default 1)");
   if (isObject(i) && i.schedule !== undefined && !(IMPROVER_SCHEDULES as readonly unknown[]).includes(i.schedule)) out.push(`improver.schedule must be one of ${IMPROVER_SCHEDULES.join(", ")} (default off)`);
+  if (isObject(i) && i.daily_trigger !== undefined && typeof i.daily_trigger !== "boolean") out.push("improver.daily_trigger must be true or false (default true)");
   if (d !== undefined && !isObject(d)) out.push("distill must be an object with min_cases");
   if (isObject(d) && d.min_cases !== undefined && !positiveInt(d.min_cases)) out.push("distill.min_cases must be an integer ≥ 1 (default 2)");
   return out;
 }
+
+/** Whether the controller's daily improve step runs: `improver.daily_trigger`, on when unset. */
+export const dailyTriggerOn = (c: Pick<ImproverConfig, "daily_trigger"> | undefined): boolean => c?.daily_trigger !== false;
 
 /** The proposal settings of a parsed factory.config.json, each absent one its default; a bad value throws, failing startup. */
 export function improverConfig(raw: unknown): ImproverConfig {
