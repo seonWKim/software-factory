@@ -3,6 +3,7 @@
 // object-valued model_by, many commands, rules on with applied and waiting rules, a standing approval that approved
 // three items), served by the real UI server (dist/ui/server.js) on a free port.
 // Nothing here reads factory.config.json, .factory/ or the secrets file: every dependency is built in place.
+import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -25,7 +26,6 @@ import { UiCalendar } from "../../dist/ui/calendar-api.js";
 import { HealthMonitor } from "../../dist/ui/health.js";
 import { newCsrfToken, storeProjectResolver } from "../../dist/ui/settings-api.js";
 import { startUi } from "../../dist/ui/server.js";
-import { seedSkill } from "./skill-evals.mjs";
 
 const REPO = { owner: "acme-platform-infrastructure", name: "very-long-repository-name-for-layout-checks" };
 const PROJECT = { key: "github:github.com:R_kgDOresponsive0000000000001", label: `github.com/${REPO.owner}/${REPO.name}` };
@@ -237,7 +237,7 @@ async function seed(store, storage, dir) {
   await store.pauseClaims(new Date(Date.now() + 3_600_000).toISOString(), "model_stall");
 
   await seedStanding(store);
-  const skill = await seedSkill(store, dir, OWNER, { SkillRefsStore, skillVersion, skillRefId, storeSql });
+  const skill = await seedSkill(store, dir);
   await seedSchedules(store);
 
   // Overrides: an object-valued model_by and a project-level key, with history.
@@ -245,6 +245,51 @@ async function seed(store, storage, dir) {
   await store.setSettingOverride({ key: "max_diff_files", project: PROJECT.key, value: "40", actor: OWNER });
 
   return { item: busy.id, parent: parent.id, run: failed.id, skill };
+}
+
+const SKILL_NAME = "fixture-review";
+const SKILL_SUITE = "suite_responsive_fixture";
+/** The fixture skill's SKILL.md, oldest first: each is written over the one before and recorded as the next version. */
+const SKILL_TEXTS = [
+  `---\ndescription: Reviews a change against the repository's rules and names each broken one.\n---\n\n# ${SKILL_NAME}\n`,
+  `---\ndescription: Reviews a change against the repository's rules, names each broken one and the page and width it breaks at.\n---\n\n# ${SKILL_NAME}\n\nName the rule, the page and the width of each finding.\n`,
+];
+/** Per version: each of the two cases' verdicts (the run's pass rate is their pass share). */
+const SKILL_VERDICTS = [["pass", "fail"], ["pass", "pass"]];
+
+/**
+ * One imported skill with an eval suite of two cases and two versions, so the Plugins page's Skills tab has a row whose
+ * Evals button is on (a row needs its SKILL.md path, which only an imported skill has) and the Evals page (evals/<skill>)
+ * draws two version rows, the newer one current, and a Compare dialog with a diff and a case table. Each SKILL.md text
+ * in turn is written, its folder hash taken (skillVersion, as eval runs store it), recorded (recordSkillVersion), and
+ * one finished run bound to that hash gets a replay per case and its figures. Returns the suite's skill_ref: the skills
+ * folder joined with the name, as the pages key a suite. Exported for tests/responsive-fixture-evals.test.ts.
+ */
+export async function seedSkill(store, dir) {
+  const folder = join(dir, "skills");
+  const skillFolder = join(folder, SKILL_NAME);
+  const path = join(skillFolder, "SKILL.md");
+  const skill_ref = `${folder}/${SKILL_NAME}`;
+  mkdirSync(skillFolder, { recursive: true });
+  const refs = new SkillRefsStore(storeSql(store), () => new Date().toISOString());
+  await store.createSkillEvalSuite({ id: SKILL_SUITE, skill_ref, title: "Fixture suite", created_by: OWNER });
+  const cases = [];
+  for (const n of [1, 2]) cases.push(await store.addSkillEvalCase({ id: `case_responsive_${n}`, suite_id: SKILL_SUITE, input: { change: `Change ${n}` }, expected: { rule: `Rule ${n}` } }));
+
+  for (const [i, text] of SKILL_TEXTS.entries()) {
+    writeFileSync(path, text);
+    const found = { source: "claude", kind: "skill", name: SKILL_NAME, path, sha256: createHash("sha256").update(text).digest("hex") };
+    await refs.insert(found, OWNER);
+    const folder_hash = await skillVersion(skillFolder);
+    if (!(await store.recordSkillVersion({ ref_id: skillRefId(found), folder_hash, text, source: "claude" }))) throw new Error(`fixture skill version ${i + 1} was not recorded`);
+    const verdicts = SKILL_VERDICTS[i];
+    const run = await store.startSkillEvalRun({ id: `run_responsive_${i + 1}`, suite_id: SKILL_SUITE, created_by: OWNER, skill_version: folder_hash });
+    for (const [c, verdict] of verdicts.entries()) await store.recordSkillEvalReplay({ run_id: run.id, case_id: cases[c].id, verdict, detail: {} });
+    await store.finishSkillEvalRun(run.id, verdicts.includes("fail") ? "failed" : "passed");
+    const passed = verdicts.filter((v) => v === "pass").length;
+    await store.recordSkillEvalRunFigures(run.id, { model_class: "standard", judge_model_class: "strong", replays: verdicts.length, pass_rate: passed / verdicts.length, errored: 0 });
+  }
+  return skill_ref;
 }
 
 /**

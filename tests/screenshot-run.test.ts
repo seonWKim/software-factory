@@ -171,10 +171,9 @@ describe("the capture set", () => {
 
   it("the fixture seeds one imported skill with a SKILL.md and an eval suite, so the Skills tab has a row with Evals", async () => {
     const fixture = await readFile(join(import.meta.dirname, "..", "scripts", "responsive", "fixture.mjs"), "utf8");
-    const skill = await readFile(join(import.meta.dirname, "..", "scripts", "responsive", "skill-evals.mjs"), "utf8");
-    expect(skill).toMatch(/SKILL\.md/);
+    expect(fixture).toMatch(/SKILL\.md/);
     expect(fixture).toMatch(/SkillRefsStore/);
-    expect(skill).toMatch(/createSkillEvalSuite\(/);
+    expect(fixture).toMatch(/createSkillEvalSuite\(/);
   });
 
   it("the fixture seeds schedules, so the Schedules rows have the ⋯ menu check:responsive opens as menu-row", async () => {

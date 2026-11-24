@@ -1,20 +1,24 @@
-// The Evals part of the responsive fixture (scripts/responsive/skill-evals.mjs): the fixture skill has two versions
-// with different SKILL.md texts, the newer one current, and a finished run with a pass rate bound to each version's
-// folder hash, so the Evals page and its Compare dialog have something to draw. Run on src/, no build.
-import { mkdtempSync, rmSync } from "node:fs";
+// The Evals part of the responsive fixture (seedSkill in scripts/responsive/fixture.mjs): the fixture skill has two
+// versions with different SKILL.md texts, the newer one current, and a finished run with a pass rate bound to each
+// version's folder hash, so the Evals page and its Compare dialog have something to draw.
+// fixture.mjs imports dist/, which a test run has not built: the test loads a copy of it whose dist/ imports point at src/.
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { skillRefId, SkillRefsStore } from "../src/import/import-plugins.js";
-import { storeSql } from "../src/impl/store/sql/store-sql.js";
-import { skillVersion } from "../src/runtime/capabilities/capabilities.js";
 import { skillVersionRows } from "../src/core/skill-eval-compare.js";
+import { storeSql } from "../src/impl/store/sql/store-sql.js";
 import { newStore } from "./helpers/store.js";
 
-const { seedSkill } = (await import(pathToFileURL(join(import.meta.dirname, "..", "scripts", "responsive", "skill-evals.mjs")).href)) as {
-  seedSkill(store: unknown, dir: string, owner: string, lib: unknown): Promise<string>;
-};
+const ROOT = join(import.meta.dirname, "..");
+
+async function loadFixture(dir: string): Promise<{ seedSkill(store: unknown, dir: string): Promise<string> }> {
+  const text = readFileSync(join(ROOT, "scripts", "responsive", "fixture.mjs"), "utf8").replaceAll('"../../dist/', `"${join(ROOT, "src")}/`);
+  const file = join(dir, "fixture.mjs");
+  writeFileSync(file, text);
+  return import(pathToFileURL(file).href);
+}
 
 let dir = "";
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -22,14 +26,16 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 describe("responsive fixture: the Evals page's skill", () => {
   it("has two versions with different texts, the newer current, and a finished run with a pass rate bound to each", async () => {
     dir = mkdtempSync(join(tmpdir(), "sf-fixture-evals-"));
+    const { seedSkill } = await loadFixture(dir);
     const { store } = await newStore();
-    const skill = await seedSkill(store, dir, "local:owner", { SkillRefsStore, skillVersion, skillRefId, storeSql });
+    const skill = await seedSkill(store, dir);
 
     const runs = await store.listSkillEvalRuns(skill);
     const [hit] = await storeSql(store).all("SELECT ref_id FROM ext_skill_versions", []);
     const versions = await store.listSkillVersions(String(hit!.ref_id));
     expect(versions.map((v) => v.version)).toEqual([1, 2]);
     expect(versions[0]!.text).not.toBe(versions[1]!.text);
+    expect(versions[0]!.folder_hash).not.toBe(versions[1]!.folder_hash);
 
     const rows = skillVersionRows(versions, runs);
     expect(rows.map((r) => r.version)).toEqual([2, 1]);
