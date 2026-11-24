@@ -500,7 +500,7 @@ function SkillsTab({ view, query, now, report, fresh }: { view: PluginsView; que
       key: "evals",
       header: t("evals.open"),
       render: (r) => (
-        <Button size="sm" disabled={r.path === undefined} title={r.path === undefined ? t("evals.noPath") : undefined} aria-label={t("evals.openLabel", { name: r.name })} onClick={(e) => {
+        <Button size="sm" disabled={r.path === undefined} title={r.path === undefined ? t("evals.noPath") : undefined} aria-label={t("evals.openLabel", { name: r.name })} data-capture-open="evals" onClick={(e) => {
           if (r.path === undefined) return;
           opener.current = e.currentTarget;
           setEvals(r.path);
