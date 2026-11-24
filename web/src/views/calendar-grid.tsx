@@ -1,16 +1,16 @@
-import { useRef, useState } from "react";
+import { type MouseEvent, useContext, useRef, useState } from "react";
 import type { CalendarDay, CalendarEvent } from "../api.js";
 import { SUB_TITLE } from "../components/ui/card.js";
 import { useWide } from "../components/ui/parts.js";
 import { CHIP_TITLE, ChipButton, Popover } from "../components/ui/popover.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
-import { EventButton, colourOf, titleOf } from "./calendar-event.js";
+import { CalendarActionsContext, EventButton, colourOf, titleOf } from "./calendar-event.js";
 import { dayLabel } from "./tasks/groups.js";
 
 // The Calendar page's week and month (design 09-dashboard-tasks-calendar): plain grids inside the page's one Card,
 // split by 1px `border` lines, with no box of their own and no card inside the card, drawn like macOS Calendar.
-// Read-only; each event is a chip that opens its whole details (calendar-event.tsx). An all-day event is a filled pill
+// Each event is a chip that opens its whole details (calendar-event.tsx). An all-day event is a filled pill
 // in its calendar's colour; a timed one is a dot in that colour, its time in muted text, then its title.
 
 /** The event rows a month cell has room for: all its events up to this many, else one less and "+N more". */
@@ -19,6 +19,19 @@ export const MONTH_SLOTS = 3;
 /** How many of a month cell's `n` events it shows, and how many "+N more" names: every cell is the same height. */
 export function monthFit(n: number): { shown: number; more: number } {
   return n <= MONTH_SLOTS ? { shown: n, more: 0 } : { shown: MONTH_SLOTS - 1, more: n - (MONTH_SLOTS - 1) };
+}
+
+/**
+ * A day's click handler: a press on its empty area (not on an event, a button or a link, and not inside a panel opened
+ * from it, which React still bubbles here) opens the New event dialog for that day. Undefined without the page's actions.
+ */
+function useDayClick(date: string): ((e: MouseEvent<HTMLElement>) => void) | undefined {
+  const actions = useContext(CalendarActionsContext);
+  if (actions === null) return undefined;
+  return (e) => {
+    const target = e.target as Element;
+    if (e.currentTarget.contains(target) && !target.closest("button, a")) actions.newOn(date);
+  };
 }
 
 /** The shading of a day the last syncs did not cover. */
@@ -111,6 +124,26 @@ function EventList({ events, label, showSource, wrap, className }: { events: rea
   );
 }
 
+/** One day of the Week: its heading and events; a click on its empty area opens New event for it. */
+function WeekDay({ d, today, showSource }: { d: CalendarDay; today: string; showSource: boolean }) {
+  const onClick = useDayClick(d.date);
+  return (
+    <li
+      data-day={d.date}
+      {...(d.synced ? {} : { "data-not-synced": "" })}
+      {...(onClick ? { onClick } : {})}
+      className={cn("grid min-w-0 grid-cols-[2.5rem_minmax(0,1fr)] items-start gap-x-3 px-2 py-2 xl:flex xl:min-h-48 xl:flex-col xl:gap-2 xl:px-1.5", !d.synced && SHADED)}
+    >
+      <h3 className={cn(SUB_TITLE, "flex flex-col items-center gap-0.5 xl:flex-row xl:gap-1.5 xl:px-1.5")}>
+        <span className="sr-only">{dayLabel(d.date)}</span>
+        <span aria-hidden className={cn(weekend(d.date) && "text-text-3")}>{weekday(d.date)}</span>
+        <DayNumber date={d.date} today={today} />
+      </h3>
+      {d.synced && d.events.length > 0 && <EventList events={d.events} label={dayLabel(d.date)} showSource={showSource} wrap className="xl:w-full" />}
+    </li>
+  );
+}
+
 /**
  * Week: Monday to Sunday as seven columns split by 1px lines from `xl` up, so the week fits the card with no sideways
  * scroll, each a heading (weekday and number) over its events; below `xl` one row per day, the weekday over the number
@@ -121,19 +154,7 @@ export function WeekDays({ label, days, today, showSource }: GridProps) {
   return (
     <ol aria-label={label} className="grid grid-cols-1 divide-y divide-border xl:grid-cols-7 xl:divide-x xl:divide-y-0">
       {days.map((d) => (
-        <li
-          key={d.date}
-          data-day={d.date}
-          {...(d.synced ? {} : { "data-not-synced": "" })}
-          className={cn("grid min-w-0 grid-cols-[2.5rem_minmax(0,1fr)] items-start gap-x-3 px-2 py-2 xl:flex xl:min-h-48 xl:flex-col xl:gap-2 xl:px-1.5", !d.synced && SHADED)}
-        >
-          <h3 className={cn(SUB_TITLE, "flex flex-col items-center gap-0.5 xl:flex-row xl:gap-1.5 xl:px-1.5")}>
-            <span className="sr-only">{dayLabel(d.date)}</span>
-            <span aria-hidden className={cn(weekend(d.date) && "text-text-3")}>{weekday(d.date)}</span>
-            <DayNumber date={d.date} today={today} />
-          </h3>
-          {d.synced && d.events.length > 0 && <EventList events={d.events} label={dayLabel(d.date)} showSource={showSource} wrap className="xl:w-full" />}
-        </li>
+        <WeekDay key={d.date} d={d} today={today} showSource={showSource} />
       ))}
     </ol>
   );
@@ -166,10 +187,12 @@ function MoreButton({ day, more, showSource }: { day: CalendarDay; more: number;
 function MonthCell({ day, today, outside, showSource }: { day: CalendarDay; today: string; outside: boolean; showSource: boolean }) {
   const events = day.synced ? day.events : [];
   const { shown, more } = monthFit(events.length);
+  const onClick = useDayClick(day.date);
   return (
     <div
       role="cell"
       data-day={day.date}
+      {...(onClick ? { onClick } : {})}
       {...(day.synced ? {} : { "data-not-synced": "" })}
       {...(outside ? { "data-outside": "" } : {})}
       className={cn("flex h-28 min-w-0 flex-col gap-0.5 overflow-hidden p-1", !day.synced && SHADED)}
