@@ -6,13 +6,17 @@
 // skill's current version (its folder as it is now) by default; `version` names a stored version of the imported skill
 // by its folder hash (design 06-measurement), and the run replays that version's text and stores its hash.
 //
+// Each replay runs in a clean sandbox (design 06-measurement, clean replays): the `sandbox` plugin's name (a replay with
+// tools is refused under `noop`), the skill's folder, the approved pack MCP servers a case names, and the Clock's time
+// for its wall time come from here; the scan gives the engine the rule names a stored transcript or answer matched.
+//
 // main.ts passes skillEvalRun to every command through the command call (CommandCall.runSkillEval), so the CLI
 // handler imports no root or legacy module. The composition root builds the improve run's skill improvement wiring
 // here (skillImproveWiring, design 07-self-improvement): the scratch run, the re-run after a promote, and SKILL.md I/O.
 
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { codeVersion } from "./config-values.js";
 import { capabilitiesConfig, skillImproveConfig } from "./core/config.js";
 import type { SkillImproveWiring } from "./core/skill-improve.js";
@@ -21,19 +25,22 @@ import type { Loaded } from "./load-config.js";
 import { Plugins } from "./plugin-set.js";
 import { judgeClass, skillJudge } from "./core/scorer.js";
 import { MODEL_CLASSES, type ModelClass } from "./core/model-choice.js";
-import type { AgentRunner } from "./interfaces/agent-runner.js";
+import type { AgentRunner, PackMcpServer } from "./interfaces/agent-runner.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
+import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import { CODE_VERSION_ENV } from "./interfaces/updater.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SkillEvalRun, SkillEvalRunFigures, SkillEvalStore } from "./interfaces/skill-eval-store.js";
 import { skillFolderPath, skillVersion } from "./runtime/capabilities/capabilities.js";
 import { skillVersionsOf } from "./ui/plugins-api.js";
+import { storeSqlOrNull } from "./impl/store/sql/store-sql.js";
+import { checkPackGrants } from "./packs/pack-grants.js";
 import { type Authored, type CaseVerdict, type SkillEvalAuthoring, type SkillEvalEngineDeps, type TriedCase, addSkillEvalCase, addSkillEvalSuite, deleteSkillEvalSuite, editSkillEvalCase, renameSkillEvalSuite, runSkillEval, skillEvalReplay, tryCase } from "./runtime/index.js";
 
 /** The class a skill-eval replay runs on when no --model is given; its judge runs on judgeClass of it. */
 export const SKILL_EVAL_CLASS: ModelClass = "standard";
-/** The role a replay runs as: no tools, no session, no writable path (skillEvalReplay). */
+/** The role a replay runs as: no file or shell tools, no session, no writable path (skillEvalReplay). */
 const REPLAY_ROLE = "implement";
 
 /** One `eval run`: the skill's ref (its suite's `skill_ref`, a skill folder), who starts it, and its stop signal. */
@@ -61,6 +68,8 @@ export interface SkillEvalPlugins {
   runner: AgentRunner;
   llm: LLMProvider;
   scanner: EgressScanner;
+  /** Milliseconds of the configured Clock, for a replay's wall time; absent: no wall time is stored. */
+  now?: () => number;
 }
 
 export interface SkillEvalWiring {
@@ -74,6 +83,13 @@ export interface SkillEvalWiring {
   deny_paths: readonly string[];
   timeout_ms: number;
   newId(): string;
+  /** The `sandbox` plugin's name: under `noop` a replay with tools or MCP servers is refused (`noop_tools_refused`). */
+  sandbox_plugin: string;
+  /**
+   * The approved pack MCP servers for the names a case gives (`pack:mcp_server:<name>`), or null when one is not
+   * approved or `runs` (the runner runs MCP servers) is false. Absent: none is served.
+   */
+  mcpServers?(names: readonly string[], runs: boolean): Promise<readonly PackMcpServer[] | null>;
   /** The factory revision stored on each run (SF_CODE_VERSION); absent: `dev`, as the worker stamps runs. */
   factory_version?: string;
 }
@@ -119,13 +135,27 @@ export function runClass(r: Pick<SkillEvalRequest, "model_class" | "judge_model_
   return { model_class };
 }
 
-/** The engine's replay (with `system_prompt` as the skill's system prompt), judge and scan on `model_class`. */
-async function engineOf(d: SkillEvalWiring, system_prompt: string, model_class: ModelClass): Promise<Engine> {
+/** The rule names `scanner` matched in `text`; none when it is clean. */
+export async function scanRules(scanner: EgressScanner, text: string): Promise<string[]> {
+  const r = await scanner.scan("log", text);
+  return r.clean ? [] : r.findings.map((f) => f.rule);
+}
+
+/**
+ * The engine's replay (with `system_prompt` as the SKILL.md under test of `skill`, a skill folder), judge and scan on
+ * `model_class`. The replay grants no broker tool: a skill whose `tools:` names one has its cases errored.
+ */
+async function engineOf(d: SkillEvalWiring, skill: string, system_prompt: string, model_class: ModelClass): Promise<Engine> {
   const [p, system] = await Promise.all([d.plugins(), d.judgePrompt()]);
+  const folder = skillFolderPath(skill, d.root);
+  const mcpServers = d.mcpServers;
   const replay = skillEvalReplay(p, {
     repo: d.repo, role: REPLAY_ROLE, system_prompt, env_allowlist: {}, deny_paths: d.deny_paths, model_class, timeout_ms: d.timeout_ms,
+    skill: { folder, name: basename(folder) }, sandbox_plugin: d.sandbox_plugin, root: d.root,
+    ...(mcpServers ? { mcpServers: (names: readonly string[]) => mcpServers(names, p.runner.runs_mcp_servers === true) } : {}),
+    ...(p.now ? { now: p.now } : {}),
   });
-  const scan = async (text: string) => (await p.scanner.scan("log", text)).clean;
+  const scan = (text: string) => scanRules(p.scanner, text);
   return { replay, judge: skillJudge(p.llm, system, model_class), scan, judge_version: judgeVersion(system) };
 }
 
@@ -137,7 +167,7 @@ async function engineParts(d: SkillEvalWiring, skill: string, model_class: Model
   const folder = skillFolderPath(skill, d.root);
   const [skill_text, skill_version] = await Promise.all([readFile(join(folder, "SKILL.md"), "utf8").catch(() => null), skillVersion(folder).catch(() => null)]);
   if (skill_text === null || skill_version === null) return { refused: `cannot read ${skill}/SKILL.md: nothing run` };
-  return { engine: await engineOf(d, skill_text, model_class), skill_version };
+  return { engine: await engineOf(d, skill, skill_text, model_class), skill_version };
 }
 
 /**
@@ -150,7 +180,7 @@ async function versionParts(d: SkillEvalWiring, skill: string, hash: string, mod
   const versions = await skillVersionsOf(d.store, [now, ...(await d.store.listSkillEvalRuns(skill)).map((r) => r.skill_version)]);
   const v = versions.find((x) => x.folder_hash === hash);
   if (!v) return { refused: `${skill} has no version ${hash}: nothing run` };
-  return { engine: await engineOf(d, v.text, model_class), skill_version: v.folder_hash };
+  return { engine: await engineOf(d, skill, v.text, model_class), skill_version: v.folder_hash };
 }
 
 /** Runs the suite through the engine as run `id`, records its figures and returns the stored run. */
@@ -193,7 +223,7 @@ export async function scratchRunFor(
 ): Promise<SkillEvalRun | null> {
   const suite = (await d.store.listSkillEvalSuites()).find((s) => s.skill_ref === r.skill_ref);
   if (!suite) return null;
-  return runAndRecord(d, await engineOf(d, r.system_prompt, r.model_class), { id: r.run_id, suite_id: suite.id, created_by: r.created_by, skill_version: r.skill_version, model_class: r.model_class }, signal);
+  return runAndRecord(d, await engineOf(d, r.skill_ref, r.system_prompt, r.model_class), { id: r.run_id, suite_id: suite.id, created_by: r.created_by, skill_version: r.skill_version, model_class: r.model_class }, signal);
 }
 
 /** The improve run's skill improvement over `d` (SkillImproveWiring): `folders` are capabilities.skill_folders, absolute. */
@@ -238,35 +268,46 @@ export async function tryCaseFor(d: SkillEvalWiring, r: SkillEvalTryRequest): Pr
  * The worker's skill improvement wiring (WorkerDeps.skillImprove) over its own plugins; undefined when
  * capabilities.skill_folders is absent or empty: then the improve run drafts no skill and asks nothing.
  */
-export function skillImproveWiring(store: SkillEvalWiring["store"], loaded: Loaded, plugins: SkillEvalPlugins): SkillImproveWiring | undefined {
+export function skillImproveWiring(store: FactoryStore, loaded: Loaded, plugins: SkillEvalPlugins): SkillImproveWiring | undefined {
   const folders = capabilitiesConfig(loaded.file).skill_folders;
   if (folders.length === 0) return undefined;
   const prompt = () => readFile(join(loaded.codeRoot, "prompts", "skill-improve.md"), "utf8").catch(() => null);
   return improveWiring({ ...wiringOf(store, loaded), plugins: async () => plugins }, skillImproveConfig(loaded.file), folders.map((f) => skillFolderPath(f, loaded.root)), prompt);
 }
 
+/**
+ * The approved pack MCP servers named `names` in `db`'s pack entries (checkPackGrants), or null when one is not
+ * approved or not started (`runs` false: the runner runs none).
+ */
+async function approvedMcpServers(db: NonNullable<ReturnType<typeof storeSqlOrNull>>, loaded: Loaded, names: readonly string[], runs: boolean): Promise<PackMcpServer[] | null> {
+  const r = await checkPackGrants(db, names.map((n) => `pack:mcp_server:${n}`), loaded.config.packs_auto_approve_read_only === true, runs);
+  return r.refused.length > 0 || r.broker.length > 0 ? null : r.mcp_servers;
+}
+
 /** The configured plugins and wiring over `store`, as `skillEvalRun` and `skillEvalTry` build them. */
-function wiringOf(store: SkillEvalWiring["store"], loaded: Loaded): SkillEvalWiring {
+function wiringOf(store: FactoryStore, loaded: Loaded): SkillEvalWiring {
   const plugins = async (): Promise<SkillEvalPlugins> => {
     const p = new Plugins(loaded);
     const secrets = await p.secrets();
-    const sandbox = await p.sandbox();
-    return { sandbox, runner: await p.runner(sandbox, secrets), llm: await p.llm(secrets), scanner: await p.scanner(secrets) };
+    const [sandbox, clock] = await Promise.all([p.sandbox(), p.clock()]);
+    return { sandbox, runner: await p.runner(sandbox, secrets), llm: await p.llm(secrets), scanner: await p.scanner(secrets), now: () => clock.now().getTime() };
   };
+  const db = storeSqlOrNull(store);
   return {
-    store, root: loaded.root, plugins, judgePrompt: () => readFile(join(loaded.codeRoot, "prompts", "skill-judge.md"), "utf8"),
+    store, root: loaded.root, plugins, sandbox_plugin: loaded.plugins.sandbox,
+    ...(db ? { mcpServers: (names: readonly string[], runs: boolean) => approvedMcpServers(db, loaded, names, runs) } : {}), judgePrompt: () => readFile(join(loaded.codeRoot, "prompts", "skill-judge.md"), "utf8"),
     repo: loaded.config.repo, deny_paths: loaded.config.deny_paths, timeout_ms: loaded.config.run_timeout_ms, newId: () => randomUUID(),
     ...(() => { const v = codeVersion(process.env[CODE_VERSION_ENV]).code_version; return v ? { factory_version: v } : {}; })(),
   };
 }
 
 /** `factory eval run <skill>` over the configured plugins and `store` (CommandCall.runSkillEval, built by main.ts). */
-export function skillEvalRun(store: SkillEvalWiring["store"], loaded: Loaded, r: SkillEvalRequest): Promise<SkillEvalResult> {
+export function skillEvalRun(store: FactoryStore, loaded: Loaded, r: SkillEvalRequest): Promise<SkillEvalResult> {
   return runSkillEvalFor(wiringOf(store, loaded), r);
 }
 
 /** `factory eval case try <case>` over the configured plugins and `store` (CommandCall.trySkillEvalCase, built by main.ts). */
-export function skillEvalTry(store: SkillEvalWiring["store"], loaded: Loaded, r: SkillEvalTryRequest): Promise<Authored<TriedCase>> {
+export function skillEvalTry(store: FactoryStore, loaded: Loaded, r: SkillEvalTryRequest): Promise<Authored<TriedCase>> {
   return tryCaseFor(wiringOf(store, loaded), r);
 }
 
