@@ -139,7 +139,9 @@ function soloRoot(plugins: Record<string, unknown> = {}): string {
   const dir = mkdtempSync(join(tmpdir(), "sf-schedule-start-"));
   mkdirSync(join(dir, "prompts"));
   for (const p of ["triage", "implement", "review", "resolve"]) writeFileSync(join(dir, "prompts", `${p}.md`), p);
-  const solo = { ...(REAL.plugins as object), awake: "none", updater: "none", source: ["local"], broker: "local", github_auth: "recording", ...plugins };
+  // The checked-in config selects "routed"; start from no action so each test picks its own.
+  const { schedule_action: _real, ...realPlugins } = REAL.plugins as Record<string, unknown>;
+  const solo = { ...realPlugins, awake: "none", updater: "none", source: ["local"], broker: "local", github_auth: "recording", ...plugins };
   writeFileSync(join(dir, "factory.config.json"), JSON.stringify({ ...REAL, plugins: solo, store: { type: "sqlite" }, state_dir: "state", worktrees_dir: "wt" }));
   writeFileSync(join(dir, "secrets.env"), "MYSQL_PASSWORD=pw\n");
   vi.stubEnv("SOFTWARE_FACTORY_SECRETS_FILE", join(dir, "secrets.env"));

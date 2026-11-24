@@ -57,7 +57,8 @@
     "ticks": "time-based",
     "engine": "journal",
     "tacit": "agents-home",
-    "eval_source": "none"
+    "eval_source": "none",
+    "schedule_action": "routed"
   },
   "models": { "cheap": "haiku", "standard": "sonnet", "strong": "opus" },
   "model_by": {
