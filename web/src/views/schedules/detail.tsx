@@ -24,13 +24,17 @@ export function summaryOf(s: ScheduleRow): string {
   return /^(.+?[.!?])(\s|$)/.exec(line)?.[1] ?? line;
 }
 
-/** The Schedule cell: the title, and under it the summary in one muted line cut with an ellipsis (its full text in the tooltip). */
+/**
+ * The Schedule cell: the title, and under it the summary in one muted line cut with an ellipsis (its full text in the
+ * tooltip). The summary takes the column's width (`w-0 min-w-full`) and never widens it, so the row fits a tablet;
+ * from lg the cell is at least 12rem wide (18rem from xl), so the line has room.
+ */
 export function TitleCell({ s }: { s: ScheduleRow }) {
   const summary = summaryOf(s);
   return (
-    <span className="flex min-w-0 flex-col">
+    <span className="flex min-w-0 flex-col lg:min-w-48 xl:min-w-72">
       <span className="truncate">{s.title}</span>
-      <span data-summary title={summary} className="truncate text-xs font-normal text-text-2">
+      <span data-summary title={summary} className="w-0 min-w-full truncate text-xs font-normal text-text-2">
         {summary}
       </span>
     </span>
