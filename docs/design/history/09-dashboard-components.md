@@ -1,5 +1,7 @@
 ## History
 
+- **The scrolling Dialog's form and body, and the ModalPanel's body, were `flex-1`** (decision changed 2026-11-24, the WebKit sizing decision at the top of 09-dashboard-components.md). Before: they grew from a zero basis (`flex: 1 1 0%`) to fill the dialog; WebKit sized the fit-content `<dialog>` from that zero, so a Dialog drew as a 2px line and a ModalPanel as its header only.
+
 - **A DataTable card cell was `min-w-0 break-words`** (decision changed 2026-11-24, the card-values decision at the top of 09-dashboard-components.md). Before: a card cell (`Td` below `sm`) and the card title were `break-words` and links kept their own width, so an inline-block link whose text is one long word (the Data page's `work_item_id`, `LINK_CLASS`) stayed as wide as that word and ran past the card's right edge at 390 px; a column's own `break-words` was kept in a card.
 
 - **The Disclosure, the SegmentedControl and the tree's expand triangle before the 2026-11-24 polish** (decision changed 2026-11-24, owner feedback). Before: the Disclosure summary was plain `text-xs text-2` with a 16px chevron flush left, no hover state and no space round the body; the SegmentedControl was a `role=group` of `aria-pressed` buttons in a 32px `border-strong` box on `surface`, segments sized to their text, the selected one with an inset `border-strong` ring; the Work tree's expand control was a 24x28px button holding a ▸/▾ text triangle; Good and Bad on the decision card were a SegmentedControl with no selection.

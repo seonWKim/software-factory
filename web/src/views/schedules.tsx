@@ -119,7 +119,7 @@ export function SchedulesPage() {
       <PageHeader
         title={t("page.schedules")}
         description={t("schedules.description")}
-        actions={<Button ref={addButton} variant="primary" disabled={!w.ready} onClick={() => { opener.current = addButton.current; setForm({ schedule: null }); }}>{t("schedules.new")}</Button>}
+        actions={<Button ref={addButton} variant="primary" data-capture-open="new-schedule" disabled={!w.ready} onClick={() => { opener.current = addButton.current; setForm({ schedule: null }); }}>{t("schedules.new")}</Button>}
       />
       {form !== null && (
         <ScheduleDialog
