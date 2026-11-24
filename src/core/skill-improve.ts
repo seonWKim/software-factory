@@ -6,8 +6,11 @@
 // reject and hold are the functions below, each a conditional change of the draft row. A seeded skill is a suite whose
 // skill_ref is inside capabilities.skill_folders; with none configured the composition root passes no wiring and the
 // feature is off. File reads and writes, the replay and the judge come through SkillImproveWiring (src/skill-evals.ts).
+// With the owner's tacit ledger on, each `proposed` draft and each verdict the store accepts on it are also handed to
+// the ledger, after the store holds them; a ledger failure is logged and changes nothing here (`handOff`).
 
 import { cyrb53 } from "./hash.js";
+import { errorText, type Logger } from "./log.js";
 import { MODEL_CLASSES, type ModelClass } from "./model-choice.js";
 import type { SkillImproveConfig } from "./skill-improve-config.js";
 import type { UserId } from "./types.js";
@@ -16,6 +19,7 @@ import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { LLMProvider, LLMResponse } from "../interfaces/llm-provider.js";
 import type { SkillDraft, SkillDraftState } from "../interfaces/skill-draft-store.js";
 import type { SkillEvalRun } from "../interfaces/skill-eval-store.js";
+import type { TacitChangeProposal, TacitHandOff, TacitLedger, TacitVerdictRecord } from "../interfaces/tacit-ledger.js";
 
 /** Who starts the scratch runs. */
 export const SKILL_IMPROVER = "system:skill-improve" as UserId;
@@ -60,7 +64,51 @@ export interface SkillImproveDeps {
   clock: { now(): Date };
   wiring: SkillImproveWiring;
   signal: AbortSignal;
+  /** The owner's tacit ledger and where its failures are logged; absent or off: nothing is handed off. */
+  ledger?: SkillLedger | undefined;
 }
+
+/** The owner's tacit ledger as the skill hand-off reads it, and the log a failed hand-off is written to. */
+export interface SkillLedger {
+  tacit: TacitHandOff;
+  log: Logger;
+}
+
+/**
+ * Hands one stored record to the ledger when it is on: its failure is logged and never thrown, so the stored draft and
+ * the verdict's result stay as they are with the ledger off.
+ */
+async function handOff(ledger: SkillLedger | undefined, r: { proposal: TacitChangeProposal } | { verdict: TacitVerdictRecord }): Promise<void> {
+  if (!ledger?.tacit.enabled) return;
+  const id = "proposal" in r ? r.proposal.id : r.verdict.id;
+  try {
+    if ("proposal" in r) await ledger.tacit.changeProposal?.(r.proposal);
+    else await ledger.tacit.verdictRecord?.(r.verdict);
+  } catch (err) {
+    ledger.log.warn("skill draft not handed to the tacit ledger; the factory keeps it", { id, record: "proposal" in r ? "proposal" : r.verdict.decision, error: errorText(err) });
+  }
+}
+
+/**
+ * Starts a live tacit holder (src/runtime/live-tacit.ts) through `start`, with a build that remembers the plugin it last
+ * built, and returns it with the hand-off: `enabled` from the holder, which delegates neither method, and the two
+ * methods on that plugin (a failed build keeps it; a plugin without a method sends nothing for it).
+ */
+export async function withHandOff<H extends { readonly enabled: boolean }>(
+  start: (build: (name: string) => Promise<TacitLedger>) => Promise<H>, make: (name: string) => Promise<TacitLedger>,
+): Promise<{ holder: H; handOff: TacitHandOff }> {
+  let inUse: TacitLedger | undefined;
+  const holder = await start(async (name) => (inUse = await make(name)));
+  const handOff: TacitHandOff = {
+    get enabled() { return holder.enabled; },
+    changeProposal: async (p) => inUse?.changeProposal?.(p),
+    verdictRecord: async (v) => inUse?.verdictRecord?.(v),
+  };
+  return { holder, handOff };
+}
+
+/** The file a skill draft changes, as the ledger names it. */
+const skillTarget = (skill_ref: string) => `${skill_ref}/SKILL.md`;
 
 /** Why a skill fell below its target: its newest measured run dropped, or its last runs gained nothing. */
 export type SkillTrigger = "drop" | "stall";
@@ -154,7 +202,15 @@ async function draftSkill(d: SkillImproveDeps, project: string, skill_ref: strin
   if (!baseline) return store("tried", call.tokens, { ...drafted, reason: "no_baseline" });
   const gain = scratch.pass_rate - baseline.pass_rate!;
   const scores = { ...drafted, baseline_run: { id: baseline.id, pass_rate: baseline.pass_rate }, gain };
-  return past(gain, c.skill_improve_noise) ? store("proposed", call.tokens, scores) : store("tried", call.tokens, { ...scores, reason: "no_gain" });
+  if (!past(gain, c.skill_improve_noise)) return store("tried", call.tokens, { ...scores, reason: "no_gain" });
+  const stored = await store("proposed", call.tokens, scores);
+  const checks = failed_checks.length > 0 ? failed_checks.join("; ") : "none recorded";
+  await handOff(d.ledger, { proposal: {
+    id, target: skillTarget(skill_ref), title: `Improve ${skill_ref}: pass rate ${baseline.pass_rate} → ${scratch.pass_rate}`,
+    rationale: `Its newest eval run on ${model_class} failed these checks: ${checks}. The draft scored ${scratch.pass_rate} in scratch against ${baseline.pass_rate} for the current version.`,
+    change: call.text,
+  } });
+  return stored;
 }
 
 /** The model class of the newest measured run (the scratch run and its baseline use it); `standard` when it names none. */
@@ -209,20 +265,33 @@ export type SkillVerdict = { draft: SkillDraft } | { refused: string };
 type VerdictStore = Pick<FactoryStore, "getSkillDraft" | "setSkillDraftState">;
 
 /** proposed → held. */
-export function holdSkillDraft(store: VerdictStore, id: string): Promise<SkillVerdict> {
-  return decide(store, id, ["proposed"], "held");
+export function holdSkillDraft(store: VerdictStore, id: string, ledger?: SkillLedger): Promise<SkillVerdict> {
+  return decide(store, id, ["proposed"], "held", "hold", ledger);
 }
 
 /** proposed or held → rejected. */
-export function rejectSkillDraft(store: VerdictStore, id: string): Promise<SkillVerdict> {
-  return decide(store, id, ["proposed", "held"], "rejected");
+export function rejectSkillDraft(store: VerdictStore, id: string, ledger?: SkillLedger): Promise<SkillVerdict> {
+  return decide(store, id, ["proposed", "held"], "rejected", "reject", ledger);
 }
 
-async function decide(store: VerdictStore, id: string, from: readonly SkillDraftState[], to: SkillDraftState): Promise<SkillVerdict> {
+async function decide(
+  store: VerdictStore, id: string, from: readonly SkillDraftState[], to: SkillDraftState, decision: TacitVerdictRecord["decision"], ledger: SkillLedger | undefined,
+): Promise<SkillVerdict> {
   const draft = await store.getSkillDraft(id);
   if (!draft) return { refused: `no skill draft ${id}` };
   if (!from.includes(draft.state) || !(await store.setSkillDraftState(id, draft.state, to))) return { refused: `skill draft ${id} is ${draft.state}: nothing changed` };
+  await recordVerdict(ledger, draft, decision);
   return { draft: (await store.getSkillDraft(id))! };
+}
+
+/**
+ * The verdict the store accepted on `draft` (as it was before it), to the ledger: only for a draft that was proposed,
+ * so a draft stored `held` past its token budget, never handed off, sends none.
+ */
+function recordVerdict(ledger: SkillLedger | undefined, draft: SkillDraft, decision: TacitVerdictRecord["decision"]): Promise<void> {
+  const reason = ((draft.detail ?? {}) as Record<string, unknown>).reason;
+  if (draft.state !== "proposed" && !(draft.state === "held" && reason !== "token_budget")) return Promise.resolve();
+  return handOff(ledger, { verdict: { id: draft.id, decision, target: skillTarget(draft.skill_ref), reason: `The owner's ${decision} of skill draft ${draft.id} in the factory.` } });
 }
 
 /**
@@ -230,7 +299,9 @@ async function decide(store: VerdictStore, id: string, from: readonly SkillDraft
  * re-runs the suite (the run is stored) and sets the draft promoted with that run. Refused, nothing written, for a
  * skill outside capabilities.skill_folders, a decided draft, or an unreadable skill.
  */
-export async function promoteSkillDraft(d: { store: VerdictStore; wiring: SkillImproveWiring; signal: AbortSignal }, id: string, created_by: UserId): Promise<SkillVerdict> {
+export async function promoteSkillDraft(
+  d: { store: VerdictStore; wiring: SkillImproveWiring; signal: AbortSignal }, id: string, created_by: UserId, ledger?: SkillLedger,
+): Promise<SkillVerdict> {
   const draft = await d.store.getSkillDraft(id);
   if (!draft) return { refused: `no skill draft ${id}` };
   const folder = d.wiring.folderOf(draft.skill_ref);
@@ -244,6 +315,7 @@ export async function promoteSkillDraft(d: { store: VerdictStore; wiring: SkillI
   await d.wiring.writeSkill(folder, detail.draft);
   const model_class = MODEL_CLASSES.find((c) => c === detail.model_class) ?? "standard";
   const run = await d.wiring.rerun({ skill_ref: draft.skill_ref, model_class, created_by }, d.signal);
-  await d.store.setSkillDraftState(id, draft.state, "promoted", { ...kept, promoted_run: run ? { id: run.id, pass_rate: run.pass_rate } : null });
+  const promoted = await d.store.setSkillDraftState(id, draft.state, "promoted", { ...kept, promoted_run: run ? { id: run.id, pass_rate: run.pass_rate } : null });
+  if (promoted) await recordVerdict(ledger, draft, "promote");
   return { draft: (await d.store.getSkillDraft(id))! };
 }

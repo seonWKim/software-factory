@@ -14,7 +14,8 @@ import { DEFAULT_TIMEOUTS, defineRunKind } from "../../run-kind.js";
  * stored report, the learner may write one tighter max_diff_lines for the project (design 08-settings), and, as
  * `improver.schedule` allows, the entity proposals are drafted and replayed through the golden set (core/proposals.ts).
  * With a model and capabilities.skill_folders, each seeded skill below its eval target that dropped or stalled gets
- * one draft, measured in scratch and stored for a verdict (src/core/skill-improve.ts). Last, with a model, the
+ * one draft, measured in scratch and stored for a verdict (src/core/skill-improve.ts); a proposed one also goes to the
+ * owner's tacit ledger when it is on. Last, with a model, the
  * project's design learnings are tagged and counted; the outcome lists the proposals due (design 07-design-learnings).
  */
 async function improve(w: Worker, run: Run, item: WorkItem, signal: AbortSignal): Promise<Record<string, unknown>> {
@@ -30,7 +31,9 @@ async function improve(w: Worker, run: Run, item: WorkItem, signal: AbortSignal)
   );
   const learned = await learnFromReport({ store: w.d.store, layers: w.cfg.settings }, run, report);
   const wiring = w.d.skillImprove;
-  const skills = metered && wiring ? await improveSkills({ store: w.d.store, scanner: w.d.scanner, llm: metered, clock: w.d.clock, wiring, signal }, item.project) : [];
+  const skills = metered && wiring ? await improveSkills({
+    store: w.d.store, scanner: w.d.scanner, llm: metered, clock: w.d.clock, wiring, signal, ...(w.d.tacit ? { ledger: { tacit: w.d.tacit, log: w.d.log } } : {}),
+  }, item.project) : [];
   // Entity proposals (design §7, #496): the review prompt's change per recurring failure, with its golden evidence; nothing applied.
   const cfg = w.cfg.improver ?? IMPROVER_DEFAULTS;
   const replay = w.d.reviewReplay; // the golden replay, built in the composition root (src/golden-replay.ts)

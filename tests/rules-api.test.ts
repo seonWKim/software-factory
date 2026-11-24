@@ -178,6 +178,25 @@ describe("skill drafts: the proposals list and the Rules page's verdict", () => 
     expect(files.get("/repo/skills/a")).toBe("SKILL A");
   });
 
+  it("passes the ledger the UI holds: an accepted verdict is recorded there, a refused one sends nothing, and a failure keeps the answer", async () => {
+    const { add, sd, store } = await setup();
+    const recorded: string[] = [];
+    let fail = false, refreshed = 0;
+    const ledger = {
+      enabled: true, verdictRecord: async (v: { id: string; decision: string }) => { recorded.push(`${v.id}:${v.decision}`); if (fail) throw new Error("ledger locked"); },
+    } as unknown as TacitLedger;
+    const on: PauseDeps = { ...sd, tacit: { ledger, settings: { refresh: async () => void refreshed++, values: () => ({ integrations: {} }) }, home: () => ({ path: "", missing: null, homes: [] }) } };
+    await add("skd_p", "proposed");
+    await add("skd_q", "proposed");
+    expect((await writeSkillVerdict(on, sd.pauses!, { id: "skd_p", verdict: "hold" })).value).toEqual({ id: "skd_p", state: "held" });
+    expect((await writeSkillVerdict(on, sd.pauses!, { id: "skd_p", verdict: "hold" })).status).toBe(409);
+    fail = true;
+    expect(await writeSkillVerdict(on, sd.pauses!, { id: "skd_q", verdict: "reject" })).toEqual({ status: 200, value: { id: "skd_q", state: "rejected" } });
+    expect((await store.getSkillDraft("skd_q"))!.state).toBe("rejected");
+    expect(recorded).toEqual(["skd_p:hold", "skd_q:reject"]);
+    expect(refreshed).toBeGreaterThan(0);
+  });
+
   it("a verdict the core refuses changes nothing and answers the core's reason", async () => {
     const { add, verdict, files, reruns, store } = await setup();
     await add("skd_t", "tried");

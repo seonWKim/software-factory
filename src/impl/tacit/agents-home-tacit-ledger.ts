@@ -14,14 +14,16 @@
 // processes only: an agent run never gets it. An edit of an applied class (2026-11-22) rewrites its block's heading,
 // default and exception lines in the rules file and runs `sync-agents`, with no verdict. The Pushbacks list reads
 // `tacit show --active --unclustered` and Dismiss runs `tacit status <T-id> noise`: both forms are assumed until the
-// owner confirms them (docs/plugins/tacit-ledger.md).
+// owner confirms them (docs/plugins/tacit-ledger.md). A skill draft the factory stored `proposed` goes to `evolve
+// propose --id <draft id> …` and the owner's verdict on it, once stored, to `evolve verdict <draft id> …` (2026-11-24;
+// the propose form is assumed too).
 
 import { accessSync, constants, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import {
-  type TacitApplied, type TacitDecision, type TacitDraft, type TacitEntryDetail, type TacitLedger, type TacitPendingEntry, type TacitPromotion,
-  type TacitOpenPushback, type TacitPushback, type TacitRetired, type TacitRule, TacitRefusal, TacitSyncFailed, isProse, tacitIdKind,
+  type TacitApplied, type TacitChangeProposal, type TacitDecision, type TacitDraft, type TacitEntryDetail, type TacitLedger, type TacitPendingEntry, type TacitPromotion,
+  type TacitOpenPushback, type TacitPushback, type TacitRetired, type TacitRule, type TacitVerdictRecord, TacitRefusal, TacitSyncFailed, isProse, tacitIdKind,
 } from "../../interfaces/tacit-ledger.js";
 import { SystemClock } from "../clock/system-clock.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
@@ -37,6 +39,12 @@ export const RULES_FILE = "private/tacit/rules.md";
 const LEDGER_FILE = "private/tacit/ledger.jsonl";
 /** The view `evolve pending` reads, rebuilt by the daily brief: a verdict newer than it is not in the view yet. */
 const CANDIDATES_FILE = "private/tacit/rule-candidates.md";
+
+/** The kind a skill draft is proposed as: it edits an asset the owner has (its SKILL.md). */
+const SKILL_PROPOSAL_KIND = "edit-asset";
+
+/** A factory proposal ID that can go in argv as one item: letters, digits, `_` and `-`, not starting with `-`. */
+const FACTORY_PROPOSAL_ID = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
 
 /** The status `tacit status` records for a dismissed pushback. */
 const NOISE = "noise";
@@ -89,6 +97,11 @@ function kindOf(id: string): "class" | "proposal" {
   const kind = tacitIdKind(id);
   if (kind === null) throw new Error(`"${id}" is neither a class (C-) nor a proposal (P-) ID`);
   return kind;
+}
+
+/** Throws `TacitRefusal`, before any CLI runs, for a factory proposal ID that cannot be one argv item. */
+function factoryProposalId(id: string): void {
+  if (!FACTORY_PROPOSAL_ID.test(id)) throw new TacitRefusal(`"${id}" is not a factory proposal ID: nothing sent`);
 }
 
 export class AgentsHomeTacitLedger implements TacitLedger {
@@ -280,6 +293,26 @@ export class AgentsHomeTacitLedger implements TacitLedger {
   async dismiss(id: string): Promise<void> {
     if (!/^T-[0-9A-Za-z_-]+$/.test(id)) throw new TacitRefusal(`only a pushback (T-) is dismissed, not "${id}"`);
     await this.run("tacit", ["status", id, NOISE]);
+  }
+
+  /**
+   * `evolve propose --id <id> --kind edit-asset --target <target> --title <title> --rationale <why> --change <text>`
+   * (the form is assumed): one skill draft the factory stored `proposed`. An ID that does not fit throws first.
+   */
+  async changeProposal(p: TacitChangeProposal): Promise<void> {
+    factoryProposalId(p.id);
+    await this.run("evolve", [
+      "propose", "--id", p.id, "--kind", SKILL_PROPOSAL_KIND, "--target", p.target, "--title", p.title, "--rationale", p.rationale, "--change", p.change,
+    ]);
+  }
+
+  /**
+   * `evolve verdict <id> <hold|reject|promote> --reason <reason>`, with `--applied-to <target>` on promote (the form
+   * `verdict` uses for a proposal): the owner's verdict the factory stored. Writes no file. An ID that does not fit throws first.
+   */
+  async verdictRecord(v: TacitVerdictRecord): Promise<void> {
+    factoryProposalId(v.id);
+    await this.run("evolve", ["verdict", v.id, v.decision, "--reason", v.reason, ...(v.decision === "promote" ? ["--applied-to", v.target] : [])]);
   }
 
   /** `<home>/<path>` resolved, refused when it is missing or resolves outside the resolved home. */
