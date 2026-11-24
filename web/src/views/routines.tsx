@@ -10,7 +10,7 @@ import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
 import { t } from "../i18n/index.js";
 import { DeleteRoutineDialog, RoutineDialog, newRoutineId } from "./routines/form.js";
-import { repeatsText } from "./routines/labels.js";
+import { routineRepeats } from "./routines/labels.js";
 
 // The Routines page (design 09-dashboard-routines, over 08-routines): every routine in a DataTable inside a Card, read
 // through GET /api/v1/routines. Each row's Switch is on while the routine is not paused and posts pause or resume; its
@@ -60,7 +60,7 @@ function RoutineRows({ rows, selected, onSelect, onEdit, onDelete, w }: { rows: 
     // The name takes the room the other columns leave and is cut to one line (its details Card has it whole); Repeats
     // and Next run stay on one line. `max-w-0` with `w-full` is what lets a table cell shrink below its text.
     { key: "name", header: t("routines.col.name"), className: "w-full max-w-0" },
-    { key: "repeats", header: t("routines.col.repeats"), render: (r) => repeatsText(r.schedule), className: "whitespace-nowrap" },
+    { key: "repeats", header: t("routines.col.repeats"), render: (r) => routineRepeats(r.schedule), className: "whitespace-nowrap" },
     // Never empty: below `sm` each row is a card whose labels show even for an empty cell.
     { key: "next", header: t("routines.col.next"), render: nextRun, className: "whitespace-nowrap" },
     {
