@@ -61,12 +61,30 @@ export async function itemChecks(checks: readonly DoneCheck[] | null, runs: read
 type Text = (v: string | null, channel?: "run_outcome") => Promise<string | null>;
 
 /**
- * About's fields on GET /api/v1/items/:id: the intake text's first paragraph, the spec once approved (done_criteria
+ * The request: the first paragraph of the intake text's body. Every intake stores `${title}\n\n${body}`, so the stored
+ * title is dropped when the text starts with it (then a blank line, or the end); null when nothing is left or the
+ * paragraph is the title itself.
+ */
+export function requestOf(it: Pick<WorkItem, "title" | "issue_text">): string | null {
+  const full = it.issue_text?.trim();
+  if (!full) return null;
+  const title = it.title?.trim() ?? "";
+  let rest = full;
+  if (title && full.startsWith(title)) {
+    const after = full.slice(title.length);
+    if (after === "" || /^[ \t]*\n[ \t]*\n/.test(after)) rest = after;
+  }
+  const first = rest.trim().split(/\n[ \t]*\n/)[0]?.trim() ?? "";
+  return first === "" || first === title ? null : first;
+}
+
+/**
+ * About's fields on GET /api/v1/items/:id: the request (the body's first paragraph), the spec once approved (done_criteria
  * set), and the checks; each text withheld on its own, an output tail on the run_outcome channel.
  */
 export async function aboutFields(it: WorkItem, runs: readonly Run[], text: Text) {
   return {
-    request: await text(it.issue_text?.split(/\n[ \t]*\n/)[0]?.trim() || null),
+    request: await text(requestOf(it)),
     spec: it.done_criteria && { problem: (await text(it.problem))!, desired_output: await text(it.desired_output), done_criteria: await Promise.all(it.done_criteria.map(async (d) => (await text(d))!)) },
     checks: await itemChecks(it.done_checks, runs, async (v, outcome) => (await text(v, outcome ? "run_outcome" : undefined))!),
   };

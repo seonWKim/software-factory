@@ -6,7 +6,7 @@ import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { ItemChecks } from "./item-checks.js";
 
-// The item page's About (docs/design/09-dashboard-item.md): the request's first paragraph, the done-when lines with
+// The item page's About (docs/design/09-dashboard-item.md): the body's first paragraph as the request, the done-when lines with
 // their checks and latest results, and the approved spec collapsed below them (without its done-when list while the
 // checks show it). A text the API withheld (`[withheld: <rule>]`) shows the withheld note, never the marker.
 
