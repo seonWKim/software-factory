@@ -263,8 +263,8 @@ describe("Run now", () => {
   });
 });
 
-// The Plugins page's Evals card (design 09-dashboard-settings, 2026-11-24): an Evals button on each Skills row with a
-// SKILL.md path opens the card under the Skills table, above Skill folders. It reads /suite and /runs for the path,
+// The Plugins page's Evals panel (design 09-dashboard-settings, 2026-11-24): an Evals button on each Skills row with a
+// SKILL.md path opens the Evals content in a modal panel titled with the skill's name; closing it returns focus to the button. It reads /suite and /runs for the path,
 // writes through POST /api/v1/evals/write with GET /api/v1/pauses's token, and opens every input, delete and try
 // result in a Dialog; a 409 stays in the open Dialog. The reads and writes are a fake fetch.
 
@@ -310,12 +310,13 @@ async function openCard() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(createElement(QueryClientProvider, { client }, createElement(PluginsPage)));
   fireEvent.click(await screen.findByRole("button", { name: "Evals for review-plan" }, SLOW));
-  return screen.findByRole("region", { name: "Evals: review-plan" }, SLOW);
+  return screen.findByRole("dialog", { name: "Evals: review-plan" }, SLOW);
 }
 
-const dialog = () => screen.getByRole("dialog");
+// The panel is a dialog too; a Dialog it opens is the last one.
+const dialog = () => screen.getAllByRole("dialog").at(-1)!;
 const confirmIn = (name: string) => fireEvent.click(within(dialog()).getByRole("button", { name }));
-const closed = () => vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), SLOW);
+const closed = () => vi.waitFor(() => expect(screen.getAllByRole("dialog")).toHaveLength(1), SLOW);
 
 describe("Plugins Skills tab: the Evals card", () => {
   beforeEach(() => {
@@ -335,18 +336,32 @@ describe("Plugins Skills tab: the Evals card", () => {
     expect(off.getAttribute("title")).toBe("Only a skill with a SKILL.md file can have evals.");
   });
 
-  it("opens the card under the Skills table and above Skill folders, reading the suite for the URL-encoded path", async () => {
+  it("opens a dialog titled with the skill's name, with no aria-pressed on the button, reading the suite for the URL-encoded path", async () => {
     const card = await openCard();
-    const table = screen.getByRole("table", { name: "Skills" });
-    const folders = screen.getByRole("region", { name: "Skill folders" });
-    expect(table.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(card.compareDocumentPosition(folders) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Evals for review-plan" }).hasAttribute("aria-pressed")).toBe(false);
     expect(urls).toContain(`/api/v1/evals/${ENC}/suite`);
     const cases = await within(card).findByRole("table", undefined, SLOW);
     expect(within(cases).getAllByRole("row")).toHaveLength(CASES.length + 1);
     expect(card.textContent).toContain("Plan reviews");
     // Plain words: no suite, case or run ID, and no SKILL.md path.
     expect(card.textContent).not.toMatch(/suite_|case_|run_|SKILL\.md/);
+  });
+
+  it("closing the dialog (close button, Esc or the backdrop) returns focus to that row's Evals button", async () => {
+    await openCard();
+    const button = screen.getByRole("button", { name: "Evals for review-plan" });
+    const close = [
+      (card: HTMLElement) => fireEvent.click(within(card).getByRole("button", { name: "Close" })),
+      (card: HTMLElement) => fireEvent.keyDown(card, { key: "Escape" }),
+      (card: HTMLElement) => fireEvent.click(card),
+    ];
+    for (const how of close) {
+      how(screen.getByRole("dialog", { name: "Evals: review-plan" }));
+      await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), SLOW);
+      expect(document.activeElement).toBe(button);
+      fireEvent.click(button);
+      await screen.findByRole("dialog", { name: "Evals: review-plan" }, SLOW);
+    }
   });
 
   it("offers Add test set only when the skill has none, and posts suite.add with the pauses token", async () => {
