@@ -190,10 +190,12 @@ function TableRow(props: TableProps & DataAttrs) {
   const menu = rowMenu(props);
   const cell: Record<Slot, () => ReactNode> = {
     badge: () => <Td key="badge">{props.badge}</Td>,
+    // wrap-anywhere, not break-words: only it lowers the column's min-content width, so an unbroken word in the title
+    // or an error's Details cannot push the actions column past the window (design 09-dashboard-item-runs, 2026-11-24).
     title: () => (
       <Td key="title" className="max-w-md min-w-40">
-        <Title s={props} cell className="max-w-full font-medium break-words" />
-        {props.second && <div data-row-second className="mt-1 text-xs break-words">{props.second}</div>}
+        <Title s={props} cell className="max-w-full font-medium wrap-anywhere" />
+        {props.second && <div data-row-second className="mt-1 text-xs wrap-anywhere">{props.second}</div>}
       </Td>
     ),
     why: () => <Td key="why" className="text-text-2">{props.why}</Td>,
