@@ -140,12 +140,14 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
       }}
       className="m-auto max-h-[calc(100dvh-2rem)] max-w-xl flex-col overflow-hidden rounded-card open:flex"
     >
-      {/* The title and the footer stay put; only the body between them scrolls, so Cancel and the confirm are always in view. */}
-      <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
+      {/* The title and the footer stay put; only the body between them scrolls, so Cancel and the confirm are always in view.
+          The form and the body keep their content height and only shrink (min-h-0) to the dialog's max height: none of
+          them grows from a zero basis (flex-1), which WebKit sizes as zero, collapsing the dialog to its border. */}
+      <form onSubmit={submit} className="flex min-h-0 flex-col">
         <h2 id={titleId} title={title} className="shrink-0 truncate px-6 pt-6 text-base font-semibold">
           {title}
         </h2>
-        <div data-dialog-body className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-6 py-3">
+        <div data-dialog-body className="flex min-h-0 flex-col gap-3 overflow-y-auto overscroll-contain px-6 py-3">
           {children}
           {consequence && (
             <p data-dialog-consequence className="text-sm text-pretty break-words">
@@ -218,7 +220,7 @@ export function ModalPanel({ title, header, size = "lg", placement = "center", o
           <X aria-hidden className="size-4" />
         </Button>
       </header>
-      <div data-panel-body tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4 text-sm outline-none">
+      <div data-panel-body tabIndex={-1} className="min-h-0 overflow-y-auto overscroll-contain px-5 py-4 text-sm outline-none">
         {children}
       </div>
     </Modal>

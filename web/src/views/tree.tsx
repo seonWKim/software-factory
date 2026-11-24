@@ -10,7 +10,7 @@ import { FOCUS } from "../components/ui/control.js";
 import { DisclosureChevron } from "../components/ui/disclosure.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
-import { duration } from "../lib/format.js";
+import { elapsed } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 import { PrLink, When, WhyText, WorkerName, runKindLabel } from "./common.js";
@@ -65,12 +65,12 @@ function Row({ node, now, byNumber, byId }: { node: TreeNode; now: number; byNum
       href={itemPath(it.id)}
       why={it.why && <WhyText why={it.why} />}
       worker={run && (
-        <span className="flex flex-wrap gap-x-2">
+        <span className="flex flex-wrap items-center gap-x-2">
           {run && (
             <span className="whitespace-nowrap tabular-nums" data-run>
               {runKindLabel(run.kind)} #{run.attempt}
               {run.status === "queued" && run.position !== null && t("tree.queue", { position: run.position })}
-              {run.started_at && run.status === "running" && ` · ${duration(now - Date.parse(run.started_at))}`}
+              {run.started_at && run.status === "running" && ` · ${elapsed(now - Date.parse(run.started_at))}`}
             </span>
           )}
           {run?.worker_id && <WorkerName id={run.worker_id} />}
@@ -89,22 +89,24 @@ function Row({ node, now, byNumber, byId }: { node: TreeNode; now: number; byNum
 const INDENT = ["pl-0", "pl-4", "pl-8", "pl-12", "pl-16"] as const;
 const indentFor = (level: number) => INDENT[Math.min(Math.max(level, 1), INDENT.length) - 1];
 
-function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, Item>; byId: ReadonlyMap<string, Item> }) {
-  const { node } = props;
+function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, Item>; byId: ReadonlyMap<string, Item>; gutter: boolean }) {
+  const { node, gutter } = props;
   return (
     <TreeItem id={node.item.id} textValue={node.item.title ?? node.item.source.id} className="outline-none data-[focus-visible]:ring-2 data-[focus-visible]:ring-focus">
       <TreeItemContent>
         {({ hasChildItems, isExpanded, level }) => (
           <div className={cn("flex items-start gap-1 border-b border-border pr-1", indentFor(level))}>
             {hasChildItems ? (
-              // The design system's icon button (32px, ghost) around the Disclosure's chevron: the row's first line is 32px
-              // already, so the row keeps its height.
-              <Button slot="chevron" className={buttonClass({ variant: "ghost", size: "icon", className: "group text-text-2" })} aria-label={isExpanded ? t("tree.collapse") : t("tree.expand")}>
+              // The design system's icon button (32px, ghost) around the Disclosure's chevron, 4px down (the compact row's top
+              // padding), so it is centred on the row's 32px first line and the row keeps its height.
+              <Button slot="chevron" className={buttonClass({ variant: "ghost", size: "icon", className: "group mt-1 text-text-2" })} aria-label={isExpanded ? t("tree.collapse") : t("tree.expand")}>
                 <DisclosureChevron open={isExpanded} className="size-4" />
               </Button>
-            ) : (
+            ) : gutter || level > 1 ? (
+              // The chevron's column, so a leaf's badge lines up under its siblings' badges; none when no row of
+              // the tree has a chevron.
               <span className="w-8 shrink-0" aria-hidden />
-            )}
+            ) : null}
             <Row {...props} />
           </div>
         )}
@@ -151,6 +153,8 @@ export function ItemsTree({ nodes, rows, now, expanded, onExpanded }: {
     const n = issueNumber(r);
     if (n !== null) byNumber.set(n, r);
   }
+  // A top-level row keeps the chevron's column only when some top-level row has children to expand.
+  const gutter = nodes.some((n) => n.children.length > 0);
   return (
     <Tree
       aria-label={t("tree.label")}
@@ -159,7 +163,7 @@ export function ItemsTree({ nodes, rows, now, expanded, onExpanded }: {
       onExpandedChange={(keys) => onExpanded([...keys].map(String))}
       className="rounded-control border border-border text-sm"
     >
-      {nodes.map((n) => <NodeItem key={n.item.id} node={n} now={now} byNumber={byNumber} byId={byId} />)}
+      {nodes.map((n) => <NodeItem key={n.item.id} node={n} now={now} byNumber={byNumber} byId={byId} gutter={gutter} />)}
     </Tree>
   );
 }

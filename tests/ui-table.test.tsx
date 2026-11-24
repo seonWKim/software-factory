@@ -170,9 +170,23 @@ describe("DataTable select", () => {
     expect(picked).toEqual(["b"]);
     expect(screen.getByRole("button", { name: "Show Alpha" }).getAttribute("aria-pressed")).toBe("true");
     expect(beta.getAttribute("aria-pressed")).toBe("false");
-    // A Button would draw a pill (surface-2 when pressed) and sit 4px below the cells; this one is 28px, pulled up 4px.
-    expect(beta.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-h-7", "-my-1"]));
+    // A Button would draw a pill (surface-2 when pressed); this one is the cell's whole 32px first line, so its text is
+    // centred on the row's centre line with the other cells (Td's CELL_LINE starts a 32px control at the top).
+    expect(beta.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-h-8"]));
+    expect(beta.className).not.toContain("-my-");
     expect(beta.className).not.toMatch(/aria-pressed:bg/);
+  });
+});
+
+// Owner feedback 2026-11-24 (#83, Schedules): the text sat at the top of each row while the Switch and the ⋯ sat lower.
+// Every cell's content starts on the row's one 32px line: text 6px down (its 20px line centred on it), a 32px button
+// at the top, a 28px one 2px down, a 24px Switch 4px down, so all of them share one centre line.
+describe("Td puts every cell on the row's centre line", () => {
+  const line = (cell: string) => render(<Table label="T" head={["A"]}><Tr><Td>{cell}</Td></Tr></Table>).container.querySelector("td > [data-cell-line]")!;
+  it("wraps each cell's content in the one cell line, with the offsets for text and controls", () => {
+    width(SM_PX);
+    const cls = line("Every day at 09:00").className.split(/\s+/);
+    expect(cls).toEqual(expect.arrayContaining(["py-1.5", "has-[button.min-h-8,button.size-8]:py-0", "has-[button.min-h-7]:py-0.5", "has-[[role=switch]]:py-1"]));
   });
 });
 

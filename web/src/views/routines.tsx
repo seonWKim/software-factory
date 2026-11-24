@@ -1,3 +1,4 @@
+import { Pause, Pencil, Play, Trash2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { API, type RoutineFields, type RoutineRow, type RoutineSuggestionRow, type RoutineVerb, type Session, postRoutine, useApi, useRoutineSuggestions, useRoutines } from "../api.js";
@@ -75,10 +76,11 @@ function RoutineRows({ rows, selected, onSelect, onEdit, onDelete, w }: { rows: 
         <OverflowMenu
           label={t("routines.more", { name: r.name })}
           items={[
-            { label: t("routines.run"), action: "routine run", disabled: !w.ready || r.paused || r.schedule === null, onSelect: () => void w.write("run", r.id) },
-            { label: t("routines.edit"), action: "routine edit", disabled: !w.ready, onSelect: () => onEdit(r, document.activeElement as Opener) },
-            { label: t(r.paused ? "routines.resume" : "routines.pause"), action: r.paused ? "routine resume" : "routine pause", disabled: !w.ready, onSelect: () => void w.write(r.paused ? "resume" : "pause", r.id) },
-            { label: t("routines.delete"), action: "routine delete", disabled: !w.ready, onSelect: () => onDelete(r, document.activeElement as Opener) },
+            { label: t("routines.run"), icon: Play, action: "routine run", disabled: !w.ready || r.paused || r.schedule === null, onSelect: () => void w.write("run", r.id) },
+            { label: t("routines.edit"), icon: Pencil, action: "routine edit", disabled: !w.ready, onSelect: () => onEdit(r, document.activeElement as Opener) },
+            { label: t(r.paused ? "routines.resume" : "routines.pause"), icon: r.paused ? Play : Pause, action: r.paused ? "routine resume" : "routine pause", disabled: !w.ready, onSelect: () => void w.write(r.paused ? "resume" : "pause", r.id) },
+            { separator: true },
+            { label: t("routines.delete"), icon: Trash2, danger: true, action: "routine delete", disabled: !w.ready, onSelect: () => onDelete(r, document.activeElement as Opener) },
           ]}
         />
       ),

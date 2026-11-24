@@ -39,8 +39,12 @@ async function sidebarPages() {
 }
 
 // Clicks that show more of a page without writing anything: Data's work_items table, then every <details>.
+// The two "menu-" entries open a ⋯ menu (the top bar's More, the first Routines row's), so overlay-bounds and small-target
+// check the open menu at every viewport.
 const PREPARE = {
   data: `[...document.querySelectorAll('nav[aria-label="Tables"] button')].find((b) => b.textContent.startsWith("work_items"))?.click()`,
+  "menu-top": `document.querySelector('header [aria-haspopup="menu"]')?.click()`,
+  "menu-row": `document.querySelector('main [aria-haspopup="menu"]')?.click()`,
 };
 const OPEN_DETAILS = `document.querySelectorAll("details").forEach((d) => (d.open = true))`;
 
@@ -66,6 +70,8 @@ async function main() {
     { name: "health-cost", path: "health?tab=cost" },
     { name: "health-review", path: "health?tab=review" },
     { name: "transcript", path: `items/${enc(fixture.pages.item)}/runs/${enc(fixture.pages.run)}` },
+    { name: "menu-top", path: "routines" },
+    { name: "menu-row", path: "routines" },
   ].filter((p) => only === null || p.name === only);
 
   await rm(SHOTS, { recursive: true, force: true });
@@ -93,6 +99,12 @@ async function main() {
         for (const vp of VIEWPORTS) {
           await page.send("Emulation.setDeviceMetricsOverride", { ...vp, deviceScaleFactor: 1, mobile: false });
           await page.eval(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))`);
+          // An open menu measures its side when it opens: close and open it again at this size.
+          if (p.name.startsWith("menu-")) {
+            await page.eval(`document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')?.click()`);
+            await page.eval(PREPARE[p.name]);
+            await page.eval(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))`);
+          }
           await page.eval(`document.querySelectorAll("[data-responsive-fail]").forEach((e) => e.removeAttribute("data-responsive-fail"))`);
           const { failures: found, sizes } = await page.eval(`(${checkLayout.toString()})(${JSON.stringify(LIMITS)})`);
           checks++;
