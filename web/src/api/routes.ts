@@ -88,7 +88,7 @@ export const API = {
 export type TaskAction = "edit" | "done" | "reopen" | "delete" | "sub";
 
 /** A Schedules page write: the path segment of its route. */
-export type ScheduleVerb = "add" | "edit" | "pause" | "resume" | "run";
+export type ScheduleVerb = "add" | "edit" | "pause" | "resume" | "run" | "delete";
 
 /** A Routines page write: the path segment of its route. */
 export type RoutineVerb = "add" | "edit" | "pause" | "resume" | "delete" | "run";

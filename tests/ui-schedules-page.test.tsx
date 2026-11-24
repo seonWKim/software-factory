@@ -109,16 +109,58 @@ describe("Schedules page", () => {
     expect(posts[1]).toEqual({ path: "resume", body: { id: "sch_bbbb2222" }, token: TOKEN });
   });
 
-  it("the row menu holds Run now and Edit; Run now posts run, and is off while the schedule is paused", async () => {
+  it("the row menu holds Run now, Edit, Pause or Resume, a separator and Delete; Run now posts run, and is off while the schedule is paused", async () => {
     show();
     await ready();
     fireEvent.click(within(await row("Weekly review")).getByRole("button", { name: "More for Weekly review" }));
-    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Run now", "Edit"]);
+    const menu = screen.getByRole("menu");
+    expect(within(menu).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Run now", "Edit", "Resume", "Delete"]);
+    expect([...menu.children].map((li) => (li.getAttribute("role") === "separator" ? "|" : li.textContent))).toEqual(["Run now", "Edit", "Resume", "|", "Delete"]);
+    const del = screen.getByRole("menuitem", { name: "Delete" });
+    expect(del.className).toContain("text-pill-bad-fg");
+    expect(del.querySelector("svg")).toBeTruthy();
     expect((screen.getByRole("menuitem", { name: "Run now" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.keyDown(window, { key: "Escape" });
     fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "More for Nightly docs check" }));
+    expect(screen.getByRole("menuitem", { name: "Pause" })).toBeTruthy();
     fireEvent.click(screen.getByRole("menuitem", { name: "Run now" }));
     await waitFor(() => expect(posts).toEqual([{ path: "run", body: { id: "sch_aaaa1111" }, token: TOKEN }]), SLOW);
+  });
+
+  it("Delete asks in a danger Dialog; confirming posts once, the row goes, the detail Card closes and the focus goes to the table", async () => {
+    show();
+    await ready();
+    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "Show what Nightly docs check does and its runs" }));
+    await screen.findByRole("region", { name: "About Nightly docs check" }, SLOW);
+    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "More for Nightly docs check" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog", undefined, SLOW);
+    expect(within(dialog).getByRole("heading").textContent).toBe("Delete Nightly docs check?");
+    expect(dialog.textContent).toContain("It stops running. Past runs stay in Work.");
+    expect(posts).toEqual([]);
+    // The server forgets it once the delete lands, so the reread has one row.
+    schedules = schedules.filter((s) => s.id !== "sch_aaaa1111");
+    const confirm = within(dialog).getByRole("button", { name: "Delete schedule" });
+    expect(confirm.className).toContain("bg-failed");
+    fireEvent.click(confirm);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), SLOW);
+    expect(posts).toEqual([{ path: "delete", body: { id: "sch_aaaa1111" }, token: TOKEN }]);
+    await waitFor(() => expect(screen.queryAllByText("Nightly docs check")).toHaveLength(0), SLOW);
+    expect(screen.queryByRole("region", { name: "About Nightly docs check" })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(document.querySelector("[data-schedules-table]")), SLOW);
+  });
+
+  it("Cancel in the delete Dialog posts nothing; the detail Card's Delete opens the same Dialog", async () => {
+    show();
+    await ready();
+    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "Show what Nightly docs check does and its runs" }));
+    const card = await screen.findByRole("region", { name: "About Nightly docs check" }, SLOW);
+    fireEvent.click(within(card).getByRole("button", { name: "Delete Nightly docs check" }));
+    const dialog = await screen.findByRole("dialog", undefined, SLOW);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), SLOW);
+    expect(posts).toEqual([]);
+    expect(await row("Nightly docs check")).toBeTruthy();
   });
 
   it("shows the server's refusal of a write in a Notice", async () => {

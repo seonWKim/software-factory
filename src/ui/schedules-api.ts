@@ -1,10 +1,11 @@
 // Schedules over HTTP (design 08-schedules): what `factory schedule …` does, through the same core functions
 // (src/core/schedule.ts). GET /api/v1/schedules lists them; GET /api/v1/schedules/runs?schedule=<id> lists one's runs
-// (400 without the parameter, 404 for an unknown ID). POST /api/v1/schedules/add, /edit, /pause, /resume and /run
+// (400 without the parameter, 404 for an unknown ID). POST /api/v1/schedules/add, /edit, /pause, /resume, /run and /delete
 // take a JSON body with `id` and, for add and edit, the CLI's fields (`title`, `cadence`, `spec`, `zone`, `action`,
 // `body`, `skip_when_busy`, `token_cap`). After the request guards (write-routes.ts, the pauses CSRF token) a body that
 // is not an object or has an unknown, missing or wrongly typed field is a 400 before any store call; then the owner
-// check (rules-api.ts ownerOf, passed in, 403); a refusal of the core is a 409 with its reason; else 200 with the schedule.
+// check (rules-api.ts ownerOf, passed in, 403); a delete of an unknown ID is a 404; any other refusal of the core is a
+// 409 with its reason; else 200 with the schedule (a delete's as it was before it went).
 
 import type { ScheduleFields, ScheduleWrite, writeSchedule } from "../core/schedule.js";
 import type { UserId } from "../core/types.js";
@@ -65,6 +66,7 @@ export interface ScheduleWriteDeps {
 /** The write each POST path runs. */
 export const SCHEDULE_WRITE_PATHS: Readonly<Record<string, ScheduleWrite>> = {
   [`${SCHEDULES_PATH}/add`]: "add", [`${SCHEDULES_PATH}/edit`]: "edit", [`${SCHEDULES_PATH}/pause`]: "pause", [`${SCHEDULES_PATH}/resume`]: "resume", [`${SCHEDULES_PATH}/run`]: "run",
+  [`${SCHEDULES_PATH}/delete`]: "delete",
 };
 
 /** One POST: the body, then the owner, then the core's write. */
@@ -73,6 +75,7 @@ export async function postSchedule(d: Pick<UiDeps, "store" | "clock">, w: Schedu
   if (typeof b === "string") return apiError(400, b);
   const own = await c.owner("manages schedules");
   if ("error" in own) return apiError(403, own.error);
+  if (w === "delete" && !(await d.store.listSchedules()).some((s) => s.id === b.id)) return apiError(404, `no schedule ${b.id}`);
   const r = await c.write(d.store, w, b.id, b.fields, own.user, d.clock.now());
   if (!r.ok) return apiError(409, r.problem);
   c.log.info(`schedule ${w}`, { id: b.id, actor: own.user });
