@@ -76,7 +76,9 @@ Produce:
   the change does not alter: two items that list the same file wait for each other.
   A store schema change (a new table, column or migration) needs a migration, named and placed by the
   repository's own migration naming rule: allow the paths that rule names, so a path limit never stops the work
-  halfway.
+  halfway. Name a new migration and its test by slug, with the timestamp written as `<stamp>` (for example
+  `src/<component>/migrations/<stamp>-<component>-<slug>.migration.ts` and `tests/<stamp>-<component>-<slug>.test.ts`):
+  the implementer takes the next free timestamp. Check its done-when line with a check command, not a `<stamp>` test file.
 - files_to_change: every repo-relative file or directory the done criteria require creating or editing
   (not files you only read). Each entry equals an allowed_paths entry or sits under one ending in `/`;
   an output where allowed_paths does not cover files_to_change is rejected.

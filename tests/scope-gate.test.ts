@@ -27,26 +27,27 @@ describe("scopeViolations (pure)", () => {
   });
 });
 
-// Migration timestamps (design 04-triage): a build that finds the spec's migration timestamp taken adds the same
-// folder, component and slug at a later minute; that file and its test pass the scope check like the spec's path.
-describe("scopeViolations and a later same-slug migration", () => {
-  const spec = ["src/controller/migrations/20261122T1200-controller-new-thing.migration.ts", "tests/20261122T1200-controller-new-thing.test.ts"];
+// Migration timestamps (design 04-pre-push-gates): a build adds the spec's migration at the next free minute, same
+// folder, component and slug; that file and its test pass the scope check whether the spec wrote a stamp or `<stamp>`.
+describe("scopeViolations and a same-slug migration", () => {
+  const specs = [
+    ["src/controller/migrations/20261122T1200-controller-new-thing.migration.ts", "tests/20261122T1200-controller-new-thing.test.ts"],
+    ["src/controller/migrations/<stamp>-controller-new-thing.migration.ts", "tests/<stamp>-controller-new-thing.test.ts"],
+  ];
 
-  it("passes an implement run that adds <later-ts>-<same slug>.migration.ts and its test in place of the spec's paths", () => {
-    const later = z("src/controller/migrations/20261122T1202-controller-new-thing.migration.ts", "tests/20261122T1202-controller-new-thing.test.ts");
-    expect(scopeViolations(later, spec)).toEqual([]);
+  it("passes an implement run that adds <free-ts>-<same slug>.migration.ts and its test in place of the spec's paths", () => {
+    const free = z("src/controller/migrations/20261122T1202-controller-new-thing.migration.ts", "tests/20261122T1202-controller-new-thing.test.ts");
+    for (const spec of specs) expect(scopeViolations(free, spec)).toEqual([]);
   });
 
-  it("still refuses an earlier timestamp, another slug or another component folder", () => {
+  it("still refuses another slug or another component folder", () => {
     const outside = [
-      "src/controller/migrations/20261122T1159-controller-new-thing.migration.ts",
       "src/controller/migrations/20261122T1202-controller-other-thing.migration.ts",
       "src/worker/migrations/20261122T1202-worker-new-thing.migration.ts",
       "src/worker/migrations/20261122T1202-controller-new-thing.migration.ts",
-      "tests/20261122T1100-controller-new-thing.test.ts",
       "tests/20261122T1202-worker-new-thing.test.ts",
     ];
-    expect(scopeViolations(z(...outside), spec)).toEqual([...outside].sort());
+    for (const spec of specs) expect(scopeViolations(z(...outside), spec)).toEqual([...outside].sort());
   });
 });
 

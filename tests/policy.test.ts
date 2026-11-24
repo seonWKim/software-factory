@@ -237,19 +237,28 @@ describe("auto mode rules (design 03-risk)", () => {
   });
 });
 
-// Migration timestamps (design 04-triage): a later timestamp with an allowed migration's folder, component and slug is covered.
-describe("isCovered: a later same-slug migration", () => {
-  const allowed = ["src/controller/migrations/20261122T1200-controller-new-thing.migration.ts", "tests/20261122T1200-controller-new-thing.test.ts"];
+// Migration timestamps (design 04-pre-push-gates): a migration or migration test of any timestamp with an allowed
+// one's folder, component and slug is covered; the allowed path may write the timestamp as `<stamp>`.
+describe("isCovered: a same-slug migration at any timestamp", () => {
+  const stamped = ["src/controller/migrations/20261122T1200-controller-new-thing.migration.ts", "tests/20261122T1200-controller-new-thing.test.ts"];
+  const placeholder = ["src/controller/migrations/<stamp>-controller-new-thing.migration.ts", "tests/<stamp>-controller-new-thing.test.ts"];
 
-  it("covers the migration and its test at a later timestamp", () => {
-    expect(isCovered("src/controller/migrations/20261122T1201-controller-new-thing.migration.ts", allowed)).toBe(true);
-    expect(isCovered("tests/20261123T0000-controller-new-thing.test.ts", allowed)).toBe(true);
+  it("covers the migration and its test at a later or earlier timestamp, whether the allowed path has a stamp or <stamp>", () => {
+    for (const allowed of [stamped, placeholder]) {
+      expect(isCovered("src/controller/migrations/20261122T1201-controller-new-thing.migration.ts", allowed)).toBe(true);
+      expect(isCovered("src/controller/migrations/20261122T1100-controller-new-thing.migration.ts", allowed)).toBe(true);
+      expect(isCovered("tests/20261123T0000-controller-new-thing.test.ts", allowed)).toBe(true);
+    }
   });
 
-  it("does not cover an earlier timestamp, another slug, another component, or a later file with no allowed migration", () => {
-    expect(isCovered("src/controller/migrations/20261122T1100-controller-new-thing.migration.ts", allowed)).toBe(false);
-    expect(isCovered("src/controller/migrations/20261122T1201-controller-new-thing-two.migration.ts", allowed)).toBe(false);
-    expect(isCovered("src/worker/migrations/20261122T1201-worker-new-thing.migration.ts", allowed)).toBe(false);
+  it("does not cover another slug, another component or folder, a test for a migration, or a file with no allowed migration", () => {
+    for (const allowed of [stamped, placeholder]) {
+      expect(isCovered("src/controller/migrations/20261122T1201-controller-new-thing-two.migration.ts", allowed)).toBe(false);
+      expect(isCovered("src/worker/migrations/20261122T1201-worker-new-thing.migration.ts", allowed)).toBe(false);
+      expect(isCovered("src/worker/migrations/20261122T1201-controller-new-thing.migration.ts", allowed)).toBe(false);
+      expect(isCovered("tests/20261122T1201-worker-new-thing.test.ts", allowed)).toBe(false);
+    }
+    expect(isCovered("src/controller/migrations/20261122T1201-controller-new-thing.migration.ts", [placeholder[1]!])).toBe(false);
     expect(isCovered("src/controller/migrations/20261122T1201-controller-new-thing.migration.ts", ["src/core/policy.ts"])).toBe(false);
   });
 });
