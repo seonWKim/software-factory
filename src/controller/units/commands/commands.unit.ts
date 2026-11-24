@@ -344,9 +344,7 @@ export class CommandsUnit {
         if (r === RETRY) continue;
         return r;
       }
-      if (e.kind === "budget_continue") {
-        return it.stage === "CLOSED" ? CLOSED_REFUSAL : "the work item is not at a budget checkpoint";
-      }
+      if (e.kind === "budget_continue") return it.stage === "CLOSED" ? CLOSED_REFUSAL : "the work item is not at a budget checkpoint";
       // `/approve` while implementing: lifts a coordination-cost hold on the queued implement run (design §5).
       if (e.kind === "spec_approved" && approvesHold(it)) {
         // The held run is already queued with its paths; `+paths` does not change them (issue #280).
@@ -560,6 +558,8 @@ export class CommandsUnit {
       return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr?.change_ref ?? it.change_ref, key: { comment_id: e.comment_id } });
     }
     // `/approve` (design §4): a goal split waiting for the owner (goal_question, goal_limit) is answered by the phases unit (design 04-split-specs); else the approve gate every source shares (core request-transition), a split's filing claimed here; a spec that changes no file in this repo is refused first (design 04-spec-gate-commands).
+    // A routine's run held at its daily cap (routines unit): `/approve` raises today's cap by the last run's cost and runs it, `/reject` skips it.
+    if (this.c.unit("routines").holds(it)) return this.c.unit("routines").answerCap(e.kind, it, actor);
     if (e.kind === "spec_approved") {
       if (this.c.unit("phases").waitsOnGoal(it)) return this.c.unit("phases").approveGoal(it, actor);
       const noFiles = noFilesRefusal(it, await this.c.k.reader.listRuns(it.id)), a = noFiles ? { refuse: noFiles } : await approveCheck(this.c.k.reader, it, { actor, note, paths, comment_id: e.comment_id, tag, widen: (p) => this.widen(it, p), answers: NOTE_ANSWERS });

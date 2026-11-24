@@ -6,7 +6,7 @@ import {
   type DesignLearningSource, FIX_SPEC_APPROVED, type FilingDeps, LEARNINGS_HEAD, LEARNINGS_PATH, captureDesignLearning, captureKey, enqueueImprove, fileProposals,
   fileReport, isDesignFinding, markerKey, renderLine, settleOutcomes, triggerImprove, utcDay,
 } from "../../../core/improver.js";
-import { type FiledPattern, type Run, type SourceRef, type Timestamp, type WorkItem } from "../../../core/types.js";
+import type { FiledPattern, Run, SourceRef, Timestamp, WorkItem } from "../kernel.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -131,10 +131,9 @@ export class ImproveUnit {
     return this.c.k.d.clock.now().toISOString() as Timestamp;
   }
 
-  /** The first source in `plugins.source` order that can file (`fileIssue`), bound; null when none can. */
+  /** The filing source's `fileIssue` (the kernel's `filingSource`); null when no source can file. */
   private filer(): FilingDeps["file"] {
-    const filer = this.c.k.sources.find((s) => typeof s.fileIssue === "function");
-    return filer?.fileIssue ? (input) => filer.fileIssue!(input) : null;
+    return this.c.k.filingSource()?.fileIssue ?? null;
   }
 
   /** A comment on a filed item: through its thread (and the outbox) when the store holds it, else to its source. */
