@@ -20,7 +20,7 @@ import { ACTION_TEXT, OUTCOME_TEXT, STATE_TEXT } from "./schedules/labels.js";
 // read through GET /api/v1/schedules. Repeats reads in plain words through the shared formatter (lib/repeats.ts, as on
 // Routines); a paused schedule's Next run says Paused. Each row's Switch is on while the schedule has a next run and off while it is
 // paused (pause clears the next run), and posts pause or resume; its "⋯" menu holds Run now (off while paused), Edit,
-// Pause or Resume, a separator and Delete (danger), as on Routines. Delete, there or in the detail Card's title row,
+// Pause or Resume, a separator and Delete (danger). Delete, there or in the detail Card's title row,
 // asks in a danger Dialog; once it is gone the list rereads, the detail Card closes and the focus goes to the table.
 // Each title has one muted line under it saying what the schedule does (schedules/detail.tsx). Pressing a row's title
 // (DataTable's `select`) marks the row as current and shows a detail Card (what it does, its settings, its last and next
