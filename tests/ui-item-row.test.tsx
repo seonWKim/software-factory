@@ -90,10 +90,10 @@ describe("ItemRow", () => {
     expect(classes(row.querySelector("[data-row-action]")!).has("leading-6")).toBe(true);
   });
 
-  it("below sm keeps the title and the badge on the first line: the title has no base width and the details start a new line", () => {
+  it("below sm sizes the title by its text, so a short one keeps its line with the badge, and the details start a new line", () => {
     const li = listRow({ badge: <span>B</span>, why: <span>W</span> });
     const title = li.querySelector("[data-row-title]")!;
-    expect(classes(title).has("basis-0")).toBe(true);
+    expect(classes(title).has("basis-auto")).toBe(true);
     expect(classes(title).has("sm:basis-40")).toBe(true);
     const badge = li.querySelector("[data-row-badge]")!;
     expect(classes(badge.nextElementSibling!).has("basis-full")).toBe(true);

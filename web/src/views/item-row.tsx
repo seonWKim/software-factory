@@ -94,10 +94,10 @@ function Title({ s, className, cell = false, link = LINK_CLASS }: { s: ItemRowSl
 
 /**
  * A list row's title: one 32px line (the 32px controls' height), the text centred in it, in the row title weight. It
- * takes the free width; below `sm` it has no base width, so it shares its line with the badge and is cut instead of
- * dropping to a line of its own.
+ * takes the free width. Below `sm` its base width is its text's: a short title shares its line with the badge, a long
+ * one takes the line to itself (cut with an ellipsis) and the badge starts the next. From `sm` up it starts at 160px.
  */
-export const LIST_TITLE = "min-h-8 min-w-0 flex-1 basis-0 font-medium leading-8 text-text-1 sm:basis-40";
+export const LIST_TITLE = "min-h-8 min-w-0 flex-1 basis-auto font-medium leading-8 text-text-1 sm:basis-40";
 
 const AGE = "text-xs whitespace-nowrap tabular-nums text-text-2";
 
@@ -186,11 +186,12 @@ function TreeRow(props: TreeProps & DataAttrs) {
   return (
     // One centre line: the 32px title line (it takes the free width and is cut with an ellipsis), the badge, the meta
     // (why, run, worker, PR, then the age, always the last: all text-xs text-2) and the 32px "⋯" at the end are centred
-    // on it. At phone width the title and the badge share the first line and the meta takes its own line under it;
+    // on it. At phone width a short title and its badge share the first line (a long title takes it alone, the badge
+    // under it) and the meta takes its own line under them;
     // the "⋯" stays on the first line.
     <div {...dataOf(props)} data-item-row={props.variant} data-item-id={props.itemId} className={cn("flex min-w-0 flex-1 items-start", ROW_SPACE.tree[props.variant], props.className)}>
       <div className={cn("flex min-w-0 flex-1 flex-wrap items-center gap-y-1", ROW_SPACE.tree[props.variant].split(" ")[0])}>
-        <Title s={props} className="min-h-8 min-w-0 flex-1 basis-0 truncate leading-8 font-medium sm:basis-40" />
+        <Title s={props} className="min-h-8 min-w-0 flex-1 basis-auto truncate leading-8 font-medium sm:basis-40" />
         {props.badge && <span data-row-badge className="flex min-h-8 shrink-0 items-center">{props.badge}</span>}
         {/* At phone width the why and the worker take their own line. */}
         <span className="flex min-w-0 basis-full flex-wrap items-center gap-x-2 *:min-w-0 text-xs wrap-anywhere text-text-2 sm:basis-auto">
