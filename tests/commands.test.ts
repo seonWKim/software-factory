@@ -15,6 +15,9 @@ import { githubCommand } from "../src/core/command-inbox.js";
 import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { answersDetail, splitAnswers, storedAnswers } from "../src/shared/command-notes.js";
+import { overCapNoteRequired } from "../src/core/size-cap.js";
+import { sizeDetail } from "../src/core/diff-gate.js";
+import { runKey } from "../src/core/policy.js";
 import { retry } from "../src/controller/units/support.js";
 import { runKindLabel } from "../src/controller/units/run-results/run-kind-label.js";
 import { FakeAuth } from "./helpers/fakes/runner.js";
@@ -1012,6 +1015,80 @@ describe("the footer of a spec auto mode approved (issue #586)", () => {
   it("utcMinute reads an ISO time as its minute in UTC, and leaves other text as it is", () => {
     expect(utcMinute(AT)).toBe("2026-11-11 10:04 UTC");
     expect(utcMinute("soon")).toBe("soon");
+  });
+});
+
+// An over-cap /approve at too_large (design 04-split-specs, 2026-11-24): the too_large comment names it; with no note one
+// refusal, the same from a comment and from `factory approve`, and nothing stored; with a note `/retry`'s implement run
+// and the one-time cap with its size_cap_approved record, in one transition.
+describe("/approve over the cap at too_large", () => {
+  const ME = "github:1" as UserId;
+  const CAPS = { max_diff_lines: 1500, max_diff_files: 40 };
+  const auth: AuthProvider = { resolve: async (i) => ({ user_id: `${i.provider}:${i.subject}` as UserId }), authorize: async () => ({ allow: true }) };
+
+  async function tooLarge(n: number) {
+    const { store, clock } = await newStore();
+    const source = new FakeSource();
+    const controller = new ControllerRole({ store, sources: [source], auth, clock, config, log: silent, scanner: cleanScanner });
+    const { item } = await store.createWorkItem({ source: issueRef(n), requester_id: ME, project: PROJECT_KEY, problem: "p", resources: [] }, system);
+    const t = await store.transition({ id: item.id, expected_version: item.version, actor: system, reason: "setup", patch: { stage: "RUNNING", tier: 2, allowed_paths: ["src/a/", "src/b/"] }, enqueue: { kind: "implement", idempotency_key: runKey(item, "implement") } });
+    if (!t.ok) throw new Error("setup");
+    const run = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: 60_000 }))!;
+    await store.completeRun(run.id, run.lease!.token, { status: "failed", error_code: "diff_too_large", detail: sizeDetail({ lines: 5000, files: 60 }, CAPS), infra: false });
+    await controller.tickRuns();
+    let comments = 0;
+    /** A GitHub comment `/approve [note]`; the controller's refusal for it, or undefined. */
+    const approve = async (text: string) => {
+      const id = 800 + ++comments;
+      await store.appendCliCommand(githubCommand({ comment_id: id, user_id: 1, command: "approve", text, source: issueRef(n) }));
+      await controller.tickCommands();
+      return source.comments.find((c) => c.marker === `<!-- factory:refused:${id} -->`)?.body;
+    };
+    const cli = {
+      answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: ME, from: "cli_user" as const }, project: async () => PROJECT_KEY, read: async () => "",
+      newId: () => `n${++comments}`, caps: async () => CAPS,
+    };
+    return { store, source, controller, item: (await store.getWorkItem(item.id))!, approve, cli };
+  }
+
+  it("the too_large comment names /approve with the diff size, the cap and the proposed cap", async () => {
+    const h = await tooLarge(1);
+    expect(commandPhase(h.item)).toBe("too_large");
+    const body = h.source.comments.find((c) => c.marker.startsWith("<!-- factory:run-failed:"))!.body;
+    expect(body).toContain("`/approve <why>`");
+    expect(body).toContain("5000 lines in 60 files against `max_diff_lines` = 1500 and `max_diff_files` = 40");
+    expect(body).toContain("one-time cap of 5883 lines and 71 files");
+  });
+
+  it("with no note: one refusal, the same from a comment and from `factory approve`, and nothing stored", async () => {
+    const h = await tooLarge(2);
+    const runs = (await h.store.listRuns(h.item.id)).length;
+    const before = (await h.store.listCliCommandsAfter(0, 100)).length;
+    const typed = await runLocalCli(h.cli, { action: "command", command: "approve", id: h.item.id, text: "" });
+    const reason = overCapNoteRequired({ sizes: { lines: 5000, files: 60 }, caps: CAPS, one_time_cap: { max_diff_lines: 5883, max_diff_files: 71 } });
+    expect(typed).toEqual({ code: 1, lines: [refusalText("/approve", reason)] });
+    expect((await h.store.listCliCommandsAfter(0, 100)).length).toBe(before);
+    expect(await h.approve("")).toBe(typed.lines[0]);
+    const after = (await h.store.getWorkItem(h.item.id))!;
+    expect(after).toMatchObject({ version: h.item.version, blocked_reason: "run_failed:implement:diff_too_large", size_cap: null });
+    expect((await h.store.listRuns(h.item.id)).length).toBe(runs);
+  });
+
+  it("with a note from `factory approve`: /retry's implement run, keyed as /retry's, with the one-time cap and its record in one transition", async () => {
+    const h = await tooLarge(3);
+    const key = (retry(h.item, { kind: "user", id: ME }, "implement", "the generated table is one file", null, runKindLabel) as { enqueue: { idempotency_key: string } }).enqueue.idempotency_key;
+    const typed = await runLocalCli(h.cli, { action: "command", command: "approve", id: h.item.id, text: "the generated table is one file" });
+    expect(typed.code).toBe(0);
+    await h.controller.tickCommands();
+    const it = (await h.store.getWorkItem(h.item.id))!;
+    expect(it).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null, size_cap: { max_diff_lines: 5883, max_diff_files: 71 } });
+    const queued = (await h.store.listRuns(it.id)).filter((r) => r.kind === "implement" && r.status === "queued");
+    expect(queued.map((r) => r.idempotency_key)).toEqual([key]);
+    const change = (await h.store.listStateChanges(it.id)).find((c) => typeof c.detail?.size_cap_approved === "string")!;
+    expect(change.changes.size_cap).toEqual({ from: null, to: { max_diff_lines: 5883, max_diff_files: 71 } });
+    expect(JSON.parse(String(change.detail!.size_cap_approved))).toEqual({
+      actor: `local:${ME}`, sizes: { lines: 5000, files: 60 }, project_cap: CAPS, one_time_cap: { max_diff_lines: 5883, max_diff_files: 71 }, note: "the generated table is one file",
+    });
   });
 });
 

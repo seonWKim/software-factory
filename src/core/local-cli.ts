@@ -5,12 +5,12 @@ import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import { MERGE_COMMAND } from "./local-merge.js";
 import { COMMAND_TABLE, SENTENCE_FORM, cliUsageOf, commandLine, topWords } from "./command-table.js";
-import { CLOSED_REFUSAL, approveRefusal, helpReply, itemCommandState, latestSpec, refusalText } from "./commands.js";
+import { CLOSED_REFUSAL, approveRefusal, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText } from "./commands.js";
 import type { NoteAnswers } from "./request-transition.js";
 import { VERDICT_USAGE, parseVerdict, verdictRefusal } from "./verdict.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMessage, interpretReply, interpretTexts, isProposalId, openItems, typed } from "./interpret.js";
-import { needsDueDate, parseQuickAdd, parseQuickEdit } from "./quick-add.js";
-import { type Project, projectSlug } from "./projects.js";
+import { needsDueDate, parseQuickAdd, parseQuickEdit } from "./quick-add.js"; import { type Project, projectSlug } from "./projects.js";
+export { storedProjectCaps } from "./size-cap.js"; // the project's size caps for `approve` (LocalCliDeps.caps), for the CLI handler
 import { ProjectRefused, type TaskEdit, type TaskFields, projectRefusal, taskLine } from "./tasks.js";
 import { CREATE_HELP, LOCAL_ID, NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask, localItemOf, withDependsOn } from "./task-build.js";
 import { type ScheduleCommand, parseScheduleArgs, runScheduleCommand } from "./schedule.js";
@@ -288,8 +288,8 @@ export interface LocalCliDeps {
   read: (path: string) => Promise<string>;
   /** A new random ID: a local item's source ID, a task's ID, a command's idempotency key. */
   newId: () => string;
-  /** The source type the command was typed in, when not the CLI (a chat, design 05-sources): its items' rows are not mirrored there. Absent: the CLI. */
-  origin?: string;
+  origin?: string; // the source type the command was typed in, when not the CLI (a chat, design 05-sources): its items' rows are not mirrored there; absent: the CLI
+  caps?: (project: string) => Promise<{ max_diff_lines: number; max_diff_files: number }>; // the project's size caps as the controller reads them (storedProjectCaps): `approve` refuses an over-cap approval with no note before any write; absent (chat): the controller does
   cli?: string; // the hints' command name (cliName); absent: DEFAULT_CLI_NAME, as chat callers leave it
   ui?: { port?: number }; // factory.config.json's `ui` (validated at load): `task create` prints the item's loopback link on its port; absent: no link (chat)
   answers: NoteAnswers<{ question: string; answer: string | null; accepted_default: boolean }>; // splitAnswers, answersDetail (src/shared/command-notes.ts)
@@ -439,10 +439,11 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       if ("lines" in item) return item;
       const name = a.command === MERGE_COMMAND ? `${cli} merge` : `/${a.command}`;
       // The controller's phase check, before any write: the same refusal it would post (issues #528, #523).
-      const refused = a.command === "approve" ? approveRefusal(item) : a.command === "verdict" ? verdictRefusal(item) : a.command === "note" && item.stage === "CLOSED" ? CLOSED_REFUSAL : null;
+      const runs = a.command === "approve" ? await d.store.listRuns(item.id) : [], capped = a.command === "approve" && d.caps ? overCapApproval(overCap(item, runs, latestSpec(runs), await d.caps(item.project)), { kind: "user", id: user }, a.text, null) : null; // over the caps: the controller's own refusal (design 04-split-specs)
+      const refused = a.command === "approve" ? approveRefusal(item) ?? capped?.refuse ?? null : a.command === "verdict" ? verdictRefusal(item) : a.command === "note" && item.stage === "CLOSED" ? CLOSED_REFUSAL : null;
       if (refused !== null) return fail(refusalText(name, refused));
       // `approve`'s `N: <answer>` lines, read as the controller will (issue #526): a bad line stores nothing; each decision is printed.
-      const ans = d.answers.split(a.text, a.command === "approve" ? latestSpec(await d.store.listRuns(item.id))?.decision_items ?? [] : []);
+      const ans = d.answers.split(a.text, a.command === "approve" ? latestSpec(runs)?.decision_items ?? [] : []);
       if ("refuse" in ans) return fail(ans.refuse);
       await claim();
       const args: Record<string, unknown> = { item: item.id, ...(a.text !== "" ? { text: a.text } : {}) };

@@ -549,7 +549,7 @@ CREATE TABLE "controller_work_items" (
     pr_files                 TEXT,
     edges_source_updated_at  TEXT,
     change_ref               TEXT,
-    change_url               TEXT, done_checks TEXT,
+    change_url               TEXT, done_checks TEXT, size_cap TEXT,
     UNIQUE (source_type, source_id)
   );
 
