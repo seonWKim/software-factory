@@ -207,19 +207,19 @@ describe("split spec flow", () => {
     const refusals = f.source.comments.filter((c) => c.source.id === issueRef(72).id && c.marker.startsWith("<!-- factory:refused:"));
     expect(refusals).toHaveLength(1);
     expect(refusals[0]!.body).toContain("needs a note saying why");
-    expect(await f.get(item)).toMatchObject({ version: before, stage: "READY", blocked_reason: "spec_pending", size_cap: null });
+    expect(await f.get(item)).toMatchObject({ version: before, stage: "READY", blocked_reason: "spec_pending" });
     // With a note: the spec's approval stores the estimate's one-time cap and its record in the same transition.
     await f.approve(issueRef(72), "one change keeps the migration atomic");
-    expect(await f.get(item)).toMatchObject({ stage: "RUNNING", blocked_on: "none", size_cap: { max_diff_lines: 2000, max_diff_files: 40 } });
+    expect(await f.get(item)).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
     const approved = (await f.store.listStateChanges(item.id)).filter((c) => c.reason === "spec_approved");
     expect(approved).toHaveLength(1);
-    expect(approved[0]!.changes.size_cap).toEqual({ from: null, to: { max_diff_lines: 2000, max_diff_files: 40 } });
+    expect(approved[0]!.changes).not.toHaveProperty("size_cap");
     expect(JSON.parse(String(approved[0]!.detail!.size_cap_approved))).toEqual({
       actor: "github:1", sizes: { lines: 2000, files: 4 }, project_cap: { max_diff_lines: 1500, max_diff_files: 40 },
       one_time_cap: { max_diff_lines: 2000, max_diff_files: 40 }, note: "one change keeps the migration atomic",
     });
-    // Later implement runs read the one-time cap through sizeCaps (src/core/size-cap.ts).
-    expect(sizeCaps(await f.get(item), { max_diff_lines: 1500, max_diff_files: 40 })).toEqual({ max_diff_lines: 2000, max_diff_files: 40 });
+    // Later implement runs read the one-time cap from that record through sizeCaps (src/core/size-cap.ts).
+    expect(sizeCaps(await f.store.listStateChanges(item.id), { max_diff_lines: 1500, max_diff_files: 40 })).toEqual({ max_diff_lines: 2000, max_diff_files: 40 });
     expect(f.source.subIssues).toEqual([]);
   });
 

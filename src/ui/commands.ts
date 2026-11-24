@@ -236,7 +236,7 @@ async function applyNow(d: UiDeps, r: AppCommandRequest, item: WorkItem): Promis
  */
 async function overCapApprove(d: UiDeps, item: WorkItem): Promise<boolean> {
   const it = (await d.store.getWorkItem(item.id)) ?? item, runs = await d.store.listRuns(it.id);
-  return overCap(it, runs, latestSpec(runs), await projectCaps(d, it.project)) !== null;
+  return overCap(it, runs, await d.store.listStateChanges(it.id), latestSpec(runs), await projectCaps(d, it.project)) !== null;
 }
 
 /** A project's size caps as the controller reads them (storedProjectCaps): the over-cap checks of the request path and the item API. */
@@ -280,7 +280,7 @@ export type PageAction = "approve_spec" | "approve_merge";
  */
 export type ActorGrant = ({ allow: true } | { allow: false; reason: string }) & {
   restart?: boolean;
-  /** The item's state changes, for the rows' `repeated_stop` (stopCount); carried here for the same reason. Absent: not read. */
+  /** The item's state changes, for the rows' `repeated_stop` (stopCount) and an Approve's one-time cap (overCapRow); carried here for the same reason. Absent: not read. */
   changes?: (id: WorkItemId) => Promise<readonly StateChange[]>;
 };
 
@@ -373,22 +373,23 @@ export async function itemCommands(
   const reason = grant.allow ? null : await text(grant.reason);
   const paths = await askedPaths(it, runs, text);
   const cmds = commandsFor(itemCommandState(it, runs)).filter((c) => APP_COMMANDS.includes(c.name));
-  // Its state changes say how often the item stopped with its current blocked_reason (none read when it has none).
-  const stops = it.blocked_reason !== null && grant.changes ? stopCount(it, await grant.changes(it.id)) : 0;
+  // Its state changes say how often the item stopped with its current blocked_reason, and hold its one-time cap (none read when neither is asked).
+  const changes = (it.blocked_reason !== null || caps) && grant.changes ? await grant.changes(it.id) : [];
+  const stops = it.blocked_reason !== null ? stopCount(it, changes) : 0;
   const rows: ItemCommandRow[] = cmds.map((c) => ({
     name: c.name, usage: c.usage, description: c.description, allowed: grant.allow, reason,
     ...(paths.length > 0 && PATHS_COMMANDS.includes(c.name) ? { paths } : {}),
     ...(stops >= REPEATED_STOP ? { repeated_stop: true as const } : {}),
   }));
-  const over = caps && rows.some((r) => r.name === "approve") ? overCapRow(it, runs, caps) : null;
+  const over = caps && rows.some((r) => r.name === "approve") ? overCapRow(it, runs, changes, caps) : null;
   if (over) for (const r of rows) if (r.name === "approve") r.over_cap = over;
   if (grant.restart === true && mergedIntoBase(it)) rows.push({ name: RESTART_COMMAND, usage: RESTART_COMMAND, description: RESTART_DESCRIPTION, allowed: grant.allow, reason });
   return rows;
 }
 
 /** The over-cap figures of an Approve on `it` (overCap): its size, the caps in force and the one-time cap; null when not over or no size was recorded. */
-function overCapRow(it: WorkItem, runs: readonly Run[], caps: SplitLimits): OverCapSizes | null {
-  const over = overCap(it, runs, latestSpec(runs), caps);
+function overCapRow(it: WorkItem, runs: readonly Run[], changes: readonly StateChange[], caps: SplitLimits): OverCapSizes | null {
+  const over = overCap(it, runs, changes, latestSpec(runs), caps);
   return over && "at" in over ? { sizes: over.sizes, caps: over.caps, one_time_cap: over.one_time_cap } : null;
 }
 

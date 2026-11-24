@@ -2,13 +2,14 @@ import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
+import { SIZE_CAP_APPROVED } from "../src/core/size-cap.js";
 import type { RunOutcome, SourceRef, WorkItem } from "../src/core/types.js";
 import type { SourceCloseReason } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { FakeAuth } from "./helpers/fakes/runner.js";
 import { FakeSource } from "./helpers/fakes/source.js";
 import { alice, cleanScanner, config, issueRef, silent, triageSpec } from "./helpers/fakes/config.js";
-import { newStore, w1 } from "./helpers/store.js";
+import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // phases_auto_approve (src/controller/units/phases/phases.unit.ts): approvedByParent at triage and the phase tick.
 // A phase spec that is itself a split, or waits at its own size checkpoint, is never approved by the parent's /approve.
@@ -135,6 +136,20 @@ describe("phases_auto_approve: the parent's /approve covers its phases", () => {
     await f.controller.tickPhases();
     expect(await f.get(p1)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
     expect((await f.runsOf(p1)).filter((r) => r.kind === "implement")).toEqual([]);
+  });
+
+  it("on: another item's one-time cap (its size_cap_approved record) does not lift a phase spec over the project caps", async () => {
+    const f = await setup({ ...config, phases_auto_approve: true });
+    const { item: other } = await f.store.createWorkItem(issue(87), system); // no triage run of its own
+    const record = { actor: "github:1", sizes: { lines: 5000, files: 60 }, project_cap: { max_diff_lines: 1500, max_diff_files: 40 }, one_time_cap: { max_diff_lines: 5883, max_diff_files: 71 }, note: "why" };
+    expect(await f.store.transition({ id: other.id, expected_version: other.version, actor: system, reason: "seed", patch: { spec_feedback: "x" }, detail: { [SIZE_CAP_APPROVED]: JSON.stringify(record) } })).toMatchObject({ ok: true });
+    const { p1 } = await approvedSplit(f, 88);
+    expect(p1.project).toBe(other.project);
+    await f.finish("triage", f.triaged({ ...smallSpec, estimated_lines: 1400 }));
+    expect(await f.get(p1)).toMatchObject({ stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
+    await f.controller.tickPhases();
+    expect(await f.get(p1)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
+    expect((await f.store.listStateChanges(p1.id)).map((c) => c.reason)).not.toContain("phase_spec_auto_approved");
   });
 
   it("turned on live: a phase spec waiting at its size checkpoint is not approved by the phase tick", async () => {

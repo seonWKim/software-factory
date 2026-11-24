@@ -108,7 +108,7 @@ export async function fixStep(
     output_schema: IMPLEMENT_SCHEMA,
     writable_paths: [s.gitDir],
     env_allowlist: gitIdentity(w.cfg.agent_git_identity),
-    gate_hooks: gateHooks(w, run, item, s.start, s.baseSha, (await PrePushSelection.open(w.d.store, w.cfg.repo, item.project, () => {})).mode),
+    gate_hooks: await gateHooks(w, run, item, s.start, s.baseSha, (await PrePushSelection.open(w.d.store, w.cfg.repo, item.project, () => {})).mode),
   }, "check" in failed ? `pack-${failed.check}` : "fix");
   const out = parseImplement(result.output);
   if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
@@ -170,17 +170,17 @@ async function checksEnv(w: Worker, run: Run, item: WorkItem, failed: CheckResul
   });
 }
 
-/** The item's size caps: its one-time cap, else its project's settings (src/core/size-cap.ts). */
-export const itemCaps = (w: Worker, item: WorkItem) => sizeCaps(item, settingValues(item.project, w.cfg.settings, w.d.learned));
+/** The item's size caps: its one-time cap, else its project's settings (src/core/size-cap.ts). The worker's copy of `itemSizeCaps`: it reaches core/ only through legacy-imports.ts. */
+export const itemCaps = async (w: Worker, item: WorkItem) => sizeCaps(await w.d.store.listStateChanges(item.id), settingValues(item.project, w.cfg.settings, w.d.learned));
 
 /**
  * The gate hooks for an implement agent step (design §4, issue #302): the values the worker's gates use, the check list
  * with the check env (no test database), the Stop hook's cap with what earlier steps used, and the test selection.
  */
-export function gateHooks(w: Worker, run: Run, item: WorkItem, start: string, baseSha: string, mode: StopSelection["mode"]): GateHooks {
+export async function gateHooks(w: Worker, run: Run, item: WorkItem, start: string, baseSha: string, mode: StopSelection["mode"]): Promise<GateHooks> {
   return {
     allowed_paths: [...item.allowed_paths], start_sha: start, base_sha: baseSha,
-    limits: itemCaps(w, item),
+    limits: await itemCaps(w, item),
     check_commands: checkCommands(w.cfg.repo),
     check_env: { ...w.d.toolEnv, ...w.slotEnv() },
     stop_checks: w.cfg.agent_stop_checks ?? AGENT_STOP_CHECKS_DEFAULT,
@@ -232,7 +232,7 @@ export async function prePushGates(
   const s = settingValues(item.project, w.cfg.settings, w.d.learned);
   let gates;
   try {
-    gates = await diffGates((args) => w.git(handle, args), baseSha, item, { ...s, ...itemCaps(w, item) });
+    gates = await diffGates((args) => w.git(handle, args), baseSha, item, { ...s, ...(await itemCaps(w, item)) });
   } catch (err) {
     if (err instanceof NumstatError) throw new RunFailure("git_failed", err.message, true);
     throw err;
