@@ -24,18 +24,19 @@ export type ScheduleOutcome = ClaimOutcome | "rejected";
 export const SKIP_WHEN_BUSY_THRESHOLD = 15;
 
 /**
- * What a fired occurrence does: file one work item, run one read-only agent, file the feedback agent's tasks, or
- * queue the daily improve run of its slot's UTC day. Stored and routed; `factory schedule add` and `edit` (and the
- * HTTP routes) write only SCHEDULE_WRITE_KINDS: an `improve` schedule is added by setup.
+ * What a fired occurrence does: file one work item, run one read-only agent, file the feedback agent's tasks, queue
+ * the daily improve run of its slot's UTC day, or queue a routine run (Check a page, planned by planRoutine in
+ * src/core/routines.ts). Stored and routed; `factory schedule add` and `edit` (and the HTTP routes) write only
+ * SCHEDULE_WRITE_KINDS: an `improve` schedule is added by setup, a `check_page` one through the routine API.
  */
-export type ScheduleActionKind = "build" | "agent" | "feedback" | "improve";
-export const SCHEDULE_ACTION_KINDS: readonly ScheduleActionKind[] = ["build", "agent", "feedback", "improve"];
+export type ScheduleActionKind = "build" | "agent" | "feedback" | "improve" | "check_page";
+export const SCHEDULE_ACTION_KINDS: readonly ScheduleActionKind[] = ["build", "agent", "feedback", "improve", "check_page"];
 /** The kinds `schedule add` and `schedule edit` accept (design 08-schedules). */
 export const SCHEDULE_WRITE_KINDS: readonly ScheduleActionKind[] = ["build", "agent", "feedback"];
 /** The kinds that call a model, so the schedule's token cap holds them. */
-const MODEL_KINDS: ReadonlySet<ScheduleActionKind> = new Set(["agent", "feedback"]);
+const MODEL_KINDS: ReadonlySet<ScheduleActionKind> = new Set(["agent", "feedback", "check_page"]);
 
-/** A schedule's action: its kind and its settings (build `title`, `body`; agent `prompt`; feedback `prompt`, `max_tasks`). */
+/** A schedule's action: its kind and its settings (build `title`, `body`; agent `prompt`; feedback `prompt`, `max_tasks`; check_page `instruction`, `url`, read from the row's own columns). */
 export interface ScheduleActionSpec {
   kind: ScheduleActionKind;
   settings: Readonly<Record<string, unknown>>;
@@ -109,6 +110,18 @@ export interface ScheduleClaim {
   queued_implement_runs?: number;
 }
 
+/**
+ * The claim of a Check a page occurrence (design 08-schedules): its marks move from `read` to `marks` (a trigger row
+ * has no `next_due_at` to claim on), `fired` or held at a `checkpoint`, with the run row for `occurrence_at`.
+ */
+export interface CheckPageClaim {
+  schedule_id: string;
+  occurrence_at: Timestamp;
+  read: Pick<Schedule, "next_due_at" | "last_run_at">;
+  marks: Pick<Schedule, "next_due_at" | "last_run_at">;
+  outcome: "fired" | "checkpoint";
+}
+
 /** What an action's run used, added to its run row. */
 export interface ScheduleRunResult {
   output: string;
@@ -121,8 +134,15 @@ export interface ScheduleStore {
   /** Inserts the schedule unless its ID is stored; returns the stored row either way. */
   addSchedule(s: NewSchedule): Promise<Schedule>;
   listSchedules(): Promise<Schedule[]>;
-  /** Schedules whose `next_due_at` is at or before `due_by`, earliest first. Read-only. */
+  /** Schedules whose `next_due_at` is at or before `due_by`, earliest first; no Check a page row. Read-only. */
   listDueSchedules(due_by: Timestamp): Promise<Schedule[]>;
+  /** Every Check a page row (action `check_page`, its settings `instruction` and `url`), oldest first: what the due list leaves out. Read-only. */
+  listCheckPages(): Promise<Schedule[]>;
+  /**
+   * One transaction: moves a Check a page row's marks only while they still equal `c.read` (another pass or a routine
+   * write since then: null, nothing stored), and stores its run row. Never sets `running_since`.
+   */
+  claimCheckPage(c: CheckPageClaim): Promise<ScheduleRun | null>;
   /**
    * One conditional update: moves `next_due_at` from `occurrence_at` to `next_due_at` only while the schedule is
    * idle (`fired`, which also sets `running_since`, or `skipped` and `checkpoint`, which do not) or running
@@ -195,7 +215,7 @@ export async function addSchedule(store: Pick<ScheduleStore, "addSchedule">, inp
 export const tokenCap = (s: Pick<Schedule, "token_cap">): number => s.token_cap ?? SCHEDULE_TOKEN_CAP;
 
 /** Whether a due occurrence of `s` is held: its action calls a model and its runs used its cap (budget's overBudget). */
-async function overCap(store: ScheduleStore, s: Schedule): Promise<boolean> {
+export async function overCap(store: Pick<ScheduleStore, "scheduleTokensUsed">, s: Schedule): Promise<boolean> {
   return s.action !== null && MODEL_KINDS.has(s.action.kind) && overBudget(await store.scheduleTokensUsed(s.id), tokenCap(s));
 }
 
@@ -310,6 +330,7 @@ export type ScheduleWrite = "add" | "edit" | "pause" | "resume" | "run" | "delet
 /** The action a kind and a body make (the CLI and the HTTP routes): build `body`, agent and feedback `prompt`, which they need. */
 export function scheduleActionOf(kind: string, body: string | undefined): ScheduleActionSpec | { problem: string } {
   if (kind === "improve") return { problem: `the improve action is added by setup only (improver.daily_trigger off), not by schedule add or edit: one of ${SCHEDULE_WRITE_KINDS.join(", ")}` };
+  if (kind === "check_page") return { problem: `a Check a page schedule is a routine: add it through the routine API, not schedule add or edit: one of ${SCHEDULE_WRITE_KINDS.join(", ")}` };
   if (!(SCHEDULE_WRITE_KINDS as readonly string[]).includes(kind)) return { problem: `unknown action kind "${kind}": one of ${SCHEDULE_WRITE_KINDS.join(", ")}` };
   const text = body?.trim() ?? "";
   if (kind === "build") return { kind, settings: text === "" ? {} : { body: text } };
