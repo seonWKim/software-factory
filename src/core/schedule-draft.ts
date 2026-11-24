@@ -135,7 +135,7 @@ export async function draftSchedule(words: string, d: DraftDeps): Promise<DraftR
 }
 
 /** The text improve revises: a build's body, an agent's or feedback's prompt; "" when it has none. */
-export function scheduleText(s: Pick<Schedule, "action">): string {
+function scheduleText(s: Pick<Schedule, "action">): string {
   const v = s.action?.settings[s.action.kind === "build" ? "body" : "prompt"];
   return typeof v === "string" ? v : "";
 }
@@ -185,7 +185,7 @@ export function parseScheduleWords(args: readonly string[]): ScheduleWords | str
 }
 
 /** The words after `factory schedule` when they are draft or improve: the command, or why it is none; null for any other verb. */
-export function parseDraftArgs(args: readonly string[]): DraftCommand | string | null {
+function parseDraftArgs(args: readonly string[]): DraftCommand | string | null {
   const [verb, ...rest] = args;
   if (verb !== "draft" && verb !== "improve") return null;
   const yes = rest.at(-1) === "--yes";
@@ -204,12 +204,12 @@ export interface DraftTerminal {
   ask?: (question: string) => Promise<boolean>;
 }
 
-export interface DraftCliDeps extends Omit<DraftDeps, "llm" | "scanner">, DraftTerminal {
+interface DraftCliDeps extends Omit<DraftDeps, "llm" | "scanner">, DraftTerminal {
   store: ScheduleAdminStore;
 }
 
 /** Whether the command is draft or improve, the ones that take the model, the scanner and the ask. */
-export const isDraftCommand = (c: ScheduleWords): c is DraftCommand => c.verb === "draft" || c.verb === "improve";
+const isDraftCommand = (c: ScheduleWords): c is DraftCommand => c.verb === "draft" || c.verb === "improve";
 
 /** Runs any `factory schedule …` command as `user`: draft and improve here, the others through schedule.ts. */
 export function runScheduleWords(d: DraftCliDeps, c: ScheduleWords, user: UserId, isOwner: () => Promise<boolean>): Promise<{ code: number; lines: string[] }> {
@@ -217,7 +217,7 @@ export function runScheduleWords(d: DraftCliDeps, c: ScheduleWords, user: UserId
 }
 
 /** Runs draft or improve as `user`: the owner check first, then the model, then the ask, then the one write. */
-export async function runDraftCommand(d: DraftCliDeps, c: DraftCommand, user: UserId, isOwner: () => Promise<boolean>): Promise<{ code: number; lines: string[] }> {
+async function runDraftCommand(d: DraftCliDeps, c: DraftCommand, user: UserId, isOwner: () => Promise<boolean>): Promise<{ code: number; lines: string[] }> {
   const fail = (...lines: string[]) => ({ code: 1, lines });
   if (!(await isOwner())) return fail(`schedule ${c.verb} refused: only the owner manages schedules; you are ${user}`);
   if (!d.llm || !d.scanner) return fail(`schedule ${c.verb} refused: ${NO_MODEL}`);
