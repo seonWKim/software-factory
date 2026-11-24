@@ -161,7 +161,6 @@ export const tasks = {
   "calendarPage.eventOpenGoogle": "Open in Google Calendar",
   "calendarPage.eventOpen": "Open in calendar",
   "calendarPage.newEvent": "New event",
-  "calendarPage.noCalendar": "No calendar is connected, so only your own events show here.",
   "calendarPage.eventEdit": "Edit",
   "calendarPage.eventDelete": "Delete",
   "calendarPage.deleteTitle": "Delete {title}",
