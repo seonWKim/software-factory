@@ -91,4 +91,4 @@ export type TaskAction = "edit" | "done" | "reopen" | "delete" | "sub";
 export type ScheduleVerb = "add" | "edit" | "pause" | "resume" | "run";
 
 /** A Routines page write: the path segment of its route. */
-export type RoutineVerb = "add" | "edit" | "pause" | "resume" | "delete";
+export type RoutineVerb = "add" | "edit" | "pause" | "resume" | "delete" | "run";

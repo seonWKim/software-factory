@@ -14,7 +14,7 @@ import { CADENCE_TEXT } from "./routines/labels.js";
 
 // The Routines page (design 09-dashboard-routines, over 08-routines): every routine in a DataTable inside a Card, read
 // through GET /api/v1/routines. Each row's Switch is on while the routine is not paused and posts pause or resume; its
-// "⋯" menu holds Edit and Delete. Pressing a row's name selects it and shows its details in a second Card, with a warn
+// "⋯" menu holds Run now, Edit and Delete. Pressing a row's name selects it and shows its details in a second Card, with a warn
 // Notice while it is paused. New routine and Edit open one Dialog; Delete asks in a Dialog before it posts. A refusal
 // shows in a Notice above the table.
 
@@ -77,6 +77,7 @@ function RoutineRows({ rows, selected, onSelect, onEdit, onDelete, w }: { rows: 
         <OverflowMenu
           label={t("routines.more", { name: r.name })}
           items={[
+            { label: t("routines.run"), action: "routine run", disabled: !w.ready || r.paused || r.schedule === null, onSelect: () => void w.write("run", r.id) },
             { label: t("routines.edit"), action: "routine edit", disabled: !w.ready, onSelect: () => onEdit(r, document.activeElement as Opener) },
             { label: t("routines.delete"), action: "routine delete", disabled: !w.ready, onSelect: () => onDelete(r, document.activeElement as Opener) },
           ]}

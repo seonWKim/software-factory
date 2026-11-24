@@ -95,11 +95,38 @@ describe("Routines page", () => {
     expect(posts[1]).toEqual({ path: "resume", body: { id: "rtn_bbbb2222" }, token: TOKEN });
   });
 
-  it("the row menu holds Edit and Delete", async () => {
+  it("the row menu holds Run now, Edit and Delete", async () => {
     show();
     await ready();
     fireEvent.click(within(await row("Docs check")).getByRole("button", { name: "More for Docs check" }));
-    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Edit", "Delete"]);
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Run now", "Edit", "Delete"]);
+  });
+
+  it("Run now posts run with the routine's id and the CSRF token", async () => {
+    show();
+    await ready();
+    await openMenu("Docs check", "Run now");
+    await waitFor(() => expect(posts).toEqual([{ path: "run", body: { id: "rtn_aaaa1111" }, token: TOKEN }]), SLOW);
+  });
+
+  it("Run now is disabled for a paused routine and for an On merge routine", async () => {
+    routines = [routine("rtn_aaaa1111", "Docs check", { paused: true }), routine("rtn_bbbb2222", "After merge", { schedule: null, trigger: "merge" })];
+    show();
+    await ready();
+    for (const name of ["Docs check", "After merge"]) {
+      fireEvent.click(within(await row(name)).getByRole("button", { name: `More for ${name}` }));
+      expect((screen.getByRole("menuitem", { name: "Run now" }) as HTMLButtonElement).disabled || screen.getByRole("menuitem", { name: "Run now" }).getAttribute("aria-disabled") === "true").toBe(true);
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    }
+    expect(posts).toHaveLength(0);
+  });
+
+  it("shows a refused run's error in an alert", async () => {
+    refusal = "routine is paused";
+    show();
+    await ready();
+    await openMenu("Docs check", "Run now");
+    expect((await screen.findByRole("alert", undefined, SLOW)).textContent).toContain(refusal);
   });
 
   it("a paused selected routine shows the warn Notice with its details; a running one shows none", async () => {
