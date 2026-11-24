@@ -629,3 +629,20 @@ describe("alarms: red main", () => {
     expect(alarmsFor([open!], item, [])).toEqual([]);
   });
 });
+
+// A skill draft limit (design 07-self-improvement): the improve run stores one owner question per limit and UTC day; the
+// status views name the limit and its value, and its detail the proposed change. It holds up no item's runs.
+describe("alarms: skill draft limit", () => {
+  it("alarmText names the limit and its value, the detail the proposed change, and no item is held up", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const detail = "skill_drafts_per_day is 3: today's skill drafts are taken, so skills/a was not drafted. Proposed change: skill_drafts_per_day 3 → 4.";
+    await store.recordAlert({ pattern: "skill_draft_limit", pattern_key: "skill_draft_limit:skill_drafts_per_day:p:2026-01-01", error_code: "skill_drafts_per_day", count: 3, detail }, ALERT_DEDUPE_MS);
+    const [open] = await openAlarms(store, clock.now());
+    expect(alarmText(open!)).toBe("Alarm: a skill draft limit was reached (skill_drafts_per_day is 3)");
+    expect(alarmFullText(open!)).toContain("skill_drafts_per_day 3 → 4");
+    expect(alarmCommand(open!)).toBe("skill_drafts_per_day in factory.config.json");
+    const { item } = await store.createWorkItem(issue(901), system);
+    expect(alarmsFor([open!], item, [])).toEqual([]);
+  });
+});

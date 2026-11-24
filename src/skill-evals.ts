@@ -5,12 +5,17 @@
 // options (--model, --judge-model, --replays) are checked here before anything is read or written.
 //
 // main.ts passes skillEvalRun to every command through the command call (CommandCall.runSkillEval), so the CLI
-// handler imports no root or legacy module.
+// handler imports no root or legacy module. The composition root builds the improve run's skill improvement wiring
+// here (skillImproveWiring, design 07-self-improvement): the scratch run, the re-run after a promote, and SKILL.md I/O.
 
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { type Loaded, Plugins } from "./compose.js";
+import { readFile, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { capabilitiesConfig, skillImproveConfig } from "./core/config.js";
+import type { SkillImproveWiring } from "./core/skill-improve.js";
+import type { UserId } from "./core/types.js";
+import type { Loaded } from "./load-config.js";
+import { Plugins } from "./plugin-set.js";
 import { judgeClass, skillJudge } from "./core/scorer.js";
 import { MODEL_CLASSES, type ModelClass } from "./core/model-choice.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
@@ -90,17 +95,33 @@ export function runClass(r: Pick<SkillEvalRequest, "model_class" | "judge_model_
   return { model_class };
 }
 
-/** The engine's replay, judge and scan for `skill` on `model_class`, or why they cannot be built (its SKILL.md is unreadable). */
+/** The engine's replay (with `system_prompt` as the skill's system prompt), judge and scan on `model_class`. */
+async function engineOf(d: SkillEvalWiring, system_prompt: string, model_class: ModelClass): Promise<Omit<SkillEvalEngineDeps, "store">> {
+  const [p, system] = await Promise.all([d.plugins(), d.judgePrompt()]);
+  const replay = skillEvalReplay(p, {
+    repo: d.repo, role: REPLAY_ROLE, system_prompt, env_allowlist: {}, deny_paths: d.deny_paths, model_class, timeout_ms: d.timeout_ms,
+  });
+  const scan = async (text: string) => (await p.scanner.scan("log", text)).clean;
+  return { replay, judge: skillJudge(p.llm, system, model_class), scan };
+}
+
+/** The engine's parts for `skill`'s SKILL.md as it is now on `model_class`, or why they cannot be built (its SKILL.md is unreadable). */
 async function engineParts(d: SkillEvalWiring, skill: string, model_class: ModelClass): Promise<{ engine: Omit<SkillEvalEngineDeps, "store">; skill_version: string } | { refused: string }> {
   const folder = skillFolderPath(skill, d.root);
   const [skill_text, skill_version] = await Promise.all([readFile(join(folder, "SKILL.md"), "utf8").catch(() => null), skillVersion(folder).catch(() => null)]);
   if (skill_text === null || skill_version === null) return { refused: `cannot read ${skill}/SKILL.md: nothing run` };
-  const [p, system] = await Promise.all([d.plugins(), d.judgePrompt()]);
-  const replay = skillEvalReplay(p, {
-    repo: d.repo, role: REPLAY_ROLE, system_prompt: skill_text, env_allowlist: {}, deny_paths: d.deny_paths, model_class, timeout_ms: d.timeout_ms,
-  });
-  const scan = async (text: string) => (await p.scanner.scan("log", text)).clean;
-  return { engine: { replay, judge: skillJudge(p.llm, system, model_class), scan }, skill_version };
+  return { engine: await engineOf(d, skill_text, model_class), skill_version };
+}
+
+/** Runs the suite through the engine as run `id`, records its figures and returns the stored run. */
+async function runAndRecord(
+  d: SkillEvalWiring, engine: Omit<SkillEvalEngineDeps, "store">, r: { id: string; suite_id: string; created_by: string; skill_version: string; model_class: ModelClass }, signal: AbortSignal,
+): Promise<SkillEvalRun> {
+  const outcome = await runSkillEval({ store: d.store, ...engine }, { id: r.id, suite_id: r.suite_id, created_by: r.created_by, skill_version: r.skill_version }, signal);
+  if (outcome.status !== null) await d.store.recordSkillEvalRunFigures(r.id, runFigures(r.model_class, outcome.verdicts));
+  const run = await d.store.getSkillEvalRun(r.id);
+  if (!run) throw new Error(`skill eval run ${r.id} was not stored`);
+  return run;
 }
 
 /**
@@ -116,12 +137,37 @@ export async function runSkillEvalFor(d: SkillEvalWiring, r: SkillEvalRequest): 
   if (!suite) return { refused: `no skill eval suite for ${r.skill}: nothing run` };
   const parts = await engineParts(d, r.skill, model_class);
   if ("refused" in parts) return parts;
-  const id = d.newId();
-  const outcome = await runSkillEval({ store: d.store, ...parts.engine }, { id, suite_id: suite.id, created_by: r.created_by, skill_version: parts.skill_version }, r.signal);
-  if (outcome.status !== null) await d.store.recordSkillEvalRunFigures(id, runFigures(model_class, outcome.verdicts));
-  const run = await d.store.getSkillEvalRun(id);
-  if (!run) throw new Error(`skill eval run ${id} was not stored`);
+  const run = await runAndRecord(d, parts.engine, { id: d.newId(), suite_id: suite.id, created_by: r.created_by, skill_version: parts.skill_version, model_class }, r.signal);
   return { run };
+}
+
+/**
+ * A scratch run (design 07-self-improvement): `skill`'s suite replayed with `system_prompt` (a draft) as the skill's
+ * system prompt instead of its SKILL.md, judged, stored under `skill_version` with its figures. Reads no skill file and
+ * writes none. Null when the skill has no suite.
+ */
+export async function scratchRunFor(
+  d: SkillEvalWiring, r: { skill_ref: string; system_prompt: string; run_id: string; skill_version: string; model_class: ModelClass; created_by: UserId }, signal: AbortSignal,
+): Promise<SkillEvalRun | null> {
+  const suite = (await d.store.listSkillEvalSuites()).find((s) => s.skill_ref === r.skill_ref);
+  if (!suite) return null;
+  return runAndRecord(d, await engineOf(d, r.system_prompt, r.model_class), { id: r.run_id, suite_id: suite.id, created_by: r.created_by, skill_version: r.skill_version, model_class: r.model_class }, signal);
+}
+
+/** The improve run's skill improvement over `d` (SkillImproveWiring): `folders` are capabilities.skill_folders, absolute. */
+export function improveWiring(d: SkillEvalWiring, config: SkillImproveWiring["config"], folders: readonly string[], prompt: () => Promise<string | null>): SkillImproveWiring {
+  return {
+    config, skill_folders: folders.map((f) => resolve(f)), prompt, newId: d.newId,
+    folderOf: (ref) => resolve(skillFolderPath(ref, d.root)),
+    readSkill: (folder) => readFile(join(folder, "SKILL.md"), "utf8").catch(() => null),
+    writeSkill: (folder, text) => writeFile(join(folder, "SKILL.md"), text, "utf8"),
+    version: (folder) => skillVersion(folder).catch(() => null),
+    scratch: (r, signal) => scratchRunFor(d, r, signal),
+    rerun: async (r, signal) => {
+      const res = await runSkillEvalFor(d, { skill: r.skill_ref, model_class: r.model_class, created_by: r.created_by, signal });
+      return "run" in res ? res.run : null;
+    },
+  };
 }
 
 /** One `eval case try <case>`: the case id, the class the replay runs on, and the stop signal. */
@@ -143,6 +189,17 @@ export async function tryCaseFor(d: SkillEvalWiring, r: SkillEvalTryRequest): Pr
   const parts = await engineParts(d, suite.skill_ref, model_class);
   if ("refused" in parts) return parts;
   return tryCase({ store: d.store, ...parts.engine }, r.case_id, r.signal);
+}
+
+/**
+ * The worker's skill improvement wiring (WorkerDeps.skillImprove) over its own plugins; undefined when
+ * capabilities.skill_folders is absent or empty: then the improve run drafts no skill and asks nothing.
+ */
+export function skillImproveWiring(store: SkillEvalWiring["store"], loaded: Loaded, plugins: SkillEvalPlugins): SkillImproveWiring | undefined {
+  const folders = capabilitiesConfig(loaded.file).skill_folders;
+  if (folders.length === 0) return undefined;
+  const prompt = () => readFile(join(loaded.codeRoot, "prompts", "skill-improve.md"), "utf8").catch(() => null);
+  return improveWiring({ ...wiringOf(store, loaded), plugins: async () => plugins }, skillImproveConfig(loaded.file), folders.map((f) => skillFolderPath(f, loaded.root)), prompt);
 }
 
 /** The configured plugins and wiring over `store`, as `skillEvalRun` and `skillEvalTry` build them. */

@@ -1,7 +1,8 @@
 // Open alarms in the status views (design 09-status-page, alarms in Needs you): the alerts the alarm step stored
 // (design 05-alarms), shown in Needs you and named in the why-it-waits sentence of each item they affect. An alarm
 // is open while its newest alert is younger than the alarm step's dedupe window (ALERT_DEDUPE_MS): a pattern that
-// still holds then alerts again, one that stopped is resolved. Store reads only (listAlerts, listRuns).
+// still holds then alerts again, one that stopped is resolved. One the owner dismissed (`factory alarm dismiss`, POST
+// /api/v1/alarms/dismiss) is hidden until its pattern alerts again. Store reads only (listAlerts, listRuns).
 
 import { ALERT_DEDUPE_MS, RESTART_WINDOW_MS } from "../core/alarms.js";
 import { MODEL_RUN_KINDS } from "../core/model-choice.js";
@@ -13,7 +14,10 @@ import { failureWords } from "./why.js";
 /** Most alerts one view reads: far more than the patterns that can alert within one dedupe window. */
 const ALERTS_READ = 100;
 
-/** The open alarms as of `now`, newest first: the newest alert of each pattern key, raised less than the window ago. */
+/**
+ * The open alarms as of `now`, newest first: the newest alert of each pattern key, raised less than the window ago
+ * and not dismissed at or after it was raised.
+ */
 export async function openAlarms(store: Pick<FactoryStore, "listAlerts">, now: Date): Promise<Alert[]> {
   const since = now.getTime() - ALERT_DEDUPE_MS;
   const seen = new Set<string>();
@@ -21,7 +25,7 @@ export async function openAlarms(store: Pick<FactoryStore, "listAlerts">, now: D
   for (const a of await store.listAlerts({ limit: ALERTS_READ })) {
     if (Date.parse(a.created_at) <= since || seen.has(a.pattern_key)) continue;
     seen.add(a.pattern_key);
-    out.push(a);
+    if (a.dismissed_at === undefined || a.dismissed_at < a.created_at) out.push(a);
   }
   return out;
 }
@@ -39,6 +43,7 @@ export function alarmText(a: Alert): string {
   if (a.pattern === "dead_letter") return `Alarm: a message on ${deadLetterTopic(a)} was dead-lettered (${DEAD_LETTER_TEXT[a.error_code] ?? "for a reason the factory has no plain words for yet"})`;
   if (a.pattern === "spend_budget") return `Alarm: spending passed ${spendOf(a).pct}% of the ${spendOf(a).period} budget`;
   if (a.pattern === "red_main") return `Alarm: the base branch fails its checks on its own at \`${redMainSha(a).slice(0, 12)}\`; merge-queue changes wait until it moves`;
+  if (a.pattern === "skill_draft_limit") return `Alarm: a skill draft limit was reached (${a.error_code} is ${a.count})`;
   return `Alarm: the factory restarted ${a.count} times in ${RESTART_WINDOW_MS / 60_000} minutes`;
 }
 
@@ -147,7 +152,7 @@ function redMainSha(a: Alert): string {
   return a.pattern_key.slice("red_main:".length);
 }
 
-/** Where the operator looks into the alarm; no command resolves one (it closes once its pattern stops). */
+/** Where the operator looks into the alarm; it closes once its pattern stops, or when dismissed (`factory alarm dismiss <id>`). */
 export function alarmCommand(a: Alert): string {
   if (a.pattern === "spend_budget") return "Spend page (/app/spend)";
   if (a.pattern === "repeated_error") return "Failures page (/app/failures)";
@@ -155,6 +160,7 @@ export function alarmCommand(a: Alert): string {
   if (a.pattern === "auto_stopped") return "Turn auto back on in Settings (/app/settings) after the cause is fixed, or factory mode auto";
   if (a.pattern === "red_main") return `Fix the base branch at ${redMainSha(a)} (a fix item is filed for it); queued changes are checked again once it moves`;
   if (a.pattern === "dead_letter") return `bus_${deadLetterTopic(a).replace(/\./g, "_")}_dead_letters (replay once the cause is fixed)`;
+  if (a.pattern === "skill_draft_limit") return `${a.error_code} in factory.config.json`;
   return "factory doctor";
 }
 
@@ -170,8 +176,8 @@ export function alarmsFor(open: readonly Alert[], it: WorkItem, runs: readonly R
   const active = runs.some((r) => r.status === "queued" || r.status === "running");
   return open.filter((a) => {
     if (a.pattern === "child_restarts") return active;
-    // A stop of auto mode, a dead letter, a spend alert or red main holds up no run of the item: Needs you shows the alarm.
-    if (a.pattern === "auto_stopped" || a.pattern === "dead_letter" || a.pattern === "spend_budget" || a.pattern === "red_main") return false;
+    // A stop of auto mode, a dead letter, a spend alert, red main or a skill draft limit holds up no run of the item: Needs you shows the alarm.
+    if (a.pattern === "auto_stopped" || a.pattern === "dead_letter" || a.pattern === "spend_budget" || a.pattern === "red_main" || a.pattern === "skill_draft_limit") return false;
     if (last === null || Date.parse(last.finished_at!) < Date.parse(a.created_at) - ALERT_DEDUPE_MS) return false;
     if (a.pattern === "repeated_error") return last.outcome?.status === "failed" && last.outcome.error_code === a.error_code;
     return (MODEL_RUN_KINDS as readonly string[]).includes(last.kind) && runTokenCount(last) === 0;

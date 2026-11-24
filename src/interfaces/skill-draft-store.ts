@@ -1,7 +1,7 @@
 // Skill drafts (design 07-self-improvement, skill improvement): the store's methods over `controller_skill_drafts`
 // (one row per drafted skill change, in one of SKILL_DRAFT_STATES) and `controller_skill_draft_days` (the drafts
 // taken per project and UTC day). `detail` is JSON stored as text and read back as written; it never holds a
-// transcript. Nothing calls them yet: drafting, scoring and the daily run come in later phases.
+// transcript. The improve run writes them (src/core/skill-improve.ts), which also holds the verdicts.
 
 import type { Timestamp } from "../core/types.js";
 

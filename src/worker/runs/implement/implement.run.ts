@@ -71,7 +71,7 @@ async function implement(
         ? [renderSessionResume(plan ? plan.state.head : continued?.head ?? null, plan ? null : "stopped"), budget].join("\n\n")
         : await w.withIndex(
           [
-            renderWorkItem(item, { includeSpec: true }), renderRequest(item), budget, notes, feedback, previous,
+            renderWorkItem(item, { includeSpec: true }), newCheckFiles(item), renderRequest(item), budget, notes, feedback, previous,
             plan ? renderNewSessionResume(restored ? plan.state.head : null) : "",
             continued ? renderContinueNewSession(continued.head) : "",
           ].filter(Boolean).join("\n\n"),
@@ -244,6 +244,16 @@ async function implement(
     ...(sync.conflicts.length ? { conflicts: sync.conflicts } : {}), test_selection: sel.record() ?? undefined, // the selection before push (design §4)
     ...(checked.done ? { done_checks: checked.done } : {}), // each done-when line: pass, fail, manual or not_run (design §4)
   };
+}
+
+/**
+ * The prompt's "New check files" section (design 04-triage): each done-check test file the spec marks new, its done-when
+ * line, and that the run creates it. Empty when there is none (an item triaged before the mark has none).
+ */
+function newCheckFiles(item: WorkItem): string {
+  const files = (item.done_checks ?? []).flatMap((c) => ("test_file" in c && c.new ? [`- \`${c.test_file}\`: checks "${c.line}"`] : []));
+  if (files.length === 0) return "";
+  return ["## New check files", "", "These test files do not exist on the base. The run must create each one: it is the check of its done-when line.", "", ...files].join("\n");
 }
 
 /**

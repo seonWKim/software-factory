@@ -455,7 +455,7 @@ describe("ui api: open alarms in Needs you and the why sentence (design 09-statu
     const created = clock.now().getTime();
     const o = await overview(d);
     expect(o.system_actions).toContainEqual({
-      code: "alarm", text: `${ALARM}: npm test exited #`, command: "Failures page (/app/failures)", pattern: "repeated_error", error_code: "checks_failed", until: new Date(created + ALERT_DEDUPE_MS).toISOString(),
+      code: "alarm", alert_id: expect.any(String), text: `${ALARM}: npm test exited #`, command: "Failures page (/app/failures)", pattern: "repeated_error", error_code: "checks_failed", until: new Date(created + ALERT_DEDUPE_MS).toISOString(),
     });
     // The failing item is Failed, in the Problem group: no Needs-you row of its own.
     expect(o.needs_you).toBe(o.system_actions.length);

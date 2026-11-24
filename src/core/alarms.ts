@@ -10,15 +10,17 @@
 // or an interactive run the owner abandoned: neither is a failure a person must act on. The same step checks the spend budgets
 // (design 06-spend): 80% and 100% of a daily or weekly budget alert once each per period, and never stop, pause or
 // hold anything. A run the pack grant check refused holds its item for a person at once and alerts once an hour, so
-// an unattended run that could not reach its tools is never a silent no-op. No forge, LLM or sandbox call; every text
-// is scanned first.
+// an unattended run that could not reach its tools is never a silent no-op. A pattern the owner dismissed counts only
+// the runs (and restarts) that finished after the dismissal, so a failure that goes on brings its alarm back; a
+// dismissed spend threshold does not alert again in its period. No forge, LLM or sandbox call; every text is scanned
+// first.
 
 import { groupFailures, normalizeDetail, patternKey, sleptRuns } from "./improver.js";
 import type { Logger } from "./log.js";
 import { AGENT_STALLED, INTERACTIVE, MODEL_STALL, SESSION_ABANDONED } from "./policy.js";
 import { DAY_MS, dayStart, spendTotals, utcDay, weekStart } from "./spend.js";
 import {
-  type FailureGroup, type FiledPattern, RECURRING_FAILURE, type Run, type RunId, type RunKind, type RunOutcome, type SourceRef, type StateChange, type Timestamp, type WorkItem, type WorkItemId,
+  type FailureGroup, type FiledPattern, RECURRING_FAILURE, type Run, type RunId, type RunKind, type RunOutcome, type SourceRef, type StateChange, type Timestamp, type UserId, type WorkItem, type WorkItemId,
   runTokenCount,
 } from "./types.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -85,6 +87,7 @@ export interface AlarmFinding {
  * stall pattern's detail adds the stall rate (`stallRate`, which counts every stall) and it holds no item.
  * Zero tokens: the newest `alarm_repeat_count` or more agent runs finished inside the window all used no tokens.
  * Child restarts: at least `alarm_restart_count` restarts within RESTART_WINDOW_MS, with the last exit reason.
+ * Each pattern counts only what finished (or restarted) after its key's dismissal in `dismissed`.
  */
 export function detectAlarms(input: {
   runs: readonly Run[];
@@ -93,6 +96,8 @@ export function detectAlarms(input: {
   settings: AlarmSettings;
   /** Failed runs the repeated-error check leaves out; absent: none. */
   skip?: ReadonlySet<RunId>;
+  /** Each dismissed pattern key's dismissal time in ms (design 05-alarms); absent: none. */
+  dismissed?: ReadonlyMap<string, number>;
 }): AlarmFinding[] {
   const { settings: s } = input;
   const now = input.now.getTime();
@@ -101,14 +106,24 @@ export function detectAlarms(input: {
     .filter((r) => r.finished_at !== null && Date.parse(r.finished_at) >= since && Date.parse(r.finished_at) <= now)
     // Stable: runs finished at the same time keep the store's order (newest first, then insertion).
     .sort((a, b) => cmp(b.finished_at!, a.finished_at!));
-  return [...repeatedErrors(finished, input.skip ?? new Set(), s.alarm_repeat_count, s.alarm_window_minutes), ...zeroTokens(finished, s.alarm_repeat_count), ...childRestarts(input.restarts, now, s.alarm_restart_count)];
+  const after = afterDismissal(input.dismissed ?? new Map());
+  return [
+    ...repeatedErrors(finished, input.skip ?? new Set(), after, s.alarm_repeat_count, s.alarm_window_minutes),
+    ...zeroTokens(finished.filter((r) => after("zero_tokens", r.finished_at!)), s.alarm_repeat_count),
+    ...childRestarts(input.restarts.filter((r) => after("child_restarts", r.at)), now, s.alarm_restart_count),
+  ];
 }
 
-function repeatedErrors(newestFirst: readonly Run[], skip: ReadonlySet<RunId>, threshold: number, windowMinutes: number): AlarmFinding[] {
+/** Whether a time is after the dismissal of a pattern key (none: always). */
+type After = (pattern_key: string, at: string) => boolean;
+const afterDismissal = (dismissed: ReadonlyMap<string, number>): After => (key, at) => Date.parse(at) > (dismissed.get(key) ?? -Infinity);
+
+function repeatedErrors(newestFirst: readonly Run[], skip: ReadonlySet<RunId>, after: After, threshold: number, windowMinutes: number): AlarmFinding[] {
   const groups = new Map<string, { code: string; detail: string; runs: Run[]; items: Set<WorkItemId> }>();
   for (const r of newestFirst) {
     if (r.kind === "improve" || r.status !== "failed" || r.outcome?.status !== "failed" || abandoned(r) || skip.has(r.id)) continue;
     const detail = normalizeDetail(r.outcome.detail ?? "");
+    if (!after(alertKey(patternKey({ error_code: r.outcome.error_code, detail })), r.finished_at!)) continue;
     const key = `${r.outcome.error_code}\n${detail}`;
     const g = groups.get(key) ?? { code: r.outcome.error_code, detail, runs: [], items: new Set<WorkItemId>() };
     g.runs.push(r);
@@ -184,7 +199,7 @@ export interface AlarmDeps {
   store: Pick<
     FactoryStore,
     "listRunsFinishedWithin" | "listRunsFinishedBetween" | "recordAlert" | "listAlerts" | "getFiledPattern" | "pauseClaims" | "getWorkItemBySource" | "listStateChanges"
-    | "listHostSleeps"
+    | "listHostSleeps" | "listAlertDismissals"
   >;
   scanner: EgressScanner;
   clock: Clock;
@@ -211,15 +226,18 @@ export interface AlarmDeps {
  */
 export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_interval_ms: number; spend?: SpendBudgets }): Promise<Alert[]> {
   const now = d.clock.now();
-  const runs = await d.store.listRunsFinishedWithin(Math.max(settings.alarm_window_minutes * 60_000, RERAISE_WINDOW_MS));
+  const span = Math.max(settings.alarm_window_minutes * 60_000, RERAISE_WINDOW_MS);
+  const runs = await d.store.listRunsFinishedWithin(span);
   const restarts = d.restarts ? await d.restarts() : [];
+  // A dismissal older than every run read here (and every restart, RESTART_WINDOW_MS) leaves out none of them.
+  const dismissed = await dismissalsSince(d.store, now.getTime() - span);
   const skip = await sleptStalls(d.store, runs, settings.alarm_repeat_count);
   const counted = runs.filter((r) => !skip.has(r.id) && !abandoned(r));
   // Before this step's own alerts, so a pattern's new 6-hour alert never hides the re-raise it is due.
-  const stored = await reraise(d, counted, now, settings.alarm_repeat_count);
+  const stored = await reraise(d, counted, now, settings.alarm_repeat_count, dismissed);
   await holdFiled(d, counted, now);
-  stored.push(...(await holdRefused(d, runs, now)));
-  for (const { held, ...f } of detectAlarms({ runs, restarts, now, settings, skip })) {
+  stored.push(...(await holdRefused(d, runs, now, dismissed)));
+  for (const { held, ...f } of detectAlarms({ runs, restarts, now, settings, skip, dismissed })) {
     // G5: alerts reach the status page, so the detail is scanned as UI text, never stored unscanned.
     const scan = await d.scanner.scan("ui", f.detail);
     const r = await d.store.recordAlert({ ...f, detail: scan.clean ? f.detail : null }, ALERT_DEDUPE_MS);
@@ -236,6 +254,30 @@ export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_
   }
   if (settings.spend) stored.push(...(await spendStep(d, settings.spend)));
   return stored;
+}
+
+/** Each pattern key dismissed at or after `since` (ms), with its dismissal time in ms. */
+async function dismissalsSince(store: Pick<FactoryStore, "listAlertDismissals">, since: number): Promise<Map<string, number>> {
+  const rows = await store.listAlertDismissals(new Date(since).toISOString() as Timestamp);
+  return new Map(rows.map((r) => [r.pattern_key, Date.parse(r.dismissed_at)]));
+}
+
+/** A dismissed alert pattern (design 05-alarms): when, and by whom as an ID, never a display name. */
+export interface AlertDismissal {
+  pattern_key: string;
+  dismissed_at: Timestamp;
+  dismissed_by: UserId;
+}
+
+/** The store's alarm dismissals (FactoryStore; the SQL store's alerts.ts). */
+export interface AlertDismissalStore {
+  /**
+   * Dismisses the pattern of alert `alert_id` at the store clock's now, by `actor`. Conditional: a pattern already
+   * dismissed since its last alert keeps that dismissal (`dismissed: false`). Lifts no hold. Null: no such alert.
+   */
+  dismissAlert(alert_id: string, actor: UserId): Promise<{ pattern_key: string; dismissed: boolean; dismissed_at: Timestamp } | null>;
+  /** The patterns dismissed at or after `since`, newest first. Read-only. */
+  listAlertDismissals(since: Timestamp): Promise<AlertDismissal[]>;
 }
 
 /**
@@ -261,16 +303,19 @@ export async function spendStep(d: Pick<AlarmDeps, "store" | "scanner" | "clock"
   if (periods.length === 0) return [];
   const since = Math.min(...periods.map((p) => p.start));
   const runs = await d.store.listRunsFinishedBetween(new Date(since).toISOString() as Timestamp, new Date(now + 1).toISOString() as Timestamp);
+  // A threshold dismissed in its period was seen: it does not alert again until the next period's key.
+  const dismissed = await dismissalsSince(d.store, since);
   const stored: Alert[] = [];
   for (const p of periods) {
     const t = spendTotals(runs.filter((r) => Date.parse(r.finished_at!) >= p.start));
     for (const pct of SPEND_THRESHOLDS) {
-      if (t.cost_usd * 100 < p.budget * pct) continue;
+      const pattern_key = `spend:${p.name}:${utcDay(p.start)}:${pct}`;
+      if (t.cost_usd * 100 < p.budget * pct || dismissed.has(pattern_key)) continue;
       const unknown = t.unknown === 0 ? "" : `; ${t.unknown} run${t.unknown === 1 ? "" : "s"} with no stored cost not counted`;
       const detail = `$${t.cost_usd.toFixed(2)} of the $${p.budget.toFixed(2)} ${p.name} budget spent (${p.name === "daily" ? "UTC day" : "week from"} ${utcDay(p.start)})${unknown}`;
       const scan = await d.scanner.scan("ui", detail);
       const r = await d.store.recordAlert(
-        { pattern: "spend_budget", pattern_key: `spend:${p.name}:${utcDay(p.start)}:${pct}`, error_code: `${p.name}_${pct}`, count: t.runs, detail: scan.clean ? detail : null },
+        { pattern: "spend_budget", pattern_key, error_code: `${p.name}_${pct}`, count: t.runs, detail: scan.clean ? detail : null },
         SPEND_DEDUPE_MS,
       );
       if (!r.created) continue;
@@ -297,10 +342,10 @@ const holds = (g: Pick<FailureGroup, "error_code">): boolean => g.error_code !==
  * was first known, the earlier of its alert and its filing). The re-raise is an alert (pattern `repeated_error`, key
  * `recurring:<key>`) the store dedupes for RERAISE_WINDOW_MS, so of several replicas or steps exactly one stores it,
  * at most once an hour. That one holds the pattern's items (each not held for it since its run, `unheld`; a stall
- * pattern holds none) and comments the count since filing on its filed item.
- * Returns the re-raises it stored.
+ * pattern holds none) and comments the count since filing on its filed item. A dismissal of the re-raise or of the
+ * pattern's alert moves the count's start to it. Returns the re-raises it stored.
  */
-async function reraise(d: AlarmDeps, runs: readonly Run[], now: Date, threshold: number): Promise<Alert[]> {
+async function reraise(d: AlarmDeps, runs: readonly Run[], now: Date, threshold: number, dismissed: ReadonlyMap<string, number>): Promise<Alert[]> {
   const finished = new Map(runs.map((r) => [r.id, Date.parse(r.finished_at ?? "")]));
   const byRun = new Map(runs.map((r) => [r.id, r]));
   const stored: Alert[] = [];
@@ -314,7 +359,7 @@ async function reraise(d: AlarmDeps, runs: readonly Run[], now: Date, threshold:
     if (known === null) continue;
     const { filed } = known;
     // Counted from the last re-raise, else from when the pattern was first known (its alert or its filing).
-    const from = newest.get(reraiseKey(key)) ?? known.at;
+    const from = Math.max(newest.get(reraiseKey(key)) ?? known.at, dismissed.get(reraiseKey(key)) ?? -Infinity, dismissed.get(alertKey(key)) ?? -Infinity);
     const fresh = g.run_ids.filter((id) => (finished.get(id) ?? 0) > from).length;
     if (fresh < threshold) continue;
     const scan = await d.scanner.scan("ui", g.detail);
@@ -355,10 +400,10 @@ async function holdFiled(d: AlarmDeps, runs: readonly Run[], now: Date): Promise
  * Each pack grant refusal of the last RERAISE_WINDOW_MS (a failed run with PACK_TOOL_REFUSED, of any kind) holds its
  * item for a person at its first run, and its pattern (the improver's key of the code and normalized detail) stores one `repeated_error` alert, key `grant_refused:<key>`, at most once per
  * RERAISE_WINDOW_MS. The detail is the newest run's, which names the refused grant. The hold is the recurring one
- * (`unheld`, then a conditional transition), so `/retry` lifts it and a second step writes nothing. Returns the alerts
- * it stored.
+ * (`unheld`, then a conditional transition), so `/retry` lifts it and a second step writes nothing. A dismissed alert
+ * counts only the runs after its dismissal; the holds do not change. Returns the alerts it stored.
  */
-async function holdRefused(d: AlarmDeps, runs: readonly Run[], now: Date): Promise<Alert[]> {
+async function holdRefused(d: AlarmDeps, runs: readonly Run[], now: Date, dismissed: ReadonlyMap<string, number>): Promise<Alert[]> {
   const since = now.getTime() - RERAISE_WINDOW_MS;
   const groups = new Map<string, Run[]>();
   for (const r of runs) {
@@ -374,15 +419,18 @@ async function holdRefused(d: AlarmDeps, runs: readonly Run[], now: Date): Promi
       const items = await unheld(d, group, key, null);
       if (items.length > 0) await d.hold({ pattern_key: key, work_item_ids: items });
     }
-    const newest = [...group].sort((a, b) => cmp(b.finished_at!, a.finished_at!))[0]!.outcome as Extract<RunOutcome, { status: "failed" }>;
+    const pattern_key = `${GRANT_REFUSED_PREFIX}${key}`;
+    const fresh = group.filter((r) => afterDismissal(dismissed)(pattern_key, r.finished_at!));
+    if (fresh.length === 0) continue;
+    const newest = [...fresh].sort((a, b) => cmp(b.finished_at!, a.finished_at!))[0]!.outcome as Extract<RunOutcome, { status: "failed" }>;
     const scan = await d.scanner.scan("ui", newest.detail);
     const r = await d.store.recordAlert(
-      { pattern: "repeated_error", pattern_key: `${GRANT_REFUSED_PREFIX}${key}`, error_code: newest.error_code, count: group.length, detail: scan.clean ? newest.detail : null },
+      { pattern: "repeated_error", pattern_key, error_code: newest.error_code, count: fresh.length, detail: scan.clean ? newest.detail : null },
       RERAISE_WINDOW_MS,
     );
     if (!r.created) continue;
     stored.push(r.alert);
-    d.log.warn("alarm: a run was refused by the pack grant check", { alert_id: r.alert.id, error_code: newest.error_code, count: group.length });
+    d.log.warn("alarm: a run was refused by the pack grant check", { alert_id: r.alert.id, error_code: newest.error_code, count: fresh.length });
   }
   return stored;
 }

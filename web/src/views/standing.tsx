@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Fragment, type ReactNode, useId, useState } from "react";
+import { Fragment, type ReactNode, useId, useRef, useState } from "react";
 import { API, type StandingProposalRow, type StandingRuleRow, type StandingView, type StandingWriteBody, postStanding, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
@@ -29,6 +29,9 @@ import { ROW_PAD } from "./rules-shared.js";
 // removed in a Dialog, from its Switch or its ⋯ menu, never in the row; each dialog lists the waiting items the change
 // would approve now, or "none". Every write is POST /api/v1/standing with the CSRF token; the server runs the owner
 // check (approve_spec), and a refusal shows in the dialog, or beside the proposal it came from.
+
+/** The most titles a standing row names before "+N more". */
+const RECENT_SHOWN = 2;
 
 const muted = "text-xs text-pretty break-keep text-text-2";
 
@@ -89,8 +92,8 @@ function firedText(at: string | null, now: number): string {
 export type RuleAction = "add" | "pause" | "edit" | "remove";
 
 /**
- * One standing rule as a ListRow: its Switch, its sentence, then on or off, when it last fired and the items it
- * approved in the last 7 days, each a link named by its title (no ID); its raw facts behind Details. The Switch and
+ * One standing rule as a ListRow: its Switch, its sentence, then when it last fired and the items it
+ * approved in the last 7 days, at most two links named by their title (no ID), then "+N more" that opens Details; its raw facts behind Details. The Switch and
  * the ⋯ menu (Turn on or Pause, Edit, Remove) each open the rule's Dialog; the row itself never grows.
  */
 export function StandingRule({ rule, token }: { rule: StandingRuleRow; token: string | null }) {
@@ -102,24 +105,36 @@ export function StandingRule({ rule, token }: { rule: StandingRuleRow; token: st
   const recent = rule.recent ?? [];
   const firedAt = rule.last_fired_at ?? null;
   const off = token === null;
+  // At most two titles on the row; "+N more" opens the row's Details, which list them all.
+  const shown = recent.slice(0, RECENT_SHOWN);
+  const hidden = recent.length - shown.length;
+  const row = useRef<HTMLLIElement>(null);
+  const openDetails = () => {
+    const summary = row.current?.querySelector<HTMLElement>("details[data-raw] > summary");
+    if (summary?.getAttribute("aria-expanded") === "false") summary.click();
+  };
   return (
     <ListRow
+      ref={row}
       data-rule={rule.rule}
       className={ROW_PAD}
       leading={<Switch aria-label={sentence} checked={rule.enabled} disabled={off} onCheckedChange={(next) => setAction(next ? "add" : "pause")} />}
       title={<p data-rule-sentence className={`${ROW_TITLE} font-medium`} title={sentence}>{sentence}</p>}
       details={
         <>
-          <span>{rule.enabled ? t("standing.on") : t("standing.off")}</span>
           <span data-fired>{firedText(firedAt, now)}</span>
           <span data-recent className="min-w-0 break-keep">
             {recent.length === 1 ? t("standing.recentOne") : t("standing.recent", { count: recent.length })}
-            {recent.map((item, i) => (
+            {recent.length > 0 && ": "}
+            {shown.map((item, i) => (
               <Fragment key={item.id}>
-                {i === 0 ? ": " : ", "}
                 <Link href={itemPath(item.id)} className={LINK_CLASS}>{item.title}</Link>
+                {i < shown.length - 1 || hidden > 0 ? ", " : ""}
               </Fragment>
             ))}
+            {hidden > 0 && (
+              <Button variant="ghost" size="sm" data-recent-more className={`min-h-0 px-1 ${LINK_CLASS}`} onClick={openDetails}>{t("standing.recentMore", { count: hidden })}</Button>
+            )}
           </span>
         </>
       }
@@ -138,6 +153,11 @@ export function StandingRule({ rule, token }: { rule: StandingRuleRow; token: st
       }
     >
       <RawDetails>
+        {hidden > 0 && (
+          <ul data-recent-all className={`mb-1 ${muted}`}>
+            {recent.map((item) => <li key={item.id}><Link href={itemPath(item.id)} className={LINK_CLASS}>{item.title}</Link></li>)}
+          </ul>
+        )}
         <p className={muted}>
           {t("standing.ruleId", { rule: rule.rule })}
           {" · "}
