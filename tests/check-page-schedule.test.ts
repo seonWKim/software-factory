@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import { checkPageAction } from "../src/controller/units/schedule/plugins/check-page/check-page-action.js";
-import { scheduledAction } from "../src/core/controller-deps.js";
+import { routineQueue, scheduledAction } from "../src/core/controller-deps.js";
 import { ROUTINE_CAP, type RoutineInput, addRoutine, carrierSource, holdSource } from "../src/core/routines.js";
 import { SCHEDULE_CHECKPOINT, SCHEDULE_TOKEN_CAP, checkpointSourceId } from "../src/core/schedule.js";
 import type { Timestamp, UserId, WorkItemId } from "../src/core/types.js";
@@ -41,7 +41,7 @@ async function harness(over: Partial<RoutineInput> = {}) {
   const reads = Object.assign(Object.create(store) as SqlFactoryStore, { listMergeEvaluations: async () => merges.map((merged_at) => ({ merged_at })) as never });
   const runner = new FakeRunner({});
   const loaded = { config: { repo: { path: "/repo", base_branch: "main" }, deny_paths: [], run_timeout_ms: 60_000 } };
-  const routes = { check_page: checkPageAction };
+  const routes = { check_page: checkPageAction(routineQueue(store, PROJECT)) };
   const routed = new RoutedScheduleAction({ loaded, repo: { owner: "o", name: "r" }, extraScanValues: [], store, runner, sandbox: new FakeSandbox(), tools: READ_TOOLS, scanner: cleanScanner, project: PROJECT, routes } as never);
   const controller = new ControllerRole({ store, sources: [new LocalSource(store)], auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, schedule_action: scheduledAction(reads, routed, silent, PROJECT) });
   const added = await addRoutine(store, routine(over), clock.now());

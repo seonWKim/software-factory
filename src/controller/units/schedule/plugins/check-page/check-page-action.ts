@@ -4,8 +4,9 @@
 // trigger, the daily cap's hold and the token cap's checkpoint come before this action. It records nothing on the
 // run row: the run's model calls are recorded there when the run finishes (the routines unit's recordFindings).
 
-import type { ScheduleActionRoute } from "../ports.js";
+import type { RoutineQueue, ScheduleActionRoute } from "../ports.js";
 
-export const checkPageAction: ScheduleActionRoute = async (_schedule, _occurrence_at, ports) => {
-  await ports.queueRoutine();
+/** The Check a page route over `queue` (compose binds it to the store and the project). */
+export const checkPageAction = (queue: RoutineQueue): ScheduleActionRoute => async (schedule, occurrence_at) => {
+  await queue(schedule.id, occurrence_at);
 };

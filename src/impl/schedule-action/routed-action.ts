@@ -7,7 +7,6 @@
 
 import type { Contexts } from "../../plugin-api.js";
 import type { ActionPorts, AgentAnswer } from "../../controller/units/schedule/plugins/ports.js";
-import { queueRoutineRun } from "../../core/routines.js";
 import type { Schedule } from "../../core/schedule.js";
 import type { ToolSpec } from "../../core/tools/types.js";
 import { type RunId, type Timestamp, type WorkItemId, usageTokens } from "../../core/types.js";
@@ -59,7 +58,6 @@ export class RoutedScheduleAction implements ScheduleAction {
         return { id: item.id, created };
       },
       ask: (i) => this.ask(schedule, occurrence_at, i),
-      queueRoutine: () => queueRoutineRun(store, project, schedule.id, occurrence_at),
       record: (r) => store.recordScheduleRunResult(schedule.id, occurrence_at, r),
     };
   }

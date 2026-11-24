@@ -5,7 +5,7 @@
 import type { FactoryConfig } from "./config.js";
 import type { TickLease } from "./lease.js";
 import { type Logger, errorText } from "./log.js";
-import { type CheckPageStore, runDueCheckPages } from "./routines.js";
+import { type CheckPageStore, type RoutineRunStore, queueRoutineRun, runDueCheckPages } from "./routines.js";
 import { type CheckpointStore, type Schedule, type ScheduleRun, checkpointAnswer, runDueSchedules } from "./schedule.js";
 import type { LearnedSettingsSource, LiveSettings } from "./settings.js";
 import type { Timestamp } from "./types.js";
@@ -168,6 +168,9 @@ export interface ScheduledAction {
   /** Claims the occurrences due at `now` and runs the action once per fired one; returns the fired runs. */
   fireDue(now: Date): Promise<ScheduleRun[]>;
 }
+
+/** The Check a page route's queue (design 08-schedules): queues the routine run of a schedule's slot in `project`. */
+export const routineQueue = (store: RoutineRunStore, project: string) => (schedule_id: string, slot: string) => queueRoutineRun(store, project, schedule_id, slot);
 
 /**
  * Binds `action` to `store`'s claims (design 08-schedules): each pass claims the schedules due at the time it is
