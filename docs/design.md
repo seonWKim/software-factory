@@ -1,6 +1,6 @@
 # Software factory: design index
 
-Read this index, then only the topics you touch. Topics: current decision first, replaced ones in `history/<topic>.md`. Add a line here only for a new topic. "§5" means `05-*`.
+Read this index, then only the topics you touch. Add a line here only for a new topic. "§5" means `05-*`.
 
 ## 1. Shape
 - [01-shape.md](design/01-shape.md): intake to human gate and post-merge.
@@ -90,7 +90,7 @@ Read this index, then only the topics you touch. Topics: current decision first,
 - [09-dashboard-tasks-quick-add.md](design/09-dashboard-tasks-quick-add.md): Quick add.
 - [09-dashboard-tasks-calendar.md](design/09-dashboard-tasks-calendar.md): Calendar page.
 - [09-dashboard-schedules.md](design/09-dashboard-schedules.md): Schedules page.
-- [09-dashboard-routines.md](design/09-dashboard-routines.md): Routines page.
+- [09-dashboard-routines.md](design/09-dashboard-routines.md): Routines.
 - [09-dashboard-tasks-projects.md](design/09-dashboard-tasks-projects.md): Projects.
 - [09-dashboard-rules.md](design/09-dashboard-rules.md): Rules page.
 - [09-dashboard-rules-waiting.md](design/09-dashboard-rules-waiting.md): waiting rows.
