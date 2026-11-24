@@ -1,5 +1,7 @@
 // English text, area: shell. A key's prefix (before its first dot) belongs to this file only.
 export const shell = {
+  "clamp.more": "Show more",
+  "clamp.less": "Show less",
   "app.name": "Gongbang",
   "nav.sidebar": "Sidebar",
   "nav.tasks": "Tasks",
