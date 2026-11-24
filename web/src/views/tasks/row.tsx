@@ -26,6 +26,12 @@ import { SUB_TITLE } from "../../components/ui/card.js";
 const closedKey = (reason: NonNullable<TaskRow["close_reason"]>): MessageKey =>
   reason === "rejected" ? "tasks.closedRejected" : reason === "wont_do" ? "tasks.closedNotPlanned" : "tasks.closedOther";
 
+/**
+ * The Tasks read's fields for a task whose item was rejected (design 02-tasks-build): `reject_reason`, on an open task no
+ * replacement took, and `link_note`, on a task that followed its item's replacement; null or absent otherwise.
+ */
+type Followed = TaskRow & { reject_reason?: string | null; link_note?: string | null };
+
 /** Build this, from the row's menu: one POST; its refusal shows on the row until the next try. */
 function useBuild(task: TaskRow, token: string | null) {
   const client = useQueryClient();
@@ -57,6 +63,9 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false, date =
   const row = useRef<HTMLLIElement>(null);
   const action = useTaskAction(token);
   const done = task.done_at != null;
+  const { reject_reason = null, link_note = null } = task as Followed;
+  // An open task whose item was rejected with no replacement says it was not built, and why, instead of `Rejected`.
+  const notBuilt = done ? null : reject_reason;
   // A done task is not late, wherever it is placed.
   const overdue = inOverdue && !done;
   const [mode, setMode] = useState<"view" | "edit" | "sub" | "delete" | "projects" | "description">("view");
@@ -164,7 +173,12 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false, date =
       details={
         <>
           {task.done_at != null && <span className="tabular-nums">{t("tasks.doneAt", { at: localDateTime(task.done_at) })}</span>}
-          {task.close_reason != null && <span>{t(closedKey(task.close_reason))}</span>}
+          {notBuilt !== null ? (
+            <span data-not-built className="break-words">{t("tasks.notBuilt", { reason: notBuilt })}</span>
+          ) : (
+            task.close_reason != null && <span>{t(closedKey(task.close_reason))}</span>
+          )}
+          {!done && link_note !== null && <span data-link-note className="break-words">{link_note}</span>}
           {parent !== null && !sub && titles.has(parent) && <span className="break-words">{t("tasks.subOf", { title: titles.get(parent)! })}</span>}
           {minutes !== null && <span className="tabular-nums">{t("tasks.minutes", { minutes })}</span>}
           {task.priority !== null && <span>!{task.priority}</span>}

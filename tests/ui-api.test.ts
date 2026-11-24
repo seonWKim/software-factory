@@ -295,12 +295,13 @@ describe("ui api: the item's request and spec (About on the item page)", () => {
     return { body: await json<About>(d, `/api/v1/items/${encodeURIComponent(it0.id)}`), list: await json<{ items: Record<string, unknown>[] }>(d, "/api/v1/items") };
   }
 
-  it("a request with an approved spec: the request's first paragraph and the problem, output and each criterion", async () => {
+  it("a request with an approved spec: the body's first paragraph and the problem, output and each criterion", async () => {
     const { body } = await about({
-      issue_text: "Item page shows what the work is about\n\nThe item page says\nwhat the work is about.",
+      title: "Item page shows what the work is about",
+      issue_text: "Item page shows what the work is about\n\nThe item page says\nwhat the work is about.\n\nDone when: it shows.",
       problem: "The page shows no text.", desired_output: "An About card.", done_criteria: ["About shows", "Spec collapses"],
     });
-    expect(body.item.request).toBe("Item page shows what the work is about");
+    expect(body.item.request).toBe("The item page says\nwhat the work is about.");
     expect(body.item.spec).toEqual({ problem: "The page shows no text.", desired_output: "An About card.", done_criteria: ["About shows", "Spec collapses"] });
   });
 

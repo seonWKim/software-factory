@@ -8,7 +8,7 @@ import {
   type TaskTime, type UpdateTaskResult, applyTaskEdit, dueDate, nextDueDate, reminderDays, reminderDue,
 } from "../../../core/tasks.js";
 import type { NewNotice } from "../../../core/notifications.js";
-import type { Timestamp, UserId, WorkItemId } from "../../../core/types.js";
+import type { Timestamp, UserId, WorkItem, WorkItemId } from "../../../core/types.js";
 import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
 import { recordNotice } from "./notices.js";
 import { linkTaskProjects, unlinkTask } from "./projects.js";
@@ -16,11 +16,20 @@ import { newId } from "./rows.js";
 
 const COLUMNS =
   "id, title, list, priority, due_date, due_time, recurrence, created_by, created_at, done_at, parent_id, work_item_id, parent_task_id, duration_minutes, reminded_at, body";
+/** What a read selects: the written columns and `link_note`, which only followReplacement writes. */
+const READ = `${COLUMNS}, link_note`;
 
 const text = (v: unknown): string | null => (v == null ? null : String(v));
 
-function rowToTask(r: Row): Task {
+/**
+ * A stored task as the store reads it: a Task, and `link_note` (design 02-tasks-build), `Moved from wi_…` on a task that
+ * followed its rejected item's replacement, else null; GET /api/v1/tasks returns it with each row.
+ */
+type StoredTask = Task & { link_note: string | null };
+
+function rowToTask(r: Row): StoredTask {
   return {
+    link_note: text(r.link_note),
     id: String(r.id), title: String(r.title), list: text(r.list), priority: r.priority == null ? null : (Number(r.priority) as TaskPriority),
     due_date: text(r.due_date), due_time: text(r.due_time), recurrence: text(r.recurrence) as Recurrence | null,
     created_by: String(r.created_by) as UserId, created_at: String(r.created_at) as Timestamp, done_at: text(r.done_at) as Timestamp | null,
@@ -31,7 +40,7 @@ function rowToTask(r: Row): Task {
 }
 
 async function select(db: SqlExecutor, column: "id" | "parent_id", value: string): Promise<Task | null> {
-  const [row] = await db.all(`SELECT ${COLUMNS} FROM controller_tasks WHERE ${column} = ?`, [value]);
+  const [row] = await db.all(`SELECT ${READ} FROM controller_tasks WHERE ${column} = ?`, [value]);
   return row ? rowToTask(row) : null;
 }
 
@@ -120,7 +129,7 @@ export async function deleteTask(db: SqlDriver, id: string, opts: { with_sub_tas
   return db.transaction(async (tx) => {
     const task = await select(tx, "id", id);
     if (task === null) return { ok: false, reason: "not_found" } as const;
-    const subs = (await tx.all(`SELECT ${COLUMNS} FROM controller_tasks WHERE parent_task_id = ? ORDER BY id`, [id])).map(rowToTask);
+    const subs = (await tx.all(`SELECT ${READ} FROM controller_tasks WHERE parent_task_id = ? ORDER BY id`, [id])).map(rowToTask);
     if (opts.with_sub_tasks === true) {
       for (const s of subs) {
         await unlinkTask(tx, s.id);
@@ -146,14 +155,14 @@ export async function countOpenSubTasks(db: SqlDriver): Promise<Record<string, n
 }
 
 export async function listTasks(db: SqlDriver, limit: number): Promise<Task[]> {
-  const rows = await db.all(`SELECT ${COLUMNS} FROM controller_tasks WHERE done_at IS NULL ORDER BY created_at, id LIMIT ?`, [limit]);
+  const rows = await db.all(`SELECT ${READ} FROM controller_tasks WHERE done_at IS NULL ORDER BY created_at, id LIMIT ?`, [limit]);
   return rows.map(rowToTask);
 }
 
 /** Read-only: the window's done tasks, most recently done first, and whether one was done before it. */
 export async function listDoneTasks(db: SqlDriver, w: DoneWindow): Promise<DoneTasks> {
   const [upper, args] = w.before === null ? ["", [w.from]] : [" AND done_at < ?", [w.from, w.before]];
-  const rows = await db.all(`SELECT ${COLUMNS} FROM controller_tasks WHERE done_at >= ?${upper} ORDER BY done_at DESC, id DESC`, args);
+  const rows = await db.all(`SELECT ${READ} FROM controller_tasks WHERE done_at >= ?${upper} ORDER BY done_at DESC, id DESC`, args);
   const older = await db.all("SELECT id FROM controller_tasks WHERE done_at < ? LIMIT 1", [w.from]);
   return { tasks: rows.map(rowToTask), older: older.length > 0 };
 }
@@ -201,7 +210,7 @@ export async function reopenTask(db: SqlDriver, id: string): Promise<ReopenTaskR
 export async function listDueReminders(db: SqlDriver, now: Date): Promise<Task[]> {
   const { from, to } = reminderDays(now);
   const rows = await db.all(
-    `SELECT ${COLUMNS} FROM controller_tasks WHERE done_at IS NULL AND reminded_at IS NULL AND due_time IS NOT NULL AND due_date >= ? AND due_date <= ?
+    `SELECT ${READ} FROM controller_tasks WHERE done_at IS NULL AND reminded_at IS NULL AND due_time IS NOT NULL AND due_date >= ? AND due_date <= ?
       ORDER BY due_date, due_time, id`,
     [from, to],
   );
@@ -248,6 +257,58 @@ export async function completeLinkedTasks(db: SqlDriver, tx: SqlExecutor, work_i
     if (r.ok && r.completed) closed.push(r.task);
   }
   return closed;
+}
+
+/** A `wi_` id as a reject reason names it: the full id or a short prefix of it (`wi_149faba7`). */
+const NAMED_ITEM = /\bwi_[A-Za-z0-9]{6,}\b/g;
+
+/**
+ * The item `reason` names as the replacement of closed item `id`: the first `wi_` id in it that matches exactly one
+ * stored item (the full id, else a unique prefix) other than `id`; null when it names none.
+ */
+async function namedReplacement(tx: SqlExecutor, id: WorkItemId, reason: string | null): Promise<string | null> {
+  for (const [named] of (reason ?? "").matchAll(NAMED_ITEM)) {
+    const [exact] = await tx.all("SELECT id FROM controller_work_items WHERE id = ?", [named]);
+    const rows = exact ? [exact] : await tx.all("SELECT id FROM controller_work_items WHERE id LIKE ? LIMIT 2", [`${named}%`]);
+    const [only] = rows;
+    if (only !== undefined && rows.length === 1 && String(only.id) !== id) return String(only.id);
+  }
+  return null;
+}
+
+/**
+ * In `tx`, when item `id` closes as rejected (design 02-tasks-build): its open linked tasks follow its replacement. The
+ * replacement is the item the reject `reason` names (namedReplacement); else, for a split parent, its phases: every
+ * phase closed completes the tasks, as completeLinkedTasks does, and an open phase takes them (the highest-numbered
+ * one). A moved task stores `Moved from <id>` in `link_note`, and one moved to an item already closed as completed is
+ * completed at once. With no replacement nothing changes: the task stays open for the owner. Each write is
+ * conditional on the task being open and still linked to `id`, so a second call changes nothing.
+ */
+async function followReplacement(db: SqlDriver, tx: SqlExecutor, id: WorkItemId, reason: string | null, now: Timestamp): Promise<void> {
+  const open = await tx.all("SELECT id FROM controller_tasks WHERE work_item_id = ? AND done_at IS NULL ORDER BY id", [id]);
+  if (open.length === 0) return;
+  let to = await namedReplacement(tx, id, reason);
+  if (to === null) {
+    const phases = await tx.all("SELECT id, stage FROM controller_work_items WHERE parent_id = ? AND phase IS NOT NULL ORDER BY phase DESC", [id]);
+    if (phases.length === 0) return;
+    const openPhase = phases.find((p) => p.stage !== "CLOSED");
+    if (openPhase === undefined) {
+      await completeLinkedTasks(db, tx, id, now);
+      return;
+    }
+    to = String(openPhase.id);
+  }
+  for (const t of open) {
+    await tx.run("UPDATE controller_tasks SET work_item_id = ?, link_note = ? WHERE id = ? AND work_item_id = ? AND done_at IS NULL", [to, `Moved from ${id}`, String(t.id), id]);
+  }
+  const [target] = await tx.all("SELECT stage, close_reason FROM controller_work_items WHERE id = ?", [to]);
+  if (target?.stage === "CLOSED" && target.close_reason === "completed") await completeLinkedTasks(db, tx, to as WorkItemId, now);
+}
+
+/** In `tx`, on the first move of `item` to CLOSED (design 02-tasks-build): completed completes its tasks, rejected moves them to its replacement. */
+export async function onItemClosed(db: SqlDriver, tx: SqlExecutor, item: WorkItem, now: Timestamp): Promise<void> {
+  if (item.close_reason === "completed") await completeLinkedTasks(db, tx, item.id, now);
+  if (item.close_reason === "rejected") await followReplacement(db, tx, item.id, item.spec_feedback, now);
 }
 
 /** completeLinkedTasks in its own transaction. */
