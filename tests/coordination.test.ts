@@ -56,7 +56,7 @@ describe("coordination cost (design §5, 2026-11-03)", () => {
   // The ratchet lists are always writable by the scope rule (design 04-triage, 2026-11-16), but that must not
   // make them overlap every path: coordination uses the pure prefix test.
   it("a ratchet list shares no path, hotspot or mechanical weight with an unrelated path", () => {
-    const list = "tests/architecture/known-violations/file-budget.json";
+    const list = "tests/architecture/known-violations/file-budget-core.json";
     expect(pathsOverlap([list], ["src/x.ts"])).toEqual([]);
     expect(pathsOverlap(["src/x.ts"], [list])).toEqual([]);
     expect(coordinationCost([list], ["src/x.ts"], none, S).cost).toBe(0);
