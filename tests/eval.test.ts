@@ -113,8 +113,8 @@ describe("factory eval results", () => {
 });
 
 /** A finished run of suite s1 with its skill version and figures. */
-async function storedRun(store: FactoryStore, id: string, f: { version: string; model: string; pass_rate: number | null; replays: number }) {
-  await store.startSkillEvalRun({ id, suite_id: "s1", created_by: OWNER, skill_version: f.version });
+async function storedRun(store: FactoryStore, id: string, f: { version: string; model: string; pass_rate: number | null; replays: number; judge_version?: string }) {
+  await store.startSkillEvalRun({ id, suite_id: "s1", created_by: OWNER, skill_version: f.version, judge_version: f.judge_version ?? "j1" });
   await store.finishSkillEvalRun(id, "failed");
   await store.recordSkillEvalRunFigures(id, { model_class: f.model, judge_model_class: f.model === "strong" ? "standard" : "strong", replays: f.replays, pass_rate: f.pass_rate, errored: 0 });
 }
@@ -208,6 +208,20 @@ describe("factory eval compare", () => {
     expect(none.code).toBe(0);
     expect(none.out.join("\n")).toContain("no comparison");
     expect(JSON.parse((await evalCommand(await two(null, 0.75), ["compare", "ra", "rb", "--json"])).out.join("\n"))).toMatchObject({ gap: null, noise_band: null, within_noise: null });
+  });
+
+  it("prints not comparable, with the reason and no gap, when the runs' judge versions differ", async () => {
+    const { store } = await newStore();
+    await store.createSkillEvalSuite({ id: "s1", skill_ref: SKILL, title: "t", created_by: OWNER });
+    await storedRun(store, "ra", { version: "v1", model: "standard", pass_rate: 0.5, replays: 4 });
+    await storedRun(store, "rb", { version: "v1", model: "standard", pass_rate: 0.75, replays: 4, judge_version: "j2" });
+    const r = await evalCommand(store, ["compare", "ra", "rb"]);
+    expect(r.code).toBe(0);
+    expect(r.out.join("\n")).toContain("not comparable: the judge versions differ");
+    expect(r.out.join("\n")).not.toContain("gap");
+    expect(JSON.parse((await evalCommand(store, ["compare", "ra", "rb", "--json"])).out.join("\n"))).toMatchObject({
+      comparable: false, reason: "the judge versions differ", gap: null, noise_band: null, within_noise: null,
+    });
   });
 
   it("exits 1 naming an unknown run, and on a missing run id; it writes nothing", async () => {

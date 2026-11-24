@@ -23,7 +23,8 @@ const USAGE = `  eval run <skill> [--model <class>] [--judge-model <class>] [--r
   eval compare <run-a> <run-b> [--json]
                both runs' pass rates, the gap (b − a), the noise band 2 × sqrt(sd_a² + sd_b²) with
                sd = sqrt(p × (1 − p) ÷ replays), and whether the gap is within it; no comparison without two
-               pass rates (--json: the same fields as GET /api/v1/evals/<skill>/compare?a=<run-a>&b=<run-b>)
+               pass rates, or when the runs' suite or judge versions differ or one has none recorded
+               (not comparable, with the reason) (--json: the same fields as GET /api/v1/evals/<skill>/compare?a=<run-a>&b=<run-b>)
   eval suite list|add|rename|delete
                suite list prints each suite's skill and title; suite add <skill> [--title <title>] makes the
                skill's one suite (title defaults to the skill); suite rename <skill> <title>; suite delete
@@ -261,7 +262,8 @@ async function compare(ctx: Pick<CommandContext, "withStore">, reads: SkillEvalR
   }
   console.log(`a  ${summaryLine(c.a)}`);
   console.log(`b  ${summaryLine(c.b)}`);
-  if (c.gap === null || c.noise_band === null) console.log("no comparison: both runs need a pass rate");
+  if (!c.comparable) console.log(`not comparable: ${c.reason}`);
+  else if (c.gap === null || c.noise_band === null) console.log("no comparison: both runs need a pass rate");
   else console.log(`gap ${c.gap >= 0 ? "+" : ""}${c.gap.toFixed(2)}, noise band ${c.noise_band.toFixed(2)}: ${c.within_noise ? "within noise" : "beyond noise"}`);
   return 0;
 }

@@ -63,6 +63,9 @@ export interface SkillEvalRunSummary {
   started_at: string;
   status: string;
   skill_version: string | null;
+  suite_version: number | null;
+  judge_version: string | null;
+  factory_version: string | null;
   model_class: string | null;
   judge_model_class: string | null;
   replays: number | null;
@@ -74,8 +77,13 @@ export interface SkillEvalRunSummary {
 export interface SkillEvalReads {
   /** One row per (skill version, model class) from its newest run; runs with no figures left out. */
   grid(runs: readonly SkillEvalRunRow[]): SkillEvalRunSummary[];
-  /** b against a: the gap, the noise band and within_noise; the three null without two pass rates. */
-  compare(a: SkillEvalRunRow, b: SkillEvalRunRow): { a: SkillEvalRunSummary; b: SkillEvalRunSummary; gap: number | null; noise_band: number | null; within_noise: boolean | null };
+  /**
+   * b against a: the gap, the noise band and within_noise; the three null without two pass rates, or when the runs are
+   * not comparable (different suite or judge versions, or one with none recorded: `reason` says which).
+   */
+  compare(a: SkillEvalRunRow, b: SkillEvalRunRow): {
+    a: SkillEvalRunSummary; b: SkillEvalRunSummary; comparable: boolean; reason: string | null; gap: number | null; noise_band: number | null; within_noise: boolean | null;
+  };
 }
 
 /** What a command runs with: its call, plus the CLI identity and the store, built once here for every command. */
