@@ -1,4 +1,4 @@
-// The Routines page: GET /api/v1/routines (useRoutines) and the writes under /api/v1/routines (postRoutine: add, edit,
+// The Routines page: GET /api/v1/routines (useRoutines), GET /api/v1/routines/suggestions?routine=<id> (useRoutineSuggestions) and the writes under /api/v1/routines (postRoutine: add, edit,
 // pause, resume, delete and run), as src/ui/routines-api.ts answers them (design 08-routines, 09-dashboard-routines).
 
 import { t } from "../i18n/index.js";
@@ -38,6 +38,17 @@ export interface RoutineFields {
 
 /** Every routine, oldest first, polled like the other reads. */
 export const useRoutines = () => useApi<{ routines: RoutineRow[] }>(API.routines);
+
+/** One finding of a routine, as GET /api/v1/routines/suggestions answers it (the page reads its text and state only). */
+export interface RoutineSuggestionRow {
+  id: string;
+  text: string;
+  state: "pending" | "accepted" | "dismissed" | "snoozed";
+}
+
+/** One routine's suggestions, oldest first; the key starts with the routines path, so a routine write rereads it. */
+export const useRoutineSuggestions = (routineId: string) =>
+  useApi<{ suggestions: RoutineSuggestionRow[] }>(`${API.routines}/suggestions?routine=${encodeURIComponent(routineId)}`);
 
 /** POST one routine write; a refusal (not the owner, the core's reason) comes back as `{ ok: false, error }`. */
 export async function postRoutine(token: string, verb: RoutineVerb, id: string, fields: RoutineFields = {}): Promise<{ ok: true } | { ok: false; error: string }> {

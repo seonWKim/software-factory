@@ -1,8 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import { API, type RoutineFields, type RoutineRow, type RoutineVerb, type Session, postRoutine, useApi, useRoutines } from "../api.js";
+import { API, type RoutineFields, type RoutineRow, type RoutineSuggestionRow, type RoutineVerb, type Session, postRoutine, useApi, useRoutineSuggestions, useRoutines } from "../api.js";
 import { Button } from "../components/ui/button.js";
-import { Card } from "../components/ui/card.js";
+import { Card, CardSection } from "../components/ui/card.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { OverflowMenu } from "../components/ui/menu.js";
 import { Notice, PageHeader } from "../components/ui/notice.js";
@@ -14,12 +14,14 @@ import { repeatsText } from "./routines/labels.js";
 
 // The Routines page (design 09-dashboard-routines, over 08-routines): every routine in a DataTable inside a Card, read
 // through GET /api/v1/routines. Each row's Switch is on while the routine is not paused and posts pause or resume; its
-// "⋯" menu holds Run now, Edit and Delete. Pressing a row's name (DataTable's `select`) marks the row as current and
+// "⋯" menu holds Run now, Edit, Pause or Resume, and Delete. Pressing a row's name (DataTable's `select`) marks the row as current and
 // shows its details in a second Card, with a warn Notice while it is paused; with no routine there is no second Card, only the table's empty state. The Cards follow
 // the PageHeader as siblings, spaced by the Card's own top margin as on the other pages (no flex gap on top of it). New routine and Edit open one Dialog; Delete asks in a Dialog before it posts. A refusal
 // shows in a Notice above the table.
 
 const when = (at: string) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+/** The next run as the table and the detail card word it: paused, after the next merge, or the time. */
+const nextRun = (r: RoutineRow) => (r.paused ? t("routines.nextPaused") : r.next_due_at === null ? t("routines.nextOnMerge") : when(r.next_due_at));
 const usd = (n: number | null) => (n === null ? t("routines.none") : `$${n}`);
 
 /** The writes the page sends, with the one error they share and a reread after each. */
@@ -60,7 +62,7 @@ function RoutineRows({ rows, selected, onSelect, onEdit, onDelete, w }: { rows: 
     { key: "name", header: t("routines.col.name"), className: "w-full max-w-0" },
     { key: "repeats", header: t("routines.col.repeats"), render: (r) => repeatsText(r.schedule), className: "whitespace-nowrap" },
     // Never empty: below `sm` each row is a card whose labels show even for an empty cell.
-    { key: "next", header: t("routines.col.next"), render: (r) => (r.paused ? t("routines.nextPaused") : r.next_due_at === null ? t("routines.nextOnMerge") : when(r.next_due_at)), className: "whitespace-nowrap" },
+    { key: "next", header: t("routines.col.next"), render: nextRun, className: "whitespace-nowrap" },
     {
       key: "active",
       header: t("routines.col.active"),
@@ -75,6 +77,7 @@ function RoutineRows({ rows, selected, onSelect, onEdit, onDelete, w }: { rows: 
           items={[
             { label: t("routines.run"), action: "routine run", disabled: !w.ready || r.paused || r.schedule === null, onSelect: () => void w.write("run", r.id) },
             { label: t("routines.edit"), action: "routine edit", disabled: !w.ready, onSelect: () => onEdit(r, document.activeElement as Opener) },
+            { label: t(r.paused ? "routines.resume" : "routines.pause"), action: r.paused ? "routine resume" : "routine pause", disabled: !w.ready, onSelect: () => void w.write(r.paused ? "resume" : "pause", r.id) },
             { label: t("routines.delete"), action: "routine delete", disabled: !w.ready, onSelect: () => onDelete(r, document.activeElement as Opener) },
           ]}
         />
@@ -84,12 +87,33 @@ function RoutineRows({ rows, selected, onSelect, onEdit, onDelete, w }: { rows: 
   return <DataTable columns={columns} rows={rows} rowKey={(r) => r.id} label={t("routines.listLabel")} empty={t("routines.empty")} dataKey select={{ key: selected, onSelect, label: (r) => t("routines.select", { name: r.name }) }} />;
 }
 
+const SUGGESTION_STATE_TEXT = {
+  pending: "routines.suggestions.state.pending",
+  accepted: "routines.suggestions.state.accepted",
+  dismissed: "routines.suggestions.state.dismissed",
+  snoozed: "routines.suggestions.state.snoozed",
+} as const;
+
+const SUGGESTION_COLUMNS: Column<RoutineSuggestionRow>[] = [
+  { key: "text", header: t("routines.suggestions.text"), render: (s) => <span className="break-words whitespace-pre-wrap">{s.text}</span> },
+  { key: "state", header: t("routines.suggestions.state"), render: (s) => t(SUGGESTION_STATE_TEXT[s.state]) },
+];
+
+/** A routine's suggestions, read only: their text and state, no ID and no control. */
+function Suggestions({ id }: { id: string }) {
+  const q = useRoutineSuggestions(id);
+  if (q.isError) return <ErrorNote error={q.error} />;
+  if (!q.data) return <Loading rows={2} label="loading.routines" onRetry={() => void q.refetch()} />;
+  return <DataTable columns={SUGGESTION_COLUMNS} rows={q.data.suggestions} rowKey={(s) => s.id} label={t("routines.detail.suggestions")} empty={t("routines.suggestions.empty")} />;
+}
+
 function Detail({ r }: { r: RoutineRow }) {
   const rows: [string, string][] = [
+    [t("routines.detail.next"), nextRun(r)],
+    [t("routines.detail.last"), r.last_run_at === null ? t("routines.never") : when(r.last_run_at)],
     [t("routines.detail.instruction"), r.instruction],
     [t("routines.detail.url"), r.url ?? t("routines.none")],
     [t("routines.detail.zone"), r.zone],
-    [t("routines.detail.last"), r.last_run_at === null ? t("routines.never") : when(r.last_run_at)],
     [t("routines.detail.runCap"), usd(r.run_cap_usd)],
     [t("routines.detail.dailyCap"), usd(r.daily_cap_usd)],
   ];
@@ -104,6 +128,9 @@ function Detail({ r }: { r: RoutineRow }) {
           </div>
         ))}
       </dl>
+      <CardSection title={t("routines.detail.suggestions")}>
+        <Suggestions id={r.id} />
+      </CardSection>
     </div>
   );
 }
