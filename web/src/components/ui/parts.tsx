@@ -23,6 +23,13 @@ export function useWide(): boolean {
   return wide;
 }
 
+/**
+ * A bordered list box inside a Card (the Work tree, a Table's cards): from `sm` up a 1px `border` box with the control radius; below it
+ * only its top and bottom lines, square, so a phone does not draw the Card's border and padding and then the box's
+ * border again 16px inside it (Work at 390px, 2026-11-24). Its rows drop their side padding below `sm` to match.
+ */
+export const LIST_BOX = "rounded-control border border-border max-sm:rounded-none max-sm:border-x-0";
+
 const TableMode = createContext<{ head: readonly string[]; cards: boolean }>({ head: [], cards: false });
 
 /**
@@ -35,7 +42,7 @@ export function Table({ head, children, label, numeric }: { head: readonly strin
   if (!wide) {
     return (
       <TableMode.Provider value={{ head, cards: true }}>
-        <ul aria-label={label} data-cards className="divide-y divide-border rounded-control border border-border">
+        <ul aria-label={label} data-cards className={cn("divide-y divide-border", LIST_BOX)}>
           {children}
         </ul>
       </TableMode.Provider>
@@ -76,7 +83,9 @@ export function Tr({ children, current = false, ...attrs }: { children: ReactNod
   const [title, ...cells] = Children.toArray(children);
   const [under, ...rest] = cells;
   return (
-    <li {...attrs} {...mark} className={cn("min-w-0 px-3 py-2 text-sm", current && CURRENT_LI)}>
+    // No side padding: below `sm` the list box has no side border (LIST_BOX), so a card's text starts on the Card's
+    // content edge; the current card keeps 12px so its bar does not touch the text.
+    <li {...attrs} {...mark} className={cn("min-w-0 py-2 text-sm", current ? cn(CURRENT_LI, "px-3") : "px-0")}>
       <div className="min-w-0 font-medium wrap-anywhere">{title}</div>
       {under !== undefined && <div className="mt-1 min-w-0">{under}</div>}
       {rest.length > 0 && (

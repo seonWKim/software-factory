@@ -12,6 +12,28 @@ export interface CalendarEvent {
   all_day: boolean;
   /** When the source last changed the event; null when it reports none. */
   updated_at: string | null;
+  /**
+   * Its calendar's name, place, notes, people, meeting link and event page, from the same read; absent when the source
+   * answers none. The same shape as EventDetails in src/calendar/event-details.ts, restated because a legacy folder
+   * imports no component; compose hands the sources over, so the typecheck keeps the two in step.
+   */
+  details?: {
+    calendar: string | null;
+    location: string | null;
+    description: string | null;
+    organizer: CalendarEventPerson | null;
+    attendees: readonly CalendarEventPerson[];
+    conference_url: string | null;
+    link: string | null;
+    time_zone: string | null;
+  };
+}
+
+/** A person on an event. `response`: their answer to the invitation, when the source says. */
+export interface CalendarEventPerson {
+  name: string | null;
+  email: string | null;
+  response: "accepted" | "declined" | "tentative" | "waiting" | null;
 }
 
 /** The span a sync asks about: events that overlap [from, to), both ISO 8601 instants. */

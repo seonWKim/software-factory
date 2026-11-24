@@ -3,7 +3,8 @@
 // sql-factory-store.ts's budget. The claim is one UPDATE conditional on the `next_due_at` the worker read and on
 // the schedule's running state; zero rows changed means another worker claimed it first, and nothing is recorded.
 // A held checkpoint is resumed or rejected by UPDATEs conditional on its run row still being held. An edit, pause,
-// resume or run is one UPDATE conditional on the `next_due_at` it read, so it and a claim never both apply.
+// resume or run is one UPDATE conditional on the `next_due_at` it read, so it and a claim never both apply. A delete
+// removes the schedule row and ends its held checkpoints as `rejected` in one transaction; its other run rows stay.
 
 import type { CadenceKind } from "../../../core/schedule-cadence.js";
 import type {
@@ -143,6 +144,14 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
     const due = read === null ? "next_due_at IS NULL" : "next_due_at = ?";
     const sql = `UPDATE controller_schedules SET ${cols.map(([c]) => `${c} = ?`).join(", ")} WHERE id = ? AND ${due}`;
     return (await this.db.run(sql, [...cols.map(([, v]) => v), id, ...(read === null ? [] : [read])])) === 1;
+  }
+
+  deleteSchedule(id: string): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
+      if ((await tx.run("DELETE FROM controller_schedules WHERE id = ?", [id])) !== 1) return false;
+      await tx.run(`UPDATE controller_schedule_runs SET outcome = 'rejected' WHERE schedule_id = ? AND ${HELD}`, [id]);
+      return true;
+    });
   }
 
   scheduleNow(): Timestamp {

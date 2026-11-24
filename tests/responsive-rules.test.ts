@@ -163,3 +163,37 @@ describe("check:responsive offscreen inside a scrolling box", () => {
     expect(offscreen([wrapper, table, plot, el])).toEqual([]);
   });
 });
+
+describe("check:responsive disclosure-align", () => {
+  /** A stand-in at `left`, 100px wide, with a left border of `border` px. */
+  const at = (tag: string, left: number, border = 0) => ({
+    ...element(tag, { width: 100, height: 28 }),
+    css: { borderLeftWidth: `${border}px` },
+    getBoundingClientRect: () => ({ left, top: 0, right: left + 100, bottom: 28, width: 100, height: 28 }),
+  });
+  /** The failures of a <details> whose chevron is at `chevron`, right under a box at 217 with a `border`px left border. */
+  function disclosureUnder(chevron: number, border: number): Failure[] {
+    const list = at("ul", 217, border);
+    const mark = at("svg", chevron);
+    const summary = { ...at("summary", chevron - 6), querySelector: (q: string) => (q === "[data-chevron]" ? mark : null) };
+    const details = { ...at("details", 211), previousElementSibling: list, querySelector: (q: string) => (q === ":scope > summary" ? summary : null) };
+    pageWith({ scrollWidth: 390, clientWidth: 390 });
+    const body = (globalThis as unknown as { document: { body: { querySelectorAll: (q: string) => unknown[] } } }).document.body;
+    body.querySelectorAll = (q: string) => (q === "details" ? [details] : []);
+    return checkLayout(LIMITS).failures.filter((x) => x.rule === "disclosure-align");
+  }
+
+  it("fails a Details whose chevron sits 13px in from the bordered list above it (the Host sleeps list's row padding)", () => {
+    const f = disclosureUnder(230, 1);
+    expect(f).toHaveLength(1);
+    expect(f[0]!.detail).toContain("+13px");
+  });
+
+  it("passes a Details whose chevron starts on the list's left edge", () => {
+    expect(disclosureUnder(217, 1)).toEqual([]);
+  });
+
+  it("passes a Details under a box with no border: there is no list edge to line up with", () => {
+    expect(disclosureUnder(230, 0)).toEqual([]);
+  });
+});

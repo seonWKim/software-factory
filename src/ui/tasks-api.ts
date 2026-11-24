@@ -83,7 +83,8 @@ export async function readTasks(d: UiDeps, project: string | null = null): Promi
   const kept = project === null ? rows : rows.filter((t) => t.projects.includes(project));
   const active_projects = await Promise.all((await d.store.listProjects("active")).map(async (p) => ({ slug: p.slug, name: (await w.plain(p.name)).text })));
   const calendar = await readCalendar(storeSql(d.store));
-  const events = await shown(w, calendar.events);
+  // The Tasks views show an event's title and time only; its details are the Calendar page's (calendar-events-api.ts).
+  const events = await shown(w, calendar.events.map(({ details: _, ...e }) => e));
   const can_build = (d.commands?.actor ?? null) !== null;
   const add_key = await readAddKey(d);
   return {

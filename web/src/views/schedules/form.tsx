@@ -121,3 +121,27 @@ export function ScheduleDialog({ schedule, busy, error, returnFocusTo, onSave, o
     </Dialog>
   );
 }
+
+/** Asks before a delete: the schedule stops running, and its past runs stay in Work. The confirm is the danger one. */
+export function DeleteScheduleDialog({ schedule, busy, error, returnFocusTo, onConfirm, onClose }: {
+  schedule: ScheduleRow;
+  busy: boolean;
+  error: string | null;
+  returnFocusTo: RefObject<HTMLElement | null>;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog
+      title={t("schedules.delete.title", { title: schedule.title })}
+      consequence={t("schedules.delete.consequence")}
+      confirmLabel={t("schedules.delete.confirm")}
+      confirmDisabled={busy}
+      danger
+      error={error}
+      returnFocusTo={returnFocusTo}
+      onConfirm={onConfirm}
+      onClose={onClose}
+    />
+  );
+}

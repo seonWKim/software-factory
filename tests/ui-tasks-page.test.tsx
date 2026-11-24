@@ -399,14 +399,14 @@ describe("a built task's Work row: queued and pending states", () => {
 // title (cut with an ellipsis, the full title on hover), the due time as why, the list as project and the other
 // details, then the menu. A second line only for an error.
 describe("a task row's layout", () => {
-  it("puts the checkbox before the badge, then the truncated title, the due time and the list, in the comfortable variant", async () => {
+  it("puts the checkbox first, then the truncated title, the badge, the due time and the list, in the comfortable variant", async () => {
     await show();
     const title = card("tk_built").querySelector<HTMLElement>("a[title]")!;
     expect(title.getAttribute("title")).toBe("tk_built");
     expect(title.className).toContain("truncate");
     const line = title.parentElement!;
-    expect(line.firstElementChild!.hasAttribute("data-row-badge")).toBe(true);
-    expect(line.children[1]).toBe(title);
+    expect(line.firstElementChild).toBe(title);
+    expect(line.children[1]!.hasAttribute("data-row-badge")).toBe(true);
     expect(card("tk_built").dataset.itemRow).toBe("comfortable");
     const soon = card("tk_soon");
     expect(soon.querySelector("[role=checkbox], input[type=checkbox]")!.compareDocumentPosition(soon.querySelector("[data-row-title]")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

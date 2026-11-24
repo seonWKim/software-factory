@@ -19,7 +19,6 @@ export * from "./api/rules.js";
 export * from "./api/proposals.js";
 export * from "./api/tasks.js";
 export * from "./api/calendar.js";
-export * from "./api/routines.js";
 export * from "./api/schedules.js";
 export * from "./api/data.js";
 export * from "./api/model-credential.js";
