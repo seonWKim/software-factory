@@ -95,5 +95,4 @@ declare module "../../router/unit.js" {
 export default controllerUnit({
   name: "routines",
   create: (c: Ctx) => new RoutinesUnit(c),
-  steps: [],
 });
