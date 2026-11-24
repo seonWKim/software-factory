@@ -13,8 +13,9 @@ import { Link } from "../nav.js";
 
 // The one row of every list of work items (design 09-dashboard-tasks, 09-dashboard-system, 09-dashboard-item): Tasks,
 // the Needs you rows, Work (its table and its tree), Runners' running runs and the item page's Runs. The slots come in
-// one order: StatusBadge · title (the link to the item) · why it is in this state · project · worker · age · one
-// primary action · "⋯" menu. A second line shows only for "held behind X" or an error. A raw ID is never row text:
+// one order: title (the link to the item) · StatusBadge · why it is in this state · project · worker · age · one
+// primary action · "⋯" menu. The title comes first (design-system/patterns.md "List rows"), so the titles of a list
+// start on one left edge whatever badge a row has (2026-11-24, the owner's alignment review). A second line shows only for "held behind X" or an error. A raw ID is never row text:
 // Copy ID in the "⋯" menu is the way to it.
 
 /** compact (Work, Runners) or comfortable (Tasks): they differ in spacing only. */
@@ -91,8 +92,12 @@ function Title({ s, className, cell = false, link = LINK_CLASS }: { s: ItemRowSl
   return <p title={s.title} {...mark} className={cn(className, s.titleClassName)}>{s.title}</p>;
 }
 
-/** A list row's title: one 32px line (the 32px controls' height), the text centred in it, in the row title weight. */
-export const LIST_TITLE = "min-h-8 min-w-0 flex-1 basis-40 font-medium leading-8 text-text-1";
+/**
+ * A list row's title: one 32px line (the 32px controls' height), the text centred in it, in the row title weight. It
+ * takes the free width; below `sm` it has no base width, so it shares its line with the badge and is cut instead of
+ * dropping to a line of its own.
+ */
+export const LIST_TITLE = "min-h-8 min-w-0 flex-1 basis-0 font-medium leading-8 text-text-1 sm:basis-40";
 
 const AGE = "text-xs whitespace-nowrap tabular-nums text-text-2";
 
@@ -155,10 +160,12 @@ function ListRowOf(props: ListProps & DataAttrs) {
         {/* One line: the slots are its children, so a slot's parts sit beside the badge (small muted text but the title).
             It is also the row's details (`data-details`, as a ListRow's), where the due time and the list are read. */}
         <div data-row-line data-details className={cn("flex min-w-0 flex-wrap items-center gap-y-1 text-xs text-pretty text-text-2", ROW_SPACE.list[variant].split(" ")[0])}>
-          {props.badge && <span data-row-badge className="flex min-h-8 shrink-0 items-center gap-1">{props.badge}</span>}
           {/* A 32px line, text centred in it: the same height and centre as the Checkbox, the action and the menu, so
               they share one centre line, also when the details wrap under it (design 09-dashboard-tasks). */}
           <Title s={props} link={ROW_LINK_CLASS} className={cn(ROW_TITLE, LIST_TITLE)} />
+          {props.badge && <span data-row-badge className="flex min-h-8 shrink-0 items-center gap-1">{props.badge}</span>}
+          {/* Below `sm` the title and the badge keep the first line to themselves; the details start the next one. */}
+          {(props.why || props.project || props.details || props.worker || props.age || props.action) && <span aria-hidden className="basis-full sm:hidden" />}
           {props.why}
           {props.project && <span data-row-project className="break-all">{props.project}</span>}
           {props.details}
@@ -177,21 +184,23 @@ function ListRowOf(props: ListProps & DataAttrs) {
 function TreeRow(props: TreeProps & DataAttrs) {
   const menu = rowMenu(props);
   return (
-    // One centre line: the badge, the 32px title line (it takes the free width and is cut with an ellipsis), the meta
-    // (why, run, worker, age, PR: all text-xs text-2) and the 32px "⋯" at the end are centred on it. At phone width
-    // the meta takes its own line under the title; the "⋯" stays on the first line.
+    // One centre line: the 32px title line (it takes the free width and is cut with an ellipsis), the badge, the meta
+    // (why, run, worker, PR, then the age, always the last: all text-xs text-2) and the 32px "⋯" at the end are centred
+    // on it. At phone width the title and the badge share the first line and the meta takes its own line under it;
+    // the "⋯" stays on the first line.
     <div {...dataOf(props)} data-item-row={props.variant} data-item-id={props.itemId} className={cn("flex min-w-0 flex-1 items-start", ROW_SPACE.tree[props.variant], props.className)}>
       <div className={cn("flex min-w-0 flex-1 flex-wrap items-center gap-y-1", ROW_SPACE.tree[props.variant].split(" ")[0])}>
+        <Title s={props} className="min-h-8 min-w-0 flex-1 basis-0 truncate leading-8 font-medium sm:basis-40" />
         {props.badge && <span data-row-badge className="flex min-h-8 shrink-0 items-center">{props.badge}</span>}
-        <Title s={props} className="min-h-8 min-w-0 flex-1 basis-40 truncate leading-8 font-medium" />
         {/* At phone width the why and the worker take their own line. */}
         <span className="flex min-w-0 basis-full flex-wrap items-center gap-x-2 *:min-w-0 text-xs wrap-anywhere text-text-2 sm:basis-auto">
           {props.why}
           {props.project}
           {props.worker}
         </span>
+        {/* The PR link: a 24px line with its text centred, so it sits on the row's centre line like the age. */}
+        {props.action && <span data-row-action className="flex items-center text-xs leading-6 tabular-nums text-text-2">{props.action}</span>}
         {props.age && <span className={AGE}>{props.age}</span>}
-        {props.action && <span data-row-action className="flex items-center text-xs tabular-nums text-text-2">{props.action}</span>}
         {props.second && <span data-row-second className="basis-full text-xs text-text-2">{props.second}</span>}
       </div>
       {menu && <span data-row-menu className="shrink-0">{menu}</span>}
