@@ -11,6 +11,7 @@ Pick the component by the need, before drawing anything by hand. A UI spec names
 | a state | `StatusBadge` for an item, run or worker state, else `Badge` | `StatusBadge` shows the state table's label and tone (`src/shared/states.ts`) with `data-status`; `Badge` any other short status as a pill, tone from a state table key; never a hand-made chip or a bordered Button. |
 | an on/off choice in a list | `Checkbox` (`web/src/components/ui/checkbox.tsx`) | One box per row that turns that row's choice on or off, such as a task's completion; never a Button drawn as a box. |
 | a short notice that goes by itself | `Toast` | Top right for 6 s, paused while hovered or focused, with Dismiss; never for a state the owner must act on (that is a `Notice`). |
+| long text in a row or card (a description, a title, an example) | `Clamp` | Clamps to 2 lines and opens in place with Show more / Show less, the button only when the text is cut off; never a hand-written `line-clamp`. Decision rule 7. |
 | a row's extra actions | `OverflowMenu` | The row's secondary actions behind one "more" button at its end, so the row stays one line. |
 | a row of a list of work items | `ItemRow` (`web/src/views/item-row.tsx`) | Tasks, Needs you, Work (table and tree), Runners' running runs, the item page's Runs: StatusBadge · title (the link) · why · project · worker · age · one primary action · ⋯ menu; Copy ID in the menu, never an ID in the text. Design 09-dashboard-tasks. |
 | any other row in a bordered list | `ListRow` | Leading control, one-line title with ellipsis, details line, every action in its ⋯ menu. |
@@ -172,6 +173,10 @@ A copy element: the shown text (`children`, else `value`) in `font-mono text-xs`
 ## IdDetails
 
 A readable name (`label`, e.g. "worker 3" or "you") as a plain button on the shared Tooltip: the full `id` shows in the tooltip on hover and keyboard focus (not in the DOM while hidden), and a click copies it and shows "Copied" in place of the label for 1.5 s, on the same line, so the row height never changes. No disclosure; with no clipboard a click does nothing. The copy logic is one helper shared with CopyButton. Pages use it so no raw ID shows in running text (design 09-dashboard-app).
+
+## Clamp
+
+Long row text (`web/src/components/ui/clamp.tsx`): a `<p>` clamped to 2 lines with `line-clamp-2`, and under it a small ghost `Button` ("Show more", then "Show less"; both from the i18n catalog, `clamp.more` and `clamp.less`) that opens the full text in place. The button appears only when the text is actually cut off, so a short text shows no control. It has `aria-expanded`. Props: the children (the text), `className` (the text style: size, colour) and `data-*`, both passed to the `<p>`. Write no `line-clamp` in `web/src/views/`: decision rule 7 in `patterns.md`. A whole block of long content (more than ~3 lines or a list) is a `Disclosure` instead.
 
 ## Disclosure
 

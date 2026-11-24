@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { type EvalCase, type EvalWrite, type EvalWritten, type TriedCase, postEvalWrite, useEvalRuns, useEvalSuite, useEvalsToken } from "../api/evals.js";
+import { Clamp } from "../components/ui/clamp.js";
 import { Badge } from "../components/ui/badge.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
@@ -224,7 +225,7 @@ export function EvalsCard({ path }: { path: string }) {
   const cases = q.data?.cases ?? [];
   const n = (c: EvalCase) => cases.indexOf(c) + 1;
   const columns: Column<EvalCase>[] = [
-    { key: "input", header: t("evals.colInput"), render: (c) => <span className="line-clamp-2 text-xs text-pretty wrap-anywhere">{inputText(c.input)}</span> },
+    { key: "input", header: t("evals.colInput"), render: (c) => <Clamp className="text-xs">{inputText(c.input)}</Clamp> },
     { key: "checks", header: t("evals.colChecks"), render: (c) => <span className="text-xs whitespace-nowrap">{t("evals.checkCount", { n: checksOf(c.expected).length })}</span> },
     {
       key: "actions",

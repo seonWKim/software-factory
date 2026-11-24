@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
 import { type AppliedRule, type RuleDetail, type RuleEvidence, type RuleRow, useRuleEntry } from "../api.js";
+import { Clamp } from "../components/ui/clamp.js";
 import { Button } from "../components/ui/button.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { SUB_TITLE } from "../components/ui/card.js";
@@ -65,9 +66,9 @@ function Examples({ items }: { items: RuleEvidence[] }) {
                   </p>
                 )}
                 {said !== undefined && (
-                  <p data-example-text className={`${quote} line-clamp-2`}>
+                  <Clamp data-example-text className={quote}>
                     {said}
-                  </p>
+                  </Clamp>
                 )}
               </li>
             );
@@ -113,7 +114,7 @@ function ReadingOrder({ entry, d, cited, applied }: { entry: DetailEntry; d: Rul
     <div data-rule-detail className="min-w-0 space-y-3 rounded-control bg-surface-2 p-3">
       <DetailPart label="rules.detailWhat" part="what">
         {[
-          d.description !== undefined && <p key="desc" data-detail-description className={`${line} line-clamp-2`}>{d.description}</p>,
+          d.description !== undefined && <Clamp key="desc" data-detail-description className={line}>{d.description}</Clamp>,
           d.change !== undefined && <p key="change" data-detail-change className={line}>{d.change}</p>,
           rule !== undefined && <p key="rule" className={line}>{t("rules.whatRule", { rule })}</p>,
           exception !== undefined && <p key="except" className={line}>{t("rules.whatExcept", { exceptions: exception })}</p>,

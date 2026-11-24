@@ -1,5 +1,6 @@
 import { type MouseEvent, type ReactNode, type RefObject, useRef, useState } from "react";
 import { API, type CommandReply, type ItemCommand, type ItemDetail, type ThreadEntry, mergeReturned, showsMerge, useApi } from "../api.js";
+import { Clamp } from "../components/ui/clamp.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { CARD_TITLE, SUB_TITLE } from "../components/ui/card.js";
@@ -55,7 +56,7 @@ function ThreadContext({ thread }: { thread: readonly ThreadEntry[] | undefined 
   if (!latest) return null;
   return (
     <div data-decide-context className="text-sm text-pretty text-text-1">
-      <p className="line-clamp-2 break-words">{summaryOf(latest.body)}</p>
+      <Clamp className="break-words">{summaryOf(latest.body)}</Clamp>
       <a href={`#${latest.anchor}`} onClick={(e) => showInThread(e, latest.anchor)} className={LINK_CLASS}>
         {t("decide.showInThread")}
       </a>

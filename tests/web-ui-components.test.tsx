@@ -13,6 +13,7 @@ import { Badge, StatusBadge, TONE_CLASS } from "../web/src/components/ui/badge.j
 import { STATES } from "../src/shared/states.js";
 import { Card, CardSection } from "../web/src/components/ui/card.js";
 import { Chart } from "../web/src/components/ui/chart.js";
+import { Clamp } from "../web/src/components/ui/clamp.js";
 import { Disclosure } from "../web/src/components/ui/disclosure.js";
 import { ListRow, ROW_TITLE } from "../web/src/components/ui/list-row.js";
 import { EmptyState, Kbd, Notice, PageHeader, PageToolbar } from "../web/src/components/ui/notice.js";
@@ -514,5 +515,39 @@ describe("ListRow", () => {
     const row = screen.getByTestId("row");
     expect(row.querySelector("[data-details]")).toBeNull();
     expect(row.querySelector("[data-row-menu]")).toBeNull();
+  });
+});
+
+describe("Clamp", () => {
+  const sizes = (scroll: number, client: number) => {
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", { value: scroll, configurable: true });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { value: client, configurable: true });
+  };
+  afterEach(() => {
+    delete HTMLElement.prototype.scrollHeight;
+    delete HTMLElement.prototype.clientHeight;
+  });
+
+  it("clamps to 2 lines and opens and closes the full text in place", () => {
+    sizes(100, 40);
+    render(<Clamp data-x="1">A long description</Clamp>);
+    const text = screen.getByText("A long description");
+    expect(text.className).toContain("line-clamp-2");
+    expect(text.getAttribute("data-x")).toBe("1");
+    const more = screen.getByRole("button", { name: "Show more" });
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(more);
+    expect(text.className).not.toContain("line-clamp-2");
+    const less = screen.getByRole("button", { name: "Show less" });
+    expect(less.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(less);
+    expect(text.className).toContain("line-clamp-2");
+    expect(screen.getByRole("button", { name: "Show more" })).toBeTruthy();
+  });
+
+  it("shows no toggle when the text is not cut off", () => {
+    sizes(40, 40);
+    render(<Clamp>Short</Clamp>);
+    expect(screen.queryByRole("button")).toBeNull();
   });
 });
