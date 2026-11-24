@@ -9,6 +9,8 @@
 // Each replay runs in a clean sandbox (design 06-measurement, clean replays): the `sandbox` plugin's name (a replay with
 // tools is refused under `noop`), the skill's folder, the approved pack MCP servers a case names, and the Clock's time
 // for its wall time come from here; the scan gives the engine the rule names a stored transcript or answer matched.
+// A skill whose `tools:` front matter names a tool gets the configured ToolBroker behind G2 (brokerGuard, the one guard
+// work-item runs use too) and a run passport per replay run, narrowed to its granted tools (design 06-measurement).
 //
 // main.ts passes skillEvalRun to every command through the command call (CommandCall.runSkillEval), so the CLI
 // handler imports no root or legacy module. The composition root builds the improve run's skill improvement wiring
@@ -18,11 +20,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { codeVersion } from "./config-values.js";
-import { capabilitiesConfig, skillImproveConfig } from "./core/config.js";
+import { type ToolGrants, capabilitiesConfig, skillImproveConfig, toolGrantsConfig } from "./core/config.js";
 import type { SkillImproveWiring } from "./core/skill-improve.js";
 import type { UserId } from "./core/types.js";
-import type { Loaded } from "./load-config.js";
+import { type Loaded, localProject } from "./load-config.js";
 import { Plugins } from "./plugin-set.js";
+import { createPlugin } from "./plugins.js";
 import { judgeClass, skillJudge } from "./core/scorer.js";
 import { MODEL_CLASSES, type ModelClass } from "./core/model-choice.js";
 import type { AgentRunner, PackMcpServer } from "./interfaces/agent-runner.js";
@@ -31,10 +34,17 @@ import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import { CODE_VERSION_ENV } from "./interfaces/updater.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
+import type { SecretStore } from "./interfaces/secret-store.js";
+import type { ToolBroker } from "./interfaces/tool-broker.js";
+import { type PassportService, startIdentity } from "./identity/index.js";
+import { PassportToolBroker } from "./impl/broker/passport-broker.js";
+import { packToolBrokers } from "./impl/broker/pack-tools.js";
+import { RunPassports } from "./worker/passports/run-passports.js";
+import { storeProjectResolver } from "./ui/settings-api.js";
 import type { SkillEvalRun, SkillEvalRunFigures, SkillEvalStore } from "./interfaces/skill-eval-store.js";
-import { skillFolderPath, skillVersion } from "./runtime/capabilities/capabilities.js";
+import { frontMatterTools, skillFolderPath, skillVersion } from "./runtime/capabilities/capabilities.js";
 import { skillVersionsOf } from "./ui/plugins-api.js";
-import { storeSqlOrNull } from "./impl/store/sql/store-sql.js";
+import { storeSql, storeSqlOrNull } from "./impl/store/sql/store-sql.js";
 import { checkPackGrants } from "./packs/pack-grants.js";
 import { type Authored, type CaseVerdict, type SkillEvalAuthoring, type SkillEvalEngineDeps, type TriedCase, addSkillEvalCase, addSkillEvalSuite, deleteSkillEvalSuite, editSkillEvalCase, renameSkillEvalSuite, runSkillEval, skillEvalReplay, tryCase } from "./runtime/index.js";
 
@@ -42,6 +52,8 @@ import { type Authored, type CaseVerdict, type SkillEvalAuthoring, type SkillEva
 export const SKILL_EVAL_CLASS: ModelClass = "standard";
 /** The role a replay runs as: no file or shell tools, no session, no writable path (skillEvalReplay). */
 const REPLAY_ROLE = "implement";
+/** The run kind a replay's passport is minted for: a kind the worker calls no tool for, so it names only the granted tools. */
+const REPLAY_PASSPORT_KIND = "skill_eval";
 
 /** One `eval run`: the skill's ref (its suite's `skill_ref`, a skill folder), who starts it, and its stop signal. */
 export interface SkillEvalRequest {
@@ -62,14 +74,29 @@ export interface SkillEvalRequest {
 /** The stored run with its figures, or why nothing was run (and no run written). */
 export type SkillEvalResult = { run: SkillEvalRun } | { refused: string };
 
+/** What serves a replay's granted tools: the guarded broker the runner calls them through, and the run passports. */
+export interface ReplayTools {
+  /** The configured broker behind G2 (brokerGuard); its read-only tools are the ones a replay may be granted. */
+  broker: ToolBroker;
+  /** Each replay run mints its own passport here and drops it after the run. */
+  passports: Pick<RunPassports, "begin" | "end">;
+  /** The project key the passports name. */
+  project: string;
+}
+
 /** The plugins a run calls, built only once the skill's suite and files are found. */
 export interface SkillEvalPlugins {
   sandbox: Sandbox;
+  /** The runner; when `tools` is set it was built with that guarded broker and the scanner, as work-item runs' is. */
   runner: AgentRunner;
   llm: LLMProvider;
   scanner: EgressScanner;
   /** Milliseconds of the configured Clock, for a replay's wall time; absent: no wall time is stored. */
   now?: () => number;
+  /** The broker tools a replay may be granted; absent: none is served, and a skill naming a tool is errored `tool_not_served`. */
+  tools?: ReplayTools;
+  /** Stops what was started for these plugins (Identity's tick), after the run; absent: nothing to stop. */
+  close?(): Promise<void>;
 }
 
 export interface SkillEvalWiring {
@@ -78,7 +105,8 @@ export interface SkillEvalWiring {
   root: string;
   /** prompts/skill-judge.md, the judge's system prompt. */
   judgePrompt(): Promise<string>;
-  plugins(): Promise<SkillEvalPlugins>;
+  /** `tools`: the skill names a broker tool, so the broker is wanted (wiringOf builds it only then). */
+  plugins(o?: { tools: boolean }): Promise<SkillEvalPlugins>;
   repo: { path: string; base_branch: string };
   deny_paths: readonly string[];
   timeout_ms: number;
@@ -142,25 +170,49 @@ export async function scanRules(scanner: EgressScanner, text: string): Promise<s
 }
 
 /**
+ * `runner` with each run holding its own run passport (RunPassports, audience tool-broker), narrowed to the run's
+ * `tool_grants`, minted before the run and dropped after it: the guarded broker refuses a call from a run with none.
+ */
+function passportedRunner(runner: AgentRunner, t: ReplayTools): Pick<AgentRunner, "run"> {
+  return {
+    run: async (spec) => {
+      const held = { run: spec.run_id, lease_token: spec.lease_token };
+      await t.passports.begin({ ...held, kind: REPLAY_PASSPORT_KIND, item: spec.work_item_id, project: t.project, branch: `skill-eval/${spec.run_id}`, grants: spec.tool_grants });
+      try {
+        return await runner.run(spec);
+      } finally {
+        t.passports.end(held.run, held.lease_token);
+      }
+    },
+  };
+}
+
+/**
  * The engine's replay (with `system_prompt` as the SKILL.md under test of `skill`, a skill folder), judge and scan on
- * `model_class`. The replay grants no broker tool: a skill whose `tools:` names one has its cases errored.
+ * `model_class`. When the skill's `tools:` front matter names a tool (and the sandbox is not `noop`, which refuses it),
+ * the plugins are built with the configured broker behind G2: its read-only tools go to skillEvalReplay as
+ * `broker_tools`, and each replay run holds a run passport narrowed to its granted tools. A named tool the broker does
+ * not serve read-only still errors the case `tool_not_served`.
  */
 async function engineOf(d: SkillEvalWiring, skill: string, system_prompt: string, model_class: ModelClass): Promise<Engine> {
-  const [p, system] = await Promise.all([d.plugins(), d.judgePrompt()]);
+  const named = frontMatterTools(system_prompt).length > 0 && d.sandbox_plugin !== "noop";
+  const [p, system] = await Promise.all([d.plugins({ tools: named }), d.judgePrompt()]);
   const folder = skillFolderPath(skill, d.root);
   const mcpServers = d.mcpServers;
-  const replay = skillEvalReplay(p, {
+  const t = named ? p.tools : undefined;
+  const replay = skillEvalReplay({ sandbox: p.sandbox, runner: t ? passportedRunner(p.runner, t) : p.runner }, {
     repo: d.repo, role: REPLAY_ROLE, system_prompt, env_allowlist: {}, deny_paths: d.deny_paths, model_class, timeout_ms: d.timeout_ms,
     skill: { folder, name: basename(folder) }, root: d.root, ...(d.sandbox_plugin !== undefined ? { sandbox_plugin: d.sandbox_plugin } : {}),
+    ...(t ? { broker_tools: t.broker.allTools().filter((x) => x.read_only).map((x) => ({ name: x.name, read_only: true })) } : {}),
     ...(mcpServers ? { mcpServers: (names: readonly string[]) => mcpServers(names, p.runner.runs_mcp_servers === true) } : {}),
     ...(p.now ? { now: p.now } : {}),
   });
   const scan = (text: string) => scanRules(p.scanner, text);
-  return { replay, judge: skillJudge(p.llm, system, model_class), scan, judge_version: judgeVersion(system) };
+  return { replay, judge: skillJudge(p.llm, system, model_class), scan, judge_version: judgeVersion(system), close: async () => p.close?.() };
 }
 
-/** The engine's replay, judge and scan, and the judge's version a run stores. */
-type Engine = Omit<SkillEvalEngineDeps, "store"> & { judge_version: string };
+/** The engine's replay, judge and scan, the judge's version a run stores, and the stop of what its plugins started. */
+type Engine = Omit<SkillEvalEngineDeps, "store"> & { judge_version: string; close(): Promise<void> };
 
 /** The engine's parts for `skill`'s SKILL.md as it is now on `model_class`, or why they cannot be built (its SKILL.md is unreadable). */
 async function engineParts(d: SkillEvalWiring, skill: string, model_class: ModelClass): Promise<{ engine: Engine; skill_version: string } | { refused: string }> {
@@ -187,9 +239,9 @@ async function versionParts(d: SkillEvalWiring, skill: string, hash: string, mod
 async function runAndRecord(
   d: SkillEvalWiring, engine: Engine, r: { id: string; suite_id: string; created_by: string; skill_version: string; model_class: ModelClass }, signal: AbortSignal,
 ): Promise<SkillEvalRun> {
-  const { judge_version, ...parts } = engine;
+  const { judge_version, close, ...parts } = engine;
   const store = versionedStore(d.store, { judge_version, factory_version: d.factory_version ?? "dev" });
-  const outcome = await runSkillEval({ store, ...parts }, { id: r.id, suite_id: r.suite_id, created_by: r.created_by, skill_version: r.skill_version }, signal);
+  const outcome = await runSkillEval({ store, ...parts }, { id: r.id, suite_id: r.suite_id, created_by: r.created_by, skill_version: r.skill_version }, signal).finally(close);
   if (outcome.status !== null) await d.store.recordSkillEvalRunFigures(r.id, runFigures(r.model_class, outcome.verdicts));
   const run = await d.store.getSkillEvalRun(r.id);
   if (!run) throw new Error(`skill eval run ${r.id} was not stored`);
@@ -260,8 +312,8 @@ export async function tryCaseFor(d: SkillEvalWiring, r: SkillEvalTryRequest): Pr
   if (!suite) return { refused: `no skill eval suite for case ${r.case_id}` };
   const parts = await engineParts(d, suite.skill_ref, model_class);
   if ("refused" in parts) return parts;
-  const { judge_version: _unused, ...engine } = parts.engine;
-  return tryCase({ store: d.store, ...engine }, r.case_id, r.signal);
+  const { judge_version: _unused, close, ...engine } = parts.engine;
+  return tryCase({ store: d.store, ...engine }, r.case_id, r.signal).finally(close);
 }
 
 /**
@@ -290,15 +342,55 @@ async function approvedMcpServers(db: NonNullable<ReturnType<typeof storeSqlOrNu
   return r.refused.length > 0 || r.broker.length > 0 ? null : r.mcp_servers;
 }
 
+/** G2 (RFC 0015 §8, M9; pack tool approvals #592): this process's run passports, and the guard every served broker sits behind. */
+export interface BrokerGuard {
+  passports: RunPassports;
+  /** `b` behind the pack tool approvals and the run passport check (PassportToolBroker). */
+  guard(b: ToolBroker): ToolBroker;
+}
+
+/**
+ * The one G2 guard (build() for work-item runs, replayTools for skill-eval replays): pack tool approvals, then the
+ * run passport check against `identity`, over the run passports this process holds.
+ */
+export function brokerGuard(loaded: Loaded, d: { store: FactoryStore; secrets: SecretStore; identity: PassportService; tool_grants: ToolGrants | undefined }): BrokerGuard {
+  const packTools = packToolBrokers(loaded.pack_tools, d.tool_grants, { db: storeSql(d.store), store: d.store, secrets: d.secrets, autoApproveReadOnly: loaded.config.packs_auto_approve_read_only === true });
+  const passports = new RunPassports(d.identity);
+  return { passports, guard: (b) => new PassportToolBroker(packTools(b), { checker: d.identity, passportOf: (run) => passports.passportOf(run) }) };
+}
+
+/**
+ * The configured broker through the registry, behind brokerGuard, with Identity started on the store for the replays'
+ * run passports; `close` stops Identity. The passports name the stored project key, else the local one.
+ */
+async function replayTools(store: FactoryStore, loaded: Loaded, p: Plugins, d: { secrets: SecretStore; scanner: EgressScanner; clock: Awaited<ReturnType<Plugins["clock"]>> }): Promise<{ tools: ReplayTools; close(): Promise<void> }> {
+  const { credentials, api: github } = await p.githubAccess(d);
+  const broker = await createPlugin(loaded.registry, "broker", loaded.plugins.broker, { ...p.base, github, credentials, store, ...d });
+  const tool_grants = toolGrantsConfig(loaded.file.tool_grants, broker, loaded.plugins.broker);
+  const project = (await storeProjectResolver(store, loaded.config.repo)()) ?? localProject(loaded.config.repo);
+  const identity = await startIdentity({ db: storeSql(store), stateDir: loaded.stateDir });
+  const { guard, passports } = brokerGuard(loaded, { store, secrets: d.secrets, identity: identity.passports, tool_grants });
+  return { tools: { broker: guard(broker), passports, project: project.key }, close: () => identity.stop() };
+}
+
 /** The configured plugins and wiring over `store`, as `skillEvalRun` and `skillEvalTry` build them. */
 function wiringOf(store: FactoryStore, loaded: Loaded): SkillEvalWiring {
-  const plugins = async (): Promise<SkillEvalPlugins> => {
+  const db = storeSqlOrNull(store);
+  const plugins = async (o?: { tools: boolean }): Promise<SkillEvalPlugins> => {
     const p = new Plugins(loaded);
     const secrets = await p.secrets();
     const [sandbox, clock] = await Promise.all([p.sandbox(), p.clock()]);
-    return { sandbox, runner: await p.runner(sandbox, secrets), llm: await p.llm(secrets), scanner: await p.scanner(secrets), now: () => clock.now().getTime() };
+    const scanner = await p.scanner(secrets);
+    // The broker only for a skill that names a tool, and only over a SQL store, where Identity keeps its passports.
+    const served = o?.tools === true && db ? await replayTools(store, loaded, p, { secrets, scanner, clock }) : null;
+    try {
+      const runner = await p.runner(sandbox, secrets, served ? { broker: served.tools.broker, scanner } : undefined);
+      return { sandbox, runner, llm: await p.llm(secrets), scanner, now: () => clock.now().getTime(), ...(served ? { tools: served.tools, close: served.close } : {}) };
+    } catch (e) {
+      await served?.close();
+      throw e;
+    }
   };
-  const db = storeSqlOrNull(store);
   return {
     store, root: loaded.root, plugins, sandbox_plugin: loaded.plugins.sandbox,
     ...(db ? { mcpServers: (names: readonly string[], runs: boolean) => approvedMcpServers(db, loaded, names, runs) } : {}), judgePrompt: () => readFile(join(loaded.codeRoot, "prompts", "skill-judge.md"), "utf8"),
