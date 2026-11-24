@@ -125,14 +125,14 @@ describe("eval case", () => {
 });
 
 describe("eval case try", () => {
-  const replay: SkillReplay = async () => "output";
+  const replay: SkillReplay = async () => ({ output: "output" });
   const yesNo: SkillJudgeFn = async (s) => s.checks.map((c, i) => ({ answer: i === 0 ? "yes" : "no", reason: `because ${c}` }));
 
   it("prints each check and the verdict, and writes no run and no replay", async () => {
     const { store, suite } = await withSuite();
     await evalCommand(store, ["case", "add", SKILL, "--input", "hi", "--check", "one", "--check", "two"]);
     const [c] = await store.listSkillEvalCases(suite.id);
-    const call: SkillEvalTryFn = async (s, _l, r) => tryCase({ store: s, replay, judge: yesNo, scan: async () => true }, r.case_id, r.signal);
+    const call: SkillEvalTryFn = async (s, _l, r) => tryCase({ store: s, replay, judge: yesNo, scan: async () => [] }, r.case_id, r.signal);
     const fn = vi.fn(call);
     const r = await evalCommand(store, ["case", "try", c!.id, "--model", "cheap"], fn);
     expect(fn).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ case_id: c!.id, model_class: "cheap" }));
@@ -148,7 +148,7 @@ describe("eval case try", () => {
     const { store, suite } = await withSuite();
     await evalCommand(store, ["case", "add", SKILL, "--input", "hi", "--check", "one"]);
     const [c] = await store.listSkillEvalCases(suite.id);
-    const pass = (scan: boolean, judge: SkillJudgeFn = async (s) => s.checks.map(() => ({ answer: "yes" as const, reason: "r" }))): SkillEvalTryFn => async (s, _l, r) => tryCase({ store: s, replay, judge, scan: async () => scan }, r.case_id, r.signal);
+    const pass = (scan: boolean, judge: SkillJudgeFn = async (s) => s.checks.map(() => ({ answer: "yes" as const, reason: "r" }))): SkillEvalTryFn => async (s, _l, r) => tryCase({ store: s, replay, judge, scan: async () => (scan ? [] : ["known_secret"]) }, r.case_id, r.signal);
     const ok = await evalCommand(store, ["case", "try", c!.id], pass(true));
     expect(ok.code).toBe(0);
     expect(ok.out.at(-1)).toBe("verdict: pass");

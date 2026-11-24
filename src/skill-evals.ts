@@ -83,8 +83,8 @@ export interface SkillEvalWiring {
   deny_paths: readonly string[];
   timeout_ms: number;
   newId(): string;
-  /** The `sandbox` plugin's name: under `noop` a replay with tools or MCP servers is refused (`noop_tools_refused`). */
-  sandbox_plugin: string;
+  /** The `sandbox` plugin's name (wiringOf sets it): under `noop` a replay with tools or MCP servers is refused (`noop_tools_refused`). */
+  sandbox_plugin?: string;
   /**
    * The approved pack MCP servers for the names a case gives (`pack:mcp_server:<name>`), or null when one is not
    * approved or `runs` (the runner runs MCP servers) is false. Absent: none is served.
@@ -151,7 +151,7 @@ async function engineOf(d: SkillEvalWiring, skill: string, system_prompt: string
   const mcpServers = d.mcpServers;
   const replay = skillEvalReplay(p, {
     repo: d.repo, role: REPLAY_ROLE, system_prompt, env_allowlist: {}, deny_paths: d.deny_paths, model_class, timeout_ms: d.timeout_ms,
-    skill: { folder, name: basename(folder) }, sandbox_plugin: d.sandbox_plugin, root: d.root,
+    skill: { folder, name: basename(folder) }, root: d.root, ...(d.sandbox_plugin !== undefined ? { sandbox_plugin: d.sandbox_plugin } : {}),
     ...(mcpServers ? { mcpServers: (names: readonly string[]) => mcpServers(names, p.runner.runs_mcp_servers === true) } : {}),
     ...(p.now ? { now: p.now } : {}),
   });

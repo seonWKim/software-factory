@@ -199,8 +199,8 @@ export interface SkillUnderTest {
 /** What a skill-eval replay runs with: the skill's text as the system prompt, the skill, and the repo, class and limits. */
 export type SkillReplayOptions<T> = Omit<ReplayRequest<T>, "run_id" | "work_item_id" | "prompt" | "tools" | "tool_grants" | "mcp_servers" | "prepare" | "output_schema" | "signal"> & {
   skill: SkillUnderTest;
-  /** The `sandbox` plugin's name: under `noop` a replay with tools or MCP servers is refused (`noop_tools_refused`). */
-  sandbox_plugin: string;
+  /** The `sandbox` plugin's name: under `noop` a replay with tools or MCP servers is refused (`noop_tools_refused`). Absent: not noop. */
+  sandbox_plugin?: string;
   /** The tools the ToolBroker serves; only a read-only one may be granted. Absent: none. */
   broker_tools?: readonly { name: string; read_only: boolean }[];
   /** The approved MCP servers for the names a case gives, or null when one is not served. Absent: none is. */

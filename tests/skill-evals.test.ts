@@ -33,7 +33,10 @@ vi.mock("../src/runtime/skill-evals/replay.js", async (load) => {
 const OWNER = "local:owner" as UserId;
 const JUDGE_PROMPT = readFileSync(join(import.meta.dirname, "..", "prompts", "skill-judge.md"), "utf8");
 const REPO = { path: config.repo.path, base_branch: config.repo.base_branch };
-const REPLAY_OPTS = { repo: REPO, role: "implement", system_prompt: "SKILL", env_allowlist: {}, deny_paths: [".env"], model_class: "standard" as const, timeout_ms: 1000 };
+const REPLAY_OPTS = {
+  repo: REPO, role: "implement", system_prompt: "SKILL", env_allowlist: {}, deny_paths: [".env"], model_class: "standard" as const, timeout_ms: 1000,
+  skill: { folder: "/host/skills/tests-first", name: "tests-first" }, sandbox_plugin: "local", root: "/host",
+};
 
 let tmp: string;
 beforeEach(async () => {
@@ -68,13 +71,13 @@ async function suiteWith(cases: Record<string, { input: unknown; expected: unkno
 const signal = () => new AbortController().signal;
 
 describe("replayInSandbox, shared by the golden and the skill-eval replay", () => {
-  it("the skill-eval replay runs in a fresh detached sandbox with no tools, no session and no doc index, and destroys it", async () => {
+  it("the skill-eval replay runs in a fresh detached sandbox, cleaned first, with the tools its skill names (none here), no session and no doc index, and destroys it", async () => {
     const sandbox = new FakeSandbox();
     const runner = new FakeRunner({ implement: () => ({ output: { done: true } }) });
     const replay = skillEvalReplay({ sandbox, runner }, REPLAY_OPTS);
 
-    expect(await replay({ run_id: "r1", case_id: "c1", input: "do it" }, signal())).toBe('{"done":true}');
-    expect(await replay({ run_id: "r1", case_id: "c2", input: "again" }, signal())).toBe('{"done":true}');
+    expect((await replay({ run_id: "r1", case_id: "c1", input: "do it" }, signal())).output).toBe('{"done":true}');
+    expect((await replay({ run_id: "r1", case_id: "c2", input: "again" }, signal())).output).toBe('{"done":true}');
 
     expect(replayModule.replayInSandbox).toHaveBeenCalledTimes(2);
     expect(sandbox.created).toEqual([
@@ -82,6 +85,7 @@ describe("replayInSandbox, shared by the golden and the skill-eval replay", () =
       { repo: REPO.path, branch: null, base_ref: REPO.base_branch },
     ]);
     expect(sandbox.destroyedIds).toEqual(["sbx1", "sbx2"]);
+    expect(sandbox.commands.filter((c) => c.startsWith("sh -c set -e"))).toHaveLength(2); // the clean-up, once per sandbox
     const spec = runner.specs[0]!;
     expect(spec).toMatchObject({ run_id: "skill_eval_r1_c1", system_prompt: "SKILL", prompt: "do it", tools: [], tool_grants: [], writable_paths: [], lease_token: 0 });
     expect(spec.sandbox).toMatchObject({ id: "sbx1" });
@@ -165,8 +169,8 @@ describe("the skill judge, sharing LlmJudge's plain completion", () => {
 
 describe("runSkillEval", () => {
   /** Engine deps over the store, a replay that echoes its input, and the skill judge on a fake LLM. */
-  function deps(store: SkillEvalEngineDeps["store"], llm: LLMProvider, replay: SkillReplay = async (c) => `out:${c.input}`): SkillEvalEngineDeps {
-    return { store, replay, judge: skillJudge(llm, JUDGE_PROMPT, "standard"), scan: async () => true };
+  function deps(store: SkillEvalEngineDeps["store"], llm: LLMProvider, replay: SkillReplay = async (c) => ({ output: `out:${c.input}` })): SkillEvalEngineDeps {
+    return { store, replay, judge: skillJudge(llm, JUDGE_PROMPT, "standard"), scan: async () => [] };
   }
 
   it("passes a case only when every check is yes; one no fails it and the run", async () => {
@@ -208,14 +212,14 @@ describe("runSkillEval", () => {
   it("withholds a judge reason the egress scan flags", async () => {
     const store = await suiteWith({ c1: { input: "x", expected: ["a"] } });
     const judge: SkillJudgeFn = async () => [{ answer: "yes", reason: "leaks a token" }];
-    await runSkillEval({ store, replay: async () => "o", judge, scan: async (t) => !t.includes("token") }, { id: "r1", suite_id: "s1", created_by: OWNER, skill_version: "v" }, signal());
+    await runSkillEval({ store, replay: async () => ({ output: "o" }), judge, scan: async (t) => (t.includes("token") ? ["known_secret"] : []) }, { id: "r1", suite_id: "s1", created_by: OWNER, skill_version: "v" }, signal());
     expect(JSON.stringify((await store.listSkillEvalReplays("r1"))[0]!.detail)).not.toContain("token");
   });
 
   it("is safe to run twice: a finished run is left as it is and nothing is replayed again", async () => {
     const store = await suiteWith({ c1: { input: "x", expected: ["a"] } });
-    const replay = vi.fn<SkillReplay>(async () => "o");
-    const d = { store, replay, judge: (async () => [{ answer: "yes", reason: "ok" }]) as SkillJudgeFn, scan: async () => true };
+    const replay = vi.fn<SkillReplay>(async () => ({ output: "o" }));
+    const d = { store, replay, judge: (async () => [{ answer: "yes", reason: "ok" }]) as SkillJudgeFn, scan: async () => [] };
     await runSkillEval(d, { id: "r1", suite_id: "s1", created_by: OWNER, skill_version: "v" }, signal());
     const again = await runSkillEval(d, { id: "r1", suite_id: "s1", created_by: OWNER, skill_version: "v" }, signal());
     expect(again).toEqual({ run_id: "r1", status: null, verdicts: [{ case_id: "c1", verdict: "pass" }] });
@@ -259,7 +263,7 @@ describe("the eval wiring (runSkillEvalFor)", () => {
     const runner = new FakeRunner({ implement: (spec) => ({ output: `did ${spec.prompt}` }) });
     const plugins = vi.fn(async () => ({ sandbox, runner, llm, scanner: cleanScanner }));
     const d: SkillEvalWiring = {
-      store, root: tmp, judgePrompt: async () => JUDGE_PROMPT, plugins, repo: REPO, deny_paths: [".env"], timeout_ms: 1000, newId: () => "run1",
+      store, root: tmp, judgePrompt: async () => JUDGE_PROMPT, plugins, repo: REPO, deny_paths: [".env"], timeout_ms: 1000, newId: () => "run1", sandbox_plugin: "local",
     };
     return { d, folder, runner, plugins };
   }
