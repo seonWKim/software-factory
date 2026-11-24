@@ -15,7 +15,8 @@ import { localDateTime, relativeTime } from "../lib/format.js";
 import { RawDetails, useNow, useViewer } from "./common.js";
 import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import { OverflowMenu } from "../components/ui/menu.js";
-import { LINK_CLASS } from "../components/ui/link-style.js";
+import { BLOCK_LINK_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
+import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 import { ROW_PAD } from "./rules-shared.js";
@@ -123,14 +124,18 @@ export function StandingRule({ rule, token }: { rule: StandingRuleRow; token: st
       details={
         <>
           <span data-fired>{firedText(firedAt, now)}</span>
-          <span data-recent className="min-w-0 break-keep">
-            {recent.length === 1 ? t("standing.recentOne") : t("standing.recent", { count: recent.length })}
-            {recent.length > 0 && ": "}
+          {/* An inline list as a wrapping flex line: each title is one line cut with an ellipsis (BLOCK_LINK_CLASS), its comma
+              kept in the same box so a separator never sits alone on a line, and every box is the 24px link height. */}
+          <span data-recent className="flex min-w-0 flex-wrap items-center gap-x-1">
+            <span className="break-keep">
+              {recent.length === 1 ? t("standing.recentOne") : t("standing.recent", { count: recent.length })}
+              {recent.length > 0 && ": "}
+            </span>
             {shown.map((item, i) => (
-              <Fragment key={item.id}>
-                <Link href={itemPath(item.id)} data-raw className={LINK_CLASS}>{item.title}</Link>
-                {i < shown.length - 1 || hidden > 0 ? ", " : ""}
-              </Fragment>
+              <span key={item.id} data-recent-item className="flex max-w-full min-w-0 items-center sm:max-w-[40ch]">
+                <Link href={itemPath(item.id)} data-raw title={item.title} className={cn(BLOCK_LINK_CLASS, "min-w-0 truncate leading-6")}>{item.title}</Link>
+                {(i < shown.length - 1 || hidden > 0) && <span className="shrink-0">, </span>}
+              </span>
             ))}
             {hidden > 0 && (
               <Button variant="ghost" size="sm" data-recent-more className={`min-h-0 px-1 ${LINK_CLASS}`} onClick={openDetails}>{t("standing.recentMore", { count: hidden })}</Button>
