@@ -124,6 +124,20 @@ describe("draftSchedule", () => {
     expect(JSON.stringify(out)).not.toContain(SECRET);
     expect(await answer.store.listSchedules()).toEqual([]);
   });
+
+  it("scans every field the model wrote before the checks, whose refusals would quote it", async () => {
+    const fields: Record<string, unknown>[] = [
+      { ...DRAFT, cadence: SECRET }, { ...DRAFT, spec: SECRET }, { ...DRAFT, zone: SECRET },
+      { ...DRAFT, action: SECRET }, { ...DRAFT, title: SECRET },
+    ];
+    for (const answer of fields) {
+      const { store, deps } = await setup(answer);
+      const r = await draftSchedule(WORDS, deps);
+      expect({ answer, r }).toMatchObject({ r: { ok: false, reason: expect.stringContaining("rule github_token") } });
+      expect(JSON.stringify(r)).not.toContain(SECRET);
+      expect(await store.listSchedules()).toEqual([]);
+    }
+  });
 });
 
 describe("improveSchedule", () => {

@@ -110,7 +110,7 @@ function wordsName(words: string, zone: string): boolean {
 
 /**
  * Drafts a schedule from the owner's words: the scan of the words, one standard model call with the words fenced as
- * untrusted data, the checks `schedule add` runs (cadence, zone, action), then the scan of the model's text. The ID
+ * untrusted data, the scan of the model's text, then the checks `schedule add` runs (cadence, zone, action). The ID
  * is `sch_` and a new random ID; the zone is the machine's unless the words name one. Stores nothing.
  */
 export async function draftSchedule(words: string, d: DraftDeps): Promise<DraftResult<ScheduleProposal>> {
@@ -126,11 +126,12 @@ export async function draftSchedule(words: string, d: DraftDeps): Promise<DraftR
   if (typeof out === "string") return refuse(out);
   const title = str(out.title), kind = str(out.cadence), spec = str(out.spec), named = str(out.zone), action = str(out.action), body = str(out.text);
   if (!title || kind === null || spec === null || action === null || body === null) return refuse("the model's answer was not the JSON asked for");
+  // Every field the model wrote is scanned before the checks, whose refusals quote the field back.
+  const leak = await scanProblem(d.scanner, [title, kind, spec, named ?? "", action, body].join("\n"), "the model's answer");
+  if (leak) return refuse(`${leak}, so it is not shown`);
   const zone = named && wordsName(text, named) ? named : d.zone ?? machineZone();
   const problem = cadenceProblem({ kind: kind as CadenceKind, spec }, zone) ?? ((a) => ("problem" in a ? a.problem : null))(scheduleActionOf(action, body));
   if (problem) return refuse(`the model's proposal was refused: ${problem}`);
-  const leak = await scanProblem(d.scanner, [title, spec, zone, body].join("\n"), "the model's answer");
-  if (leak) return refuse(`${leak}, so it is not shown`);
   return ok({ id: `sch_${d.newId().replace(/[^A-Za-z0-9]/g, "").slice(0, 16)}`, fields: { title, cadence: kind, spec, zone, action, body } });
 }
 
