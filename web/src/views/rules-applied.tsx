@@ -1,3 +1,4 @@
+import { Archive, FileSearch, Pencil } from "lucide-react";
 import { type RefObject, useRef, useState } from "react";
 import { type RulesView, type AppliedRule, useRuleEntry } from "../api.js";
 import { Dialog } from "../components/ui/dialog.js";
@@ -106,9 +107,9 @@ function AppliedClass({ rule, id, token, round, applied }: { rule: AppliedRule; 
   const name = ruleName(rule);
   const owner = token !== null;
   const items = [
-    { label: t("rules.edit"), action: "edit", disabled: !owner, onSelect: () => setOpen("edit") },
-    { label: t("rules.openEvidence"), action: "evidence", onSelect: () => setOpen("evidence") },
-    { label: t("rules.retire"), action: "retire", danger: true, disabled: !owner, onSelect: () => setOpen("retire") },
+    { label: t("rules.edit"), icon: Pencil, action: "edit", disabled: !owner, onSelect: () => setOpen("edit") },
+    { label: t("rules.openEvidence"), icon: FileSearch, action: "evidence", onSelect: () => setOpen("evidence") },
+    { label: t("rules.retire"), icon: Archive, action: "retire", danger: true, disabled: !owner, onSelect: () => setOpen("retire") },
   ];
   // One muted line: "<scope> · Seen 3 times (Oct 17)"; either part alone when the other is missing.
   const scope = rule.scope === null || rule.scope === "" ? null : rule.scope.replace(/\s*\n\s*/g, " ");

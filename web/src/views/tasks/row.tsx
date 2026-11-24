@@ -1,3 +1,4 @@
+import { AlignLeft, Folder, ListPlus, RotateCcw, Trash2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { type KeyboardEvent, useContext, useRef, useState } from "react";
 import { API, type TaskRow, postTaskBuild } from "../../api.js";
@@ -104,12 +105,12 @@ export function TaskCard({ task, overdue: inOverdue = false, sub = false, date =
   // task has none: Reopen is in its menu, as is every other action, and a waiting work item's commands come first.
   // Each menu entry that acts carries `data-action` (its `factory task` verb) and `data-item` (the task's ID).
   const items: MenuItem[] = done
-    ? [{ label: t("tasks.reopen"), action: "reopen", item: task.id, disabled: action.busy, onSelect: () => void reopen() }]
+    ? [{ label: t("tasks.reopen"), icon: RotateCcw, action: "reopen", item: task.id, disabled: action.busy, onSelect: () => void reopen() }]
     : [
-        { label: t("tasks.description"), onSelect: () => setMode("description") },
-        ...(parent === null ? [{ label: t("tasks.addSub"), onSelect: () => setMode("sub") }] : []),
-        { label: t("tasks.projectsItem"), onSelect: () => setMode("projects") },
-        { label: t("tasks.delete"), danger: true, onSelect: () => setMode("delete") },
+        { label: t("tasks.description"), icon: AlignLeft, onSelect: () => setMode("description") },
+        ...(parent === null ? [{ label: t("tasks.addSub"), icon: ListPlus, onSelect: () => setMode("sub") }] : []),
+        { label: t("tasks.projectsItem"), icon: Folder, onSelect: () => setMode("projects") },
+        { label: t("tasks.delete"), icon: Trash2, shortcut: "Delete", danger: true, onSelect: () => setMode("delete") },
       ];
   const menuLabel = t("tasks.more", { title: task.title });
   const waiting = !done && waitsOnOwner(it);

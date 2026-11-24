@@ -49,6 +49,8 @@ let posts: { url: string; body: unknown }[];
 
 beforeEach(() => {
   posts = [];
+  // react-aria's focus handling (the Work tree) calls CSS.escape, which jsdom does not have; an open menu focuses its first item.
+  if (!globalThis.CSS?.escape) vi.stubGlobal("CSS", { escape: (v: string) => v.replace(/[^\w-]/g, "\\$&") });
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") {
       posts.push({ url, body: JSON.parse(String(init.body)) });
@@ -320,10 +322,10 @@ describe("⌘K actions", () => {
     expect(screen.queryByRole("dialog", { name: "Search" })).toBeNull();
   });
 
-  it("the sidebar footer's ? Shortcuts link opens the shortcut list", async () => {
+  it("the sidebar's Shortcuts row opens the shortcut list", async () => {
     mount("/app/tasks");
     const sidebar = await screen.findByRole("complementary", { name: "Sidebar" });
-    fireEvent.click(within(sidebar).getByRole("button", { name: "? Shortcuts" }));
+    fireEvent.click(within(sidebar).getByRole("button", { name: "Shortcuts" }));
     const help = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
     expect(help.textContent).toContain("⌘K");
   });

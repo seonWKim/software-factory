@@ -80,7 +80,7 @@ export function Tr({ children, current = false, ...attrs }: { children: ReactNod
       <div className="min-w-0 font-medium wrap-anywhere">{title}</div>
       {under !== undefined && <div className="mt-1 min-w-0">{under}</div>}
       {rest.length > 0 && (
-        <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+        <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1 text-xs">
           {rest.map((cell, i) => (
             // A cell with nothing in it (a reset that does not apply) is not listed, so no label stands alone.
             isValidElement<{ children?: ReactNode }>(cell) && (cell.props.children === undefined || typeof cell.props.children === "boolean" || cell.props.children === null) ? null : (
@@ -104,11 +104,24 @@ export function Tr({ children, current = false, ...attrs }: { children: ReactNod
  */
 export const CARD_CELL = "min-w-0 wrap-anywhere [&_a]:max-w-full [&_a[data-id]]:truncate [&_a[data-id]]:align-bottom";
 
+/**
+ * A table cell's content box (design 09-dashboard-components, 2026-11-24): its first line is the row's one 32px line,
+ * 8px under the cell's top, so text, Badges, Switches and buttons in every cell of a row share one centre line (24px
+ * down) and a single-line row is 49px. Text gets 6px above it (its 20px line centred in the 32px one) and keeps that
+ * offset when it wraps, so a control in another cell stays level with the first line. A 32px control (an icon or md
+ * Button) starts at the top, a 28px one (a small Button, a copyable ID) 2px down and a Switch (24px) 4px down.
+ */
+export const CELL_LINE = "min-w-0 py-1.5 has-[button.min-h-8,button.size-8]:py-0 has-[button.min-h-7]:py-0.5 has-[[role=switch]]:py-1";
+
 export function Td({ children, className, ...attrs }: { children?: ReactNode; className?: string } & { [data: `data-${string}`]: string | undefined }) {
   const { cards } = useContext(TableMode);
   // In a card the cell wraps: the table's column widths, no-wrap and break-words (CARD_CELL's wrap-anywhere wins) are dropped.
   if (cards) return <div {...attrs} className={cn(CARD_CELL, className?.split(/\s+/).filter((c) => !/^((min-|max-)?w-|whitespace-nowrap$|break-words$)/.test(c)).join(" "))}>{children}</div>;
-  return <td {...attrs} className={cn("px-3 py-2 align-top", className)}>{children}</td>;
+  return (
+    <td {...attrs} className={cn("px-3 py-2 align-top", className)}>
+      <div data-cell-line className={CELL_LINE}>{children}</div>
+    </td>
+  );
 }
 
 /** After this long the placeholder shows what it waits for and for how long (design 09-dashboard-shell, 2026-11-19). */

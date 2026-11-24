@@ -1,3 +1,4 @@
+import { Pause, Pencil, Play, Trash2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Fragment, type ReactNode, useId, useRef, useState } from "react";
 import { API, type StandingProposalRow, type StandingRuleRow, type StandingView, type StandingWriteBody, postStanding, useApi } from "../api.js";
@@ -148,11 +149,12 @@ export function StandingRule({ rule, token }: { rule: StandingRuleRow; token: st
           label={t("standing.actions", { rule: sentence })}
           items={[
             rule.enabled
-              ? { label: t("standing.pause"), action: "pause", disabled: off, onSelect: () => setAction("pause") }
-              : { label: t("standing.turnOn"), action: "add", disabled: off, onSelect: () => setAction("add") },
-            { label: t("standing.edit"), action: "edit", disabled: off, onSelect: () => setAction("edit") },
+              ? { label: t("standing.pause"), icon: Pause, action: "pause", disabled: off, onSelect: () => setAction("pause") }
+              : { label: t("standing.turnOn"), icon: Play, action: "add", disabled: off, onSelect: () => setAction("add") },
+            { label: t("standing.edit"), icon: Pencil, action: "edit", disabled: off, onSelect: () => setAction("edit") },
+            { separator: true },
             // A rule with no stored row has nothing to remove.
-            { label: t("standing.remove"), action: "remove", danger: true, disabled: off || rule.created_at === null, onSelect: () => setAction("remove") },
+            { label: t("standing.remove"), icon: Trash2, action: "remove", danger: true, disabled: off || rule.created_at === null, onSelect: () => setAction("remove") },
           ]}
         />
       }
