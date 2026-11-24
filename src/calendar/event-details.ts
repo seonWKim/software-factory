@@ -2,7 +2,7 @@
 // calendar's name, place, notes, people and links, as a source answered them, so the Calendar page's detail view shows
 // the whole event. Neutral: no provider's field names. Stored as one JSON text in calendar_events.details; an event a
 // source answered without details, or a row stored before the column, has none. A source keeps its links to
-// http(s) only and cuts long notes and attendee lists itself (google-calendar-source.ts).
+// http(s) only and cuts long notes and attendee lists itself (the calendar plugin's source).
 
 /** A person on an event, as the source names them. `response`: their answer to the invitation, when the source says. */
 export interface EventPerson {
