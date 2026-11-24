@@ -11,6 +11,8 @@ import { scheduledAction } from "./core/controller-deps.js";
 import { agentAction } from "./controller/units/schedule/plugins/agent/agent-action.js";
 import { buildAction } from "./controller/units/schedule/plugins/build/build-action.js";
 import { feedbackAction } from "./controller/units/schedule/plugins/feedback/feedback-action.js";
+import { improveAction } from "./controller/units/schedule/plugins/improve/improve-action.js";
+import { dailyTriggerOn, enqueueImprove } from "./core/improver.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import { errorText, type Logger } from "./core/log.js";
 import type { CliEnvironment, CliIdentity } from "./core/local-cli.js";
@@ -54,9 +56,7 @@ import { type UiTacit, uiTacit } from "./ui/rules-api.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
 import { LiveTacit } from "./runtime/live-tacit.js";
 import { LiveCalendars } from "./calendar/index.js";
-import {
-  INTEGRATION_KINDS, createPlugin, selectedRunners, selectedSources,
-} from "./plugins.js";
+import { INTEGRATION_KINDS, createPlugin, selectedRunners, selectedSources } from "./plugins.js";
 import { packChecks, packSkills } from "./packs/packs.js";
 import { importedMcpRefusals, listRequestedMcpTools } from "./import/mcp-tool-lists.js";
 import { startPackMcpServer } from "./impl/runner/pack-mcp-client.js";
@@ -267,7 +267,7 @@ export async function build(
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
   // What a fired schedule occurrence runs (design 08-schedules): none unless `plugins.schedule_action` names one; its routes are the schedule unit's action folders.
-  const routes = { build: buildAction, agent: agentAction, feedback: feedbackAction }, actionCtx = { ...base, store, runner, sandbox, scanner, tools: READ_TOOLS, project: project.key, routes };
+  const routes = { build: buildAction, agent: agentAction, feedback: feedbackAction, improve: improveAction((slot) => enqueueImprove({ store, clock }, project.key, { slot })) }, actionCtx = { ...base, store, runner, sandbox, scanner, tools: READ_TOOLS, project: project.key, routes };
   const schedule_action = sel.schedule_action === undefined ? undefined
     : scheduledAction(store, await createPlugin(registry, "schedule_action", sel.schedule_action, actionCtx), new ConsoleLogger(clock, "schedule"), project.key);
   // The pack checks `hooks` names (design §4, issue #494), refused here when bad; its other names are `*.hook.ts`.
@@ -418,7 +418,7 @@ export async function startProcessIdentity(loaded: Loaded, store: FactoryStore, 
 }
 
 /** `workers` from factory.config.json: absent means 1, otherwise an integer of 0 or more or startup fails. */
-export { maxWorkers, workerCount };
+export { dailyTriggerOn, maxWorkers, workerCount }; // dailyTriggerOn: setup's Daily improve run schedule
 
 
 /**
@@ -588,7 +588,7 @@ export async function buildStatsStore(loaded: Loaded): Promise<FactoryStore> {
 
 export { Plugins } from "./plugin-set.js";
 export { type CleanupStore, reportLines as cleanupReport } from "./cleanup/index.js";
-export { settingsBase } from "./core/settings-base.js";
+export { settingsBase } from "./core/settings-base.js"; export { addSchedule } from "./core/schedule.js"; // addSchedule: setup's Daily improve run
 export { writeSkillVerdict } from "./ui/rules-api.js"; // `factory improve skill`: the Rules page's skill verdict
 // Config reading moved to load-config.ts and config-values.ts (RFC 0023 step 2e); re-exported for the code that also wires.
 export {

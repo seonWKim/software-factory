@@ -18,7 +18,8 @@ export default defineCommand({
   usage: `  setup        guided setup; each step shows a title, why, its question with the default (Enter takes it)
                and a ✓/✗ line: plugins (local only; GitHub and Slack optional; written to
                factory.config.json after a diff), secret file, secrets (hidden input), database, you
-               (display name), mode and auto_merge_max_tier, plugin setup, checks, canary. A run that stopped
+               (display name), mode and auto_merge_max_tier, the Daily improve run schedule (only with
+               improver.daily_trigger off), plugin setup, checks, canary. A run that stopped
                offers "Continue from step N?" (record: <state_dir>/setup-progress.json, no secret in it)
                --yes  take every default without reading the terminal; missing secrets are reported, not asked
                --rotate-github / --rotate-claude to replace a stored credential${connectUsage}`,
