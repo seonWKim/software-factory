@@ -3,7 +3,7 @@ import { isCovered } from "./policy.js";
 import { MAX_PHASES, MIN_PHASES, type SplitLimits, parseGoalLines, splitError } from "./split.js";
 import { DEPENDENCY_OPTIONS, proposedDependency } from "./task-build.js";
 import type { Tier } from "./types.js";
-export { checkTestFiles, doneCheckCommands } from "./done-checks.js"; export { sizeCaps } from "./size-cap.js"; // the triage branch's check_commands and test file check; an item's size caps for the implement run
+export { checkTestFiles, doneCheckCommands } from "./done-checks.js"; export { sizeCaps } from "./size-cap.js"; export { pinTests } from "./triage-pins.js"; // the triage branch's check_commands, test file check and pinned tests; an item's size caps for the implement run
 
 // Structured outputs of each agent role: JSON Schema for the harness + a validator for the control plane.
 // Agents can be wrong; nothing they return is trusted until it passes these.
@@ -28,8 +28,8 @@ export interface TriageOutput {
   /** Owner defaults triage applied instead of asking (issue #315), one rule per entry. Optional; the validator defaults it to []. */
   applied_defaults?: string[];
   allowed_paths: string[];
-  /** Every file or directory the done criteria create or edit; each must be covered by `allowed_paths`. */
-  files_to_change: string[];
+  /** Every file or directory the done criteria create or edit; each must be covered by `allowed_paths`. `pinned_tests`: those of them a base test file the spec quotes (design 04-triage, 2026-11-25); absent when none. */
+  files_to_change: string[]; pinned_tests?: string[];
   tier: Tier;
   tier_reason: string;
   /** Triage's estimate of the diff, before any code change (design 2026-11-01): added plus deleted lines. */
@@ -463,10 +463,9 @@ export function parseTriage(v: unknown, limits?: Partial<SplitLimits> & { check_
     decisions: [...decisions, ...decision_items.flatMap((d) => [d.reason ?? "", ...(d.options ?? []), ...(d.option_changes ?? []).flatMap((c) => c.done_when)])],
   });
   if (markup) return { ok: false, error: markup };
-  if (!isStrs(allowed_paths) || allowed_paths.length === 0 || !allowed_paths.every(isSafePath)) {
-    return { ok: false, error: "allowed_paths" };
-  }
-  if (!isStrs(files_to_change) || !files_to_change.every(isSafePath)) return { ok: false, error: "files_to_change" };
+  if (!isStrs(allowed_paths) || allowed_paths.length === 0 || !allowed_paths.every(isSafePath)) return { ok: false, error: "allowed_paths" };
+  const pinned = v.pinned_tests ?? []; // the base tests that pin the answer (design 04-triage, 2026-11-25)
+  if (!isStrs(files_to_change) || !files_to_change.every(isSafePath) || !isStrs(pinned) || !pinned.every((p) => files_to_change.includes(p))) return { ok: false, error: isStrs(files_to_change) && files_to_change.every(isSafePath) ? "pinned_tests: each must be in files_to_change" : "files_to_change" };
   const ownerOnly = ownerOnlyError("allowed_paths", allowed_paths) ?? ownerOnlyError("files_to_change", files_to_change);
   if (ownerOnly) return { ok: false, error: ownerOnly };
   const uncovered = files_to_change.filter((p) => !isCovered(p, allowed_paths));
@@ -488,7 +487,7 @@ export function parseTriage(v: unknown, limits?: Partial<SplitLimits> & { check_
     value: {
       in_short, problem, done_criteria, desired_output, ...scoped, allowed_paths, files_to_change, tier, tier_reason, estimated_lines,
       estimated_files, decisions, decision_items, applied_defaults, ...(phases.value ? { phases: phases.value } : {}), ...(goal.value ? { goal_done_when: goal.value } : {}),
-      ...(checks.value ? { done_checks: checks.value } : {}),
+      ...(checks.value ? { done_checks: checks.value } : {}), ...(pinned.length > 0 ? { pinned_tests: pinned } : {}),
     },
   };
 }
