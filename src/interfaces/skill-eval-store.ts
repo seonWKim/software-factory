@@ -3,7 +3,8 @@
 // `expected`, `detail`) are stored as text and read back as the values written. The skill-eval engine
 // (src/runtime/skill-evals/) calls them; the eval wiring (src/skill-evals.ts) records a finished run's figures, and
 // `factory eval results` and GET /api/v1/evals/<skill>/runs list a skill's runs; `factory eval compare` and
-// GET /api/v1/evals/<skill>/compare read runs by id.
+// GET /api/v1/evals/<skill>/compare read runs by id. Skill versions are rows of `ext_skill_versions`: the plugin import
+// (src/import/import-plugins.ts) records one each time an imported skill's folder hash changes.
 
 import type { Timestamp, UserId } from "../core/types.js";
 
@@ -66,6 +67,21 @@ export interface SkillEvalReplay {
   recorded_at: Timestamp;
 }
 
+/** One version of an imported skill (an `ext_skill_refs` row of kind `skill`), as an import saw it. */
+export interface SkillVersion {
+  /** The `ext_skill_refs` id. */
+  ref_id: string;
+  /** 1 for the first import, then one more per changed folder hash. */
+  version: number;
+  /** The skill folder's version (capabilities skillVersion), as eval runs store it. */
+  folder_hash: string;
+  /** The full SKILL.md text. */
+  text: string;
+  /** The ref's source label, such as `claude`. */
+  source: string;
+  created_at: Timestamp;
+}
+
 export interface SkillEvalStore {
   /** Idempotent on the id: a second call returns the stored suite. */
   createSkillEvalSuite(s: Omit<SkillEvalSuite, "created_at">): Promise<SkillEvalSuite>;
@@ -98,4 +114,11 @@ export interface SkillEvalStore {
   getSkillEvalRun(id: string): Promise<SkillEvalRun | null>;
   /** Writes a finished run's figures once; false when the run is unknown, still running or already has them. */
   recordSkillEvalRunFigures(id: string, f: SkillEvalRunFigures): Promise<boolean>;
+  /**
+   * Writes the ref's next version, in one transaction, when `folder_hash` differs from its latest version's (none:
+   * version 1). Null when the hash is unchanged, or when another worker wrote that version first (the unique key).
+   */
+  recordSkillVersion(v: Omit<SkillVersion, "version" | "created_at">): Promise<SkillVersion | null>;
+  /** A ref's versions, oldest first. */
+  listSkillVersions(ref_id: string): Promise<SkillVersion[]>;
 }
