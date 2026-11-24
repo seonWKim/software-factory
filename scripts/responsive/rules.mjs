@@ -53,6 +53,11 @@
 //                   inputs, selects, comboboxes; a SegmentedControl as one) are not all one height: a 28px sm Button
 //                   beside the 32px search Input (Work, until 2026-11-24).
 //
+//   disclosure-align a Disclosure (<details>) right under a bordered box (its previous sibling has a left border: a
+//                   bordered list, a table) has its chevron ([data-chevron], else its summary) more than 1px from that
+//                   box's left edge, so the toggle no longer reads as belonging to the list (the audit's "Details"
+//                   13px in from the Host sleeps list, 2026-11-24).
+//
 // `[data-align-skip]` on an element, or on an ancestor inside the row or toolbar, leaves it out of both (a control that
 // is meant to sit off the line, such as a tall preview). Rules in `limits.warnOnly` are reported as warnings: they
 // print but do not fail the check (see LIMITS).
@@ -393,6 +398,17 @@ export function checkLayout(limits) {
     controls.forEach((el, i) => {
       if (heights[i] !== main) fail("toolbar-height", el, `${heights[i]}px tall in a toolbar of ${main}px controls`);
     });
+  }
+
+  // disclosure-align
+  for (const d of document.body.querySelectorAll("details")) {
+    const box = d.previousElementSibling;
+    if (!box || !painted(d) || !painted(box) || parseFloat(style(box).borderLeftWidth) === 0) continue;
+    const summary = d.querySelector(":scope > summary");
+    const mark = summary?.querySelector("[data-chevron]") ?? summary;
+    if (!mark || !painted(mark)) continue;
+    const off = mark.getBoundingClientRect().left - box.getBoundingClientRect().left;
+    if (Math.abs(off) > 1) fail("disclosure-align", summary, `chevron ${off > 0 ? "+" : ""}${Math.round(off)}px from the left edge of the bordered box above it`);
   }
 
   // panel-collapsed

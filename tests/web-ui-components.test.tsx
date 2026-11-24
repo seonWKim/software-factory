@@ -67,6 +67,26 @@ describe("form controls", () => {
     expect(screen.queryByText("Shown to you")).toBeNull();
   });
 
+  it("Field with no single control is a group named by its label, with its hint under the control", () => {
+    render(<Field label="Notice when" help="Each switch is one kind"><span>switches</span></Field>);
+    const group = screen.getByRole("group", { name: "Notice when" });
+    // A <label> for no control names nothing: the label would be lost to a screen reader.
+    expect(group.querySelector("label")).toBeNull();
+    expect(group.lastElementChild!.textContent).toBe("Each switch is one kind");
+  });
+
+  it.each([["md", "px-3", "-ms-3"], ["sm", "px-2", "-ms-2"]] as const)("a flush %s Button pulls its start back by its padding, so its label sits on the text edge", (size, pad, pull) => {
+    render(<Button variant="ghost" size={size} flush>Show result</Button>);
+    const classes = screen.getByRole("button", { name: "Show result" }).className.split(" ");
+    expect(classes).toEqual(expect.arrayContaining([pad, pull]));
+  });
+
+  it("a Button that is not flush keeps its margin, and an icon Button is never flush", () => {
+    render(<><Button variant="ghost">Plain</Button><Button size="icon" flush aria-label="More">⋯</Button></>);
+    expect(screen.getByRole("button", { name: "Plain" }).className).not.toMatch(/-ms-/);
+    expect(screen.getByRole("button", { name: "More" }).className).not.toMatch(/-ms-/);
+  });
+
   it("Radio is checked, unchecked or disabled", () => {
     const onChange = vi.fn();
     render(<><Radio name="g" checked onChange={onChange}>On</Radio><Radio name="g" checked={false} onChange={onChange}>Off</Radio><Radio name="g" disabled>Dis</Radio></>);

@@ -8,6 +8,7 @@ import type { ItemRow as Item } from "../api.js";
 import { buttonClass } from "../components/ui/button.js";
 import { FOCUS } from "../components/ui/control.js";
 import { DisclosureChevron } from "../components/ui/disclosure.js";
+import { LIST_BOX } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { elapsed } from "../lib/format.js";
@@ -161,7 +162,7 @@ export function ItemsTree({ nodes, rows, now, expanded, onExpanded }: {
       selectionMode="none"
       expandedKeys={expanded}
       onExpandedChange={(keys) => onExpanded([...keys].map(String))}
-      className="rounded-control border border-border text-sm"
+      className={cn(LIST_BOX, "text-sm")}
     >
       {nodes.map((n) => <NodeItem key={n.item.id} node={n} now={now} byNumber={byNumber} byId={byId} gutter={gutter} />)}
     </Tree>

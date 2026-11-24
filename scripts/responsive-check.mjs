@@ -62,7 +62,7 @@ const openCalendar = (month, target) => `(async () => {
 })()`;
 
 // Clicks that show more of a page without writing anything: Data's work_items table, then every <details>.
-// The two "menu-" entries open a ⋯ menu (the top bar's More, the first Routines row's), so overlay-bounds and small-target
+// The two "menu-" entries open a ⋯ menu (the top bar's More, the first Schedules row's), so overlay-bounds and small-target
 // check the open menu at every viewport. The "popover-" entries open the Calendar's event popover in Week and Month
 // and a month day's "+N more" list (owner #92: the popover's body drew 24px tall in WebKit).
 const PREPARE = {
@@ -97,8 +97,8 @@ async function main() {
     { name: "health-cost", path: "health?tab=cost" },
     { name: "health-review", path: "health?tab=review" },
     { name: "transcript", path: `items/${enc(fixture.pages.item)}/runs/${enc(fixture.pages.run)}` },
-    { name: "menu-top", path: "routines" },
-    { name: "menu-row", path: "routines" },
+    { name: "menu-top", path: "schedules" },
+    { name: "menu-row", path: "schedules" },
     { name: "popover-week", path: "calendar" },
     { name: "popover-month", path: "calendar" },
     { name: "popover-more", path: "calendar" },

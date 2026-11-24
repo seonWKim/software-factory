@@ -24,6 +24,7 @@ A UI change keeps these as they are. The triage spec lists them for a change und
 
 ## Changelog
 
+- 2026-11-24: `Button` gains `flush` (a ghost Button that opens a block lines its label up with the text above); `READ_WIDTH` (32rem) is the one intro width in place of `max-w-prose`; `LIST_BOX` drops a list box's side border inside a Card below `sm` (the Work tree, a Table's cards); `Field` with no `htmlFor` is a labelled group and its `help` is the hint slot; check:responsive gains `disclosure-align`. No token changes.
 - 2026-11-24: new `Popover` (the details of one thing beside it; a `ModalPanel` sheet below `sm`) and `ChipButton` (a content chip that opens one, marked `data-chip`, which check:responsive's button-height rule skips); first used by the Calendar's event chips. No token changes.
 - 2026-11-24: `Dialog`'s body scrolls between a fixed title and footer, so Cancel and the confirm stay in view in a tall dialog; `DataTable` gains `select` (a plain text button in the first cell, the selected row `current`) and `Tr` gains `current` (`surface-2` fill and a 2 px `nav-active` bar, like the current sidebar link). No token changes.
 - 2026-11-24: `Switch` gains `readOnly` (keeps its on or off colour, focusable, ignores clicks); `opacity-50` stays for a switch disabled while busy. No token changes.

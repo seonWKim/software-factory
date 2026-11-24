@@ -218,7 +218,7 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
   ...scheduleCommands(),
 ];
 
-/** `factory schedule …` (design 08-schedules): list, add, edit, pause, resume, run and runs, in that order; the writes are the owner's only. */
+/** `factory schedule …` (design 08-schedules): list, add, edit, pause, resume, run, runs and delete, in that order; the writes are the owner's only. */
 function scheduleCommands(): TableCommand[] {
   const optional = "[--body <text>] [--skip-when-busy on|off] [--token-cap <n>]";
   const one = (name: string, args: string, chat: string, chat_args: ChatArgs, does: string, prints: string): TableCommand => ({
@@ -242,6 +242,11 @@ function scheduleCommands(): TableCommand[] {
     one("resume", "<id>", "resume <id>", "id", "Set a paused schedule's next due time to its first slot after now; refused when not paused", "the resumed schedule's line"),
     one("run", "<id>", "run <id>", "id", "Set the schedule's next due time to now, so the next tick fires it once; refused when paused, writing nothing", "the schedule's line"),
     one("runs", "<id>", "runs <id>", "id", "List the schedule's runs, oldest first", "one line per run: occurrence, outcome, recorded time, tokens, cost"),
+    one(
+      "delete", "<id>", "delete <id>", "id",
+      "Remove the schedule, so none of its slots fire again; a run in flight finishes, its past runs and their items stay; refused for an unknown ID",
+      "the deleted schedule's line",
+    ),
   ];
 }
 

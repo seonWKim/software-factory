@@ -79,7 +79,11 @@ describe("Calendar section", () => {
     expect(head.className.split(" ")).toContain("flex-wrap");
     // Rows split by one divider, the intro at a readable measure.
     expect(section.querySelector("ul")!.className.split(" ")).toEqual(expect.arrayContaining(["divide-y", "divide-border"]));
-    expect(section.querySelector("p")!.className).toContain("max-w-prose");
+    expect(section.querySelector("p")!.className.split(" ")).toContain("max-w-lg");
+    // The actions sit on the name's line: the head aligns its items at the top and the name group is 6px down, so
+    // centring on the whole group (the Disconnect 11px low once the last sync wrapped) cannot come back.
+    expect(head.className.split(" ")).toContain("items-start");
+    expect(head.firstElementChild!.className.split(" ")).toContain("py-1.5");
   });
 
   it("Connect opens the consent page at once, with no dialog", async () => {

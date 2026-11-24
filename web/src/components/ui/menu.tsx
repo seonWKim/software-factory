@@ -42,9 +42,11 @@ const isItem = (e: MenuEntry): e is MenuItem => "onSelect" in e;
 
 /** The room kept between an opened list and the edge of the page content (or of the viewport). */
 const EDGE_PX = 8;
+/** The room between the button and its opened list. */
+const GAP_PX = 4;
 
-/** The menu panel: the elevated surface, box radius, the floating shadow, 4px inside. */
-export const MENU_PANEL = "absolute z-20 min-w-48 max-w-[calc(100vw-1rem)] rounded-box border border-border bg-surface/95 p-1 shadow-lg backdrop-blur-md";
+/** The menu panel (fixed at its measured place): the elevated surface, box radius, the floating shadow, 4px inside. */
+export const MENU_PANEL = "fixed z-20 min-w-48 max-w-[calc(100vw-1rem)] rounded-box border border-border bg-surface/95 p-1 shadow-lg backdrop-blur-md";
 /** One item: 28px high, a highlight pill (control radius) on hover and keyboard focus. */
 export const MENU_ITEM = "flex h-7 w-full items-center gap-2 rounded-control px-2 text-left text-sm whitespace-nowrap outline-none";
 
@@ -59,7 +61,7 @@ function itemsIn(list: HTMLElement | null): HTMLButtonElement[] {
  * `danger`, `disabled`), separators and group labels. Keys: Enter, Space, ArrowDown or ArrowUp on the button opens it
  * on the first (last) item; ArrowDown and ArrowUp move round the items, Home and End jump, a letter moves to the next
  * item starting with it. The pointer moves the highlight too, so hover and keyboard show one pill.
- * The list ends at the button's right edge, or starts at its left edge when ending there would put its left part past
+ * The list is fixed at a measured place, so a scrolling box (a table's) never clips it. It ends at the button's right edge, or starts at its left edge when ending there would put its left part past
  * the left edge of the page content (`main`, else the viewport), where the sidebar would cover its labels; it opens
  * above the button when the viewport has no room below and there is more above.
  */
@@ -70,6 +72,7 @@ export function OverflowMenu({ label, items, icon }: { label: string; items: rea
   const list = useRef<HTMLUListElement>(null);
   const [fromStart, setFromStart] = useState(false);
   const [up, setUp] = useState(false);
+  const [at, setAt] = useState<{ left: number; top: number } | null>(null);
   const id = useId();
   const withIcons = items.some((e) => isItem(e) && e.icon !== undefined);
   const withChecks = items.some((e) => isItem(e) && e.checked !== undefined);
@@ -77,17 +80,33 @@ export function OverflowMenu({ label, items, icon }: { label: string; items: rea
     setOpen(false);
     if (refocus) trigger.current?.focus();
   };
-  // A measured check when it opens (no positioning library), as Select picks above or below; then the focus goes in.
+  // A measured check when it opens and when the window scrolls or resizes (no positioning library), as Select picks
+  // above or below; then the focus goes in. The panel is `fixed` at the measured place, so a scrolling box it sits in
+  // (a DataTable's `overflow-x-auto` wrapper) never clips it: a menu on a table's last row stays whole.
   useLayoutEffect(() => {
     if (!open || !root.current || !list.current) return;
-    const button = root.current.getBoundingClientRect();
-    const panel = list.current.getBoundingClientRect();
-    const edge = (root.current.closest("main")?.getBoundingClientRect().left ?? 0) + EDGE_PX;
-    setFromStart(button.right - panel.width < edge && button.left + panel.width <= innerWidth - EDGE_PX);
-    const below = innerHeight - button.bottom;
-    setUp(below < panel.height + EDGE_PX && button.top > below);
+    const measure = () => {
+      if (!root.current || !list.current) return;
+      const button = root.current.getBoundingClientRect();
+      const panel = list.current.getBoundingClientRect();
+      const edge = (root.current.closest("main")?.getBoundingClientRect().left ?? 0) + EDGE_PX;
+      const start = button.right - panel.width < edge && button.left + panel.width <= innerWidth - EDGE_PX;
+      const below = innerHeight - button.bottom;
+      const above = below < panel.height + EDGE_PX && button.top > below;
+      setFromStart(start);
+      setUp(above);
+      setAt({ left: start ? button.left : button.right - panel.width, top: above ? button.top - GAP_PX - panel.height : button.bottom + GAP_PX });
+    };
+    measure();
     const all = itemsIn(list.current);
     (open === "last" ? all.at(-1) : all[0])?.focus({ preventScroll: true });
+    addEventListener("scroll", measure, true);
+    addEventListener("resize", measure);
+    return () => {
+      removeEventListener("scroll", measure, true);
+      removeEventListener("resize", measure);
+      setAt(null);
+    };
   }, [open]);
   useLayoutEffect(() => {
     if (!open) return;
@@ -161,7 +180,8 @@ export function OverflowMenu({ label, items, icon }: { label: string; items: rea
           data-up={up || undefined}
           onKeyDown={onListKey}
           onMouseLeave={() => list.current?.focus({ preventScroll: true })}
-          className={cn(MENU_PANEL, "outline-none data-[side=end]:right-0 data-[side=start]:left-0", up ? "bottom-full mb-1" : "top-full mt-1")}
+          style={at ?? undefined}
+          className={cn(MENU_PANEL, "outline-none")}
         >
           {items.map((entry, i) => {
             if ("separator" in entry) return <li key={`sep-${i}`} role="separator" className="mx-2 my-1 h-px bg-border" />;
