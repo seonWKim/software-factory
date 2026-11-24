@@ -75,7 +75,7 @@ function Examples({ items }: { items: RuleEvidence[] }) {
           })}
         </ol>,
         !all && items.length > EVIDENCE_SHOWN && (
-          <Button key="all" variant="ghost" size="sm" onClick={() => setAll(true)}>
+          <Button key="all" variant="ghost" size="sm" flush onClick={() => setAll(true)}>
             {t("rules.showAll", { count: items.length })}
           </Button>
         ),

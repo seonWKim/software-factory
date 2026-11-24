@@ -3,7 +3,8 @@ import { type Column, DataTable } from "../components/ui/data-table.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
 import { When, useNow } from "./common.js";
-import { Card } from "../components/ui/card.js";
+import { CARD_INTRO, Card } from "../components/ui/card.js";
+import { cn } from "../lib/cn.js";
 import { Badge } from "../components/ui/badge.js";
 import { OverflowMenu } from "../components/ui/menu.js";
 import { useNavigate } from "../nav.js";
@@ -72,8 +73,10 @@ export function ModelsTab() {
   ];
   return (
     <Card title={title} count={rows?.length}>
-      <p className="text-sm text-pretty text-text-2">{t("plugins.modelsHint")}</p>
-      <p className="mb-2 text-sm text-pretty text-text-2">{t("plugins.modelsSwitch")}</p>
+      <div className={cn(CARD_INTRO, "space-y-1")}>
+        <p>{t("plugins.modelsHint")}</p>
+        <p>{t("plugins.modelsSwitch")}</p>
+      </div>
       {q.isError ? (
         <ErrorNote error={q.error} />
       ) : !rows ? (

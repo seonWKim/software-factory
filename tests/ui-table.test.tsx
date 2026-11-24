@@ -37,6 +37,14 @@ const sample = (
 );
 
 describe("Table", () => {
+  it("below sm its cards have no side border or side padding, so inside a Card the phone draws one box, not two", () => {
+    width(390);
+    render(sample);
+    const list = screen.getByRole("list", { name: "Sample" }).className.split(" ");
+    expect(list).toEqual(expect.arrayContaining(["max-sm:border-x-0", "max-sm:rounded-none"]));
+    expect(document.querySelector('li[data-key="a"]')!.className.split(" ")).toContain("px-0");
+  });
+
   it("at sm and up it is a table with a header row and the data attributes on the row", () => {
     width(SM_PX);
     render(sample);

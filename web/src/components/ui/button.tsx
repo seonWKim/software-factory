@@ -25,6 +25,13 @@ const SIZES = {
   icon: "size-8 shrink-0 justify-center",
 } as const;
 
+/**
+ * `flush`: a negative start margin equal to the size's inline padding, so the label starts on the text edge of the block
+ * above it: a ghost Button that opens a block ("Show 25 earlier messages", "Show result", Clamp's "Show more"). The
+ * hover fill still reaches out around the label. An `icon` Button has no label edge, so it is never flush.
+ */
+const FLUSH = { md: "-ms-3", sm: "-ms-2", icon: "" } as const;
+
 const SOLID_DANGER = "bg-failed text-on-solid enabled:hover:opacity-90";
 
 type ButtonVariant = keyof typeof VARIANTS;
@@ -35,13 +42,15 @@ interface ButtonProps extends ComponentProps<"button"> {
   size?: ButtonSize;
   /** The danger variant filled with the failed colour: only for a confirm dialog's destructive confirm. */
   solid?: boolean;
+  /** Pull the button left by its padding, so its label lines up with the text above it (FLUSH). */
+  flush?: boolean;
 }
 
 /**
  * The Button's classes, for a control that must be another library's button (react-aria's Tree chevron slot) yet look
  * like ours. Every other caller renders `Button`.
  */
-export function buttonClass({ variant = "secondary", size = "md", solid = false, className }: { variant?: ButtonVariant; size?: ButtonSize; solid?: boolean; className?: string | undefined } = {}): string {
+export function buttonClass({ variant = "secondary", size = "md", solid = false, flush = false, className }: { variant?: ButtonVariant; size?: ButtonSize; solid?: boolean; flush?: boolean; className?: string | undefined } = {}): string {
   return cn(
     "inline-flex items-center gap-1.5 rounded-control font-medium motion-safe:transition-colors",
     "aria-pressed:bg-surface-2 aria-checked:bg-surface-2",
@@ -49,6 +58,7 @@ export function buttonClass({ variant = "secondary", size = "md", solid = false,
     DISABLED,
     variant === "danger" && solid ? SOLID_DANGER : VARIANTS[variant],
     SIZES[size],
+    flush && FLUSH[size],
     className,
   );
 }
@@ -59,7 +69,7 @@ export function buttonClass({ variant = "secondary", size = "md", solid = false,
  */
 export const InToolbar = createContext(false);
 
-export function Button({ className, variant = "secondary", size = "md", solid = false, type = "button", ...props }: ButtonProps) {
+export function Button({ className, variant = "secondary", size = "md", solid = false, flush = false, type = "button", ...props }: ButtonProps) {
   const toolbar = useContext(InToolbar);
-  return <button type={type} className={buttonClass({ variant, size: toolbar && size === "sm" ? "md" : size, solid, className })} {...props} />;
+  return <button type={type} className={buttonClass({ variant, size: toolbar && size === "sm" ? "md" : size, solid, flush, className })} {...props} />;
 }

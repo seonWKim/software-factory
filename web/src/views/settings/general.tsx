@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { API, type AutoStop, type SettingRow, type SettingsView, useApi } from "../../api.js";
 import { Button } from "../../components/ui/button.js";
+import { Field } from "../../components/ui/field.js";
 import { Input } from "../../components/ui/input.js";
 import { LINK_CLASS } from "../../components/ui/link-style.js";
 import { Switch } from "../../components/ui/switch.js";
@@ -33,41 +34,39 @@ function NoticeKinds({ row, token }: { row: SettingRow; token: string }) {
     void write({ action: "set", key: row.key, value: JSON.stringify(kinds) });
   };
   return (
-    <div className="flex max-w-md flex-col gap-2 text-sm">
-      <span className="font-medium">{t("settings.noticeWhen")}</span>
-      {NOTICE_KINDS.map(([kind, label]) => (
-        <label key={kind} className="flex items-center gap-2">
-          <Switch aria-label={t("settings.noticeKind", { kind })} checked={on.includes(kind)} disabled={busy} onCheckedChange={(next) => set(kind, next)} />
-          <span className="text-pretty">{label}</span>
-        </label>
-      ))}
+    <Field label={t("settings.noticeWhen")} className="max-w-md">
+      <div className="flex flex-col gap-2 text-sm">
+        {NOTICE_KINDS.map(([kind, label]) => (
+          <label key={kind} className="flex items-center gap-2">
+            <Switch aria-label={t("settings.noticeKind", { kind })} checked={on.includes(kind)} disabled={busy} onCheckedChange={(next) => set(kind, next)} />
+            <span className="text-pretty">{label}</span>
+          </label>
+        ))}
+      </div>
       <Outcome error={error} done={done} />
-    </div>
+    </Field>
   );
 }
 
 /** The quiet-hours window as plain text (`HH:MM-HH:MM`, empty for off), sent as a JSON string; the server checks it. */
 function QuietHours({ row, token }: { row: SettingRow; token: string }) {
   const { busy, error, done, write } = useWrite(token);
+  const id = useId();
   const [draft, setDraft] = useState<string | null>(null);
   const shown = draft ?? stringOf(row.value);
   const save = async () => {
     if (await write({ action: "set", key: row.key, value: JSON.stringify(shown.trim()) })) setDraft(null);
   };
   return (
-    <div className="flex max-w-md flex-col gap-1 text-sm">
-      <span className="font-medium">{t("settings.quietHours")}</span>
-      <p className="text-xs text-pretty text-text-2">
-        {t("settings.quietHint")}
-      </p>
+    <Field label={t("settings.quietHours")} htmlFor={id} help={t("settings.quietHint")} className="max-w-md">
       <form className="flex items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save())}>
-        <Input aria-label={t("settings.quietHours")} placeholder="22:00-07:00" className="w-32 tabular-nums" value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <Input id={id} placeholder="22:00-07:00" className="w-32 tabular-nums" value={shown} onChange={(e) => setDraft(e.target.value)} />
         <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={t("settings.saveLabel", { label: t("settings.quietHours") })}>
           {t("settings.save")}
         </Button>
       </form>
       <Outcome error={error} done={done} />
-    </div>
+    </Field>
   );
 }
 
@@ -165,28 +164,31 @@ function ModeSection({ view }: { view: SettingsView }) {
   }, []);
   return (
     <Card id={MODE_ANCHOR} title={t("settings.mode")}>
-      <ul className="mb-2 space-y-1 text-sm text-pretty text-text-2">
+      <ul className={`${SETTINGS_INTRO} space-y-1`}>
         {(["settings.modeLineManual", "settings.modeLineAuto", "settings.modeLineBack"] as const).map((line) => (
           <li key={line}>{t(line)}</li>
         ))}
       </ul>
       {/* Each label sits above its control, so a refusal under one never squeezes the other's label. */}
       <div className="flex flex-wrap items-start gap-x-10 gap-y-4">
-        <div className="flex max-w-md flex-col gap-1 text-sm">
-          <span className="font-medium">{t("settings.mode")}</span>
+        <Field label={t("settings.mode")} className="max-w-md">
           <ModeControl view={view} />
           {view.auto_stop && currentMode(view)?.value === '"manual"' && <AutoStopNote stop={view.auto_stop} view={view} />}
-        </div>
+        </Field>
         {tier && (
-          <div className="flex max-w-md flex-col gap-1 text-sm">
-            <span className="font-medium whitespace-nowrap">{t("settings.tierLabel")}</span>
+          <Field
+            label={t("settings.tierLabel")}
+            className="max-w-md"
+            help={
+              <ul data-tier-levels className="space-y-0.5">
+                {(["settings.tierLevel0", "settings.tierLevel1", "settings.tierLevel2", "settings.tierLevel3", "settings.tierAbove"] as const).map((line) => (
+                  <li key={line}>{t(line)}</li>
+                ))}
+              </ul>
+            }
+          >
             <Editor row={tier} label={t("settings.tier")} value={tier.value} token={view.csrf_token} />
-            <ul data-tier-levels className="mt-1 space-y-0.5 text-xs text-text-2">
-              {(["settings.tierLevel0", "settings.tierLevel1", "settings.tierLevel2", "settings.tierLevel3", "settings.tierAbove"] as const).map((line) => (
-                <li key={line}>{t(line)}</li>
-              ))}
-            </ul>
-          </div>
+          </Field>
         )}
       </div>
     </Card>

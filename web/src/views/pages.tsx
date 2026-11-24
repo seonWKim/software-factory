@@ -429,15 +429,18 @@ export function ItemPage({ id }: { id: string }) {
         </>
       ) : (
         <>
-        <ItemFacts item={item} now={now} />
-        <Disclosure data-ids className="mt-2" summary={t("ids.summary")}>
-          <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
-            <dt className="text-xs text-text-2">{t("ids.item")}</dt>
-            <dd className="min-w-0"><CopyText value={item.id} what="item ID" /></dd>
-            <dt className="text-xs text-text-2">{t("ids.source")}</dt>
-            <dd className="min-w-0"><CopyText value={item.source.id} what="source ID" /></dd>
-          </dl>
-        </Disclosure>
+        {/* The facts are a block of the page like the others: in a Card, so they start on the cards' content edge. */}
+        <Card label={t("item.facts")}>
+          <ItemFacts item={item} now={now} />
+          <Disclosure data-ids className="mt-2" summary={t("ids.summary")}>
+            <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
+              <dt className="text-xs text-text-2">{t("ids.item")}</dt>
+              <dd className="min-w-0"><CopyText value={item.id} what="item ID" /></dd>
+              <dt className="text-xs text-text-2">{t("ids.source")}</dt>
+              <dd className="min-w-0"><CopyText value={item.source.id} what="source ID" /></dd>
+            </dl>
+          </Disclosure>
+        </Card>
         <CurrentRun runs={runs} itemId={item.id} now={now} />
         <Thread entries={q.data.thread ?? []} now={now} />
         <Phases phases={item.phases ?? []} />
@@ -640,7 +643,7 @@ function TimelineRow({ entry, now, viewer }: { entry: TimelineEntry; now: number
         </RawDetails>
         {spec.length > 0 && (
           <div className="mt-1">
-            <Button variant="ghost" size="sm" aria-expanded={open} onClick={() => setOpen(!open)} className={LINK_CLASS}>
+            <Button variant="ghost" size="sm" flush aria-expanded={open} onClick={() => setOpen(!open)} className={LINK_CLASS}>
               {open ? t("item.specHide") : t("item.specShow")}
             </Button>
             {open && (
@@ -919,8 +922,8 @@ export function HealthPage() {
               label={t("health.merges")}
               columns={[
                 { key: "pr", header: t("col.pr"), className: "tabular-nums", render: (m) => (m.change_url ? <a href={m.change_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{m.change_ref}</a> : `#${m.change_ref}`) },
-                { key: "merged_by", header: t("health.mergedBy"), className: "text-xs break-words", render: (m) => (m.merged_by && m.merged_by !== "unknown" ? <span title={m.merged_by}>{m.merged_by === viewer ? t("person.you") : t("person.other")}</span> : t("format.unknown")) },
-                { key: "merge_sha", header: t("health.mergeCommit"), className: "font-mono text-xs" },
+                { key: "merged_by", header: t("health.mergedBy"), className: "break-words", render: (m) => (m.merged_by && m.merged_by !== "unknown" ? <span title={m.merged_by}>{m.merged_by === viewer ? t("person.you") : t("person.other")}</span> : t("format.unknown")) },
+                { key: "merge_sha", header: t("health.mergeCommit"), className: "font-mono" },
                 { key: "recorded_at", header: t("col.when"), className: "tabular-nums whitespace-nowrap", render: (m) => <When at={m.recorded_at} now={now} /> },
               ]}
               rows={mergeList}
