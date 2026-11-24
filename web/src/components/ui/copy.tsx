@@ -58,7 +58,7 @@ export function IdDetails({ label, id, nowrap }: { label: string; id: string; wh
   const { done, copy } = useCopy(id);
   return (
     <Tooltip text={id}>
-      <button type="button" data-id className={cn("inline-flex min-h-7 min-w-6 cursor-pointer items-center text-left font-sans text-sm", nowrap && "whitespace-nowrap")} onClick={copy}>
+      <button type="button" data-id className={cn("inline-flex min-h-7 min-w-6 cursor-pointer items-center text-left font-sans", nowrap && "whitespace-nowrap")} onClick={copy}>
         {done ? t("copy.done") : label}
       </button>
     </Tooltip>
