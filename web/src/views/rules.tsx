@@ -88,7 +88,8 @@ function RuleCard({ entry, excerpt, applied, token }: { entry: RuleRow; excerpt?
       data-rule={entry.id}
       className={ROW_PAD}
       title={
-        <p data-rule-title className={`${ROW_TITLE} font-medium`} title={entry.title}>
+        // The title is the ledger's text as written, so it may quote a snake_case name (`data-raw`).
+        <p data-rule-title data-raw className={`${ROW_TITLE} font-medium`} title={entry.title}>
           <IdDetails label={entry.title} id={entry.id} what="rule ID" />
         </p>
       }
