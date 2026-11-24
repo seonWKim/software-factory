@@ -1,13 +1,17 @@
 // The skill-eval engine: one run of a suite replays each case, has the judge answer each of the case's rubric checks
 // yes or no, records one verdict per case and sets the run's final status. The replay and the judge are injected:
 // skillEvalReplay over replayInSandbox (the replay golden uses too) and skillJudge in src/core/scorer.ts (the plain
-// completion LlmJudge uses too). Nothing starts a run yet: no command, page or schedule calls runSkillEval.
+// completion LlmJudge uses too). Each replay runs in a clean sandbox (design 06-measurement, clean replays): the
+// checkout without its CLAUDE.md, AGENTS.md and skill folders, the skill under test in `.claude/skills/<name>/`, the
+// case's seed folder, the tools the skill's `tools:` front matter names and the MCP servers the case names. Its
+// transcript, answer, usage and wall time are stored with its verdict; a flagged transcript or answer is stored null.
 //
 // Safe to run twice: the run is started by its id, a case with a stored verdict is not replayed again, and the final
 // status is set once. The store and result types are structural (the SkillEvalStore and AgentRunner shapes used
 // here), so this component imports no legacy module (tests/architecture/dependency-direction.test.ts).
 
-import { type ReplayRequest, type ReplayRunner, type ReplaySandbox, replayInSandbox } from "./replay.js";
+import { frontMatterTools, skillFolderPath } from "../capabilities/capabilities.js";
+import { type ReplayMcpServer, type ReplayRequest, type ReplayRunner, type ReplaySandbox, cleanSkillSandbox, replayInSandbox } from "./replay.js";
 
 /** A case's verdict: `pass` when the judge answered yes to every check, `fail` on one no, `errored` when unjudged. */
 export type CaseVerdict = "pass" | "fail" | "errored";
@@ -22,21 +26,56 @@ export interface CheckAnswer {
 /** The SkillEvalStore calls the engine makes. */
 export interface SkillEvalEngineStore {
   startSkillEvalRun(r: { id: string; suite_id: string; created_by: string; skill_version?: string | null }): Promise<{ status: string }>;
-  listSkillEvalCases(suite_id: string): Promise<readonly { id: string; input: unknown; expected: unknown }[]>;
+  listSkillEvalCases(suite_id: string): Promise<readonly EngineCase[]>;
   listSkillEvalReplays(run_id: string): Promise<readonly { case_id: string; verdict: string }[]>;
-  recordSkillEvalReplay(r: { run_id: string; case_id: string; verdict: string; detail: unknown }): Promise<unknown>;
+  recordSkillEvalReplay(r: { run_id: string; case_id: string; verdict: string; detail: unknown } & Partial<ReplayRecord>): Promise<unknown>;
   finishSkillEvalRun(id: string, status: RunStatus): Promise<boolean>;
 }
 
-/** One case to replay: its input as text, and the run it belongs to. */
+/** A stored case as the engine reads it: its seed folder and MCP server names when it names them. */
+export interface EngineCase {
+  id: string;
+  input: unknown;
+  expected: unknown;
+  seed?: string | null;
+  mcp?: readonly string[] | null;
+}
+
+/** One case to replay: its input as text, the run it belongs to, and its seed folder and MCP servers (absent: none). */
 export interface ReplayCase {
   run_id: string;
   case_id: string;
   input: string;
+  seed?: string | null;
+  mcp?: readonly string[] | null;
 }
 
-/** Replays one case and returns the replay's output as text; throws when the replay did not complete. */
-export type SkillReplay = (c: ReplayCase, signal: AbortSignal) => Promise<string>;
+/** What a replay stores beside its verdict (design 06-measurement); null where it has no value or the scan flagged it. */
+export interface ReplayRecord {
+  transcript: string | null;
+  answer: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  /** Null when the runner reports no cost. */
+  cost_usd: number | null;
+  wall_ms: number | null;
+}
+
+/** A replay's output: the text the judge reads, and what it stores (before the scan); absent: nothing but the verdict. */
+export interface ReplayOutput {
+  output: string;
+  record?: ReplayRecord;
+}
+
+/** Replays one case; throws when the replay did not complete (a ReplayRefused names why it never started). */
+export type SkillReplay = (c: ReplayCase, signal: AbortSignal) => Promise<ReplayOutput>;
+
+/** A replay refused before any sandbox is made: `code` is the case's error (`noop_tools_refused`, `tool_not_served`, `mcp_not_served`). */
+export class ReplayRefused extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+  }
+}
 /** One answer per check, in order; null when the judge could not answer. */
 export type SkillJudgeFn = (s: { input: string; output: string; checks: readonly string[] }, signal: AbortSignal) => Promise<readonly CheckAnswer[] | null>;
 
@@ -44,8 +83,8 @@ export interface SkillEvalEngineDeps {
   store: SkillEvalEngineStore;
   replay: SkillReplay;
   judge: SkillJudgeFn;
-  /** The G5 egress scan of text before the store keeps it: true when clean. A flagged reason is withheld. */
-  scan(text: string): Promise<boolean>;
+  /** The G5 egress scan of text before the store keeps it: the rule names it matched, none when clean. */
+  scan(text: string): Promise<readonly string[]>;
 }
 
 export interface SkillEvalRunInput {
@@ -86,21 +125,48 @@ function runStatus(verdicts: readonly string[]): RunStatus {
   return verdicts.length === 0 || verdicts.some((v) => v !== "pass") ? "errored" : "passed";
 }
 
+/**
+ * The record as the store may keep it: a transcript or answer the scan flags becomes null, and the rule names it
+ * matched (never the text) go into `withheld`, by field.
+ */
+async function scannedRecord(scan: SkillEvalEngineDeps["scan"], r: ReplayRecord): Promise<{ record: ReplayRecord; withheld: Record<string, string[]> }> {
+  const withheld: Record<string, string[]> = {};
+  const kept = async (field: "transcript" | "answer") => {
+    const text = r[field];
+    if (text === null) return null;
+    const rules = [...new Set(await scan(text))];
+    if (rules.length === 0) return text;
+    withheld[field] = rules;
+    return null;
+  };
+  return { record: { ...r, transcript: await kept("transcript"), answer: await kept("answer") }, withheld };
+}
+
+/** A judged case: its verdict, its detail, and what its replay stores (absent: nothing). */
+export interface JudgedCase {
+  verdict: CaseVerdict;
+  detail: unknown;
+  record?: ReplayRecord;
+}
+
 /** Replays and judges one case; never throws for the replay's or the judge's fault. */
-export async function judgeCase(d: Omit<SkillEvalEngineDeps, "store">, run_id: string, c: { id: string; input: unknown; expected: unknown }, signal: AbortSignal): Promise<{ verdict: CaseVerdict; detail: unknown }> {
+export async function judgeCase(d: Omit<SkillEvalEngineDeps, "store">, run_id: string, c: EngineCase, signal: AbortSignal): Promise<JudgedCase> {
   const checks = rubricChecks(c.expected);
   if (!checks) return { verdict: "errored", detail: { error: "no_rubric" } };
   const input = caseInput(c.input);
-  let output: string;
+  let replayed: ReplayOutput;
   try {
-    output = await d.replay({ run_id, case_id: c.id, input }, signal);
-  } catch {
-    return { verdict: "errored", detail: { error: "replay_failed" } };
+    replayed = await d.replay({ run_id, case_id: c.id, input, seed: c.seed ?? null, mcp: c.mcp ?? null }, signal);
+  } catch (e) {
+    return { verdict: "errored", detail: { error: e instanceof ReplayRefused ? e.code : "replay_failed" } };
   }
-  const answers = await d.judge({ input, output, checks }, signal).catch(() => null);
-  if (!answers || answers.length !== checks.length) return { verdict: "errored", detail: { error: "judge_failed" } };
-  const kept = await Promise.all(answers.map(async (a, i) => ({ check: checks[i]!, answer: a.answer, reason: (await d.scan(a.reason)) ? a.reason : "(withheld by the egress scan)" })));
-  return { verdict: verdictOf(answers), detail: { answers: kept } };
+  const scanned = replayed.record ? await scannedRecord(d.scan, replayed.record) : null;
+  const stored = scanned ? { record: scanned.record } : {};
+  const withheld = scanned && Object.keys(scanned.withheld).length > 0 ? { withheld: scanned.withheld } : {};
+  const answers = await d.judge({ input, output: replayed.output, checks }, signal).catch(() => null);
+  if (!answers || answers.length !== checks.length) return { verdict: "errored", detail: { error: "judge_failed", ...withheld }, ...stored };
+  const kept = await Promise.all(answers.map(async (a, i) => ({ check: checks[i]!, answer: a.answer, reason: (await d.scan(a.reason)).length === 0 ? a.reason : "(withheld by the egress scan)" })));
+  return { verdict: verdictOf(answers), detail: { answers: kept, ...withheld }, ...stored };
 }
 
 /**
@@ -115,8 +181,8 @@ export async function runSkillEval(d: SkillEvalEngineDeps, r: SkillEvalRunInput,
   for (const c of await d.store.listSkillEvalCases(r.suite_id)) {
     if (done.has(c.id)) continue;
     if (signal.aborted) return { run_id: r.id, status: null, verdicts: await stored() };
-    const { verdict, detail } = await judgeCase(d, r.id, c, signal);
-    await d.store.recordSkillEvalReplay({ run_id: r.id, case_id: c.id, verdict, detail });
+    const { verdict, detail, record } = await judgeCase(d, r.id, c, signal);
+    await d.store.recordSkillEvalReplay({ run_id: r.id, case_id: c.id, verdict, detail, ...record });
   }
   const verdicts = await stored();
   const status = runStatus(verdicts.map((v) => v.verdict));
@@ -124,21 +190,74 @@ export async function runSkillEval(d: SkillEvalEngineDeps, r: SkillEvalRunInput,
   return { run_id: r.id, status, verdicts };
 }
 
-/** What a skill-eval replay runs with: the skill's text as the system prompt, and the repo, class and limits. */
-export type SkillReplayOptions<T> = Omit<ReplayRequest<T>, "run_id" | "work_item_id" | "prompt" | "tools" | "output_schema" | "signal">;
+/** The skill a replay tests: its folder (copied to `.claude/skills/<name>/`, `name` its last part) and the SKILL.md text under test. */
+export interface SkillUnderTest {
+  folder: string;
+  name: string;
+}
+
+/** What a skill-eval replay runs with: the skill's text as the system prompt, the skill, and the repo, class and limits. */
+export type SkillReplayOptions<T> = Omit<ReplayRequest<T>, "run_id" | "work_item_id" | "prompt" | "tools" | "tool_grants" | "mcp_servers" | "prepare" | "output_schema" | "signal"> & {
+  skill: SkillUnderTest;
+  /** The `sandbox` plugin's name: under `noop` a replay with tools or MCP servers is refused (`noop_tools_refused`). */
+  sandbox_plugin: string;
+  /** The tools the ToolBroker serves; only a read-only one may be granted. Absent: none. */
+  broker_tools?: readonly { name: string; read_only: boolean }[];
+  /** The approved MCP servers for the names a case gives, or null when one is not served. Absent: none is. */
+  mcpServers?(names: readonly string[]): Promise<readonly ReplayMcpServer[] | null>;
+  /** Where a case's relative seed folder resolves. */
+  root: string;
+  /** Milliseconds of the injected clock, for the replay's wall time; absent: no wall time. */
+  now?: () => number;
+};
+
+/** The tools and MCP servers a replay gets, or why it is refused; checked before any sandbox is made. */
+async function grantsOf<T>(o: SkillReplayOptions<T>, c: ReplayCase): Promise<{ tool_grants: string[]; mcp_servers?: readonly ReplayMcpServer[] }> {
+  const tool_grants = frontMatterTools(o.system_prompt);
+  const names = c.mcp ?? [];
+  if ((tool_grants.length > 0 || names.length > 0) && o.sandbox_plugin === "noop") {
+    throw new ReplayRefused("noop_tools_refused", "the noop sandbox runs no replay with tools or MCP servers");
+  }
+  const served = new Set((o.broker_tools ?? []).filter((t) => t.read_only).map((t) => t.name));
+  const missing = tool_grants.filter((t) => !served.has(t));
+  if (missing.length > 0) throw new ReplayRefused("tool_not_served", `the ToolBroker serves no read-only tool ${missing.join(", ")}`);
+  if (names.length === 0) return { tool_grants };
+  const mcp_servers = (await o.mcpServers?.(names)) ?? null;
+  if (mcp_servers === null) throw new ReplayRefused("mcp_not_served", `no approved MCP server for ${names.join(", ")}`);
+  return { tool_grants, mcp_servers };
+}
+
+/** The final answer as text: as it is, JSON for a structured one, null for none. */
+const answerText = (output: unknown): string | null => (typeof output === "string" ? output : output != null ? JSON.stringify(output) : null);
 
 /**
- * The skill-eval replay over replayInSandbox: each case runs in a fresh sandbox with no tools (`tools: []`), no
- * session and no doc index, the sandbox destroyed after. Its output is the run's final answer as text (JSON for a
- * structured one), else its transcript. A run that does not complete throws, and its case is errored.
+ * The skill-eval replay over replayInSandbox: each case runs in a fresh sandbox, cleaned before the agent starts
+ * (cleanSkillSandbox: no CLAUDE.md, AGENTS.md or other skill, the skill in `.claude/skills/<name>/`, the case's
+ * seed), with the tools the skill's `tools:` front matter names (none when absent), the MCP servers the case names
+ * (none when it names none), no session and no doc index, the sandbox destroyed after. A replay with tools under
+ * the noop sandbox, or one naming a tool or server that is not served, is refused before any sandbox is made. Its
+ * output is the final answer as text, else its transcript; its record holds both, the usage and the wall time. A
+ * run that does not complete throws, and its case is errored.
  */
-export function skillEvalReplay<H, T, R extends { status: string; output: unknown; transcript: string }>(
+export function skillEvalReplay<H, T, R extends { status: string; output: unknown; transcript: string; usage: { input_tokens: number; output_tokens: number; cost_usd: number | null } }>(
   parts: { sandbox: ReplaySandbox<H>; runner: ReplayRunner<H, T, R> },
   o: SkillReplayOptions<T>,
 ): SkillReplay {
+  const { skill, sandbox_plugin: _s, broker_tools: _b, mcpServers: _m, root, now, ...request } = o;
   return async (c, signal) => {
-    const result = await replayInSandbox(parts, { ...o, run_id: `skill_eval_${c.run_id}_${c.case_id}`, work_item_id: `skill_eval_${c.run_id}`, prompt: c.input, signal });
+    const grants = await grantsOf(o, c);
+    const seed_folder = c.seed ? skillFolderPath(c.seed, root) : undefined;
+    const prepare = (h: H) => cleanSkillSandbox(parts.sandbox, h, { skill_name: skill.name, skill_folder: skill.folder, skill_text: o.system_prompt, ...(seed_folder ? { seed_folder } : {}) }, signal);
+    const started = now?.();
+    const result = await replayInSandbox(parts, { ...request, ...grants, prepare, run_id: `skill_eval_${c.run_id}_${c.case_id}`, work_item_id: `skill_eval_${c.run_id}`, prompt: c.input, signal });
     if (result.status !== "completed") throw new Error(`skill-eval replay ${result.status}`);
-    return typeof result.output === "string" ? result.output : result.output != null ? JSON.stringify(result.output) : result.transcript;
+    const answer = answerText(result.output);
+    return {
+      output: answer ?? result.transcript,
+      record: {
+        transcript: result.transcript, answer, input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens,
+        cost_usd: result.usage.cost_usd ?? null, wall_ms: started === undefined || !now ? null : now() - started,
+      },
+    };
   };
 }

@@ -8,11 +8,11 @@ import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
 import { SqlScheduleStore } from "./schedules.js";
 
 const SUITE_COLUMNS = "id, skill_ref, title, created_by, created_at";
-const CASE_COLUMNS = "id, suite_id, input, expected, created_at";
+const CASE_COLUMNS = "id, suite_id, input, expected, created_at, seed, mcp";
 const RUN_COLUMNS = "id, suite_id, status, started_at, finished_at, created_by, skill_version, suite_version, judge_version, factory_version";
 /** A run as read back: its columns and its figures (null until recorded). */
 const RUN_READ = `${RUN_COLUMNS}, model_class, judge_model_class, replays, pass_rate, errored`;
-const REPLAY_COLUMNS = "run_id, case_id, verdict, detail, recorded_at";
+const REPLAY_COLUMNS = "run_id, case_id, verdict, detail, recorded_at, transcript, answer, input_tokens, output_tokens, cost_usd, wall_ms";
 const VERSION_COLUMNS = "ref_id, version, folder_hash, text, source, created_at";
 
 const ts = (v: unknown) => String(v) as Timestamp;
@@ -20,7 +20,11 @@ const textOrNull = (v: unknown) => (v == null ? null : String(v));
 const numberOrNull = (v: unknown) => (v == null ? null : Number(v));
 
 const rowToSuite = (r: Row): SkillEvalSuite => ({ id: String(r.id), skill_ref: String(r.skill_ref), title: String(r.title), created_by: String(r.created_by) as UserId, created_at: ts(r.created_at) });
-const rowToCase = (r: Row): SkillEvalCase => ({ id: String(r.id), suite_id: String(r.suite_id), input: JSON.parse(String(r.input)), expected: JSON.parse(String(r.expected)), created_at: ts(r.created_at) });
+/** A case as read back; its seed and MCP servers only when set, so a case without them reads as before. */
+const rowToCase = (r: Row): SkillEvalCase => ({
+  id: String(r.id), suite_id: String(r.suite_id), input: JSON.parse(String(r.input)), expected: JSON.parse(String(r.expected)), created_at: ts(r.created_at),
+  ...(r.seed != null ? { seed: String(r.seed) } : {}), ...(r.mcp != null ? { mcp: JSON.parse(String(r.mcp)) as string[] } : {}),
+});
 const rowToRun = (r: Row): SkillEvalRun => ({
   id: String(r.id), suite_id: String(r.suite_id), status: String(r.status) as SkillEvalRunStatus, started_at: ts(r.started_at),
   finished_at: r.finished_at == null ? null : ts(r.finished_at), created_by: String(r.created_by) as UserId,
@@ -34,7 +38,11 @@ const rowToVersion = (r: Row): SkillVersion => ({
 /** Gives a suite its next version, inside the transaction of the case change that calls for it. */
 const bumpSuiteVersion = (tx: SqlExecutor, suite_id: string) => tx.run("UPDATE controller_skill_eval_suites SET version = version + 1 WHERE id = ?", [suite_id]);
 
-const rowToReplay = (r: Row): SkillEvalReplay => ({ run_id: String(r.run_id), case_id: String(r.case_id), verdict: String(r.verdict), detail: JSON.parse(String(r.detail)), recorded_at: ts(r.recorded_at) });
+const rowToReplay = (r: Row): SkillEvalReplay => ({
+  run_id: String(r.run_id), case_id: String(r.case_id), verdict: String(r.verdict), detail: JSON.parse(String(r.detail)), recorded_at: ts(r.recorded_at),
+  transcript: textOrNull(r.transcript), answer: textOrNull(r.answer), input_tokens: numberOrNull(r.input_tokens), output_tokens: numberOrNull(r.output_tokens),
+  cost_usd: numberOrNull(r.cost_usd), wall_ms: numberOrNull(r.wall_ms),
+});
 
 /** SkillEvalStore over a SqlDriver; `evalStamp` is the store's injected Clock's time. */
 export class SqlSkillEvalStore extends SqlScheduleStore implements SkillEvalStore {
@@ -56,7 +64,10 @@ export class SqlSkillEvalStore extends SqlScheduleStore implements SkillEvalStor
 
   addSkillEvalCase(c: Omit<SkillEvalCase, "created_at">): Promise<SkillEvalCase> {
     return this.db.transaction(async (tx) => {
-      const added = await tx.run(`INSERT OR IGNORE INTO controller_skill_eval_cases (${CASE_COLUMNS}) VALUES (?, ?, ?, ?, ?)`, [c.id, c.suite_id, JSON.stringify(c.input), JSON.stringify(c.expected), this.evalStamp()]);
+      const added = await tx.run(
+        `INSERT OR IGNORE INTO controller_skill_eval_cases (${CASE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [c.id, c.suite_id, JSON.stringify(c.input), JSON.stringify(c.expected), this.evalStamp(), c.seed ?? null, c.mcp ? JSON.stringify(c.mcp) : null],
+      );
       if (added === 1) await bumpSuiteVersion(tx, c.suite_id);
       const [row] = await tx.all(`SELECT ${CASE_COLUMNS} FROM controller_skill_eval_cases WHERE id = ?`, [c.id]);
       return rowToCase(row!);
@@ -129,7 +140,10 @@ export class SqlSkillEvalStore extends SqlScheduleStore implements SkillEvalStor
 
   recordSkillEvalReplay(r: Omit<SkillEvalReplay, "recorded_at">): Promise<SkillEvalReplay> {
     return this.db.transaction(async (tx) => {
-      await tx.run(`INSERT OR IGNORE INTO controller_skill_eval_replays (${REPLAY_COLUMNS}) VALUES (?, ?, ?, ?, ?)`, [r.run_id, r.case_id, r.verdict, JSON.stringify(r.detail), this.evalStamp()]);
+      await tx.run(`INSERT OR IGNORE INTO controller_skill_eval_replays (${REPLAY_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+        r.run_id, r.case_id, r.verdict, JSON.stringify(r.detail), this.evalStamp(),
+        r.transcript ?? null, r.answer ?? null, r.input_tokens ?? null, r.output_tokens ?? null, r.cost_usd ?? null, r.wall_ms ?? null,
+      ]);
       const [row] = await tx.all(`SELECT ${REPLAY_COLUMNS} FROM controller_skill_eval_replays WHERE run_id = ? AND case_id = ?`, [r.run_id, r.case_id]);
       return rowToReplay(row!);
     });

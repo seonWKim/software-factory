@@ -112,17 +112,25 @@ const FRONT_MATTER_BYTES = 16 * 1024;
 /** The longest description kept. */
 const DESCRIPTION_CHARS = 500;
 
+/** The lines of a text's front matter (between a first line `---` and the next `---`); null when it has none. */
+function frontMatterLines(text: string): string[] | null {
+  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/);
+  if (lines[0]?.trim() !== "---") return null;
+  const end = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
+  return end < 0 ? null : lines.slice(1, end);
+}
+
+/** A front matter value without its quotes. */
+const unquote = (v: string): string => (/^(["']).*\1$/.test(v) ? v.slice(1, -1) : v);
+
 /**
  * The `description` of a skill file's front matter (the block between a first line `---` and the next `---`), or
  * null when there is no front matter or no description in it. Takes `description: text`, a quoted value, and a
  * folded or literal block (`>` or `|`, then indented lines). Text outside the front matter is never read.
  */
 export function frontMatterDescription(text: string): string | null {
-  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/);
-  if (lines[0]?.trim() !== "---") return null;
-  const end = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
-  if (end < 0) return null;
-  const block = lines.slice(1, end);
+  const block = frontMatterLines(text);
+  if (!block) return null;
   const at = block.findIndex((l) => /^description\s*:/.test(l));
   if (at < 0) return null;
   let value = block[at]!.replace(/^description\s*:\s*/, "").trim();
@@ -133,12 +141,33 @@ export function frontMatterDescription(text: string): string | null {
       rest.push(l.trim());
     }
     value = rest.filter((l) => l !== "").join(" ");
-  } else if (/^(["']).*\1$/.test(value)) {
-    value = value.slice(1, -1);
+  } else {
+    value = unquote(value);
   }
   value = value.trim();
   if (value === "") return null;
   return value.length > DESCRIPTION_CHARS ? `${value.slice(0, DESCRIPTION_CHARS - 1)}…` : value;
+}
+
+/**
+ * The tool names in a skill file's front matter `tools:` (design 06-measurement, clean replays): a comma list
+ * (`tools: a, b`), a flow list (`tools: [a, "b"]`) or a block list (`- a` lines). Empty when there is no front
+ * matter or no `tools:` in it: a skill names no tool unless it says so.
+ */
+export function frontMatterTools(text: string): string[] {
+  const block = frontMatterLines(text) ?? [];
+  const at = block.findIndex((l) => /^tools\s*:/.test(l));
+  if (at < 0) return [];
+  const inline = block[at]!.replace(/^tools\s*:\s*/, "").trim();
+  const items = inline !== "" ? inline.replace(/^\[|\]$/g, "").split(",") : [];
+  if (inline === "") {
+    for (const l of block.slice(at + 1)) {
+      const item = /^\s*-\s*(.*)$/.exec(l);
+      if (!item) break;
+      items.push(item[1]!);
+    }
+  }
+  return [...new Set(items.map((v) => unquote(v.trim())).filter((v) => v !== ""))];
 }
 
 /** A skill file's front matter description: only its first FRONT_MATTER_BYTES are read. Null when unreadable. */
