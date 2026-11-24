@@ -5,6 +5,8 @@
 // A held checkpoint is resumed or rejected by UPDATEs conditional on its run row still being held. An edit, pause,
 // resume or run is one UPDATE conditional on the `next_due_at` it read, so it and a claim never both apply. A delete
 // removes the schedule row and ends its held checkpoints as `rejected` in one transaction; its other run rows stay.
+// The due list leaves out Check a page rows (action_kind 'check_page', routines copied by the
+// 20261124T1100-controller-routines-into-schedules migration): they have no run behaviour yet, so they never fire.
 
 import type { CadenceKind } from "../../../core/schedule-cadence.js";
 import type {
@@ -66,7 +68,7 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
   }
 
   async listDueSchedules(due_by: Timestamp): Promise<Schedule[]> {
-    const rows = await this.db.all(`SELECT ${COLUMNS} FROM controller_schedules WHERE next_due_at IS NOT NULL AND next_due_at <= ? ORDER BY next_due_at, id`, [due_by]);
+    const rows = await this.db.all(`SELECT ${COLUMNS} FROM controller_schedules WHERE next_due_at IS NOT NULL AND next_due_at <= ? AND COALESCE(action_kind, '') <> 'check_page' ORDER BY next_due_at, id`, [due_by]);
     return rows.map(rowToSchedule);
   }
 
