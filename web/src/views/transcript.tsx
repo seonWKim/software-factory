@@ -12,7 +12,7 @@ import { t } from "../i18n/index.js";
 import { duration, errorLabel, runStatusLabel } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { When, runKindLabel } from "./common.js";
+import { When, runKindLabel, tryOf } from "./common.js";
 import { Card } from "../components/ui/card.js";
 import { Badge } from "../components/ui/badge.js";
 
@@ -152,7 +152,7 @@ function Outcome({ run, now }: { run: TranscriptPage["run"]; now: number }) {
       {failed && o.detail && <p data-raw>{o.detail}</p>}
       {!failed && o?.summary && <p data-raw>{o.summary}</p>}
       <p className="mt-1 text-xs opacity-80 tabular-nums">
-        {t("transcript.runLine", { kind: runKindLabel(run.kind), attempt: run.attempt, worker: run.worker_id ?? "–" })}
+        {t("transcript.runLine", { kind: runKindLabel(run.kind), attempt: tryOf(run.attempt), worker: run.worker_id ?? "–" })}
         {run.started_at && <> · <When at={run.started_at} now={now} label="item.startedAgo" /></>}
         {run.started_at && run.finished_at ? t("transcript.took", { time: duration(Date.parse(run.finished_at) - Date.parse(run.started_at)) }) : ""}
       </p>
@@ -218,7 +218,7 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
   return (
     <>
       <Back itemId={itemId} />
-      <PageHeader title={t("transcript.title", { kind: runKindLabel(run.kind), attempt: run.attempt })} />
+      <PageHeader title={t("transcript.title", { kind: runKindLabel(run.kind), attempt: tryOf(run.attempt) })} />
       {/* The step-type filter and the agent-step choice are page filters: the toolbar's second row, under the title. */}
       <PageToolbar>
         <ButtonRow role="group" aria-label={t("transcript.stepType")}>

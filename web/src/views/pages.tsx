@@ -28,7 +28,7 @@ import { duration, groupedInteger, localClock, localDateTime, relativeTime, runS
 import { GROUP_LABELS, ITEM_STATES, STATE_GROUPS, type StateGroup, groupOf, groupStates, isGroup, stateLabel } from "../../../src/shared/states.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, RawNames, When, byId, QueueTable, RunningTable, WhyText, WorkerName, isInteractiveRun, runKindLabel, runTitle, useNow, useViewer } from "./common.js";
+import { InteractiveBadge, ItemsTable, MergeCheckNote, RawDetails, RawNames, When, byId, QueueTable, RunningTable, WhyText, WorkerName, isInteractiveRun, runKindLabel, runTitle, tryOf, useNow, useViewer } from "./common.js";
 import { ItemTable, type ItemTableRow } from "./item-row.js";
 import { ItemDecision } from "./decision-card.js";
 import { ItemAbout } from "./item-about.js";
@@ -537,7 +537,7 @@ function CurrentRun({ runs, itemId, now }: { runs: ItemDetail["runs"]; itemId: s
       <p data-current-run={run.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
         <span className="font-medium">{runKindLabel(run.kind)}</span>
         <StatusBadge state={run.status} />
-        <span className="tabular-nums">{t("item.attempt", { attempt: run.attempt })}</span>
+        <span className="tabular-nums">{t("item.attempt", { attempt: tryOf(run.attempt) })}</span>
         <WorkerName id={run.attempts?.at(-1)?.worker_id} />
         {run.started_at && <span className="text-text-2 tabular-nums"><When at={run.started_at} now={now} label="item.startedAgo" /></span>}
         <Link href={transcriptPath(itemId, run.id)} className={LINK_CLASS}>{t("item.transcript")}</Link>

@@ -14,7 +14,7 @@ import { cn } from "../lib/cn.js";
 import { elapsed } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { PrLink, When, WhyText, WorkerName, runKindLabel } from "./common.js";
+import { PrLink, When, WhyText, WorkerName, runKindLabel, tryOf } from "./common.js";
 import { ItemRow } from "./item-row.js";
 import { StatusBadge } from "../components/ui/badge.js";
 import { type TreeNode, issueNumber } from "./tree-model.js";
@@ -69,7 +69,7 @@ function Row({ node, now, byNumber, byId }: { node: TreeNode; now: number; byNum
         <span className="flex flex-wrap items-center gap-x-2">
           {run && (
             <span className="whitespace-nowrap tabular-nums" data-run>
-              {runKindLabel(run.kind)} #{run.attempt}
+              {runKindLabel(run.kind)} #{tryOf(run.attempt)}
               {run.status === "queued" && run.position !== null && t("tree.queue", { position: run.position })}
               {run.started_at && run.status === "running" && ` · ${elapsed(now - Date.parse(run.started_at))}`}
             </span>
