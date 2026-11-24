@@ -329,10 +329,10 @@ async function drafting(answer: Record<string, unknown>, ask?: (q: string) => Pr
 
 describe("parsing `factory schedule draft` and `improve`", () => {
   it("reads the words or the ID, and --yes only as the last word", () => {
-    expect(parseLocalCliArgs("schedule", ["draft", ...WORDS.split(" ")])).toEqual({ action: "schedule_draft", command: { verb: "draft", words: WORDS, yes: false } });
-    expect(parseLocalCliArgs("schedule", ["draft", "every", "day", "--yes"])).toEqual({ action: "schedule_draft", command: { verb: "draft", words: "every day", yes: true } });
-    expect(parseLocalCliArgs("schedule", ["improve", "sch_fb"])).toEqual({ action: "schedule_draft", command: { verb: "improve", id: "sch_fb", yes: false } });
-    expect(parseLocalCliArgs("schedule", ["improve", "sch_fb", "--yes"])).toEqual({ action: "schedule_draft", command: { verb: "improve", id: "sch_fb", yes: true } });
+    expect(parseLocalCliArgs("schedule", ["draft", ...WORDS.split(" ")])).toEqual({ action: "schedule", command: { verb: "draft", words: WORDS, yes: false } });
+    expect(parseLocalCliArgs("schedule", ["draft", "every", "day", "--yes"])).toEqual({ action: "schedule", command: { verb: "draft", words: "every day", yes: true } });
+    expect(parseLocalCliArgs("schedule", ["improve", "sch_fb"])).toEqual({ action: "schedule", command: { verb: "improve", id: "sch_fb", yes: false } });
+    expect(parseLocalCliArgs("schedule", ["improve", "sch_fb", "--yes"])).toEqual({ action: "schedule", command: { verb: "improve", id: "sch_fb", yes: true } });
     for (const args of [["draft"], ["draft", "--yes"], ["improve"], ["improve", "a", "b"], ["improve", "--yes"]]) {
       expect({ args, r: parseLocalCliArgs("schedule", args) }).toMatchObject({ r: { error: expect.any(String) } });
     }

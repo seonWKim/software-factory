@@ -13,8 +13,7 @@ import { needsDueDate, parseQuickAdd, parseQuickEdit } from "./quick-add.js"; im
 export { storedProjectCaps } from "./size-cap.js"; // the project's size caps for `approve` (LocalCliDeps.caps), for the CLI handler
 import { ProjectRefused, type TaskEdit, type TaskFields, projectRefusal, taskLine } from "./tasks.js";
 import { CREATE_HELP, LOCAL_ID, NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask, localItemOf, withDependsOn } from "./task-build.js";
-import { type ScheduleCommand, parseScheduleArgs, runScheduleCommand } from "./schedule.js";
-import { type DraftCommand, parseDraftArgs, runDraftCommand } from "./schedule-draft.js";
+import { type DraftTerminal, type ScheduleWords, parseScheduleWords, runScheduleWords } from "./schedule-draft.js";
 
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
@@ -128,9 +127,7 @@ export type CliAction =
   | { action: "command"; command: ItemCommand; id: WorkItemId; text: string }
   | { action: "help"; id: WorkItemId | null }
   | { action: "confirm"; proposal: string }
-  | { action: "schedule"; command: ScheduleCommand }
-  /** `schedule draft` and `schedule improve` (src/core/schedule-draft.ts). */
-  | { action: "schedule_draft"; command: DraftCommand };
+  | { action: "schedule"; command: ScheduleWords };
 
 /** This module's commands, from the command table (src/core/command-table.ts). */
 const LOCAL_COMMANDS = COMMAND_TABLE.filter((c) => (CLI_TOP_WORDS as readonly string[]).includes(c.name.split(" ")[0]!));
@@ -215,9 +212,7 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     return bad(`unknown task command ${JSON.stringify(sub ?? "")}`);
   }
   if (word === "project") return parseProjectArgs(args, bad);
-  const draft = word === "schedule" ? parseDraftArgs(args) : null;
-  if (draft !== null) return typeof draft === "string" ? bad(draft) : { action: "schedule_draft", command: draft };
-  if (word === "schedule") return ((c) => (typeof c === "string" ? bad(c) : { action: "schedule" as const, command: c }))(parseScheduleArgs(args));
+  if (word === "schedule") return ((c) => (typeof c === "string" ? bad(c) : { action: "schedule" as const, command: c }))(parseScheduleWords(args));
   if ((ITEM_COMMANDS as readonly string[]).includes(word)) {
     const [id, ...rest] = args;
     if (!id) return bad(`${word} needs a work item ID`);
@@ -276,7 +271,7 @@ async function orRefused(fail: (line: string) => CliResult, run: () => Promise<C
   }
 }
 
-export interface LocalCliDeps {
+export interface LocalCliDeps extends DraftTerminal { // DraftTerminal: `schedule draft` and `improve`'s model, scanner and y/N ask
   store: Pick<
     FactoryStore,
     "createWorkItem" | "getWorkItem" | "findWorkItemIds" | "listWorkItems" | "listPhases" | "listRuns" | "listStateChanges" | "listItemMessages" | "appendCliCommand"
@@ -297,9 +292,6 @@ export interface LocalCliDeps {
   caps?: (project: string) => Promise<{ max_diff_lines: number; max_diff_files: number }>; // the project's size caps as the controller reads them (storedProjectCaps): `approve` refuses an over-cap approval with no note before any write; absent (chat): the controller does
   cli?: string; // the hints' command name (cliName); absent: DEFAULT_CLI_NAME, as chat callers leave it
   ui?: { port?: number }; // factory.config.json's `ui` (validated at load): `task create` prints the item's loopback link on its port; absent: no link (chat)
-  llm?: LLMProvider | null; // `schedule draft` and `improve`'s model (plugins.llm); absent or null: they are off
-  scanner?: Pick<EgressScanner, "scan">; // their egress scan of the words and the model's text
-  ask?: (question: string) => Promise<boolean>; // their y/N question on the terminal; absent when stdin is no terminal
   answers: NoteAnswers<{ question: string; answer: string | null; accepted_default: boolean }>; // splitAnswers, answersDetail (src/shared/command-notes.ts)
 }
 
@@ -436,9 +428,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
     case "project":
       return runProject(d, a, fail, claim);
     case "schedule": // A write first claims the owner, as every write does, and is refused for anyone else.
-      return runScheduleCommand(d.store, a.command, user, async () => (await claim()) === user);
-    case "schedule_draft":
-      return runDraftCommand(d, a.command, user, async () => (await claim()) === user);
+      return runScheduleWords(d, a.command, user, async () => (await claim()) === user);
     case "show": {
       const item = await resolveItem(d.store, a.id);
       if ("lines" in item) return item;

@@ -11,7 +11,7 @@
 // the proposal (a draft's ID and add fields, or improve's old and new text). Neither stores anything.
 
 import type { ScheduleFields, ScheduleWrite, writeSchedule } from "../core/schedule.js";
-import { NO_MODEL, type draftSchedule, type improveSchedule } from "../core/schedule-draft.js";
+import type { draftSchedule, improveSchedule } from "../core/schedule-draft.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { UserId } from "../core/types.js";
 import type { Logger } from "../core/log.js";
@@ -112,7 +112,7 @@ export async function postScheduleDraft(d: Pick<UiDeps, "store" | "scanner">, v:
   if (typeof value !== "string" || value.trim() === "") return apiError(400, v === "draft" ? "words must be the words to draft from." : "id must be the schedule's ID.");
   const own = await c.owner("manages schedules");
   if ("error" in own) return apiError(403, own.error);
-  if (c.llm === null) return apiError(503, `No model: ${NO_MODEL}.`);
+  if (c.llm === null) return apiError(503, "Draft and Improve are off: no model is configured (plugins.llm).");
   const deps = { llm: c.llm, scanner: d.scanner, newId: c.newId };
   const r = v === "draft" ? await c.draft(value, deps) : await c.improve(value.trim(), { ...deps, store: d.store });
   if (!r.ok) return apiError(409, r.reason);

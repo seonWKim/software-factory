@@ -4,8 +4,7 @@ import { createInterface } from "node:readline/promises";
 import { CLI_TOP_WORDS, HELP_WORD, cliName, cliUsageLines, parseLocalCliArgs, resolveItem, runLocalCli, storedProjectCaps } from "../../../core/local-cli.js";
 import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
-import { defineCommand } from "../../command.js";
-import type { Loaded } from "../../../load-config.js";
+import { Plugins, defineCommand } from "../../command.js";
 import { lastRefusedLines, refusalHint } from "./refused.js";
 
 /**
@@ -32,7 +31,7 @@ export default defineCommand({
       const { owner, name } = loaded.config.repo;
       // `schedule draft` and `improve` only: the configured model (null when it cannot be built: the feature is off), the
       // scanner, and a y/N ask while stdin is a terminal.
-      const drafting = action.action === "schedule_draft" ? await draftParts(loaded) : {};
+      const drafting = action.action === "schedule" && ["draft", "improve"].includes(action.command.verb) ? await draftParts(loaded) : {};
       const resolveProject = storeProjectResolver(store, { owner, name });
       const r = await runLocalCli(
         {
@@ -62,8 +61,7 @@ export default defineCommand({
 });
 
 /** The model, the egress scanner and the terminal ask `schedule draft` and `improve` take (src/core/schedule-draft.ts). */
-async function draftParts(loaded: Loaded) {
-  const { Plugins } = await import("../../../compose.js");
+async function draftParts(loaded: ConstructorParameters<typeof Plugins>[0]) {
   const p = new Plugins(loaded), secrets = await p.secrets();
   const llm = await p.llm(secrets).catch(() => null);
   return { llm, scanner: await p.scanner(secrets), ...(process.stdin.isTTY ? { ask: terminalAsk } : {}) };

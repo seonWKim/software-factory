@@ -10,7 +10,8 @@ import type { LLMProvider, LLMRequest } from "../interfaces/llm-provider.js";
 import { fence } from "./resolve.js";
 import { CADENCE_KINDS, type CadenceKind, cadenceProblem } from "./schedule-cadence.js";
 import {
-  SCHEDULE_ACTION_KINDS, type Schedule, type ScheduleAdminStore, type ScheduleFields, createSchedule, editSchedule, scheduleActionOf, scheduleLine,
+  SCHEDULE_ACTION_KINDS, type Schedule, type ScheduleAdminStore, type ScheduleCommand, type ScheduleFields, createSchedule, editSchedule, parseScheduleArgs,
+  runScheduleCommand, scheduleActionOf, scheduleLine,
 } from "./schedule.js";
 import type { UserId } from "./types.js";
 
@@ -175,6 +176,13 @@ export async function improveSchedule(id: string, d: DraftDeps & { store: Pick<S
 // `factory schedule draft <words…> [--yes]` and `factory schedule improve <id> [--yes]` (local-cli.ts forwards the words).
 
 export type DraftCommand = { verb: "draft"; words: string; yes: boolean } | { verb: "improve"; id: string; yes: boolean };
+/** Any `factory schedule …` command: schedule.ts's, or draft and improve. */
+export type ScheduleWords = ScheduleCommand | DraftCommand;
+
+/** The words after `factory schedule`: draft and improve here, every other verb through schedule.ts; or why they are no command. */
+export function parseScheduleWords(args: readonly string[]): ScheduleWords | string {
+  return parseDraftArgs(args) ?? parseScheduleArgs(args);
+}
 
 /** The words after `factory schedule` when they are draft or improve: the command, or why it is none; null for any other verb. */
 export function parseDraftArgs(args: readonly string[]): DraftCommand | string | null {
@@ -186,13 +194,26 @@ export function parseDraftArgs(args: readonly string[]): DraftCommand | string |
   return words.length === 1 && words[0] && !words[0].startsWith("--") ? { verb, id: words[0], yes } : "schedule improve needs one schedule ID";
 }
 
-export interface DraftCliDeps extends Omit<DraftDeps, "llm" | "scanner"> {
-  store: ScheduleAdminStore;
-  /** Absent: the feature is off. */
+/** What the CLI passes in for draft and improve (local-cli.ts LocalCliDeps extends it); each absent when not wired. */
+export interface DraftTerminal {
+  /** The configured model (plugins.llm); absent or null: draft and improve are off. */
   llm?: LLMProvider | null;
+  /** The egress scan of the words and the model's text. */
   scanner?: Pick<EgressScanner, "scan">;
   /** A y/N question on the terminal; absent when stdin is no terminal. */
   ask?: (question: string) => Promise<boolean>;
+}
+
+export interface DraftCliDeps extends Omit<DraftDeps, "llm" | "scanner">, DraftTerminal {
+  store: ScheduleAdminStore;
+}
+
+/** Whether the command is draft or improve, the ones that take the model, the scanner and the ask. */
+export const isDraftCommand = (c: ScheduleWords): c is DraftCommand => c.verb === "draft" || c.verb === "improve";
+
+/** Runs any `factory schedule …` command as `user`: draft and improve here, the others through schedule.ts. */
+export function runScheduleWords(d: DraftCliDeps, c: ScheduleWords, user: UserId, isOwner: () => Promise<boolean>): Promise<{ code: number; lines: string[] }> {
+  return isDraftCommand(c) ? runDraftCommand(d, c, user, isOwner) : runScheduleCommand(d.store, c, user, isOwner);
 }
 
 /** Runs draft or improve as `user`: the owner check first, then the model, then the ask, then the one write. */
