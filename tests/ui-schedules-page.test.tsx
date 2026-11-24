@@ -30,6 +30,9 @@ let runs: Record<string, ScheduleRunRow[]>;
 let posts: { path: string; body: Record<string, unknown>; token: string | null }[];
 /** What the next write answers, when it is not a success. */
 let refusal: string | null;
+/** The draft and improve requests, apart from the writes; a model failure the next one answers with. */
+let proposals: { path: string; body: Record<string, unknown> }[];
+let modelFailure: string | null;
 
 beforeEach(() => {
   schedules = [schedule("sch_aaaa1111", "Nightly docs check"), schedule("sch_bbbb2222", "Weekly review", { next_due_at: null, cadence: { kind: "weekly", spec: "mon 09:00" } })];
@@ -42,12 +45,23 @@ beforeEach(() => {
   };
   posts = [];
   refusal = null;
+  proposals = [];
+  modelFailure = null;
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     const u = new URL(url, "http://127.0.0.1");
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     if (u.pathname === "/api/v1/session") return json(200, { csrf_token: TOKEN, actor: "local:owner", commands_enabled: true });
     if (u.pathname === "/api/v1/schedules" && !init?.method) return json(200, { schedules });
     if (u.pathname === "/api/v1/schedules/runs") return json(200, { runs: runs[u.searchParams.get("schedule")!] ?? [] });
+    if (init?.method === "POST" && (u.pathname === "/api/v1/schedules/draft" || u.pathname === "/api/v1/schedules/improve")) {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      proposals.push({ path: u.pathname.slice("/api/v1/schedules/".length), body });
+      if (modelFailure !== null) return json(503, { error: modelFailure });
+      if (u.pathname.endsWith("/draft")) {
+        return json(200, { proposal: { id: "sch_zzzz9999", fields: { title: "Drafted title", cadence: "weekly", spec: "mon 08:00", zone: "Europe/Paris", action: "agent", body: "Summarise the week." } } });
+      }
+      return json(200, { proposal: { id: body.id, old: "Check the docs.", new: "Check the docs.\n  Then list stale pages." } });
+    }
     if (init?.method === "POST" && u.pathname.startsWith("/api/v1/schedules/")) {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       posts.push({ path: u.pathname.slice("/api/v1/schedules/".length), body, token: new Headers(init.headers).get("x-csrf-token") });
@@ -330,6 +344,116 @@ describe("Schedules page", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Add schedule" }));
     await waitFor(() => expect(within(dialog).getByText(/a daily cadence is HH:MM/)).toBeTruthy(), SLOW);
     expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  const openNew = async () => {
+    show();
+    await ready();
+    fireEvent.click(screen.getByRole("button", { name: "New schedule" }));
+    return screen.findByRole("dialog", undefined, SLOW);
+  };
+  const openEdit = async () => {
+    show();
+    await ready();
+    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "More for Nightly docs check" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    return screen.findByRole("dialog", undefined, SLOW);
+  };
+  const press = (dialog: HTMLElement, name: string) => fireEvent.click(within(dialog).getByRole("button", { name }));
+
+  it("New schedule shows Describe what should run and when over a text box, with a Draft button, and sends nothing until Draft is pressed", async () => {
+    const dialog = await openNew();
+    expect(within(dialog).getByLabelText("Describe what should run and when").tagName).toBe("TEXTAREA");
+    expect(within(dialog).getByRole("button", { name: "Draft" })).toBeTruthy();
+    expect(within(dialog).queryByRole("button", { name: "Improve" })).toBeNull();
+    fireEvent.change(within(dialog).getByLabelText("Describe what should run and when"), { target: { value: "weekly summary" } });
+    expect(proposals).toHaveLength(0);
+  });
+
+  it("Draft posts the words, fills the fields, leaves the busy rule and token limit, and rings the fields it changed until they are edited", async () => {
+    const dialog = await openNew();
+    fireEvent.click(within(dialog).getByLabelText("Skip while the factory is busy"));
+    fireEvent.change(within(dialog).getByLabelText("Token limit"), { target: { value: "700" } });
+    fireEvent.change(within(dialog).getByLabelText("Describe what should run and when"), { target: { value: "every monday summarise the week" } });
+    press(dialog, "Draft");
+    await waitFor(() => expect((within(dialog).getByLabelText("Title") as HTMLInputElement).value).toBe("Drafted title"), SLOW);
+    expect(proposals).toEqual([{ path: "draft", body: { words: "every monday summarise the week" } }]);
+    expect((within(dialog).getByLabelText("When") as HTMLInputElement).value).toBe("mon 08:00");
+    expect((within(dialog).getByLabelText("Text") as HTMLTextAreaElement).value).toBe("Summarise the week.");
+    expect(within(dialog).getByLabelText("Repeats").textContent).toContain("Weekly");
+    expect(within(dialog).getByLabelText("Does").textContent).toContain("Asks an agent");
+    expect((within(dialog).getByLabelText("Token limit") as HTMLInputElement).value).toBe("700");
+    expect(within(dialog).getByLabelText("Skip while the factory is busy").getAttribute("aria-checked") ?? (within(dialog).getByLabelText("Skip while the factory is busy") as HTMLInputElement).checked).toBeTruthy();
+    const title = within(dialog).getByLabelText("Title");
+    expect(title.hasAttribute("data-changed")).toBe(true);
+    expect(title.className).toContain("ring-2");
+    expect(within(dialog).getByLabelText("Token limit").hasAttribute("data-changed")).toBe(false);
+    // The zone is the same as before the draft only if the browser's is Europe/Paris, so it is not asserted either way.
+    fireEvent.change(title, { target: { value: "My own title" } });
+    expect(title.hasAttribute("data-changed")).toBe(false);
+    expect(within(dialog).getByLabelText("When").hasAttribute("data-changed")).toBe(true);
+    // Any filled field can still be changed before Add, and Add uses the title-made ID.
+    press(dialog, "Add schedule");
+    await waitFor(() => expect(posts).toHaveLength(1), SLOW);
+    expect(posts[0]!.body).toMatchObject({ id: "my-own-title", title: "My own title", cadence: "weekly", spec: "mon 08:00", action: "agent", body: "Summarise the week.", token_cap: 700 });
+  });
+
+  it("a failed draft shows a bad Notice in the Dialog and the fields and buttons stay usable", async () => {
+    modelFailure = "Draft and Improve are off: no model is configured (plugins.llm).";
+    const dialog = await openNew();
+    fireEvent.change(within(dialog).getByLabelText("Describe what should run and when"), { target: { value: "weekly summary" } });
+    press(dialog, "Draft");
+    await waitFor(() => expect(within(dialog).getByText(/no model is configured/)).toBeTruthy(), SLOW);
+    expect(within(dialog).getByText(/no model is configured/).closest("[data-tone]")!.getAttribute("data-tone")).toBe("bad");
+    expect((within(dialog).getByRole("button", { name: "Draft" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((within(dialog).getByRole("button", { name: "Add schedule" }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.change(within(dialog).getByLabelText("Title"), { target: { value: "Still typing" } });
+    expect((within(dialog).getByLabelText("Title") as HTMLInputElement).value).toBe("Still typing");
+  });
+
+  it("Improve on Edit posts the saved schedule's ID and shows the saved and revised text side by side, whitespace kept; Keep mine leaves Text; it can be pressed again", async () => {
+    const dialog = await openEdit();
+    expect(within(dialog).queryByLabelText("Describe what should run and when")).toBeNull();
+    fireEvent.change(within(dialog).getByLabelText("Text"), { target: { value: "Typed but not saved" } });
+    expect(proposals).toHaveLength(0);
+    press(dialog, "Improve");
+    await waitFor(() => expect(within(dialog).getByText("Revised text")).toBeTruthy(), SLOW);
+    expect(proposals).toEqual([{ path: "improve", body: { id: "sch_aaaa1111" } }]);
+    expect(within(dialog).getByText("Saved text")).toBeTruthy();
+    const revised = within(dialog).getByText(/Then list stale pages/);
+    expect(revised.className).toContain("whitespace-pre-wrap");
+    expect(revised.textContent).toBe("Check the docs.\n  Then list stale pages.");
+    press(dialog, "Keep mine");
+    expect((within(dialog).getByLabelText("Text") as HTMLTextAreaElement).value).toBe("Typed but not saved");
+    expect(within(dialog).queryByText("Revised text")).toBeNull();
+    press(dialog, "Improve");
+    await waitFor(() => expect(within(dialog).getByText("Revised text")).toBeTruthy(), SLOW);
+    expect(proposals).toHaveLength(2);
+  });
+
+  it("Use this puts the revised text in Text, Improve can be pressed again, and Save sends Does and Text together and nothing else", async () => {
+    const dialog = await openEdit();
+    press(dialog, "Improve");
+    await waitFor(() => expect(within(dialog).getByText("Revised text")).toBeTruthy(), SLOW);
+    press(dialog, "Use this");
+    expect((within(dialog).getByLabelText("Text") as HTMLTextAreaElement).value).toBe("Check the docs.\n  Then list stale pages.");
+    expect(within(dialog).queryByText("Revised text")).toBeNull();
+    press(dialog, "Improve");
+    await waitFor(() => expect(within(dialog).getByText("Revised text")).toBeTruthy(), SLOW);
+    press(dialog, "Keep mine");
+    press(dialog, "Save");
+    await waitFor(() => expect(posts).toHaveLength(1), SLOW);
+    expect(posts[0]).toEqual({ path: "edit", body: { id: "sch_aaaa1111", action: "build", body: "Check the docs.\n  Then list stale pages." }, token: TOKEN });
+  });
+
+  it("a failed improve shows a bad Notice and the form stays usable", async () => {
+    modelFailure = "the model cut off";
+    const dialog = await openEdit();
+    press(dialog, "Improve");
+    await waitFor(() => expect(within(dialog).getByText(/the model cut off/)).toBeTruthy(), SLOW);
+    expect(within(dialog).getByText(/the model cut off/).closest("[data-tone]")!.getAttribute("data-tone")).toBe("bad");
+    expect((within(dialog).getByRole("button", { name: "Improve" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((within(dialog).getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("stacks its Cards as the other pages do, on the Card's own margin, with no flex gap added on top of it", async () => {
