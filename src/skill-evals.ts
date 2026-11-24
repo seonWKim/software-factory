@@ -2,7 +2,9 @@
 // suite, builds the engine's parts from the configured plugins (the replay over the sandbox and runner plugins, the
 // judge over the llm plugin with prompts/skill-judge.md, the G5 egress scan, the skill folder's version), runs one
 // run through runSkillEval, then records the run's figures through the store. The engine is unchanged. The run's
-// options (--model, --judge-model, --replays) are checked here before anything is read or written.
+// options (--model, --judge-model, --replays) are checked here before anything is read or written. A run replays the
+// skill's current version (its folder as it is now) by default; `version` names a stored version of the imported skill
+// by its folder hash (design 06-measurement), and the run replays that version's text and stores its hash.
 //
 // main.ts passes skillEvalRun to every command through the command call (CommandCall.runSkillEval), so the CLI
 // handler imports no root or legacy module. The composition root builds the improve run's skill improvement wiring
@@ -24,6 +26,7 @@ import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SkillEvalRun, SkillEvalRunFigures, SkillEvalStore } from "./interfaces/skill-eval-store.js";
 import { skillFolderPath, skillVersion } from "./runtime/capabilities/capabilities.js";
+import { skillVersionsOf } from "./ui/plugins-api.js";
 import { type Authored, type CaseVerdict, type SkillEvalAuthoring, type SkillEvalEngineDeps, type TriedCase, addSkillEvalCase, addSkillEvalSuite, deleteSkillEvalSuite, editSkillEvalCase, renameSkillEvalSuite, runSkillEval, skillEvalReplay, tryCase } from "./runtime/index.js";
 
 /** The class a skill-eval replay runs on when no --model is given; its judge runs on judgeClass of it. */
@@ -43,6 +46,8 @@ export interface SkillEvalRequest {
   judge_model_class?: string | undefined;
   /** --replays: replays per case; only 1, since a run records one verdict per case (absent: 1). */
   replays?: number | undefined;
+  /** A previous version's folder hash (an `ext_skill_versions` row of the skill) to re-run (absent: the current version). */
+  version?: string | undefined;
 }
 
 /** The stored run with its figures, or why nothing was run (and no run written). */
@@ -57,7 +62,7 @@ export interface SkillEvalPlugins {
 }
 
 export interface SkillEvalWiring {
-  store: Pick<SkillEvalStore, "listSkillEvalSuites" | "getSkillEvalRun" | "recordSkillEvalRunFigures" | "startSkillEvalRun" | "listSkillEvalCases" | "listSkillEvalReplays" | "recordSkillEvalReplay" | "finishSkillEvalRun" | "getSkillEvalCase">;
+  store: Pick<SkillEvalStore, "listSkillEvalSuites" | "getSkillEvalRun" | "recordSkillEvalRunFigures" | "startSkillEvalRun" | "listSkillEvalCases" | "listSkillEvalReplays" | "recordSkillEvalReplay" | "finishSkillEvalRun" | "getSkillEvalCase" | "listSkillEvalRuns" | "listSkillVersions">;
   /** Where a relative skill folder resolves. */
   root: string;
   /** prompts/skill-judge.md, the judge's system prompt. */
@@ -113,6 +118,19 @@ async function engineParts(d: SkillEvalWiring, skill: string, model_class: Model
   return { engine: await engineOf(d, skill_text, model_class), skill_version };
 }
 
+/**
+ * The engine's parts for the stored version `hash` of `skill` on `model_class`: its text as the system prompt, its hash
+ * as the run's. The skill's versions are those of the imported skill that holds its folder's hash now or one of its
+ * runs' hashes (skillVersionsOf); a hash that is none of them is refused.
+ */
+async function versionParts(d: SkillEvalWiring, skill: string, hash: string, model_class: ModelClass): Promise<{ engine: Omit<SkillEvalEngineDeps, "store">; skill_version: string } | { refused: string }> {
+  const now = await skillVersion(skillFolderPath(skill, d.root)).catch(() => null);
+  const versions = await skillVersionsOf(d.store, [now, ...(await d.store.listSkillEvalRuns(skill)).map((r) => r.skill_version)]);
+  const v = versions.find((x) => x.folder_hash === hash);
+  if (!v) return { refused: `${skill} has no version ${hash}: nothing run` };
+  return { engine: await engineOf(d, v.text, model_class), skill_version: v.folder_hash };
+}
+
 /** Runs the suite through the engine as run `id`, records its figures and returns the stored run. */
 async function runAndRecord(
   d: SkillEvalWiring, engine: Omit<SkillEvalEngineDeps, "store">, r: { id: string; suite_id: string; created_by: string; skill_version: string; model_class: ModelClass }, signal: AbortSignal,
@@ -125,9 +143,9 @@ async function runAndRecord(
 }
 
 /**
- * Runs one skill eval of `r.skill`'s suite (its first, by creation), then records the run's figures. Refuses, naming
- * the skill and writing no run, when no suite exists for it or its folder's SKILL.md cannot be read, and on an option
- * runClass refuses.
+ * Runs one skill eval of `r.skill`'s suite (its first, by creation) on its current version, or on `r.version`, then
+ * records the run's figures. Refuses, naming the skill and writing no run, when no suite exists for it, its folder's
+ * SKILL.md cannot be read, `r.version` is no version of it, and on an option runClass refuses.
  */
 export async function runSkillEvalFor(d: SkillEvalWiring, r: SkillEvalRequest): Promise<SkillEvalResult> {
   const chosen = runClass(r);
@@ -135,7 +153,7 @@ export async function runSkillEvalFor(d: SkillEvalWiring, r: SkillEvalRequest): 
   const { model_class } = chosen;
   const suite = (await d.store.listSkillEvalSuites()).find((s) => s.skill_ref === r.skill);
   if (!suite) return { refused: `no skill eval suite for ${r.skill}: nothing run` };
-  const parts = await engineParts(d, r.skill, model_class);
+  const parts = r.version === undefined ? await engineParts(d, r.skill, model_class) : await versionParts(d, r.skill, r.version, model_class);
   if ("refused" in parts) return parts;
   const run = await runAndRecord(d, parts.engine, { id: d.newId(), suite_id: suite.id, created_by: r.created_by, skill_version: parts.skill_version, model_class }, r.signal);
   return { run };
