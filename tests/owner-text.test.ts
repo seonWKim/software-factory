@@ -154,7 +154,8 @@ describe("owner text for a failed item (issue #758)", () => {
     mount();
     const rev = await screen.findByTestId("factory-rev");
     const label = screen.getByText("Factory version");
+    // One line since owner review #87: the label is for screen readers beside the hash, the tooltip on the line.
     expect(label.parentElement).toBe(rev.parentElement);
-    expect(rev.getAttribute("title")).toBeTruthy();
+    expect(rev.closest("[title]")?.getAttribute("title")).toContain("Factory version");
   });
 });

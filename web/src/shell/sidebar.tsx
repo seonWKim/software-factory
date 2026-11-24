@@ -1,7 +1,9 @@
+import { Keyboard } from "lucide-react";
 import { type MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { Button } from "../components/ui/button.js";
 import { FOCUS } from "../components/ui/control.js";
+import { Kbd } from "../components/ui/notice.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { BASE, type PageDef } from "../pages.js";
@@ -9,7 +11,8 @@ import { BASE, type PageDef } from "../pages.js";
 /** A page's name in the active locale: its menu name and its heading. */
 export const pageLabel = (p: PageDef) => t(`page.${p.key}` as MessageKey);
 
-const LINK_ROW = `flex items-center gap-2 px-2 py-1.5 text-sm ${FOCUS}`;
+/** One sidebar row: 32px, icon then label, the hover pill; page links and the Shortcuts button share it. */
+const LINK_ROW = `flex min-h-8 items-center gap-2 rounded-control px-2 py-1.5 text-sm ${FOCUS}`;
 
 /** One sidebar group of page links, with no visible title; `label` is its accessible name. */
 export function SideLinks({ label, pages, current, badges = {} }: { label: string; pages: readonly PageDef[]; current: PageDef; badges?: Readonly<Record<string, number | undefined>> }) {
@@ -22,7 +25,7 @@ export function SideLinks({ label, pages, current, badges = {} }: { label: strin
               href={BASE + p.path}
               aria-current={p === current ? "page" : undefined}
               title={pageLabel(p)}
-              className={cn(LINK_ROW, "relative rounded-control hover:bg-surface-2", p === current && "bg-sidebar-active font-medium before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-nav-active")}
+              className={cn(LINK_ROW, "relative hover:bg-surface-2", p === current && "bg-sidebar-active font-medium before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-nav-active")}
             >
               <p.icon aria-hidden className="size-4 shrink-0" />
               <span className="max-lg:sr-only">{pageLabel(p)}</span>
@@ -36,23 +39,26 @@ export function SideLinks({ label, pages, current, badges = {} }: { label: strin
 }
 
 /**
- * The sidebar footer's quiet "? Shortcuts" link (design 09-dashboard-shell): opens the shortcut list (HelpDialog), as `?`
- * does. A narrow sidebar shows only the `?`.
+ * The sidebar's Shortcuts row (design 09-dashboard-shell): a row like the page links above it, the keyboard icon, its
+ * label and the `?` key at its end, that opens the shortcut list (HelpDialog), as `?` does. A narrow sidebar shows only
+ * the icon.
  */
 export function ShortcutsLink({ onOpen }: { onOpen: () => void }) {
   return (
     <Button
       variant="ghost"
-      size="sm"
+      size="md"
       aria-label={t("keys.footerLink")}
       aria-haspopup="dialog"
       aria-keyshortcuts="?"
       title={t("keys.footerLink")}
       onClick={onOpen}
-      className="w-full text-text-2 enabled:hover:text-text-1"
+      // The Button's own size, gap and weight give way to the row's, so the icon and label sit where the links' do.
+      className={cn(LINK_ROW, "w-full gap-2! px-2! font-normal! text-text-1")}
     >
-      <span className="max-lg:hidden">{t("keys.footerLink")}</span>
-      <span aria-hidden className="lg:hidden">?</span>
+      <Keyboard aria-hidden className="size-4 shrink-0" />
+      <span className="max-lg:sr-only">{t("keys.footerLink")}</span>
+      <span className="ml-auto max-lg:hidden"><Kbd hint="?" /></span>
     </Button>
   );
 }

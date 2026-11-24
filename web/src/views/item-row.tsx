@@ -1,7 +1,8 @@
+import { Copy } from "lucide-react";
 import type { KeyboardEventHandler, ReactNode, Ref } from "react";
 import { copyToClipboard } from "../components/ui/copy.js";
 import { announceStatus } from "../components/ui/dialog.js";
-import { LINK_CLASS } from "../components/ui/link-style.js";
+import { LINK_CLASS, ROW_LINK_CLASS } from "../components/ui/link-style.js";
 import { ROW_TITLE } from "../components/ui/list-row.js";
 import { type MenuItem, OverflowMenu } from "../components/ui/menu.js";
 import { EmptyState } from "../components/ui/notice.js";
@@ -28,6 +29,7 @@ export const ROW_SPACE: Readonly<Record<"list" | "tree", Readonly<Record<RowVari
 /** The "⋯" menu's Copy ID: writes `id` to the clipboard and says so; with no clipboard it does nothing. */
 export const copyIdItem = (id: string): MenuItem => ({
   label: t("copy.id"),
+  icon: Copy,
   onSelect: () => {
     void copyToClipboard(id).then((ok) => ok && announceStatus(t("copy.done")));
   },
@@ -73,20 +75,24 @@ function rowMenu(s: ItemRowSlots): ReactNode {
 
 /**
  * The title: `data-row-title` in a list or tree row, one line (the responsive check's title-wrap rule); in a table
- * `data-cell-title`, as a table's title column wraps (a card's too).
+ * `data-cell-title`, as a table's title column wraps (a card's too). `link` is the link's style: LINK_CLASS, or
+ * ROW_LINK_CLASS in a list row.
  */
-function Title({ s, className, cell = false }: { s: ItemRowSlots; className: string; cell?: boolean }) {
+function Title({ s, className, cell = false, link = LINK_CLASS }: { s: ItemRowSlots; className: string; cell?: boolean; link?: string }) {
   if (s.editing) return <>{s.editing}</>;
   const mark = cell ? { "data-cell-title": "" } : { "data-row-title": "" };
   if (s.href) {
     return (
-      <Link href={s.href} title={s.title} {...mark} data-raw={s.titleRaw ? "" : undefined} className={cn(LINK_CLASS, className, s.titleClassName)}>
+      <Link href={s.href} title={s.title} {...mark} data-raw={s.titleRaw ? "" : undefined} className={cn(link, className, s.titleClassName)}>
         {s.title}
       </Link>
     );
   }
   return <p title={s.title} {...mark} className={cn(className, s.titleClassName)}>{s.title}</p>;
 }
+
+/** A list row's title: one 32px line (the 32px controls' height), the text centred in it, in the row title weight. */
+export const LIST_TITLE = "min-h-8 min-w-0 flex-1 basis-40 font-medium leading-8 text-text-1";
 
 const AGE = "text-xs whitespace-nowrap tabular-nums text-text-2";
 
@@ -149,8 +155,10 @@ function ListRowOf(props: ListProps & DataAttrs) {
         {/* One line: the slots are its children, so a slot's parts sit beside the badge (small muted text but the title).
             It is also the row's details (`data-details`, as a ListRow's), where the due time and the list are read. */}
         <div data-row-line data-details className={cn("flex min-w-0 flex-wrap items-center gap-y-1 text-xs text-pretty text-text-2", ROW_SPACE.list[variant].split(" ")[0])}>
-          {props.badge && <span data-row-badge className="flex shrink-0 items-center gap-1">{props.badge}</span>}
-          <Title s={props} className={cn(ROW_TITLE, "min-w-0 flex-1 basis-40 text-text-1")} />
+          {props.badge && <span data-row-badge className="flex min-h-8 shrink-0 items-center gap-1">{props.badge}</span>}
+          {/* A 32px line, text centred in it: the same height and centre as the Checkbox, the action and the menu, so
+              they share one centre line, also when the details wrap under it (design 09-dashboard-tasks). */}
+          <Title s={props} link={ROW_LINK_CLASS} className={cn(ROW_TITLE, LIST_TITLE)} />
           {props.why}
           {props.project && <span data-row-project className="break-all">{props.project}</span>}
           {props.details}
@@ -169,19 +177,24 @@ function ListRowOf(props: ListProps & DataAttrs) {
 function TreeRow(props: TreeProps & DataAttrs) {
   const menu = rowMenu(props);
   return (
-    <div {...dataOf(props)} data-item-row={props.variant} data-item-id={props.itemId} className={cn("flex min-w-0 flex-1 flex-wrap items-baseline gap-y-1", ROW_SPACE.tree[props.variant], props.className)}>
-      {props.badge}
-      <Title s={props} className="min-w-0 truncate font-medium" />
-      {/* At phone width the why and the worker take their own line. */}
-      <span className="flex min-w-0 basis-full flex-wrap gap-x-2 *:min-w-0 text-xs wrap-anywhere text-text-2 sm:basis-auto sm:text-sm">
-        {props.why}
-        {props.project}
-        {props.worker}
-      </span>
-      {props.age && <span className={AGE}>{props.age}</span>}
-      {props.action && <span className="text-xs tabular-nums">{props.action}</span>}
-      {menu && <span data-row-menu className="self-center">{menu}</span>}
-      {props.second && <span data-row-second className="basis-full text-xs text-text-2">{props.second}</span>}
+    // One centre line: the badge, the 32px title line (it takes the free width and is cut with an ellipsis), the meta
+    // (why, run, worker, age, PR: all text-xs text-2) and the 32px "⋯" at the end are centred on it. At phone width
+    // the meta takes its own line under the title; the "⋯" stays on the first line.
+    <div {...dataOf(props)} data-item-row={props.variant} data-item-id={props.itemId} className={cn("flex min-w-0 flex-1 items-start", ROW_SPACE.tree[props.variant], props.className)}>
+      <div className={cn("flex min-w-0 flex-1 flex-wrap items-center gap-y-1", ROW_SPACE.tree[props.variant].split(" ")[0])}>
+        {props.badge && <span data-row-badge className="flex min-h-8 shrink-0 items-center">{props.badge}</span>}
+        <Title s={props} className="min-h-8 min-w-0 flex-1 basis-40 truncate leading-8 font-medium" />
+        {/* At phone width the why and the worker take their own line. */}
+        <span className="flex min-w-0 basis-full flex-wrap items-center gap-x-2 *:min-w-0 text-xs wrap-anywhere text-text-2 sm:basis-auto">
+          {props.why}
+          {props.project}
+          {props.worker}
+        </span>
+        {props.age && <span className={AGE}>{props.age}</span>}
+        {props.action && <span data-row-action className="flex items-center text-xs tabular-nums text-text-2">{props.action}</span>}
+        {props.second && <span data-row-second className="basis-full text-xs text-text-2">{props.second}</span>}
+      </div>
+      {menu && <span data-row-menu className="shrink-0">{menu}</span>}
     </div>
   );
 }

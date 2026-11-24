@@ -332,7 +332,7 @@ describe("the Gongbang mark in the dashboard", () => {
     // The row's "⋯" menu is the shared OverflowMenu.
     const overflow = readFileSync(join(WEB_SRC, "components", "ui", "menu.tsx"), "utf8");
     const toast = dialog.match(/const STATUS_CLASS =\s*"([^"]*)"/)?.[1];
-    const menu = overflow.match(/role="menu"[^>]*?className="([^"]*)"/)?.[1];
+    const menu = overflow.match(/export const MENU_PANEL = "([^"]*)"/)?.[1];
     expect(toast).toContain("bg-surface");
     expect(menu).toContain("bg-surface");
     const bad = /(?<![\w-])(?:[a-z-]+-)?(?:zinc|red)-\d|(?<![\w-])rounded-md(?![\w-])/;

@@ -56,6 +56,20 @@ describe("ItemRow", () => {
     expect(write).toHaveBeenCalledWith("wi_1");
   });
 
+  // Owner feedback 2026-11-24 (#81): the Checkbox (a 32px hit area) sat 7px below a 24px title whose text hugged the
+  // row's top. The list title is one 32px line with its text centred, so the Checkbox, the badge, the title and the
+  // menu share one centre line; at rest it is the row title (font-medium), not an underlined link.
+  it("gives a list row's title, badge line and Checkbox the same 32px line, the title not underlined at rest", () => {
+    const li = listRow({ badge: <span>Running</span>, lead: <Checkbox aria-label="Complete A title" /> });
+    const title = li.querySelector("[data-row-title]")!;
+    const box = li.querySelector("label")!;
+    for (const el of [title, box, li.querySelector("[data-row-badge]")!]) expect(classes(el).has("min-h-8"), el.outerHTML).toBe(true);
+    expect(classes(title).has("leading-8")).toBe(true);
+    expect(classes(title).has("font-medium")).toBe(true);
+    expect(classes(title).has("underline")).toBe(false);
+    expect(classes(title).has("hover:underline")).toBe(true);
+  });
+
   it("puts the slots in the row order: badge, title, why, project, worker, age, action, then the menu", () => {
     const li = listRow({
       badge: <span data-slot="badge">B</span>, why: <span data-slot="why">W</span>, project: <span data-slot="project">P</span>,

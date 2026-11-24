@@ -147,7 +147,7 @@ describe("shortcuts", () => {
 
   it("the help's close button closes it, and focus goes back to the sidebar's Shortcuts button that opened it", async () => {
     mount();
-    const opener = within(await screen.findByRole("complementary", { name: "Sidebar" })).getByRole("button", { name: "? Shortcuts" });
+    const opener = within(await screen.findByRole("complementary", { name: "Sidebar" })).getByRole("button", { name: "Shortcuts" });
     opener.focus();
     fireEvent.click(opener);
     const box = screen.getByRole("dialog", { name: "Keyboard shortcuts" });

@@ -1,3 +1,4 @@
+import { Terminal } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, type RefObject, useId, useRef, useState } from "react";
 import {
@@ -164,6 +165,7 @@ export const cliCommand = (action: string, id: string): string => `factory ${TAS
 export function copyCliEntry(action: string, id: string): MenuItem {
   return {
     label: t("commands.copyCli"),
+    icon: Terminal,
     onSelect: () => void copyToClipboard(cliCommand(action, id)).then((ok) => ok && announceStatus(t("commands.copiedCli", { command: cliCommand(action, id) }))),
   };
 }
