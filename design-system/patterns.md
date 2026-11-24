@@ -61,7 +61,7 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 
 ## Decision rules
 
-Six short rules from the owner's review of 2026-11-15. Each can be checked on a page or in a diff; a reviewer names a broken rule by its number ("breaks decision rule 2"). Rule 1 puts the primary action first; `components.md` (`ButtonRow`, the `Dialog` footer) still shows it last until a follow-up issue aligns them.
+Seven short rules from the owner's review of 2026-11-15. Each can be checked on a page or in a diff; a reviewer names a broken rule by its number ("breaks decision rule 2"). Rule 1 puts the primary action first; `components.md` (`ButtonRow`, the `Dialog` footer) still shows it last until a follow-up issue aligns them.
 
 1. **One decision = one action row. Primary action first, the rest in the same row or in the "…" menu. No wrapping into stacked rows at desktop width.**
    - Good: the item page shows Approve, then Revise, in one `ButtonRow`, with Reject in the `OverflowMenu`.
@@ -81,6 +81,10 @@ Six short rules from the owner's review of 2026-11-15. Each can be checked on a 
 6. **Show only actions that apply now; no "what you need to decide" box when nothing waits on the person.**
    - Good: an item that waits on an agent shows its state and the next step the factory takes, with no decision box.
    - Bad: an item that waits on an agent still shows a "What you need to decide" box, with buttons that do nothing yet.
+
+7. **Long row text clamps to 2 lines with `Clamp` and opens in place.**
+   - Good: Plugins → Skills shows two lines of each description, and "Show more" opens the rest of that row.
+   - Bad: a row prints a 10-line description, so only three skills fit on the screen; or a view writes `line-clamp-2` by hand.
 
 ## History
 

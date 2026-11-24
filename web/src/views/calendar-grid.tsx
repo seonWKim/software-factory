@@ -1,4 +1,5 @@
 import type { CalendarDay, EventRow } from "../api.js";
+import { Clamp } from "../components/ui/clamp.js";
 import { SUB_TITLE } from "../components/ui/card.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
@@ -55,7 +56,7 @@ function EventChip({ event, showSource }: { event: EventRow; showSource: boolean
           <span className="tabular-nums">{event.time ?? t("calendarPage.allDay")}</span>
           {showSource && <span data-raw> · {event.source}</span>}
         </p>
-        <p className="line-clamp-2 text-xs font-medium break-words text-text-1">{event.title}</p>
+        <Clamp className="text-xs font-medium break-words text-text-1">{event.title}</Clamp>
       </div>
     </li>
   );

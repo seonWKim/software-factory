@@ -4,6 +4,7 @@ import {
   API, type ImportItem, type ImportResult, type ItemDetail, type McpStatus, type PluginsView,
   getPluginsImport, postPackAdd, postPackApproval, postPluginsImport, postSettings, useApi,
 } from "../api.js";
+import { Clamp } from "../components/ui/clamp.js";
 import { Button } from "../components/ui/button.js";
 import { Checkbox } from "../components/ui/checkbox.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
@@ -122,7 +123,7 @@ function NameCell({ name, description, fresh = false, href }: { name: string; de
         {href === undefined ? <span className="text-xs wrap-anywhere">{name}</span> : <Link href={href} className={cn(LINK_CLASS, "text-xs wrap-anywhere")}>{name}</Link>}
         {fresh && <Badge level="running">{t("plugins.new")}</Badge>}
       </span>
-      {description && <span className="text-xs text-pretty wrap-anywhere text-text-2">{description}</span>}
+      {description && <Clamp className="text-xs text-text-2">{description}</Clamp>}
     </div>
   );
 }
