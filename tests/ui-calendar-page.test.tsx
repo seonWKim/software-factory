@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CalendarEvents, CalendarSync, EventRow } from "../web/src/api.js";
+import type { CalendarEvent, CalendarEvents, CalendarSync } from "../web/src/api.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips (as tests/ui-tasks-page.test.tsx does).
@@ -19,10 +19,13 @@ const { CalendarPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { Cal
 // days (the not-synced note), which post the days shown to POST /api/v1/calendar/sync. Today is fixed at Thursday 2026-11-12 (local).
 
 const SLOW = { timeout: 5_000 };
-const ev = (id: string, time: string | null, source = "google-calendar"): EventRow => ({ kind: "event", source, id, title: `event ${id}`, all_day: time === null, time });
+/** An event as the read answers it; its instants matter only to the details tests, which set their own. */
+const ev = (id: string, time: string | null, source = "google-calendar"): CalendarEvent => ({
+  kind: "event", source, id, title: `event ${id}`, all_day: time === null, time, starts_at: "2026-11-13T00:00:00.000Z", ends_at: "2026-11-13T01:00:00.000Z", details: null,
+});
 
 /** The fake server: the stored events by date, the synced days, and the sources' sync state. */
-let events: Record<string, EventRow[]>;
+let events: Record<string, CalendarEvent[]>;
 let synced: { from: string; to: string };
 let calendar: CalendarSync[];
 let reads: { from: string; to: string }[];
@@ -123,8 +126,8 @@ describe("Calendar page", () => {
     expect(heading()).toBe("Nov 9 – 15, 2026");
     const week = screen.getByRole("list", { name: "Nov 9 – 15, 2026" });
     expect(week.tagName).toBe("OL");
-    // Seven flexible columns from lg up (no fixed min width, so no sideways scroll); stacked below it.
-    expect(week.className.split(/\s+/)).toEqual(expect.arrayContaining(["grid-cols-1", "lg:grid-cols-7"]));
+    // Seven flexible columns from xl up (no fixed min width, so no sideways scroll); stacked below it.
+    expect(week.className.split(/\s+/)).toEqual(expect.arrayContaining(["grid-cols-1", "xl:grid-cols-7"]));
     expect(week.className).not.toMatch(/min-w-\[/);
     expect(week.closest(".overflow-x-auto")).toBeNull();
     expect([...week.querySelectorAll<HTMLElement>(":scope > li")].map((d) => d.dataset.day)).toEqual([
@@ -349,5 +352,95 @@ describe("Calendar page", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Sync" }, SLOW));
     expect((await screen.findByRole("alert", undefined, SLOW)).textContent).toContain("Only the owner syncs the calendars");
     await waitFor(() => expect(syncButtons().every((b) => !(b as HTMLButtonElement).disabled)).toBe(true), SLOW);
+  });
+});
+
+// Event details (design 09-dashboard-tasks-calendar, event details, 2026-11-24): a chip is a button that opens the
+// whole event beside it (a Popover from sm up, a sheet below), with notes shown as text, never as HTML.
+describe("Calendar page: event details", () => {
+  const LONG = "Your interview with Acme Platform Infrastructure: final round with the hiring committee and a system design session";
+  const NOTES = '<b>Agenda</b><br>Prep: <a href="https://example.com/prep">prep doc</a> and <a href="javascript:alert(1)">run me</a><img src=x onerror="alert(2)"><script>alert(3)</script> &lt;not a tag&gt;';
+  const full = (): CalendarEvent => ({
+    kind: "event", source: "google-calendar", id: "interview", title: LONG, all_day: false, time: "17:00",
+    starts_at: new Date(2026, 10, 13, 17, 0).toISOString(), ends_at: new Date(2026, 10, 13, 18, 30).toISOString(),
+    details: {
+      calendar: "Work", location: "Room 1201", description: NOTES,
+      organizer: { name: "Coordinator", email: "coord@example.com", response: null },
+      attendees: [{ name: "Coordinator", email: "coord@example.com", response: "accepted" }, { name: null, email: "panel@example.com", response: "tentative" }],
+      conference_url: "https://meet.example.com/abc", link: "https://calendar.google.com/calendar/event?eid=1", time_zone: null,
+    },
+  });
+  const panel = () => document.querySelector<HTMLElement>("dialog[open]");
+  const chip = async () => {
+    await shownRange("2026-11-09", "2026-11-15");
+    return document.querySelector<HTMLButtonElement>('[data-event="google-calendar:interview"]')!;
+  };
+
+  it("pressing a truncated event opens beside it its full title, day and time range with the zone, calendar, place, video link, people and the event's page; Esc closes it and focus returns to the event", async () => {
+    events = { "2026-11-13": [full()] };
+    show();
+    const button = await chip();
+    expect(button.tagName).toBe("BUTTON");
+    expect(button.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    // The chip cuts the title at 2 lines; its accessible name still holds the whole title.
+    expect(button.textContent).toContain(LONG);
+    expect(screen.getByRole("button", { name: new RegExp(`17:00.*${LONG}`) })).toBe(button);
+    fireEvent.click(button);
+    const p = panel()!;
+    expect(p).not.toBeNull();
+    expect(p.hasAttribute("data-popover")).toBe(true);
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    expect(within(p).getByRole("heading", { level: 2 }).textContent).toBe(LONG);
+    const when = p.querySelector("[data-event-when] dd")!.textContent!;
+    expect(when).toContain("Friday, November 13, 2026");
+    expect(when).toMatch(/5:00\s*–\s*6:30\sPM/);
+    expect(when).toMatch(/GMT|UTC/);
+    expect(p.textContent).toContain("Work");
+    expect(p.querySelector("[data-event-location] dd")!.textContent).toBe("Room 1201");
+    expect(p.querySelector<HTMLAnchorElement>("[data-event-meeting]")!.href).toBe("https://meet.example.com/abc");
+    expect([...p.querySelectorAll("[data-person]")].map((e) => e.textContent)).toEqual(["Coordinatorcoord@example.com · Organizer · Going", "panel@example.comMaybe"]);
+    const link = p.querySelector<HTMLAnchorElement>("[data-event-link]")!;
+    expect([link.textContent, link.href, link.target, link.rel]).toEqual(["Open in Google Calendar", "https://calendar.google.com/calendar/event?eid=1", "_blank", "noopener noreferrer"]);
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() => expect(panel()).toBeNull());
+    expect(document.activeElement).toBe(button);
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("notes written as HTML are shown as text: no element comes from them, an http link stays a link, a javascript: link is only its label", async () => {
+    events = { "2026-11-13": [full()] };
+    show();
+    fireEvent.click(await chip());
+    const notes = panel()!.querySelector<HTMLElement>("[data-event-notes]")!;
+    expect(notes.textContent).toBe("Agenda\nPrep: prep doc: https://example.com/prep and run me <not a tag>");
+    expect(notes.querySelectorAll("b, img, script")).toHaveLength(0);
+    expect([...notes.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["https://example.com/prep"]);
+    expect(document.querySelector("img[src=x], script:not([src])")).toBeNull();
+  });
+
+  it("an all-day event says All day; an event with no details still shows its day and calendar", async () => {
+    events = { "2026-11-13": [{ ...ev("holiday", null), starts_at: new Date(2026, 10, 13).toISOString(), ends_at: new Date(2026, 10, 14).toISOString(), details: null }] };
+    show();
+    await shownRange("2026-11-09", "2026-11-15");
+    fireEvent.click(document.querySelector<HTMLElement>('[data-event="google-calendar:holiday"]')!);
+    const p = panel()!;
+    expect(p.querySelector("[data-event-when] dd")!.textContent).toBe("Friday, November 13, 2026All day");
+    expect(p.textContent).toContain("google-calendar");
+    expect(p.querySelector("[data-event-link], [data-event-notes]")).toBeNull();
+  });
+
+  it("below sm the details open as a sheet over the page with the whole title, and in Month too", async () => {
+    vi.stubGlobal("innerWidth", 390);
+    events = { "2026-11-13": [full()] };
+    show();
+    await shownRange("2026-11-09", "2026-11-15");
+    press("Month");
+    await shownRange("2026-11-01", "2026-11-30");
+    fireEvent.click(document.querySelector<HTMLElement>('[data-event="google-calendar:interview"]')!);
+    const p = panel()!;
+    expect(p.hasAttribute("data-popover")).toBe(false);
+    expect(p.textContent).toContain(LONG);
+    expect(p.querySelector("[data-event-notes]")).not.toBeNull();
   });
 });

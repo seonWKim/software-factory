@@ -8,4 +8,5 @@ export {
 export {
   calendarSql, readCalendar, readSyncStates, type SourceSync, type SourceSyncState, type StoredCalendar, type StoredEvent, type SyncedRange,
 } from "./calendar-read.js";
+export type { EventDetails, EventPerson } from "./event-details.js";
 export { LiveCalendars } from "./live-calendars.js";

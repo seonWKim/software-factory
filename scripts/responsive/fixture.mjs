@@ -8,7 +8,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { syncCalendars } from "../../dist/calendar/index.js";
+import { requestCalendarSync, runSyncRequests, syncCalendars } from "../../dist/calendar/index.js";
 import { ALERT_DEDUPE_MS } from "../../dist/core/alarms.js";
 import { SkillRefsStore } from "../../dist/import/import-plugins.js";
 import { saveProject } from "../../dist/core/project-labels.js";
@@ -388,12 +388,27 @@ function rulesOn(home) {
 
 /**
  * The Settings page's Calendar section, as compose.ts wires it for the UI: two plugins with long names, one connected
- * whose last sync failed with a long error, one never connected. Its connect flow is never run by the check.
+ * whose last sync failed with a long error, one never connected. Its connect flow is never run by the check. Before
+ * that failure the connected one synced the events of calendarEvents for this week and month (a scheduled sync and an
+ * on-demand one), so the Calendar page draws them with the stale notice, and its first event chip opens the detail
+ * popover (capture.mjs `open: "calendar-event"`).
  */
 async function seedCalendar(store, clock) {
   const connected = `calendar-plugin-${LONG_WORD}`;
+  const db = storeSql(store);
+  const now = clock.now();
+  const before = now.getTime() - 6 * 60_000;
+  const list = calendarEvents(now);
+  const ok = { events: async (w) => list.filter((e) => e.starts_at < w.to && e.ends_at > w.from) };
+  await syncCalendars(db, [{ name: connected, source: ok }], before);
+  const day = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
+  const first = new Date(Math.min(monday.getTime(), new Date(now.getFullYear(), now.getMonth(), 1).getTime()));
+  const last = new Date(Math.max(monday.getTime() + 6 * 86_400_000, new Date(now.getFullYear(), now.getMonth() + 1, 0).getTime()));
+  await requestCalendarSync(db, { from: day(first), to: day(last), by: OWNER, nowMs: before });
+  await runSyncRequests(db, [{ name: connected, source: ok }], before);
   const failing = { events: async () => { throw new Error(`token refresh failed: invalid_grant for ${LONG_WORD} ${"while reading the calendar list ".repeat(4)}`); } };
-  await syncCalendars(storeSql(store), [{ name: connected, source: failing }], clock.now().getTime());
+  await syncCalendars(db, [{ name: connected, source: failing }], now.getTime());
   return new UiCalendar({
     plugins: [
       { name: connected, secrets: ["CALENDAR_CLIENT_ID", "CALENDAR_CLIENT_SECRET"] },
@@ -404,4 +419,34 @@ async function seedCalendar(store, clock) {
       throw new Error("the responsive check never connects a calendar");
     },
   });
+}
+
+/**
+ * This week's events: first (Monday 09:00) one with a long title, a place, notes written as HTML with a link, a video
+ * link, an organizer and attendees; then an all-day event and short ones, two on today.
+ */
+function calendarEvents(now) {
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
+  const at = (dayOffset, h, m = 0) => new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + dayOffset, h, m).toISOString();
+  const today = (now.getDay() + 6) % 7;
+  const person = (name, email, response) => ({ name, email, response });
+  return [
+    {
+      id: "interview", title: `Your interview with ${REPO.owner}: final round with the hiring committee, system design and a long tail of ${LONG_WORD}`,
+      starts_at: at(0, 9), ends_at: at(0, 10, 30), all_day: false, updated_at: null,
+      details: {
+        calendar: "Work and interviews", location: "Building 4, Room 1201 (Tall Ships), 1 Harbour Street, Seoul",
+        description: `<b>Agenda</b><br>1. Intro<br>2. System design &amp; trade-offs<br>Prep notes: <a href="https://example.com/prep/${LONG_WORD}">prep doc</a><script>alert(1)</script>`,
+        organizer: person("Hiring Coordinator", "coordinator@example.com", "accepted"),
+        attendees: [
+          person("Hiring Coordinator", "coordinator@example.com", "accepted"), person("Alex Kim", "owner@example.com", "accepted"),
+          person(null, `panel-${LONG_WORD}@example.com`, "waiting"), person("Staff Engineer", "staff@example.com", "tentative"),
+        ],
+        conference_url: "https://meet.example.com/abc-defg-hij", link: "https://calendar.google.com/calendar/event?eid=responsive", time_zone: "America/Los_Angeles",
+      },
+    },
+    { id: "offsite", title: "Team offsite", starts_at: at(2, 0), ends_at: at(3, 0), all_day: true, updated_at: null },
+    { id: "one-on-one", title: "Alex Kim <> Mentor", starts_at: at(today, 11, 30), ends_at: at(today, 12), all_day: false, updated_at: null },
+    { id: "review", title: "Design review", starts_at: at(today, 17), ends_at: at(today, 18), all_day: false, updated_at: null },
+  ];
 }

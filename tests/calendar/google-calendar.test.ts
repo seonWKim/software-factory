@@ -114,6 +114,9 @@ const timed = (id: string, start: string, end: string, extra: Record<string, unk
   id, summary: `event ${id}`, start: { dateTime: start }, end: { dateTime: end }, updated: "2026-11-01T00:00:00.000Z", ...extra,
 });
 
+/** The details of an event that says nothing beyond its title and times. */
+const NO_DETAILS = { calendar: null, location: null, description: null, organizer: null, attendees: [], conference_url: null, link: null, time_zone: null };
+
 async function errorOf(p: Promise<unknown>): Promise<string> {
   return p.then(() => "", (e: Error) => e.message);
 }
@@ -182,7 +185,7 @@ describe("google-calendar: window and calendars", () => {
     expect(read!.url.searchParams.get("timeMax")).toBe(localDay(clock, 31));
     expect(read!.url.searchParams.get("singleEvents")).toBe("true");
     expect(events.map((e) => e.id)).toEqual(["first", "far", "last"]);
-    expect(events[0]).toEqual({ id: "first", title: "event first", starts_at: iso(from - 3600_000), ends_at: iso(from + 3600_000), all_day: false, updated_at: "2026-11-01T00:00:00.000Z" });
+    expect(events[0]).toEqual({ id: "first", title: "event first", starts_at: iso(from - 3600_000), ends_at: iso(from + 3600_000), all_day: false, updated_at: "2026-11-01T00:00:00.000Z", details: NO_DETAILS });
   });
 
   it("a sync asks for its window up to 30 days ahead, and a second sync on the same local day sends the sync token", async () => {
@@ -212,7 +215,34 @@ describe("google-calendar: window and calendars", () => {
       return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     };
     http.events = () => ({ status: 200, body: { items: [{ id: "a", summary: "off", start: { date: date(1) }, end: { date: date(2) } }] } });
-    expect(await source.events(syncWindow(clock))).toEqual([{ id: "a", title: "off", starts_at: localDay(clock, 1), ends_at: localDay(clock, 2), all_day: true, updated_at: null }]);
+    expect(await source.events(syncWindow(clock))).toEqual([{ id: "a", title: "off", starts_at: localDay(clock, 1), ends_at: localDay(clock, 2), all_day: true, updated_at: null, details: NO_DETAILS }]);
+  });
+
+  it("keeps what the same events read answers beyond the title and times as the event's details: calendar name, place, notes, people, links and time zone", async () => {
+    const { http, source, clock } = setup();
+    const start = localDay(clock, 1);
+    const end = new Date(Date.parse(start) + 3600_000).toISOString();
+    const item = timed("full", start, end, {
+      start: { dateTime: start, timeZone: "America/New_York" },
+      location: "Room 1", description: "<b>Agenda</b>", htmlLink: "https://calendar.google.com/calendar/event?eid=x",
+      conferenceData: { entryPoints: [{ entryPointType: "phone", uri: "tel:+1" }, { entryPointType: "video", uri: "https://meet.google.com/abc" }] },
+      organizer: { email: "org@example.com", displayName: "Org" },
+      attendees: [
+        { email: "org@example.com", displayName: "Org", responseStatus: "accepted" },
+        { email: "a@example.com", responseStatus: "needsAction" },
+        { email: "room@resource.calendar.google.com", displayName: "Room 1", resource: true, responseStatus: "accepted" },
+      ],
+    });
+    http.events = () => ({ status: 200, body: { summary: "Work", timeZone: "Asia/Seoul", items: [item, timed("bad-links", start, end, { htmlLink: "javascript:alert(1)", hangoutLink: "data:x" })] } });
+    const [full, bad] = await source.events(syncWindow(clock));
+    expect(full!.details).toEqual({
+      calendar: "Work", location: "Room 1", description: "<b>Agenda</b>",
+      organizer: { name: "Org", email: "org@example.com", response: null },
+      attendees: [{ name: "Org", email: "org@example.com", response: "accepted" }, { name: null, email: "a@example.com", response: "waiting" }],
+      conference_url: "https://meet.google.com/abc", link: "https://calendar.google.com/calendar/event?eid=x", time_zone: "America/New_York",
+    });
+    // A link that is not http(s) is dropped, so the page never opens one; the calendar's zone stands in for the event's.
+    expect(bad!.details).toMatchObject({ conference_url: null, link: null, time_zone: "Asia/Seoul", calendar: "Work" });
   });
 
   it("the source file reads no clock: it imports no clock module and calls no Date.now or new Date()", () => {

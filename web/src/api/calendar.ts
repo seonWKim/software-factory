@@ -7,11 +7,39 @@ import { postJson, useApi } from "./client.js";
 import { API } from "./routes.js";
 import type { CalendarSync, EventRow } from "./tasks.js";
 
+/** A person on an event, as its calendar names them; `response` their answer to the invitation, when it says. */
+export interface EventPerson {
+  name: string | null;
+  email: string | null;
+  response: "accepted" | "declined" | "tentative" | "waiting" | null;
+}
+
+/** What an event says beyond its title and times (src/calendar/event-details.ts); every text passed the egress scan. */
+export interface EventDetails {
+  calendar: string | null;
+  location: string | null;
+  /** The notes as the calendar wrote them, possibly with markup: shown as text, never as HTML. */
+  description: string | null;
+  organizer: EventPerson | null;
+  attendees: EventPerson[];
+  conference_url: string | null;
+  link: string | null;
+  time_zone: string | null;
+}
+
+/** One event of a Calendar page day: the row the Tasks views list too, with its instants and its details. */
+export interface CalendarEvent extends EventRow {
+  starts_at: string;
+  ends_at: string;
+  /** Null for an event stored before details were kept, or one its calendar said nothing more about. */
+  details: EventDetails | null;
+}
+
 /** One day of `/api/v1/calendar/events`: its events (all-day first, then timed by time) and whether every source's last sync covered it. */
 export interface CalendarDay {
   date: string;
   synced: boolean;
-  events: EventRow[];
+  events: CalendarEvent[];
 }
 
 /** `/api/v1/calendar/events?from=&to=`: each day from `from` through `to`, and each source's last sync. */

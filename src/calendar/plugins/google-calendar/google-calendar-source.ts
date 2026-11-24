@@ -5,7 +5,7 @@
 // It asks only for the calendar.readonly scope. Its access token, sync tokens, ETags and last events are in-process
 // caches: losing them costs one full read. Every HTTP call goes through the injected client, so no test calls Google.
 
-import type { CalendarFeed, FeedEvent } from "../../index.js";
+import type { CalendarFeed, EventDetails, EventPerson, FeedEvent } from "../../index.js";
 
 /** The one scope the plugin asks for, and the only one a token answer may carry. */
 export const CALENDAR_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
@@ -71,8 +71,26 @@ interface GoogleEvent {
   status?: string;
   summary?: string;
   updated?: string;
-  start?: { date?: string; dateTime?: string };
+  start?: { date?: string; dateTime?: string; timeZone?: string };
   end?: { date?: string; dateTime?: string };
+  description?: string;
+  location?: string;
+  htmlLink?: string;
+  hangoutLink?: string;
+  conferenceData?: { entryPoints?: { entryPointType?: string; uri?: string }[] };
+  organizer?: GooglePerson;
+  attendees?: (GooglePerson & { responseStatus?: string; resource?: boolean })[];
+}
+
+interface GooglePerson {
+  email?: string;
+  displayName?: string;
+}
+
+/** The calendar a page of events belongs to, as the events read answers it alongside them. */
+interface GoogleCalendarMeta {
+  summary?: string;
+  timeZone?: string;
 }
 
 /** What one calendar's last answer left: the window it was read for, its sync token, ETag and events. */
@@ -154,10 +172,10 @@ export class GoogleCalendarSource<N extends string> implements CalendarFeed {
       if (res.status !== 200) throw fail(`events read of calendar ${id} failed (HTTP ${res.status})`);
       if (first) etag = res.headers.get("etag");
       first = false;
-      const body = await json<{ items?: GoogleEvent[]; nextPageToken?: string; nextSyncToken?: string }>(res, "events read");
+      const body = await json<{ items?: GoogleEvent[]; nextPageToken?: string; nextSyncToken?: string } & GoogleCalendarMeta>(res, "events read");
       for (const item of body.items ?? []) {
         if (item.status === "cancelled") next.delete(item.id);
-        else next.set(item.id, toFeedEvent(item));
+        else next.set(item.id, toFeedEvent(item, body));
       }
       if (body.nextPageToken) {
         pageToken = body.nextPageToken;
@@ -257,7 +275,7 @@ function instant(t: { date?: string; dateTime?: string } | undefined): string {
   return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).toISOString();
 }
 
-function toFeedEvent(e: GoogleEvent): FeedEvent {
+function toFeedEvent(e: GoogleEvent, calendar: GoogleCalendarMeta): FeedEvent {
   return {
     id: e.id,
     title: e.summary ?? "",
@@ -265,5 +283,38 @@ function toFeedEvent(e: GoogleEvent): FeedEvent {
     ends_at: instant(e.end),
     all_day: e.start?.date !== undefined && e.start.dateTime === undefined,
     updated_at: e.updated ? new Date(e.updated).toISOString() : null,
+    details: details(e, calendar),
+  };
+}
+
+/** Notes are cut to this many characters. */
+const DESCRIPTION_MAX = 8000;
+/** At most this many attendees are kept per event. */
+const ATTENDEES_MAX = 100;
+/** `value` when it is an http(s) URL, else null: a link the dashboard opens never runs script (`javascript:`). */
+const httpUrl = (value: unknown): string | null => (typeof value === "string" && /^https?:\/\/\S+$/i.test(value) ? value : null);
+const text = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v : null);
+const RESPONSES: Readonly<Record<string, EventPerson["response"]>> = { accepted: "accepted", declined: "declined", tentative: "tentative", needsAction: "waiting" };
+const person = (p: GooglePerson & { responseStatus?: string }): EventPerson => ({
+  name: text(p.displayName), email: text(p.email), response: RESPONSES[p.responseStatus ?? ""] ?? null,
+});
+
+/**
+ * What the event read already answers beyond the title and times (no other call, no other scope): the calendar's name,
+ * place, notes (cut to DESCRIPTION_MAX), organizer, attendees (rooms left out, at most ATTENDEES_MAX), the video link
+ * and the event's page; links only when http(s).
+ */
+function details(e: GoogleEvent, calendar: GoogleCalendarMeta): EventDetails {
+  const video = e.conferenceData?.entryPoints?.find((p) => p.entryPointType === "video")?.uri;
+  const description = text(e.description);
+  return {
+    calendar: text(calendar.summary),
+    location: text(e.location),
+    description: description === null ? null : description.slice(0, DESCRIPTION_MAX),
+    organizer: e.organizer && (text(e.organizer.email) ?? text(e.organizer.displayName)) !== null ? person(e.organizer) : null,
+    attendees: (e.attendees ?? []).filter((a) => a.resource !== true).slice(0, ATTENDEES_MAX).map(person),
+    conference_url: httpUrl(video) ?? httpUrl(e.hangoutLink),
+    link: httpUrl(e.htmlLink),
+    time_zone: text(e.start?.timeZone) ?? text(calendar.timeZone),
   };
 }
