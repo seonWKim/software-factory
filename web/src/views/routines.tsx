@@ -120,11 +120,11 @@ function Detail({ r }: { r: RoutineRow }) {
   return (
     <div className="space-y-3">
       {r.paused && <Notice tone="warn">{t("routines.paused")}</Notice>}
-      <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2 text-sm">
+      <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
         {rows.map(([k, v]) => (
           <div key={k} className="contents">
             <dt className="text-text-2">{k}</dt>
-            <dd className="break-words whitespace-pre-wrap">{v}</dd>
+            <dd className="min-w-0 wrap-anywhere whitespace-pre-wrap">{v}</dd>
           </div>
         ))}
       </dl>
