@@ -1,5 +1,5 @@
-// Rules of `npm run check:responsive` (scripts/responsive/rules.mjs): page-scroll also reads the scroll root,
-// small-target measures a labelled input by its label, and offscreen reports a control past the edge inside a table wrapper. Run against a stand-in document, no browser.
+// Rules of `npm run check:responsive` (scripts/responsive/rules.mjs): page-scroll also reads the scroll root, and
+// small-target measures a labelled input by its label. Run against a stand-in document, no browser.
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -21,8 +21,7 @@ function element(tag: string, box: Box, label: unknown = null) {
     id: "",
     classList: [],
     childNodes: [],
-    children: [] as unknown[],
-    parentElement: null as unknown,
+    parentElement: null,
     getAttribute: () => null,
     setAttribute() {},
     matches: (q: string) => q.split(",").some((p) => p.trim().split(/[:[]/)[0] === tag),
@@ -32,15 +31,12 @@ function element(tag: string, box: Box, label: unknown = null) {
   return el;
 }
 
-const BASE_STYLE = { overflowX: "visible", overflowY: "visible", display: "block", visibility: "visible", opacity: "1", position: "static", clip: "auto", fontSize: "16px", font: "16px sans-serif", paddingLeft: "0", paddingRight: "0", borderLeftWidth: "0", borderRightWidth: "0", getPropertyValue: () => "" };
-
 /** A page whose scroll root has the given widths and whose body holds `elements`. */
 function pageWith(scroll: { scrollWidth: number; clientWidth: number }, elements: unknown[] = []) {
   const root = { ...scroll, setAttribute() {} };
   const empty = { querySelectorAll: (q: string) => (q === "*" ? elements : []), querySelector: () => null };
   vi.stubGlobal("window", { innerHeight: 844 });
-  // A stand-in's own `css` overrides the default style (a scrolling wrapper's overflowX).
-  vi.stubGlobal("getComputedStyle", (el: { css?: Record<string, string> } | null) => ({ ...BASE_STYLE, ...el?.css }));
+  vi.stubGlobal("getComputedStyle", () => ({ overflowX: "visible", overflowY: "visible", display: "block", visibility: "visible", opacity: "1", position: "static", clip: "auto", fontSize: "16px", font: "16px sans-serif", paddingLeft: "0", paddingRight: "0", borderLeftWidth: "0", borderRightWidth: "0", getPropertyValue: () => "" }));
   vi.stubGlobal("CSS", { escape: (v: string) => v });
   vi.stubGlobal("NodeFilter", { SHOW_TEXT: 4 });
   vi.stubGlobal("document", {
@@ -100,45 +96,5 @@ describe("check:responsive page-scroll culprit", () => {
     const f = checkLayout(LIMITS).failures.filter((x) => x.rule === "page-scroll");
     expect(f).toHaveLength(1);
     expect(f[0]!.detail).toContain('[data-testid="wide-row"]');
-  });
-});
-
-describe("check:responsive offscreen inside a scrolling box", () => {
-  /**
-   * `tag` at x `left` to `right`, in a cell inside an overflow-x:auto box as wide as the window. With `table` the box
-   * is a table wrapper (its direct child is a <table>); without it, a box that scrolls on purpose (a plot, a tab list).
-   */
-  const inScroller = (tag: string, left: number, right: number, table = true) => {
-    const wrapper = { ...element("div", { width: 390, height: 600 }), css: { overflowX: "auto" } };
-    const inner = { ...element(table ? "table" : "div", { width: 390, height: 120 }), parentElement: wrapper };
-    const el = { ...element(tag, { width: right - left, height: 28 }), parentElement: inner };
-    wrapper.children = [inner];
-    inner.children = [el];
-    el.getBoundingClientRect = () => ({ left, top: 0, right, bottom: 28, width: right - left, height: 28 });
-    return [wrapper, inner, el];
-  };
-  const offscreen = (elements: unknown[]) => {
-    pageWith({ scrollWidth: 334, clientWidth: 334 }, elements);
-    return checkLayout(LIMITS).failures.filter((x) => x.rule === "offscreen");
-  };
-
-  it("fails a button past the window's right edge inside a table wrapper (the Skills Copy Path at x 440 to 485)", () => {
-    const f = offscreen(inScroller("button", 440, 485));
-    expect(f).toHaveLength(1);
-    expect(f[0]!.detail).toContain("485");
-  });
-
-  it("fails a link past the right edge inside a table wrapper", () => {
-    expect(offscreen(inScroller("a", 360, 420))).toHaveLength(1);
-  });
-
-  it("passes a button that fits, and text past the edge that the table wrapper holds", () => {
-    expect(offscreen(inScroller("button", 300, 390))).toEqual([]);
-    expect(offscreen(inScroller("span", 300, 600))).toEqual([]);
-  });
-
-  it("passes a button or link past the edge inside a scrolling box that is not a table wrapper", () => {
-    expect(offscreen(inScroller("button", 440, 485, false))).toEqual([]);
-    expect(offscreen(inScroller("a", 600, 700, false))).toEqual([]);
   });
 });

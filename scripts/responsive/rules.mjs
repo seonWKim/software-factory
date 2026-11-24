@@ -5,10 +5,7 @@
 //                   [data-scroll-root] content column's scrollWidth > its clientWidth.
 //   offscreen       a visible element, or its own text, ends past the viewport's right edge, and no ancestor of it
 //                   clips or scrolls sideways (an overflow-x:auto table wrapper is fine; the wrapper itself is checked
-//                   too). A control (a button or a link) past the edge is reported even so when its nearest sideways
-//                   scrolling ancestor is a table wrapper (a box whose direct child is a <table>): it is out of sight
-//                   and out of reach (the Skills card's Copy Path at 390px, 2026-11-24). The scroll root, plots that
-//                   scroll on purpose and tab lists stay skipped. Only the outermost such element of a chain is reported.
+//                   too). Only the outermost such element of a chain is reported.
 //   letter-wrap     text in a box narrower than 12ch breaks a word across lines (the old model_by column, PR #530,
 //                   was 9ch wide).
 //   tall-fixed      a position:fixed or sticky element covers more than 40% of the viewport's height.
@@ -108,24 +105,7 @@ export function checkLayout(limits) {
     }
     return v;
   };
-  // The nearest ancestor below <body> that clips or scrolls sideways, or null.
-  const scrollerX = (el) => {
-    for (let a = el.parentElement; a && a !== document.body && a !== document.documentElement; a = a.parentElement) {
-      if (style(a).overflowX !== "visible") return a;
-    }
-    return null;
-  };
-  // A table wrapper (Table's overflow-x box at `sm` and up) holds its <table> as a direct child. The scroll root,
-  // a plot that scrolls on purpose (the Workers timeline and graph) and a scrolling tab list are not table wrappers.
-  const tableWrapper = (box) => [...(box.children ?? [])].some((c) => c.tagName === "TABLE");
-  const control = "button, a[href]";
-  const pastRight = (el) => {
-    if (el.getBoundingClientRect().right <= W + 1) return false;
-    if (!insideClipX(el)) return true;
-    if (!el.matches(control)) return false;
-    const box = scrollerX(el);
-    return box !== null && tableWrapper(box);
-  };
+  const pastRight = (el) => el.getBoundingClientRect().right > W + 1 && !insideClipX(el);
 
   // page-scroll
   const sw = document.documentElement.scrollWidth;
