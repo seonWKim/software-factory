@@ -123,7 +123,7 @@ export async function draftSchedule(words: string, d: DraftDeps): Promise<DraftR
     messages: [{ role: "user", content: `The owner's words, untrusted:\n\n${fence(text, "untrusted")}` }],
   });
   if (typeof out === "string") return refuse(out);
-  const [title, kind, spec, named, action, body] = (["title", "cadence", "spec", "zone", "action", "text"] as const).map((k) => str(out[k]));
+  const title = str(out.title), kind = str(out.cadence), spec = str(out.spec), named = str(out.zone), action = str(out.action), body = str(out.text);
   if (!title || kind === null || spec === null || action === null || body === null) return refuse("the model's answer was not the JSON asked for");
   const zone = named && wordsName(text, named) ? named : d.zone ?? machineZone();
   const problem = cadenceProblem({ kind: kind as CadenceKind, spec }, zone) ?? ((a) => ("problem" in a ? a.problem : null))(scheduleActionOf(action, body));

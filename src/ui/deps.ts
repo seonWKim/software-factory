@@ -57,8 +57,8 @@ export interface UiDeps {
   /** A skill draft's verdicts on the Rules page (rules-api.ts writeSkillVerdict): compose.ts buildUiParts. Absent: each is refused. */
   skillImprove?: UiSkillImprove;
   /**
-   * The configured model (plugins.llm) for a schedule's Draft and Improve (schedules-api.ts), compose.ts buildUiParts.
-   * Absent or null: the Data page's Ask model when wired (the same plugin), else both answer 503.
+   * The configured model (plugins.llm) for a schedule's Draft and Improve (schedules-api.ts). Absent or null: the Data
+   * page's Ask model, the same plugin compose.ts buildUiParts builds (settings.ask.llm), else both answer 503.
    */
   llm?: LLMProvider | null;
 }
