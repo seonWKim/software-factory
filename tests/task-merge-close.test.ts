@@ -105,7 +105,8 @@ describe("a merge closes the task linked to the merged item", () => {
 async function taskRows(h: Awaited<ReturnType<typeof harness>>) {
   const deps = { store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], h.clock) };
   const r = await readTasks(deps);
-  return (r.value as { projects: { tasks: { id: string; done_at: string | null; close_reason?: string | null }[] }[] }).projects.flatMap((p) => p.tasks);
+  type Row = { id: string; done_at: string | null; close_reason?: string | null; reject_reason?: string | null; link_note?: string | null; work_item_id: string | null };
+  return (r.value as { projects: { tasks: Row[] }[] }).projects.flatMap((p) => p.tasks);
 }
 
 /** A task linked to an item in `patch`, and one with no link. */
@@ -207,5 +208,96 @@ describe("a rejected or wont_do close leaves the linked task open, with its item
     const r = await h.store.transition({ id: it.id, expected_version: it.version, actor: system, reason: "test_close", patch: { stage: "CLOSED", close_reason: "wont_do" } });
     expect(r.ok).toBe(true);
     expect(await h.doneAt("tk_linked")).toBeNull();
+  });
+});
+
+describe("a rejected close moves the linked task to its replacement (design 02-tasks-build)", () => {
+  const close = async (h: Awaited<ReturnType<typeof harness>>, id: WorkItem["id"], patch: WorkItemPatch) => {
+    const at = (await h.store.getWorkItem(id))!;
+    const r = await h.store.transition({ id, expected_version: at.version, actor: system, reason: "test_close", patch });
+    expect(r.ok).toBe(true);
+  };
+  const OPEN: WorkItemPatch = { stage: "READY", blocked_on: "none", blocked_reason: null };
+  /** Phases 1..n of `parent`, each an item of its own, linked as the split's phases. */
+  const phasesOf = async (h: Awaited<ReturnType<typeof harness>>, parent: WorkItem, n: number, from: number) => {
+    const out: WorkItem[] = [];
+    for (let i = 1; i <= n; i++) {
+      const p = await h.itemIn(issueRef(from + i), OPEN);
+      await h.store.db.run("UPDATE controller_work_items SET parent_id = ?, phase = ? WHERE id = ?", [parent.id, i, p.id]);
+      out.push(p);
+    }
+    return out;
+  };
+
+  it("/reject of A naming B moves A's open task to B with a note; completing B completes the task", async () => {
+    const { h, it: a, src } = await linked(10, { stage: "REVIEW", blocked_on: "human", blocked_reason: "spec_pending" });
+    const b = await h.itemIn(issueRef(11), OPEN);
+    await say(h, { kind: "spec_rejected", source: src, comment_id: String(++comment), approver: alice, reason: `refiled as ${b.id}` });
+    expect(await h.store.getWorkItem(a.id)).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
+    expect(await h.store.getTask("tk_linked")).toMatchObject({ work_item_id: b.id, done_at: null });
+    expect(await h.store.getTask("tk_free")).toMatchObject({ work_item_id: null, done_at: null });
+    const row = (await taskRows(h)).find((t) => t.id === "tk_linked");
+    expect(row).toMatchObject({ work_item_id: b.id, link_note: `Moved from ${a.id}`, reject_reason: null, close_reason: null });
+    await close(h, b.id, { stage: "CLOSED", close_reason: "completed" });
+    expect(await h.doneAt("tk_linked")).not.toBeNull();
+    expect(await h.doneAt("tk_free")).toBeNull();
+  });
+
+  it("a reason naming B by its short id moves the task; naming the item itself or an unknown id does not", async () => {
+    const { h, it: a } = await linked(12, OPEN);
+    const b = await h.itemIn(issueRef(13), OPEN);
+    await close(h, a.id, { stage: "CLOSED", close_reason: "rejected", spec_feedback: `not ${a.id}, not wi_00000000, covered by ${b.id.slice(0, 11)}` });
+    expect(await h.store.getTask("tk_linked")).toMatchObject({ work_item_id: b.id, done_at: null });
+  });
+
+  it("a task moved to a replacement already closed as completed is completed at once", async () => {
+    const { h, it: a } = await linked(14, OPEN);
+    const b = await h.itemIn(issueRef(15), OPEN);
+    await close(h, b.id, { stage: "CLOSED", close_reason: "completed" });
+    await close(h, a.id, { stage: "CLOSED", close_reason: "rejected", spec_feedback: `done by ${b.id}` });
+    expect(await h.store.getTask("tk_linked")).toMatchObject({ work_item_id: b.id });
+    expect(await h.doneAt("tk_linked")).not.toBeNull();
+  });
+
+  it("a reject with no replacement leaves the task open; Tasks gives the reject reason, or `no reason given`", async () => {
+    const { h, it: a, src } = await linked(16, { stage: "REVIEW", blocked_on: "human", blocked_reason: "spec_pending" });
+    await say(h, { kind: "spec_rejected", source: src, comment_id: String(++comment), approver: alice, reason: "the API already does this" });
+    expect(await h.store.getTask("tk_linked")).toMatchObject({ work_item_id: a.id, done_at: null });
+    expect((await taskRows(h)).find((t) => t.id === "tk_linked")).toMatchObject({
+      done_at: null, close_reason: "rejected", reject_reason: "the API already does this", link_note: null,
+    });
+    expect((await taskRows(h)).find((t) => t.id === "tk_free")).toMatchObject({ reject_reason: null, link_note: null });
+
+    const { h: h2, it: c } = await linked(17, OPEN);
+    await close(h2, c.id, { stage: "CLOSED", close_reason: "rejected", spec_feedback: null });
+    expect((await taskRows(h2)).find((t) => t.id === "tk_linked")).toMatchObject({ done_at: null, reject_reason: "no reason given" });
+  });
+
+  it("a wont_do close naming another item moves nothing", async () => {
+    const { h, it: a } = await linked(18, OPEN);
+    const b = await h.itemIn(issueRef(19), OPEN);
+    await close(h, a.id, { stage: "CLOSED", close_reason: "wont_do", spec_feedback: `see ${b.id}` });
+    expect(await h.store.getTask("tk_linked")).toMatchObject({ work_item_id: a.id, done_at: null });
+  });
+
+  it("a split parent rejected after all its phases closed completes its open task", async () => {
+    const { h, it: parent } = await linked(20, OPEN);
+    const phases = await phasesOf(h, parent, 2, 20);
+    await close(h, phases[0]!.id, { stage: "CLOSED", close_reason: "completed" });
+    await close(h, phases[1]!.id, { stage: "CLOSED", close_reason: "rejected" });
+    expect(await h.doneAt("tk_linked")).toBeNull();
+    await close(h, parent.id, { stage: "CLOSED", close_reason: "rejected" });
+    expect(await h.store.getTask("tk_linked")).toMatchObject({ work_item_id: parent.id });
+    expect(await h.doneAt("tk_linked")).not.toBeNull();
+    expect(await h.doneAt("tk_free")).toBeNull();
+  });
+
+  it("a split parent rejected with a phase still open moves its task to the highest-numbered open phase", async () => {
+    const { h, it: parent } = await linked(30, OPEN);
+    const phases = await phasesOf(h, parent, 3, 30);
+    await close(h, phases[2]!.id, { stage: "CLOSED", close_reason: "rejected" });
+    await close(h, parent.id, { stage: "CLOSED", close_reason: "rejected" });
+    expect(await h.store.getTask("tk_linked")).toMatchObject({ work_item_id: phases[1]!.id, done_at: null });
+    expect((await taskRows(h)).find((t) => t.id === "tk_linked")).toMatchObject({ link_note: `Moved from ${parent.id}` });
   });
 });
