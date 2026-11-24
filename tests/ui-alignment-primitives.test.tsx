@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 // @ts-nocheck -- tsconfig.test.json has no DOM or JSX; like the other ui tests this file typechecks under the web config.
 // The shared alignment primitives (design 09-dashboard-components, 2026-11-24): one control height in a PageToolbar,
-// one card padding and intro, one stat tile.
+// one card padding and intro, one stat tile; a Popover beside its anchor.
 import { cleanup, render, screen } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { Button } from "../web/src/components/ui/button.js";
 import { CARD_INTRO, CARD_PAD, Card } from "../web/src/components/ui/card.js";
 import { PageToolbar } from "../web/src/components/ui/notice.js";
+import { place } from "../web/src/components/ui/popover.js";
 import { STAT_NOTE, StatTile } from "../web/src/components/ui/stat-tile.js";
 
 afterEach(cleanup);
@@ -74,5 +75,19 @@ describe("StatTile", () => {
       expect(src, f).not.toContain("text-lg font-semibold tabular-nums");
       expect(src, f).toMatch(/StatTile|STAT_TILE/);
     }
+  });
+});
+
+describe("Popover placement", () => {
+  const rect = (left: number, top: number, w: number, h: number) => ({ left, top, right: left + w, bottom: top + h, width: w, height: h, x: left, y: top }) as DOMRect;
+  const win = { width: 1280, height: 800 };
+
+  it("opens beside a chip high in the window, its top on the chip's top", () => {
+    expect(place(rect(200, 100, 200, 24), { width: 320, height: 400 }, win)).toEqual({ left: 408, top: 100 });
+  });
+
+  it("flips a chip low in the window: the panel's bottom on the chip's bottom, still beside it, not at the window's top", () => {
+    // A chip on the 23rd, near the bottom (the calendar popover review, 2026-11-24).
+    expect(place(rect(200, 740, 200, 24), { width: 320, height: 512 }, win)).toEqual({ left: 408, top: 252 });
   });
 });

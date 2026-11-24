@@ -41,7 +41,7 @@ export function EventButton({ event, showSource, className, children }: { event:
         {children}
       </ChipButton>
       {open && (
-        <Popover anchor={ref} title={titleOf(event)} onClose={() => setOpen(false)}>
+        <Popover anchor={ref} title={titleOf(event)} onClose={() => setOpen(false)} footer={event.details?.link ? <EventLink link={event.details.link} /> : undefined}>
           <EventDetail event={event} showSource={showSource} />
         </Popover>
       )}
@@ -199,14 +199,16 @@ export function EventDetail({ event, showSource }: { event: CalendarEvent; showS
           </Row>
         )}
       </dl>
-      {d?.link && (
-        <p className="border-t border-border pt-3">
-          <a href={d.link} target="_blank" rel="noopener noreferrer" data-event-link className={cn(LINK_CLASS, "inline-flex min-h-6 items-center gap-1.5")}>
-            {openLabel(d.link)}
-            <ExternalLink aria-hidden className="size-3.5" />
-          </a>
-        </p>
-      )}
     </div>
+  );
+}
+
+/** The link to the event in its own calendar: the Popover's footer, pinned under the details so it stays in view. */
+export function EventLink({ link }: { link: string }) {
+  return (
+    <a href={link} target="_blank" rel="noopener noreferrer" data-event-link className={cn(LINK_CLASS, "inline-flex min-h-6 items-center gap-1.5")}>
+      {openLabel(link)}
+      <ExternalLink aria-hidden className="size-3.5" />
+    </a>
   );
 }

@@ -400,7 +400,9 @@ describe("Calendar page: event details", () => {
     expect(p.querySelector("[data-event-location] dd")!.textContent).toBe("Room 1201");
     expect(p.querySelector<HTMLAnchorElement>("[data-event-meeting]")!.href).toBe("https://meet.example.com/abc");
     expect([...p.querySelectorAll("[data-person]")].map((e) => e.textContent)).toEqual(["Coordinatorcoord@example.com · Organizer · Going", "panel@example.comMaybe"]);
-    const link = p.querySelector<HTMLAnchorElement>("[data-event-link]")!;
+    // The link is pinned in the footer, outside the body that scrolls, so long details never push it out of view.
+    const link = p.querySelector<HTMLAnchorElement>("[data-panel-footer] [data-event-link]")!;
+    expect(p.querySelector("[data-panel-body] [data-event-link]")).toBeNull();
     expect([link.textContent, link.href, link.target, link.rel]).toEqual(["Open in Google Calendar", "https://calendar.google.com/calendar/event?eid=1", "_blank", "noopener noreferrer"]);
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     await waitFor(() => expect(panel()).toBeNull());

@@ -22,14 +22,21 @@ export interface PopoverProps {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  /** A line pinned under the body (a link out, such as a calendar event's link to its calendar): it stays in view while the body scrolls. */
+  footer?: ReactNode;
 }
 
-/** Where the panel sits: right of the anchor, else left of it, else under it; always inside the window. */
-function place(anchor: DOMRect, panel: { width: number; height: number }): { left: number; top: number } {
-  const [w, h] = [innerWidth, innerHeight];
+/**
+ * Where the panel sits: right of the anchor, else left of it, else under it; always inside the window. Beside the
+ * anchor its top is the anchor's top; when the panel would run past the window's bottom it flips, its bottom on the
+ * anchor's bottom, so a chip low in the window opens a panel that grows up from it, still beside it.
+ */
+export function place(anchor: DOMRect, panel: { width: number; height: number }, win = { width: innerWidth, height: innerHeight }): { left: number; top: number } {
+  const [w, h] = [win.width, win.height];
   const clamp = (v: number, max: number) => Math.max(GAP_PX, Math.min(v, max - GAP_PX));
   let left: number;
-  let top = clamp(anchor.top, h - panel.height);
+  const below = anchor.top + panel.height <= h - GAP_PX;
+  let top = clamp(below ? anchor.top : anchor.bottom - panel.height, h - panel.height);
   if (anchor.right + GAP_PX + panel.width <= w - GAP_PX) left = anchor.right + GAP_PX;
   else if (anchor.left - GAP_PX - panel.width >= GAP_PX) left = anchor.left - GAP_PX - panel.width;
   else {
@@ -41,30 +48,31 @@ function place(anchor: DOMRect, panel: { width: number; height: number }): { lef
 
 /**
  * The details of one thing, anchored beside it from `sm` up: a non-modal native `<dialog>` (opened with `show()`, so
- * the page stays usable) rendered into `document.body`, 20rem wide, at most the window's height less 8px each side,
- * with a header (the whole title and a close icon button) over a body that scrolls. Below `sm` it is a `ModalPanel`
+ * the page stays usable) rendered into `document.body`, 20rem wide, at most 32rem tall (and the window's height less
+ * 8px each side), so it can sit beside its anchor (see `place`), with a header (the whole title and a close icon
+ * button) over a body that scrolls, and an optional `footer` pinned under the body. Below `sm` it is a `ModalPanel`
  * (a sheet over the page) with the same whole title and body. Esc, the close button and a press outside it (not on the
  * anchor, which toggles it itself) close it; focus goes into its body on open and back to the anchor on close, unless
  * the owner moved it elsewhere (pressing another chip).
  */
-export function Popover({ anchor, title, onClose, children }: PopoverProps) {
+export function Popover({ anchor, title, onClose, children, footer }: PopoverProps) {
   const wide = useWide();
   if (!wide) {
     return (
       // The title in `header`, so it wraps whole; ModalPanel's own title is one line, cut (it stays the hidden heading).
-      <ModalPanel title={title} header={<p aria-hidden data-raw className="text-base font-semibold text-pretty wrap-anywhere">{title}</p>} size="md" onClose={onClose} returnFocusTo={anchor}>
+      <ModalPanel title={title} header={<p aria-hidden data-raw className="text-base font-semibold text-pretty wrap-anywhere">{title}</p>} size="md" onClose={onClose} returnFocusTo={anchor} footer={footer}>
         {children}
       </ModalPanel>
     );
   }
   return (
-    <AnchoredPanel anchor={anchor} title={title} onClose={onClose}>
+    <AnchoredPanel anchor={anchor} title={title} onClose={onClose} footer={footer}>
       {children}
     </AnchoredPanel>
   );
 }
 
-function AnchoredPanel({ anchor, title, onClose, children }: PopoverProps) {
+function AnchoredPanel({ anchor, title, onClose, children, footer }: PopoverProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const close = useRef(onClose);
@@ -131,7 +139,7 @@ function AnchoredPanel({ anchor, title, onClose, children }: PopoverProps) {
       data-popover
       style={at ?? { visibility: "hidden" }}
       className={cn(
-        "fixed z-40 m-0 max-h-[calc(100dvh-1rem)] w-80 flex-col overflow-hidden p-0 open:flex",
+        "fixed z-40 m-0 max-h-[min(32rem,calc(100dvh-1rem))] w-80 flex-col overflow-hidden p-0 open:flex",
         "rounded-box border border-border bg-surface text-text-1 shadow-lg",
       )}
     >
@@ -146,6 +154,7 @@ function AnchoredPanel({ anchor, title, onClose, children }: PopoverProps) {
       <div data-panel-body tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3 text-sm outline-none">
         {children}
       </div>
+      {footer !== undefined && <footer data-panel-footer className="shrink-0 border-t border-border px-4 py-2 text-sm">{footer}</footer>}
     </dialog>,
     document.body,
   );
