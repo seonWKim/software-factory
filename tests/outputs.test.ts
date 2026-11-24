@@ -123,3 +123,31 @@ describe("checkTestFiles", () => {
     expect(checkTestFiles(v, FILES)).toEqual({ answer: v, refusal: null });
   });
 });
+
+// A new migration named by slug (design 04-triage, 2026-11-25): triage writes its timestamp as `<stamp>` and the
+// implementer takes the next free one; parseTriage accepts the placeholder and its allowed path covers the file.
+describe("parseTriage: a migration named by slug with <stamp>", () => {
+  const MIG = "src/controller/migrations/<stamp>-controller-new-thing.migration.ts";
+  const TEST = "tests/<stamp>-controller-new-thing.test.ts";
+  const LINE = "the new table is created";
+
+  it("accepts <stamp> in allowed_paths and files_to_change, and an allowed <stamp> path covers a concrete files_to_change entry", () => {
+    const p = parseTriage({ ...triageSpec, allowed_paths: [MIG, TEST], files_to_change: [MIG, TEST] });
+    expect(p.ok && p.value.allowed_paths).toEqual([MIG, TEST]);
+    const concrete = parseTriage({ ...triageSpec, allowed_paths: [MIG, TEST], files_to_change: ["src/controller/migrations/20261125T0930-controller-new-thing.migration.ts"] });
+    expect(concrete.ok).toBe(true);
+  });
+
+  it("refuses a files_to_change migration of another slug or component", () => {
+    for (const other of ["src/controller/migrations/<stamp>-controller-other.migration.ts", "src/worker/migrations/<stamp>-worker-new-thing.migration.ts"]) {
+      expect(parseTriage({ ...triageSpec, allowed_paths: [MIG, TEST], files_to_change: [other] })).toEqual({ ok: false, error: expect.stringContaining("files_to_change") });
+    }
+  });
+
+  it("refuses a <stamp> done-check test file, which has no name to run yet, and never swaps a <stamp> test path", () => {
+    const v = { ...triageSpec, done_criteria: [LINE], done_checks: [{ line: LINE, test_file: TEST, new: true }], allowed_paths: [MIG, TEST], files_to_change: [MIG, TEST] };
+    expect(parseTriage(v)).toEqual({ ok: false, error: expect.stringContaining("<stamp>") });
+    const unchecked = { ...v, done_checks: undefined };
+    expect(checkTestFiles(unchecked, ["tests/20261122T1200-controller-new-thing-two.test.ts"])).toEqual({ answer: unchecked, refusal: null });
+  });
+});
