@@ -102,7 +102,7 @@ async function setup(o: Parameters<typeof fakeWiring>[2] = {}, llm = fakeLlm()) 
 
 const fakeRun = (pass_rate: number | null, skill_version = "v1"): SkillEvalRun => ({
   id: "r", suite_id: "s", status: "failed", started_at: "t" as SkillEvalRun["started_at"], finished_at: "t" as SkillEvalRun["finished_at"], created_by: OWNER,
-  skill_version, model_class: "standard", judge_model_class: "strong", replays: 1, pass_rate, errored: 0,
+  skill_version, suite_version: 1, judge_version: "j1", factory_version: "dev", model_class: "standard", judge_model_class: "strong", replays: 1, pass_rate, errored: 0,
 });
 /** Runs newest first from pass rates given oldest first. */
 const history = (...rates: number[]) => rates.map((r) => fakeRun(r)).reverse();
