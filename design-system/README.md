@@ -24,6 +24,7 @@ A UI change keeps these as they are. The triage spec lists them for a change und
 
 ## Changelog
 
+- 2026-11-24: `Switch` gains `readOnly` (keeps its on or off colour, focusable, ignores clicks); `opacity-50` stays for a switch disabled while busy. No token changes.
 - 2026-11-24: `SegmentedControl` is a radiogroup on one `surface-2` track with equal segments and a sliding raised thumb; `Disclosure`'s summary is a quiet hover target with the new `DisclosureChevron` (14px, `text-3`), which the Work tree's 32px expand button reuses; `Button` exports `buttonClass`. No token changes.
 - 2026-11-24: `ModalPanel` (dialog.tsx), the modal with no confirm for the shortcut list and the search, on the same native dialog mechanics as `Dialog`; `Kbd` is at least 20 px wide and centred.
 - 2026-11-22: the `sidebar-active` colour (light `#D7DED9`, dark `#29302D`), the fill of the current sidebar link in place of `surface-2`; asserted at 1.1:1 or more against `sidebar` in both themes.
