@@ -70,6 +70,8 @@ export function ScheduleDialog({ schedule, busy, error, returnFocusTo, onSave, o
   onClose: () => void;
 }) {
   const [v, setV] = useState<Values>(() => valuesOf(schedule));
+  // The stored kind the form can't write (improve) stays listed, disabled, after another kind is picked.
+  const stored = valuesOf(schedule).action;
   const set = <K extends keyof Values>(k: K, x: Values[K]) => setV((old) => ({ ...old, [k]: x }));
   const base = useId();
   const id = (name: string) => `${base}-${name}`;
@@ -108,7 +110,7 @@ export function ScheduleDialog({ schedule, busy, error, returnFocusTo, onSave, o
       <Field label={t("schedules.form.action")} htmlFor={id("action")}>
         <Select id={id("action")} value={v.action} onChange={(e) => set("action", e.target.value as ActionKind)}>
           {ACTION_KINDS.map((k) => <option key={k} value={k}>{t(ACTION_TEXT[k])}</option>)}
-          {!isWritableKind(v.action) && <option value={v.action} disabled>{t(ACTION_TEXT[v.action])}</option>}
+          {!isWritableKind(stored) && <option value={stored} disabled>{t(ACTION_TEXT[stored])}</option>}
         </Select>
       </Field>
       <Field label={t("schedules.form.body")} htmlFor={id("body")} help={t(!isWritableKind(v.action) ? "schedules.form.bodyNone" : v.action === "build" ? "schedules.form.bodyBuild" : "schedules.form.bodyPrompt")}>
