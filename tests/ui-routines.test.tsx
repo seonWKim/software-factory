@@ -27,15 +27,23 @@ const routine = (id: string, name: string, over: Partial<RoutineRow> = {}): Rout
 let routines: RoutineRow[];
 let posts: { path: string; body: Record<string, unknown>; token: string | null }[];
 let refusal: string | null;
+let suggestions: { id: string; text: string; state: string }[];
+let suggestionReads: string[];
 
 beforeEach(() => {
   routines = [routine("rtn_aaaa1111", "Docs check"), routine("rtn_bbbb2222", "After merge", { schedule: null, trigger: "merge", paused: true, next_due_at: null })];
   posts = [];
   refusal = null;
+  suggestions = [];
+  suggestionReads = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     const u = new URL(url, "http://127.0.0.1");
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     if (u.pathname === "/api/v1/session") return json(200, { csrf_token: TOKEN, actor: "local:owner", commands_enabled: true });
+    if (u.pathname === "/api/v1/routines/suggestions" && !init?.method) {
+      suggestionReads.push(u.searchParams.get("routine") ?? "");
+      return json(200, { suggestions });
+    }
     if (u.pathname === "/api/v1/routines" && !init?.method) return json(200, { routines });
     if (init?.method === "POST" && u.pathname.startsWith("/api/v1/routines/")) {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
@@ -97,11 +105,48 @@ describe("Routines page", () => {
     expect(posts[1]).toEqual({ path: "resume", body: { id: "rtn_bbbb2222" }, token: TOKEN });
   });
 
-  it("the row menu holds Run now, Edit and Delete", async () => {
+  it("the row menu holds Run now, Edit, Pause or Resume, and Delete, in that order", async () => {
     show();
     await ready();
     fireEvent.click(within(await row("Docs check")).getByRole("button", { name: "More for Docs check" }));
-    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Run now", "Edit", "Delete"]);
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Run now", "Edit", "Pause", "Delete"]);
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    fireEvent.click(within(await row("After merge")).getByRole("button", { name: "More for After merge" }));
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Run now", "Edit", "Resume", "Delete"]);
+  });
+
+  it("the menu's Pause and Resume post pause and resume with the routine's id", async () => {
+    show();
+    await ready();
+    await openMenu("Docs check", "Pause");
+    await waitFor(() => expect(posts).toHaveLength(1), SLOW);
+    expect(posts[0]).toEqual({ path: "pause", body: { id: "rtn_aaaa1111" }, token: TOKEN });
+    await openMenu("After merge", "Resume");
+    await waitFor(() => expect(posts).toHaveLength(2), SLOW);
+    expect(posts[1]).toEqual({ path: "resume", body: { id: "rtn_bbbb2222" }, token: TOKEN });
+  });
+
+  it("the detail card lists next run, then last run, and its suggestions read only: text and state, no ID and no control", async () => {
+    suggestions = [{ id: "sug_secret1", text: "Fix the broken link.", state: "pending" }, { id: "sug_secret2", text: "Rename the page.", state: "snoozed" }];
+    show();
+    await ready();
+    fireEvent.click(within(await row("Docs check")).getByRole("button", { name: "Show details of Docs check" }));
+    expect(await screen.findByText("Fix the broken link.", undefined, SLOW)).toBeTruthy();
+    expect(screen.getByText("Rename the page.")).toBeTruthy();
+    expect(screen.getByText("Pending")).toBeTruthy();
+    expect(screen.getByText("Snoozed")).toBeTruthy();
+    expect(suggestionReads).toContain("rtn_aaaa1111");
+    expect(document.body.textContent).not.toContain("sug_secret");
+    const labels = [...document.querySelectorAll("dt")].map((d) => d.textContent);
+    expect(labels.slice(0, 3)).toEqual(["Next run", "Last run", "Instruction"]);
+    for (const name of ["Accept", "Dismiss", "Snooze"]) expect(screen.queryByRole("button", { name })).toBeNull();
+  });
+
+  it("the detail card says so when a routine has no suggestions", async () => {
+    show();
+    await ready();
+    fireEvent.click(within(await row("Docs check")).getByRole("button", { name: "Show details of Docs check" }));
+    expect(await screen.findByText("No suggestions yet.", undefined, SLOW)).toBeTruthy();
   });
 
   it("Run now posts run with the routine's id and the CSRF token", async () => {
@@ -140,6 +185,9 @@ describe("Routines page", () => {
     expect(document.querySelector("[data-tone=warn]")).toBeNull();
     fireEvent.click(within(await row("After merge")).getByRole("button", { name: "Show details of After merge" }));
     await waitFor(() => expect(document.querySelector("[data-tone=warn]")).not.toBeNull(), SLOW);
+    const notice = document.querySelector("[data-tone=warn]")!;
+    expect(notice.getAttribute("role")).toBe("alert");
+    expect(notice.textContent).toBe("This routine is paused, so no run is due. Choose Resume to run it again.");
   });
 
   it("New routine opens a Dialog with the fields and posts them with a name-made ID that is not shown", async () => {
