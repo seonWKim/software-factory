@@ -6,14 +6,15 @@
 // dialog's secret names; model-credential.ts), /api/v1/supervisor (what Migrate now, Start and Restart now may do;
 // migrate-api.ts), /api/v1/calendar/events (the Calendar page's range read; calendar-events-api.ts), /api/v1/screenshot
 // (one stored image of an item's screenshot run; item-screenshots.ts) and /api/v1/evals/<skill>/runs, /grid, /compare
-// and /suite (a skill's eval runs, grid, compare, suite and cases; evals-api.ts, a path pattern),
+// and /suite (a skill's eval runs, grid, compare, suite and cases; evals-api.ts, a path pattern), /versions and /diff
+// (a skill's versions and the diff of two; plugins-api.ts, a path pattern),
 // /api/v1/items/:id/changes (the item page's Changes tab; changes.ts) and /api/v1/schedules and
 // /api/v1/schedules/runs (`?schedule=<id>`; schedules-api.ts) and /api/v1/routines and /api/v1/routines/suggestions
 // (`?routine=<id>`; routines-api.ts); every other
 // path is api.ts's. They are served here beside api.ts so it stays within its size budget. A new read route adds one
 // entry to READ_ROUTES, not a line in server.ts.
 
-import { compareSkillEvalRuns, skillEvalGrid } from "../core/skill-eval-compare.js";
+import { caseResults, compareSkillEvalRuns, latestLinkedRun, lineDiff, skillEvalGrid, skillVersionRows, unlinkedRuns } from "../core/skill-eval-compare.js";
 import { type ApiResult, api, apiError } from "./api.js";
 import { staleCsrf } from "./commands.js";
 import { csrfMatches } from "./settings-api.js";
@@ -21,14 +22,14 @@ import { TASKS_PATH, TASK_PREVIEW_PATH, readTaskPreview, readTasks } from "./tas
 import { RULES_PATH, RULE_ENTRY_PATH, readRuleEntry, readRules } from "./rules-api.js";
 import { PROPOSALS_PATH, readProposals } from "./improve-api.js";
 import { NOTICES_PATH, readNotices } from "./notices-api.js";
-import { PLUGINS_PATH, readPlugins } from "./plugins-api.js";
+import { EVALS_VERSIONS_PATH, PLUGINS_PATH, readPlugins, readSkillVersions } from "./plugins-api.js";
 import { PLUGINS_IMPORT_PATH, readPluginsImport } from "./plugins-import-api.js";
 import { CALENDAR_PATH, readCalendarStatus } from "./calendar-api.js";
 import { CALENDAR_EVENTS_PATH, readCalendarEvents } from "./calendar-events-api.js";
 import { MODEL_CREDENTIAL_PATH, readModelCredential } from "./model-credential.js";
 import { SUPERVISOR_PATH, readSupervisor } from "./migrate-api.js";
 import { SCREENSHOT_PATH, readScreenshot } from "./item-screenshots.js";
-import { EVALS_LIST_PATH, EVALS_PATH, readEvalSuites, readSkillEvals } from "./evals-api.js";
+import { EVALS_LIST_PATH, EVALS_PATH, readEvalSuites, readSkillEvals, skillOf } from "./evals-api.js";
 import { changesPathId, readItemChanges } from "./changes.js";
 import { SCHEDULES_PATH, SCHEDULE_RUNS_PATH, readScheduleRuns, readSchedules } from "./schedules-api.js";
 import { ROUTINES_PATH, ROUTINE_SUGGESTIONS_PATH, readRoutineSuggestions, readRoutines } from "./routines-api.js";
@@ -63,6 +64,7 @@ const READ_ROUTES: readonly ReadRoute[] = [
   { path: CALENDAR_EVENTS_PATH, run: (d, u) => readCalendarEvents(d, u.searchParams.get("from"), u.searchParams.get("to")) },
   { path: SCREENSHOT_PATH, run: (d, u) => readScreenshot(d, u.searchParams) },
   { path: EVALS_LIST_PATH, run: (d) => readEvalSuites(d) },
+  { path: EVALS_VERSIONS_PATH, run: (d, u) => readSkillVersions(d, { skillVersionRows, unlinkedRuns, latestLinkedRun, lineDiff, caseResults, skillOf }, u) },
   { path: EVALS_PATH, run: (d, u) => readSkillEvals(d, { grid: skillEvalGrid, compare: compareSkillEvalRuns }, u) },
   { path: SCHEDULES_PATH, run: (d) => readSchedules(d) },
   { path: SCHEDULE_RUNS_PATH, run: (d, u) => readScheduleRuns(d, u.searchParams.get("schedule")) },
