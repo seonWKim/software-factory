@@ -4,9 +4,12 @@
 
 import { describe, expect, it } from "vitest";
 import { type CliAction, type LocalCliDeps, parseLocalCliArgs, runLocalCli } from "../src/core/local-cli.js";
+import { machineZone } from "../src/core/schedule-draft.js";
 import { SCHEDULE_LOST, type ScheduleStore, pauseSchedule, runDueSchedules } from "../src/core/schedule.js";
 import type { Timestamp, UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
+import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { answers } from "./helpers/local-cli.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
@@ -16,10 +19,10 @@ const START = "2026-11-22T12:00:00.000Z"; // 21:00 Seoul: a daily 09:00 Seoul sc
 const FIRST = "2026-11-23T00:00:00.000Z" as Timestamp;
 const ADD = ["add", "--id", "sch_fb", "--title", "Feedback", "--cadence", "daily", "--spec", "09:00", "--zone", "Asia/Seoul", "--action", "build"];
 
-async function setup() {
+async function setup(extra: Partial<LocalCliDeps> = {}) {
   const clock = new FakeClock(START);
   const { store } = await newStore(clock);
-  const d = (user: UserId): LocalCliDeps => ({ store, identity: { user, from: "cli_user" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "id", answers });
+  const d = (user: UserId): LocalCliDeps => ({ store, identity: { user, from: "cli_user" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "id", answers, ...extra });
   /** `factory schedule <args>` as `user` (the owner unless given). */
   const cli = (args: string[], user: UserId = OWNER) => {
     const a = parseLocalCliArgs("schedule", args);
@@ -292,5 +295,135 @@ describe("a write whose read is stale", () => {
     });
     expect(await pauseSchedule(racing, "sch_fb", clock.now())).toEqual({ ok: false, problem: SCHEDULE_LOST });
     expect((await stored(store))!.next_due_at).toBe("2026-11-24T00:00:00.000Z");
+  });
+});
+
+// `factory schedule draft` and `improve` (src/core/schedule-draft.ts): a fake model, never a live one.
+const WORDS = "review the design of software-factory every day at 9am";
+const DRAFTED = { title: "Design review", cadence: "daily", spec: "09:00", zone: "", action: "feedback", text: "Read design-system/ and file a task per gap." };
+const REVISED = "Read design-system/components.md and file a task for each page that departs from it.";
+
+/** A fake model that answers every call with `answer` and counts the calls. */
+function fakeModel(answer: Record<string, unknown>): LLMProvider & { calls: LLMRequest[] } {
+  const calls: LLMRequest[] = [];
+  return {
+    calls,
+    async complete(req): Promise<LLMResponse> {
+      calls.push(req);
+      return { text: JSON.stringify(answer), parsed: answer, stop_reason: "end", usage: { input_tokens: 1, output_tokens: 1, cost_usd: null } };
+    },
+  };
+}
+
+/** A y/N ask that answers `yes` and records each question. */
+function askSays(yes: boolean) {
+  const asked: string[] = [];
+  return { asked, ask: async (q: string) => (asked.push(q), yes) };
+}
+
+async function drafting(answer: Record<string, unknown>, ask?: (q: string) => Promise<boolean>) {
+  const llm = fakeModel(answer);
+  const s = await setup({ llm, scanner: new PatternEgressScanner(async () => []), ...(ask ? { ask } : {}) });
+  return { ...s, llm };
+}
+
+describe("parsing `factory schedule draft` and `improve`", () => {
+  it("reads the words or the ID, and --yes only as the last word", () => {
+    expect(parseLocalCliArgs("schedule", ["draft", ...WORDS.split(" ")])).toEqual({ action: "schedule_draft", command: { verb: "draft", words: WORDS, yes: false } });
+    expect(parseLocalCliArgs("schedule", ["draft", "every", "day", "--yes"])).toEqual({ action: "schedule_draft", command: { verb: "draft", words: "every day", yes: true } });
+    expect(parseLocalCliArgs("schedule", ["improve", "sch_fb"])).toEqual({ action: "schedule_draft", command: { verb: "improve", id: "sch_fb", yes: false } });
+    expect(parseLocalCliArgs("schedule", ["improve", "sch_fb", "--yes"])).toEqual({ action: "schedule_draft", command: { verb: "improve", id: "sch_fb", yes: true } });
+    for (const args of [["draft"], ["draft", "--yes"], ["improve"], ["improve", "a", "b"], ["improve", "--yes"]]) {
+      expect({ args, r: parseLocalCliArgs("schedule", args) }).toMatchObject({ r: { error: expect.any(String) } });
+    }
+  });
+});
+
+describe("factory schedule draft", () => {
+  it("prints the proposal and asks y/N; y adds it", async () => {
+    const { asked, ask } = askSays(true);
+    const { store, cli } = await drafting(DRAFTED, ask);
+    const r = await cli(["draft", ...WORDS.split(" ")]);
+    expect(r.code).toBe(0);
+    expect(r.lines).toEqual(expect.arrayContaining(["proposed sch_id", "  cadence: daily 09:00", `  zone: ${machineZone()}`, "  action: feedback", `  text: ${DRAFTED.text}`]));
+    expect(r.lines.at(-1)).toMatch(/^added sch_id\tDesign review\t/);
+    expect(asked).toEqual(["Add schedule sch_id?"]);
+    expect(await store.listSchedules()).toEqual([
+      expect.objectContaining({ id: "sch_id", created_by: OWNER, cadence: { kind: "daily", spec: "09:00" }, zone: machineZone(), action: expect.objectContaining({ kind: "feedback", settings: expect.objectContaining({ prompt: DRAFTED.text }) }) }),
+    ]);
+  });
+
+  it("n, or no terminal without --yes, stores nothing", async () => {
+    const no = await drafting(DRAFTED, askSays(false).ask);
+    expect(await no.cli(["draft", ...WORDS.split(" ")])).toMatchObject({ code: 0, lines: expect.arrayContaining(["proposed sch_id", "nothing was stored"]) });
+    expect(await no.store.listSchedules()).toEqual([]);
+    const tty = await drafting(DRAFTED);
+    const r = await tty.cli(["draft", ...WORDS.split(" ")]);
+    expect(r.code).toBe(1);
+    expect(r.lines.at(-1)).toContain("no terminal to ask y/N");
+    expect(await tty.store.listSchedules()).toEqual([]);
+  });
+
+  it("--yes adds it without asking", async () => {
+    const { asked, ask } = askSays(false);
+    const { store, cli } = await drafting(DRAFTED, ask);
+    expect((await cli(["draft", ...WORDS.split(" "), "--yes"])).code).toBe(0);
+    expect(asked).toEqual([]);
+    expect((await store.listSchedules()).map((s) => s.id)).toEqual(["sch_id"]);
+  });
+
+  it("with no model configured, refuses and stores nothing", async () => {
+    const { store, cli } = await setup({ llm: null, scanner: new PatternEgressScanner(async () => []), ask: askSays(true).ask });
+    const r = await cli(["draft", "every", "day", "--yes"]);
+    expect(r).toMatchObject({ code: 1, lines: [expect.stringContaining("no model is configured")] });
+    expect(await store.listSchedules()).toEqual([]);
+  });
+});
+
+describe("factory schedule improve", () => {
+  async function improving(yes?: boolean) {
+    const a = yes === undefined ? undefined : askSays(yes);
+    const s = await drafting({ text: REVISED }, a?.ask);
+    await s.cli([...ADD.map((w) => (w === "build" ? "feedback" : w)), "--body", "look at the design"]);
+    return { ...s, asked: a?.asked ?? [] };
+  }
+  const prompt = async (store: ScheduleStore) => (await stored(store))!.action!.settings.prompt;
+
+  it("prints the old and new text, asks y/N, and edits only on y", async () => {
+    const yes = await improving(true);
+    const r = await yes.cli(["improve", "sch_fb"]);
+    expect(r.code).toBe(0);
+    expect(r.lines.slice(0, 4)).toEqual(["old:", "  look at the design", "new:", `  ${REVISED}`]);
+    expect(yes.asked).toEqual(["Write the new text to sch_fb?"]);
+    expect(await prompt(yes.store)).toBe(REVISED);
+
+    const no = await improving(false);
+    expect(await no.cli(["improve", "sch_fb"])).toMatchObject({ code: 0, lines: expect.arrayContaining(["old:", "new:", "nothing was stored"]) });
+    expect(await prompt(no.store)).toBe("look at the design");
+
+    const tty = await improving();
+    expect((await tty.cli(["improve", "sch_fb"])).code).toBe(1);
+    expect(await prompt(tty.store)).toBe("look at the design");
+  });
+
+  it("--yes edits without asking", async () => {
+    const s = await improving(false);
+    expect((await s.cli(["improve", "sch_fb", "--yes"])).code).toBe(0);
+    expect(s.asked).toEqual([]);
+    expect(await prompt(s.store)).toBe(REVISED);
+  });
+});
+
+describe("schedule draft and improve are the owner's only", () => {
+  it("anyone but the owner is refused before any model call, and nothing is stored", async () => {
+    const { store, cli, llm } = await drafting(DRAFTED, askSays(true).ask);
+    await cli(ADD);
+    const before = await store.listSchedules();
+    const other = "local:guest@example.com" as UserId;
+    for (const args of [["draft", "every", "day", "--yes"], ["improve", "sch_fb", "--yes"]]) {
+      expect({ args, r: await cli(args, other) }).toMatchObject({ r: { code: 1, lines: [expect.stringContaining("only the owner manages schedules")] } });
+    }
+    expect(llm.calls).toEqual([]);
+    expect(await store.listSchedules()).toEqual(before);
   });
 });
