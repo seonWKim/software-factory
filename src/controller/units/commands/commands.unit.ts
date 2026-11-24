@@ -5,7 +5,7 @@
 // 04-gate-commands, 2026-11-15); the dashboard's request path runs them too, and `afterRequestApprove` does its rest.
 
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
-import {
+import { latestSpec, overCap, overCapApproval,
   APPROVED_RUN_QUEUED, APP_REQUEST, CHECKPOINT_REFUSAL, CLOSED_REFUSAL, HOLD_PATHS, RECHECK_PATHS_REFUSAL, appliesLocally, noFilesRefusal, appliesOnPr, approveCheck, approvesHold, awaitingSpec, commandFooter, commandNote, commandPhase, commandSpec,
   commandState, failedRunKind, floorCommand, floorTierNeeded, helpReply, parseLink, phaseLabel, refusalText, ruleOfTwoCommand, scanNote, specDecision,
   specNotWaiting, unknownCommandReply, withTag, CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity, specKind, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge, mergeCheckAgain, mergeCheckRetryRefusal, mergeCheckStopped, LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND,
@@ -26,8 +26,7 @@ import { FEEDBACK_REQUIRED, applyQueued, feedbackScan, queueRevise, replyQueued 
 
 type AppSender = { user_id: UserId } | null;
 type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
-type ResolveEvent = Extract<SourceEvent, { kind: "resolve_requested" }>;
-type PrReviewEvent = Extract<ForgeEvent, { kind: "pr_changes_requested" }>;
+type ResolveEvent = Extract<SourceEvent, { kind: "resolve_requested" }>; type PrReviewEvent = Extract<ForgeEvent, { kind: "pr_changes_requested" }>;
 type InfoEvent = Extract<SourceEvent, { kind: "help_requested" | "unknown_command" }>;
 type PlainCommentEvent = Extract<SourceEvent, { kind: "plain_comment" }>;
 /** Tells applyCommand to re-read the item and try again (a version conflict or a concurrent answer). */
@@ -557,13 +556,14 @@ export class CommandsUnit {
     if (e.kind === "revise_requested" && (e.pr || asFeedback)) {
       return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr?.change_ref ?? it.change_ref, key: { comment_id: e.comment_id } });
     }
-    // `/approve` (design §4): a goal split waiting for the owner (goal_question, goal_limit) is answered by the phases unit (design 04-split-specs); else the approve gate every source shares (core request-transition), a split's filing claimed here; a spec that changes no file in this repo is refused first (design 04-spec-gate-commands).
+    // `/approve` (design §4): a goal split waiting for the owner (goal_question, goal_limit) is answered by the phases unit (design 04-split-specs); else the approve gate every source shares (core request-transition), a split's filing claimed here; a spec that changes no file in this repo is refused first (design 04-spec-gate-commands). Over the item's size caps (04-split-specs, 2026-11-24: at too_large `/retry`'s implement run, at its size checkpoint the spec's approval) it needs a note and stores the one-time cap with its record (overCapApproval).
     // A routine's run held at its daily cap (routines unit): `/approve` raises today's cap by the last run's cost and runs it, `/reject` skips it.
     if (this.c.unit("routines").holds(it)) return this.c.unit("routines").answerCap(e.kind, it, actor);
     if (e.kind === "spec_approved") {
       if (this.c.unit("phases").waitsOnGoal(it)) return this.c.unit("phases").approveGoal(it, actor);
-      const noFiles = noFilesRefusal(it, await this.c.k.reader.listRuns(it.id)), a = noFiles ? { refuse: noFiles } : await approveCheck(this.c.k.reader, it, { actor, note, paths, comment_id: e.comment_id, tag, widen: (p) => this.widen(it, p), answers: NOTE_ANSWERS });
-      return a && "split" in a ? this.c.unit("phases").approveSplit(it, a.split, actor, a.note, e.comment_id, a.tag) : a;
+      const runs = await this.c.k.reader.listRuns(it.id), noFiles = noFilesRefusal(it, runs), over = overCap(it, runs, latestSpec(runs), this.c.k.settings(it.project)), tooLarge = over !== null && "at" in over && over.at === "too_large";
+      const a = tooLarge ? retry(it, actor, "implement", note, paths.length > 0 ? this.widen(it, paths) : null, (k) => this.c.unit("run-results").kindLabel(k)) : noFiles ? { refuse: noFiles } : await approveCheck(this.c.k.reader, it, { actor, note, paths, comment_id: e.comment_id, tag, widen: (p) => this.widen(it, p), answers: NOTE_ANSWERS });
+      return a && "split" in a ? this.c.unit("phases").approveSplit(it, a.split, actor, a.note, e.comment_id, a.tag) : overCapApproval(over, actor, note, a);
     }
     if (it.stage === "CLOSED") return e.kind === "spec_rejected" && it.merge_sha ? this.reject(e, it, actor) : { refuse: CLOSED_REFUSAL };
     if (it.blocked_reason === BUDGET_CHECKPOINT) return { refuse: CHECKPOINT_REFUSAL };

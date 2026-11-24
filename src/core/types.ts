@@ -112,8 +112,8 @@ export interface WorkItem {
    * for an item without a PR (design 2026-11-03). Null before triage, and on items from before it was stored.
    */
   files_to_change: string[] | null;
-  /** Triage's check per done-when line, in order (design 04-triage, 2026-11-22). Null before triage, and on items triaged before it was stored. */
-  done_checks: DoneCheck[] | null;
+  done_checks: DoneCheck[] | null; // triage's check per done-when line, in order (design 04-triage, 2026-11-22); null before triage, and on items triaged before it was stored
+  size_cap?: { max_diff_lines: number; max_diff_files: number } | null; // the one-time size cap an over-cap `/approve` stored (design 04-split-specs, 2026-11-24): src/core/size-cap.ts reads it; null or absent: the project's caps
   /**
    * The files the item's PR changes, as its last implement run pushed them (design 2026-11-03). Null with no
    * PR, and on PRs opened before it was stored: the coordination cost then falls back to `allowed_paths`.
