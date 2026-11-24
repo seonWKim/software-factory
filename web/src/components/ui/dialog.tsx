@@ -11,9 +11,10 @@ import { ButtonRow } from "./button-row.js";
 // backdrop (the dialog element itself; the content sits in an inner box) cancel without confirming; Enter in a
 // single-line field submits the form, which is the confirm button. Focus moves into the dialog when it opens and
 // goes back to `returnFocusTo` (else the element focused when it opened) when it closes. It is built from the
-// components/ui set: radius card, padding space-6, a text-base font-semibold title, and a right-aligned ButtonRow footer
+// components/ui set: radius card, padding space-6, a text-base font-semibold title, a body, and a right-aligned ButtonRow footer
 // with Cancel (secondary, outline; `cancelLabel` names it Close where each change is saved at once) before the confirm (primary, filled accent; or danger filled with the failed colour).
-// The title is one line, truncated, with the full text in its tooltip. The backdrop dims in both themes.
+// The title is one line, truncated, with the full text in its tooltip. The backdrop dims in both themes. When the
+// content is taller than the viewport only the body scrolls: the title and the footer stay in view.
 // ModalPanel is the same modal without a confirm (the shortcut list, the search): a header with a close icon button
 // and a body that scrolls by itself.
 
@@ -137,24 +138,27 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
           submit();
         }
       }}
-      className="m-auto max-h-[calc(100dvh-2rem)] max-w-xl overflow-y-auto rounded-card"
+      className="m-auto max-h-[calc(100dvh-2rem)] max-w-xl flex-col overflow-hidden rounded-card open:flex"
     >
-      <form onSubmit={submit} className="flex flex-col gap-3 p-6">
-        <h2 id={titleId} title={title} className="truncate text-base font-semibold">
+      {/* The title and the footer stay put; only the body between them scrolls, so Cancel and the confirm are always in view. */}
+      <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
+        <h2 id={titleId} title={title} className="shrink-0 truncate px-6 pt-6 text-base font-semibold">
           {title}
         </h2>
-        {children}
-        {consequence && (
-          <p data-dialog-consequence className="text-sm text-pretty break-words">
-            {consequence}
-          </p>
-        )}
-        {error && (
-          <p role="alert" className="text-sm text-pretty break-words text-pill-bad-fg">
-            {error}
-          </p>
-        )}
-        <ButtonRow className="justify-end">
+        <div data-dialog-body className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-6 py-3">
+          {children}
+          {consequence && (
+            <p data-dialog-consequence className="text-sm text-pretty break-words">
+              {consequence}
+            </p>
+          )}
+          {error && (
+            <p role="alert" className="text-sm text-pretty break-words text-pill-bad-fg">
+              {error}
+            </p>
+          )}
+        </div>
+        <ButtonRow data-dialog-footer className="shrink-0 justify-end px-6 pb-6">
           <Button variant="secondary" onClick={onClose}>
             {cancelLabel}
           </Button>

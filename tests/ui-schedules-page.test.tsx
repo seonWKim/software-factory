@@ -197,6 +197,16 @@ describe("Schedules page", () => {
     expect(screen.getByRole("dialog")).toBeTruthy();
   });
 
+  it("stacks its Cards as the other pages do, on the Card's own margin, with no flex gap added on top of it", async () => {
+    show();
+    await ready();
+    const sections = [...document.querySelectorAll("section")];
+    expect(sections).toHaveLength(2);
+    // Card carries mt-6; a flex column with gap-6 around it doubled the space between the list and the runs Card.
+    for (const s of sections) expect(s.parentElement!.className).not.toMatch(/\bgap-/);
+    expect(sections[0]!.parentElement).toBe(sections[1]!.parentElement);
+  });
+
   it("the sidebar lists Schedules after Calendar in the Tasks block, and the page is routed at /app/schedules", () => {
     const tasks = PAGES.filter((p) => p.group === "tasks").map((p) => p.path);
     expect(tasks.indexOf("schedules")).toBe(tasks.indexOf("calendar") + 1);

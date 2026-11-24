@@ -139,3 +139,39 @@ describe("DataTable dataKey", () => {
     expect(document.querySelector("[data-key]")).toBeNull();
   });
 });
+
+describe("DataTable select", () => {
+  const rows = [{ id: "a", n: "Alpha", s: "on" }, { id: "b", n: "Beta", s: "off" }];
+  const columns = [{ key: "n", header: "Name" }, { key: "s", header: "State" }];
+  const table = (key: string | null, onSelect = (_: string) => {}) => (
+    <DataTable label="T" columns={columns} rows={rows} rowKey={(r) => r.id} empty="None" select={{ key, onSelect, label: (r) => `Show ${r.n}` }} />
+  );
+
+  it("marks only the selected row as current, in the table and in the cards; none when nothing is selected", () => {
+    width(SM_PX);
+    const { rerender, unmount } = render(table("b"));
+    const current = () => [...document.querySelectorAll("[aria-current=true]")].map((el) => el.textContent);
+    expect(current()).toEqual(["Betaoff"]);
+    expect(document.querySelector("tr[aria-current=true]")!.className).toContain("bg-surface-2");
+    rerender(table(null));
+    expect(current()).toEqual([]);
+    unmount();
+    width(390);
+    render(table("a"));
+    expect(document.querySelector("li[aria-current=true]")!.textContent).toContain("Alpha");
+  });
+
+  it("the first cell is a named text button that selects its row by key, pressed on the selected row", () => {
+    width(SM_PX);
+    const picked: string[] = [];
+    render(table("a", (k) => picked.push(k)));
+    const beta = screen.getByRole("button", { name: "Show Beta" });
+    beta.click();
+    expect(picked).toEqual(["b"]);
+    expect(screen.getByRole("button", { name: "Show Alpha" }).getAttribute("aria-pressed")).toBe("true");
+    expect(beta.getAttribute("aria-pressed")).toBe("false");
+    // A Button would draw a pill (surface-2 when pressed) and sit 4px below the cells; this one is 28px, pulled up 4px.
+    expect(beta.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-h-7", "-my-1"]));
+    expect(beta.className).not.toMatch(/aria-pressed:bg/);
+  });
+});

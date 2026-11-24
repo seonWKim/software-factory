@@ -262,6 +262,34 @@ describe("Routines page", () => {
     expect(document.querySelectorAll("section")).toHaveLength(1);
   });
 
+  it("Repeats reads in plain words: hours for whole hours, day names joined with and, the time after at", async () => {
+    routines = [
+      routine("rtn_1", "Weekly one", { schedule: { kind: "weekly", spec: "fri,mon 09:00" } }),
+      routine("rtn_2", "Four hours", { schedule: { kind: "interval", spec: "240" } }),
+      routine("rtn_3", "Ninety", { schedule: { kind: "interval", spec: "90" } }),
+      routine("rtn_4", "Two days", { schedule: { kind: "interval", spec: "2880" } }),
+      routine("rtn_5", "Three days", { schedule: { kind: "weekly", spec: "mon,wed,fri 18:30" } }),
+    ];
+    show();
+    const repeats = async (name: string) => (await row(name)).querySelectorAll("td")[1]!.textContent;
+    expect(await repeats("Weekly one")).toBe("Weekly on Mon and Fri at 09:00");
+    expect(await repeats("Four hours")).toBe("Every 4 hours");
+    expect(await repeats("Ninety")).toBe("Every 90 minutes");
+    expect(await repeats("Two days")).toBe("Every 2 days");
+    expect(await repeats("Three days")).toBe("Weekly on Mon, Wed and Fri at 18:30");
+  });
+
+  it("the selected routine's row is marked current, not its name drawn as a pressed pill", async () => {
+    show();
+    await ready();
+    const name = within(await row("Docs check")).getByRole("button", { name: "Show details of Docs check" });
+    fireEvent.click(name);
+    await waitFor(() => expect((name.closest("tr") as HTMLElement).getAttribute("aria-current")).toBe("true"), SLOW);
+    expect(name.getAttribute("aria-pressed")).toBe("true");
+    expect((await row("After merge")).getAttribute("aria-current")).toBeNull();
+    expect(name.className).not.toMatch(/aria-pressed:bg-surface-2/);
+  });
+
   it("stacks its Cards as the other pages do, on the Card's own margin, with no flex gap added on top of it", async () => {
     show();
     await ready();
