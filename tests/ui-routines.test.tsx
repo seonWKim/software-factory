@@ -142,6 +142,18 @@ describe("Routines page", () => {
     for (const name of ["Accept", "Dismiss", "Snooze"]) expect(screen.queryByRole("button", { name })).toBeNull();
   });
 
+  it("the detail card's values wrap inside the card at 390 px: the value column can shrink and a long URL breaks anywhere", async () => {
+    show();
+    await ready();
+    fireEvent.click(within(await row("Docs check")).getByRole("button", { name: "Show details of Docs check" }));
+    const page = await screen.findByText("https://example.com/docs", undefined, SLOW);
+    // A bare 1fr column grows to the URL's min-content width, and break-words gives the URL no break point, so it ran past the card.
+    expect(page.tagName).toBe("DD");
+    expect(page.className).toMatch(/\bmin-w-0\b/);
+    expect(page.className).toMatch(/\bwrap-anywhere\b/);
+    expect(page.closest("dl")!.className).toContain("grid-cols-[max-content_minmax(0,1fr)]");
+  });
+
   it("the detail card says so when a routine has no suggestions", async () => {
     show();
     await ready();
