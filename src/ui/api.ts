@@ -11,11 +11,12 @@
 // GET /api/v1/settings, /session, /pauses and /standing are here.
 
 import { phaseOf } from "../core/phase.js";
+import type { SplitLimits } from "../core/split.js";
 import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
 import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
 import { itemAlarms, openAlarms } from "./alarms.js";
-import { actorGrant, itemCommands, itemProposals, itemReplies, mergeReadiness, needsYouCommands, readSession, waitingSpec } from "./commands.js";
+import { actorGrant, itemCommands, itemProposals, itemReplies, mergeReadiness, needsYouCommands, projectCaps, readSession, waitingSpec } from "./commands.js";
 import { type DataCtx, type DataResult, dataAutonomy, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, itemCounts, itemState, latestDecision, holderTitles, listRows, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
@@ -292,6 +293,8 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const overlaps = await overlapsOf(rows.map((r) => r.item), (v) => c.text(v)); // among every ready item, whatever the filter
   const out = [];
   const [allowed, commandGrant, review_time] = [actorGrant(c.d, "approve_merge"), actorGrant(c.d, "approve_spec"), (await effectiveGlobal(c.d, "review_time")).value]; // each read once per list
+  const capsRead = new Map<string, Promise<SplitLimits>>(); // each project's size caps, read once per list (over_cap)
+  const caps = (project: string) => capsRead.get(project) ?? capsRead.set(project, projectCaps(c.d, project)).get(project)!;
   for (const r of shown) {
     const it = r.item;
     const decision = r.decision; // the current run's only: an earlier run's hold is stale
@@ -319,7 +322,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       merge_check,
       merge: await mergeReadiness(c.d, it, merge_check, allowed, r.pending),
       ...askReason(r.input, r.level, review_time, holdingNow(review_time, c.now)), // rank_reason and held, on an ask only
-      ...(WITH_NEED.includes(r.level) ? { need: await c.need(it, merge_check), commands: await needsYouCommands(c.d, it, commandGrant, (v) => c.text(v)), overlaps: overlaps.get(it.id) ?? [] } : {}),
+      ...(WITH_NEED.includes(r.level) ? { need: await c.need(it, merge_check), commands: await needsYouCommands(c.d, it, commandGrant, (v) => c.text(v), caps), overlaps: overlaps.get(it.id) ?? [] } : {}),
       why: await c.why(r.why, it),
       parent_id: it.parent_id,
       phase: it.phase,
@@ -425,7 +428,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
     })),
     /** The item's thread, oldest first (thread.ts), its verdicts included: every body through the Withholder. */
     thread: await threadRows(s, it.id, it.source.type, async (v) => (await c.text(v))!, changes),
-    commands: await itemCommands(it, runs, await actorGrant(c.d, "approve_spec")(), (v) => c.text(v)), spec: await waitingSpec(it, runs, (v) => c.text(v)), // the viewer's (#453)
+    commands: await itemCommands(it, runs, await actorGrant(c.d, "approve_spec")(), (v) => c.text(v), await projectCaps(c.d, it.project)), spec: await waitingSpec(it, runs, (v) => c.text(v)), // the viewer's (#453)
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)), proposals: await itemProposals(c.d, it.id, (v) => c.text(v)), // pending, from the thread's markers
     ...(await screenshotFields(runs, (v, ch) => c.text(v, ch))), // the Changes tab (design 04-screenshots)
   };

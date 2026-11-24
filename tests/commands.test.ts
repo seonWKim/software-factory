@@ -535,8 +535,11 @@ describe("footers match what the controller accepts", () => {
           await controller.handleEvent(event(name, n));
           const refused = source.comments.some((c) => c.marker === `<!-- factory:refused:${n} -->`);
           const spec = COMMANDS.find((c) => c.name === name)!;
-          expect({ phase, pr, name, accepted: !refused }).toEqual({ phase, pr, name, accepted: applies(spec, state) });
-          expect({ phase, pr, name, listed: issuePart(footer).includes(`\`${spec.usage}\``) }).toEqual({ phase, pr, name, listed: !refused });
+          // At too_large /approve is listed, but the over-cap check refuses it without the blocked run's size and a note,
+          // which this item has neither of ("/approve over the cap at too_large" covers both).
+          const overCap = phase === "too_large" && name === "approve";
+          expect({ phase, pr, name, accepted: !refused }).toEqual({ phase, pr, name, accepted: applies(spec, state) && !overCap });
+          expect({ phase, pr, name, listed: issuePart(footer).includes(`\`${spec.usage}\``) }).toEqual({ phase, pr, name, listed: !refused || overCap });
         }
       }
     }));
@@ -1089,6 +1092,22 @@ describe("/approve over the cap at too_large", () => {
     expect(JSON.parse(String(change.detail!.size_cap_approved))).toEqual({
       actor: `local:${ME}`, sizes: { lines: 5000, files: 60 }, project_cap: CAPS, one_time_cap: { max_diff_lines: 5883, max_diff_files: 71 }, note: "the generated table is one file",
     });
+  });
+
+  it("the item API's Approve row carries over_cap (size, caps in force, one-time cap); the other rows and a row read without caps do not", async () => {
+    const h = await tooLarge(4);
+    const runs = await h.store.listRuns(h.item.id);
+    const rows = await itemCommands(h.item, runs, { allow: true }, async (v) => v, CAPS);
+    expect(rows.find((r) => r.name === "approve")?.over_cap).toEqual({ sizes: { lines: 5000, files: 60 }, caps: CAPS, one_time_cap: { max_diff_lines: 5883, max_diff_files: 71 } });
+    expect(rows.filter((r) => r.name !== "approve").every((r) => r.over_cap === undefined)).toBe(true);
+    expect((await itemCommands(h.item, runs, { allow: true }, async (v) => v)).find((r) => r.name === "approve")?.over_cap).toBeUndefined();
+  });
+
+  it("an Approve on an item that is not over its caps carries no over_cap", async () => {
+    const it_ = { ...(await tooLarge(5)).item, blocked_reason: "spec_pending", stage: "READY", blocked_on: "human" } as WorkItem;
+    const row = (await itemCommands(it_, [], { allow: true }, async (v) => v, CAPS)).find((r) => r.name === "approve");
+    expect(row).toBeDefined();
+    expect(row && "over_cap" in row).toBe(false);
   });
 });
 

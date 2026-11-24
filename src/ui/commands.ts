@@ -37,8 +37,8 @@ import { RESTART_COMMAND, mergedIntoBase } from "../core/restart.js";
 import { parseNeedsHuman } from "../core/outputs.js";
 import { phaseOf } from "../core/phase.js";
 import { isCovered } from "../core/policy.js";
-import { storedProjectCaps } from "../core/size-cap.js";
-import { overCap } from "../core/split.js";
+import { type OverCapSizes, storedProjectCaps } from "../core/size-cap.js";
+import { type SplitLimits, overCap } from "../core/split.js";
 import type { Run, StateChange, UserId, WorkItem, WorkItemId } from "../core/types.js";
 import type { AuthDecision } from "../interfaces/auth-provider.js";
 import type { AppCommandRequest } from "../interfaces/factory-store.js";
@@ -235,9 +235,15 @@ async function applyNow(d: UiDeps, r: AppCommandRequest, item: WorkItem): Promis
  * without a note in the thread or stores the one-time cap with its `size_cap_approved` record.
  */
 async function overCapApprove(d: UiDeps, item: WorkItem): Promise<boolean> {
-  const it = (await d.store.getWorkItem(item.id)) ?? item, runs = await d.store.listRuns(it.id), s = d.settings;
+  const it = (await d.store.getWorkItem(item.id)) ?? item, runs = await d.store.listRuns(it.id);
+  return overCap(it, runs, latestSpec(runs), await projectCaps(d, it.project)) !== null;
+}
+
+/** A project's size caps as the controller reads them (storedProjectCaps): the over-cap checks of the request path and the item API. */
+export async function projectCaps(d: UiDeps, project: string): Promise<SplitLimits> {
+  const s = d.settings;
   const key = s ? ((await s.resolveProject())?.key ?? null) : null, owner = s ? `${s.repo.owner}/${s.repo.name}` : "";
-  return overCap(it, runs, latestSpec(runs), await storedProjectCaps(d.store, s?.base ?? NO_SETTINGS_FILE, owner, key, it.project)) !== null;
+  return storedProjectCaps(d.store, s?.base ?? NO_SETTINGS_FILE, owner, key, project);
 }
 
 /** The settings base with no config file: the built-in caps, then the stored overrides. */
@@ -312,6 +318,11 @@ export interface ItemCommandRow {
   paths?: string[];
   /** The item stopped the same way REPEATED_STOP times or more (stopCount): the page's main action is Revise or Reject, not Retry. Absent otherwise. */
   repeated_stop?: true;
+  /**
+   * Approve only, on an item over its size caps (overCap, design 04-split-specs): the size, the caps in force and the
+   * proposed one-time cap the controller's refusal names (overCapNoteRequired), so the page asks for the note first. Absent otherwise.
+   */
+  over_cap?: OverCapSizes;
 }
 
 /** The identical stops from which an item's main action is Revise or Reject (design 09-dashboard-item-commands, 2026-11-20). */
@@ -353,10 +364,11 @@ async function askedPaths(it: WorkItem, runs: readonly Run[], text: (v: string) 
  * controller checks it; `/verdict`'s record_verdict comes with the same role. Not `/help`: it answers a comment and the
  * page cannot send it (APP_COMMANDS), so a button for it could only be refused. A permission ask's paths go on the
  * commands that take `+paths` (askedPaths). A merged item gets `restart` (the Restart app button) when the server
- * offers it (`grant.restart`), with the same grant as the item commands.
+ * offers it (`grant.restart`), with the same grant as the item commands. With the project's `caps` (projectCaps), an
+ * Approve over the item's caps carries `over_cap` (overCapRow); without them, or not over, the row is as it was.
  */
 export async function itemCommands(
-  it: WorkItem, runs: readonly Run[], grant: ActorGrant, text: (v: string) => Promise<string | null>,
+  it: WorkItem, runs: readonly Run[], grant: ActorGrant, text: (v: string) => Promise<string | null>, caps: SplitLimits | null = null,
 ): Promise<ItemCommandRow[]> {
   const reason = grant.allow ? null : await text(grant.reason);
   const paths = await askedPaths(it, runs, text);
@@ -368,20 +380,34 @@ export async function itemCommands(
     ...(paths.length > 0 && PATHS_COMMANDS.includes(c.name) ? { paths } : {}),
     ...(stops >= REPEATED_STOP ? { repeated_stop: true as const } : {}),
   }));
+  const over = caps && rows.some((r) => r.name === "approve") ? overCapRow(it, runs, caps) : null;
+  if (over) for (const r of rows) if (r.name === "approve") r.over_cap = over;
   if (grant.restart === true && mergedIntoBase(it)) rows.push({ name: RESTART_COMMAND, usage: RESTART_COMMAND, description: RESTART_DESCRIPTION, allowed: grant.allow, reason });
   return rows;
 }
+
+/** The over-cap figures of an Approve on `it` (overCap): its size, the caps in force and the one-time cap; null when not over or no size was recorded. */
+function overCapRow(it: WorkItem, runs: readonly Run[], caps: SplitLimits): OverCapSizes | null {
+  const over = overCap(it, runs, latestSpec(runs), caps);
+  return over && "at" in over ? { sizes: over.sizes, caps: over.caps, one_time_cap: over.one_time_cap } : null;
+}
+
+/** The phases whose Needs-you commands read the item's runs: the run that asked decides the commands, or the size an Approve is over its caps by. */
+const RUNS_READ: readonly string[] = ["agent_needs_human", "too_large", "spec_pending", "max_revisions"];
 
 /**
  * A Needs-you row's `commands` (design §9): the item API's entries for the commands that change the item's state, from
  * the command rules, but not `budget` (its tokens are typed on the item page or the issue), then `verdict` where it
  * applies (an item with a PR, or a local item: issue #513), sent from its own text form; with the viewer's `allowed`
- * and `reason` from `grant`, asked once per request. The item's runs are read only at agent_needs_human, where the run
- * that asked decides which commands apply.
+ * and `reason` from `grant`, asked once per request. The item's runs and its project's `caps` are read only in RUNS_READ,
+ * where the run that asked decides which commands apply, or an Approve may be over the caps (`over_cap`).
  */
-export async function needsYouCommands(d: UiDeps, it: WorkItem, grant: () => Promise<ActorGrant>, text: (v: string) => Promise<string | null>) {
-  const runs = phaseOf(it) === "agent_needs_human" ? await d.store.listRuns(it.id) : [];
-  const all = await itemCommands(it, runs, await grant(), text);
+export async function needsYouCommands(
+  d: UiDeps, it: WorkItem, grant: () => Promise<ActorGrant>, text: (v: string) => Promise<string | null>, caps: (project: string) => Promise<SplitLimits>,
+) {
+  const read = RUNS_READ.includes(phaseOf(it));
+  const runs = read ? await d.store.listRuns(it.id) : [];
+  const all = await itemCommands(it, runs, await grant(), text, read ? await caps(it.project) : null);
   return all.filter((c) => c.name === "verdict" || (c.name !== "budget" && c.name !== RESTART_COMMAND && commandSpec(c.name).changes_state));
 }
 

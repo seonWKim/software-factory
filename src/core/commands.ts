@@ -94,18 +94,18 @@ export interface CommandSpec {
   implementing_description?: string; triaging_description?: string;
   /** At `agent_needs_human`, it applies only when the run that asked was one of these kinds. Absent: any kind. */
   asked_by?: readonly RunKind[];
+  table_note?: string; // what only the SET_UP.md table adds to `description`: the help replies keep to it (Slack's first section is full)
 }
 
 export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "approve",
     usage: "/approve [notes]",
-    description:
-      "Approve the spec, the floor block or a run held for a person by the Rule of Two, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer. " +
+    description: "Approve the spec, the floor block or a run held for a person by the Rule of Two, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer. " +
       "`/approve +paths <path>...` (at most 10, notes on the lines below) on the spec or the floor block also adds those paths to the allowed paths",
-    // Also accepted on an implement run held by coordination cost (design §5, 2026-11-03; the hold comment names it), never on a dependency
-    // hold, and at too_large with a note, over the cap (design 04-split-specs, 2026-11-24; its comment names it): neither is a phase here.
-    phases: ["spec_pending", "max_revisions", "floor_tier", "rule_of_two"],
+    table_note: "Over the size cap (a change too large, or a spec at its size checkpoint), `/approve <why>` needs a note saying why and approves a one-time cap; the dashboard's Approve opens a dialog for that note",
+    // Also on an implement run held by coordination cost, never a dependency hold (design §5): not a phase here. At too_large only with a note (04-split-specs).
+    phases: ["spec_pending", "max_revisions", "floor_tier", "rule_of_two", "too_large"],
     needs_pr: false,
     changes_state: true,
   },
@@ -391,7 +391,7 @@ export function commandTableMarkdown(): string {
     "| Command | What it does | Applies when |",
     "|---|---|---|",
     ...COMMANDS.map((c) =>
-      `| \`${c.usage.replace(/\|/g, "\\|")}\` | ${meaning(c, null)} | ${whenText(c)} |`),
+      `| \`${c.usage.replace(/\|/g, "\\|")}\` | ${[meaning(c, null), c.table_note].filter((d) => d).join(". ")} | ${whenText(c)} |`),
   ].join("\n");
 }
 
@@ -580,7 +580,7 @@ export function approveRefusal(it: ItemState): string | null {
   if (it.blocked_reason === "budget_checkpoint") return CHECKPOINT_REFUSAL;
   if (it.blocked_reason === SCHEDULE_CHECKPOINT) return null; // the approve gate closes it (design 08-schedules)
   const s = commandState(it);
-  if (applies(commandSpec("approve"), s) || s.phase === "too_large") return null; // too_large: the controller's over-cap check (design 04-split-specs)
+  if (applies(commandSpec("approve"), s)) return null; // at too_large, the controller's over-cap check decides (design 04-split-specs)
   if (it.stage === "READY" && (it.blocked_on === "upstream" || it.blocked_reason === "delivery_failed")) return null;
   if (it.blocked_on === "dependency") return dependencyHoldRefusal(it.blocked_reason);
   return specNotWaiting(s.phase);
