@@ -35,6 +35,13 @@ describe("prompts/triage.md", () => {
     expect(text).not.toMatch(/mysql/i);
   });
 
+  it("names a new migration and its test by slug with `<stamp>`, and leaves the free timestamp to the implementer (design 04-triage)", () => {
+    const flat = text.replace(/\s+/g, " ");
+    expect(flat).toContain("`src/<component>/migrations/<stamp>-<component>-<slug>.migration.ts`");
+    expect(flat).toContain("`tests/<stamp>-<component>-<slug>.test.ts`");
+    expect(flat).toContain("the implementer takes the next free timestamp");
+  });
+
   it("takes its split caps from placeholders, with no literal default caps", () => {
     for (const p of SPLIT_PLACEHOLDERS) expect(text, p).toContain(p);
     expect(text).not.toMatch(/\b(?:1500|40)\b/);
