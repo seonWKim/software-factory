@@ -2,9 +2,32 @@
 // run's commits (wip branch, bundle), the preflight and a retry's resume from its wip branch. Split out of
 // implement.run.ts so parallel items that change different parts of the run do not share one file.
 import { type DiffStat, diffStat, overSizeLimit, sizeDetail, PREFLIGHT_FAILED, wipBranchFor, errorText, type Run, type RunResume, type WipRef, type WorkItem, type SandboxHandle, PREFLIGHT, type ToolCallContext } from "./legacy-imports.js";
-import { BUDGET_NEXT_STEPS, type ContinueWip, DIFF_CHECK_MS, type DiffBudget, NO_HOOKS, PAUSE_NEXT_STEPS, RunFailure, RunPaused, STOPPED_NEXT_STEPS, WIP_TEXT_CHARS, baseRefspec, gitIdentity, hasTool } from "../../support.js";
+import { type ContinueWip, DIFF_CHECK_MS, NO_HOOKS, PAUSE_NEXT_STEPS, RunFailure, RunPaused, WIP_TEXT_CHARS, baseRefspec, gitIdentity, hasTool } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { fetchBundle, saveBundle } from "../../bundle.js";
+
+/** The mid-run diff check of one implement agent step: `over` is the diff that went over budget, once it did. */
+export interface DiffBudget {
+  limits: { max_diff_lines: number; max_diff_files: number };
+  stop: AbortController;
+  over: DiffStat | null;
+}
+
+/** The wip ref's next steps of a run the mid-run diff check stopped. */
+const BUDGET_NEXT_STEPS = "the run stopped mid-way: its diff went over max_diff_lines or max_diff_files";
+/** The wip ref's next steps of a run stopped mid-work. */
+const STOPPED_NEXT_STEPS = "the run stopped mid-way (a usage limit, a stall or a timeout): continue the work item from the wip head";
+
+/**
+ * The context ceiling (design §5 Restarts): the implement main step's session stops once one model call's context
+ * (input, cache read and cache write tokens) reaches this, and the run continues in a new session from its WIP
+ * head. A constant, not a config key, until the owner asks to tune it.
+ */
+export const CONTEXT_CEILING_TOKENS = 150_000;
+/** The code of a run whose new session reached the context ceiling before it made a commit: stopped, its work kept as WIP. */
+export const CONTEXT_CEILING = "context_ceiling";
+/** The wip ref's next steps of a run stopped at the context ceiling without progress. */
+const CEILING_NEXT_STEPS = "the run stopped mid-way: a new session reached the context ceiling before it made a commit; continue the work item from the wip head in smaller steps";
 
 /**
  * The mid-run diff check (design §4, issue #217): every DIFF_CHECK_MS on the worker's ticks while the implement
@@ -86,6 +109,8 @@ export async function overBudget(
 export async function keepStopped(
   w: Worker,
   run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, start: string, dirs: string, failure: RunFailure, next_steps = STOPPED_NEXT_STEPS,
+  /** False: the session is not kept for a `--resume` (a session at the context ceiling has no room left). */
+  resumable = true,
 ): Promise<RunFailure> {
   await w.distrustAgentGit(handle, dirs);
   await commitWorktree(w, handle, `wip: stopped run ${run.id} (${failure.code})`);
@@ -93,7 +118,7 @@ export async function keepStopped(
   const commits = head === start ? 0 : (await w.git(handle, ["rev-list", `${start}..HEAD`])).split("\n").filter(Boolean).length;
   if (commits === 0) return failure;
   const s = w.scratch.get(run);
-  const session = s?.step_session && w.d.sandbox.reattach && w.d.runner.hasSession
+  const session = resumable && s?.step_session && w.d.sandbox.reattach && w.d.runner.hasSession
     ? { id: s.step_session, host: w.host, folder: handle.id, start, base_sha: handle.base_sha ?? null }
     : null;
   const wip: ContinueWip = {
@@ -111,6 +136,50 @@ export async function keepStopped(
   const kept = await keepWip(w, run, item, ctx, handle, failure, wip, false);
   if (session && kept.extra.wip && s) s.kept = { folder: handle.id, session: session.id };
   return kept;
+}
+
+/** The context ceiling of one agent session (design §5 Restarts): `on_context` aborts `stop` once one model call's context reaches CONTEXT_CEILING_TOKENS. */
+export interface ContextCeiling {
+  stop: AbortController;
+  /** The context that reached the ceiling, once one did. */
+  reached: number | null;
+  on_context: (tokens: number) => void;
+}
+
+export function contextCeiling(w: Worker, run: Run): ContextCeiling {
+  const c: ContextCeiling = {
+    stop: new AbortController(),
+    reached: null,
+    on_context: (tokens) => {
+      if (c.reached !== null || tokens < CONTEXT_CEILING_TOKENS) return;
+      c.reached = tokens;
+      w.d.log.info("context ceiling reached; continuing in a new session", { run_id: run.id, tokens });
+      c.stop.abort(new Error(CONTEXT_CEILING));
+    },
+  };
+  return c;
+}
+
+/**
+ * Ends a session the context ceiling stopped (design §5 Restarts), with trusted git calls after the agent stopped:
+ * its git config is distrusted, its uncommitted changes become one WIP commit, and the run's commits since `start`
+ * are listed (`<sha> <subject>`, oldest first) for the next session's prompt. A session that made no progress since
+ * `from` (its start: the first session counts its WIP commit, a later one only its own commits) fails the run as a
+ * stopped run, `context_ceiling`, its work kept on the wip branch and not resumable, so a run never loops without progress.
+ */
+export async function endSession(
+  w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, start: string, from: string, dirs: string, first: boolean,
+): Promise<{ head: string; commits: string[] }> {
+  await w.distrustAgentGit(handle, dirs);
+  const committed = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
+  await commitWorktree(w, handle, `wip: context ceiling of run ${run.id}`);
+  const head = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
+  if ((first ? head : committed) === from) {
+    const failure = new RunFailure(CONTEXT_CEILING, `a new session reached the context ceiling (${CONTEXT_CEILING_TOKENS} tokens in one model call) before it made a commit`);
+    throw await keepStopped(w, run, item, handle, ctx, start, dirs, failure, CEILING_NEXT_STEPS, false);
+  }
+  const commits = (await w.git(handle, ["log", "--reverse", "--format=%h %s", `${start}..HEAD`])).split("\n").filter(Boolean);
+  return { head, commits };
 }
 
 /**

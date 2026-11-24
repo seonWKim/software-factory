@@ -1,5 +1,4 @@
 import type { ModelClass } from "../core/model-choice.js";
-import type { DiffStat } from "../core/diff-gate.js";
 import { type Attachment, MAX_COMMAND_PATHS, attachmentLine, retryPathsReply } from "../core/commands.js";
 export { addedContext } from "../core/commands.js";
 import { type ReviewOutput, builtDifferentlyOf, specFindings, unverifiedOf } from "../core/outputs.js";
@@ -101,8 +100,6 @@ export const WIP_TEXT_CHARS = 4000;
  * issue #217). A constant, not a config key: over max_diff_lines or max_diff_files the agent is stopped.
  */
 export const DIFF_CHECK_MS = 30_000;
-/** The wip ref's next steps of a run the mid-run diff check stopped. */
-export const BUDGET_NEXT_STEPS = "the run stopped mid-way: its diff went over max_diff_lines or max_diff_files";
 /** The code of a run whose agent exited with an error (`agent_${result.status}` of a failed step). */
 export const AGENT_FAILED = "agent_failed";
 
@@ -111,8 +108,13 @@ export const AGENT_FAILED = "agent_failed";
  * wip branch, and the retry continues the agent from there.
  */
 export const STOPPED_CODES: readonly string[] = [RATE_LIMITED, AGENT_STALLED, "agent_timed_out"];
-/** The wip ref's next steps of a run stopped mid-work. */
-export const STOPPED_NEXT_STEPS = "the run stopped mid-way (a usage limit, a stall or a timeout): continue the work item from the wip head";
+
+/** The next session's section after the earlier one reached the context ceiling of `tokens` (design §5 Restarts): the WIP head and the run's commits so far (`<sha> <subject>`, oldest first). */
+export function renderContextContinue(head: string, commits: readonly string[], tokens: number): string {
+  const intro = `An earlier session of this run reached the context limit (${tokens} tokens in one model call), so the factory stopped it and continues the run in this new session from the WIP head \`${head.slice(0, 8)}\`. Its uncommitted changes, if there were any, were committed as one WIP commit. The earlier sessions of this run committed:`;
+  const rest = "That work is done: do not redo it. Read the branch's commits and diff against the base, then continue from there and finish the work item. Commit each finished part as you go: a session that reaches the limit again before it makes a commit fails the run.";
+  return ["## Continued in a new session", "", intro, "", ...commits.map((c) => `- ${c}`), "", rest].join("\n");
+}
 
 /**
  * The wip ref of an implement run stopped mid-work (design §5 Restarts), carried in the retry's input. `continue`:
@@ -187,13 +189,6 @@ export interface ResumePlan {
   session: string | null;
   /** The reattached folder, or null: the run works in a new one. */
   folder: SandboxHandle | null;
-}
-
-/** The mid-run diff check of one implement agent step: `over` is the diff that went over budget, once it did. */
-export interface DiffBudget {
-  limits: { max_diff_lines: number; max_diff_files: number };
-  stop: AbortController;
-  over: DiffStat | null;
 }
 
 /**
