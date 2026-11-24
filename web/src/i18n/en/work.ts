@@ -97,6 +97,7 @@ export const work = {
   "needs.autoStopFailure": "the factory restarted in a loop",
   "needs.autoStopTurnOn": "Turn auto back on",
   "needs.alarmDetails": "Details",
+  "needs.dismissAlarm": "Dismiss",
   "needs.whatFailed": "What failed",
   "needs.whatFailedTests": "Failing tests",
   "needs.whatFailedOutput": "Output, last lines",
