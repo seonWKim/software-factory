@@ -31,9 +31,18 @@ afterEach(() => {
 });
 
 describe("OverflowMenu placement", () => {
-  it("the list's side follows data-side: right-0 for end, left-0 for start", () => {
+  it("is fixed at the measured place, so a scrolling box it sits in (a table's wrapper) cannot clip it", () => {
+    // Button at x 1400–1432, y 0–32: the 160 px list ends at its right edge (1432 − 160) and starts 4 px below it.
     rects(1400);
-    expect(openMenu().className.split(" ")).toEqual(expect.arrayContaining(["data-[side=end]:right-0", "data-[side=start]:left-0"]));
+    const menu = openMenu();
+    expect(menu.className.split(" ")).toContain("fixed");
+    expect(menu.className.split(" ")).not.toContain("absolute");
+    expect({ left: menu.style.left, top: menu.style.top }).toEqual({ left: "1272px", top: "36px" });
+  });
+
+  it("starts at the button's left edge, fixed there, when data-side is start", () => {
+    rects(324);
+    expect(openMenu().style.left).toBe("324px");
   });
 
   it("starts at the button's left edge when ending at its right edge would put the labels under the sidebar", () => {
@@ -136,6 +145,7 @@ describe("OverflowMenu look and keys (owner design review #85)", () => {
     });
     const menu = openMenu();
     expect(menu.getAttribute("data-up")).toBe("true");
-    expect(menu.className).toContain("bottom-full");
+    // Its bottom 4 px above the button's top.
+    expect(menu.style.top).toBe(`${innerHeight - 40 - 4 - 160}px`);
   });
 });

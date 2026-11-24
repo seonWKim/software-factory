@@ -11,10 +11,17 @@ export const CARD_TITLE = "text-balance text-base font-semibold";
 export const CARD_PAD = "p-4 sm:p-6";
 
 /**
+ * The one reading width of an intro (a card's, the PageHeader description, a Notice's, a group's line): 32rem (512px).
+ * A fixed length, not `max-w-prose` (65ch), whose width follows the font size, so a text-xs line wrapped at 440px
+ * and a text-sm one at 510px on the same page.
+ */
+export const READ_WIDTH = "max-w-lg";
+
+/**
  * A block's intro paragraph, right under its title row (16px above it from the title row, 16px below it to the
  * content): `text-sm` `text-2` at the reading width, the PageHeader description's type. Every card intro uses it.
  */
-export const CARD_INTRO = "mb-4 max-w-prose text-sm text-pretty text-text-2";
+export const CARD_INTRO = `mb-4 ${READ_WIDTH} text-sm text-pretty text-text-2`;
 
 /** A sub-group's heading (an h3): a CardSection's title, and every other h3 on a page (a day, a group of rows). */
 export const SUB_TITLE = "text-xs font-medium text-text-2";

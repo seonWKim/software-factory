@@ -35,7 +35,7 @@ describe("parsing `factory schedule …`", () => {
   it("reads each command, and add and edit their flags", () => {
     expect(parseLocalCliArgs("schedule", ["list"])).toEqual({ action: "schedule", command: { verb: "list" } });
     expect(parseLocalCliArgs("schedule", ["runs", "sch_fb"])).toEqual({ action: "schedule", command: { verb: "runs", id: "sch_fb" } });
-    for (const verb of ["pause", "resume", "run"]) expect(parseLocalCliArgs("schedule", [verb, "sch_fb"])).toEqual({ action: "schedule", command: { verb, id: "sch_fb", fields: {} } });
+    for (const verb of ["pause", "resume", "run", "delete"]) expect(parseLocalCliArgs("schedule", [verb, "sch_fb"])).toEqual({ action: "schedule", command: { verb, id: "sch_fb", fields: {} } });
     expect(parseLocalCliArgs("schedule", [...ADD, "--body", "Look again", "--skip-when-busy", "on", "--token-cap", "5000"])).toEqual({
       action: "schedule",
       command: {
@@ -52,7 +52,7 @@ describe("parsing `factory schedule …`", () => {
 
   it("refuses anything incomplete or unknown with the usage", () => {
     for (const args of [
-      [], ["list", "x"], ["pause"], ["run", "a", "b"], ["show", "sch_fb"], ["add", "--title", "T"], ["edit"], ["edit", "--title", "T"],
+      [], ["list", "x"], ["pause"], ["delete"], ["delete", "a", "b"], ["run", "a", "b"], ["show", "sch_fb"], ["add", "--title", "T"], ["edit"], ["edit", "--title", "T"],
       ["edit", "sch_fb", "--id", "other"], ["edit", "sch_fb", "--title"], ["edit", "sch_fb", "--label", "x"], ["edit", "sch_fb", "--title", "a", "--title", "b"],
       ["edit", "sch_fb", "--skip-when-busy", "yes"], ["edit", "sch_fb", "--token-cap", "lots"], [...ADD, "--id", "again"],
     ]) {
@@ -215,7 +215,7 @@ describe("schedule writes are the owner's only", () => {
     await cli(ADD);
     const before = await store.listSchedules();
     const other = "local:guest@example.com" as UserId;
-    for (const args of [[...ADD.map((w) => (w === "sch_fb" ? "sch_2" : w))], ["edit", "sch_fb", "--title", "x"], ["pause", "sch_fb"], ["resume", "sch_fb"], ["run", "sch_fb"]]) {
+    for (const args of [[...ADD.map((w) => (w === "sch_fb" ? "sch_2" : w))], ["edit", "sch_fb", "--title", "x"], ["pause", "sch_fb"], ["resume", "sch_fb"], ["run", "sch_fb"], ["delete", "sch_fb"]]) {
       const r = await cli(args, other);
       expect({ args, r }).toMatchObject({ r: { code: 1, lines: [expect.stringContaining("only the owner manages schedules")] } });
     }
@@ -223,6 +223,58 @@ describe("schedule writes are the owner's only", () => {
     expect(await store.listSchedules()).toEqual(before);
     // Reads print for anyone.
     expect((await cli(["list"], other)).code).toBe(0);
+  });
+});
+
+describe("factory schedule delete", () => {
+  it("removes the schedule and its due occurrence, so nothing fires after; its past runs stay readable", async () => {
+    const { clock, store, cli } = await setup();
+    await cli(ADD);
+    clock.advance(12 * HOUR);
+    await runDueSchedules(store, clock.now());
+    const r = await cli(["delete", "sch_fb"]);
+    expect(r.code).toBe(0);
+    expect(r.lines[0]).toMatch(/^deleted \(its past runs stay\) sch_fb\tFeedback\t/);
+    expect(await store.listSchedules()).toEqual([]);
+    // Its next slot (2026-11-24 00:00Z) comes and goes: no run of it is claimed.
+    clock.advance(48 * HOUR);
+    expect(await runDueSchedules(store, clock.now())).toEqual({ fired: [], refused: [], skipped: [], checkpoint: [] });
+    expect((await store.listScheduleRuns("sch_fb")).map((x) => [x.occurrence_at, x.outcome])).toEqual([[FIRST, "fired"]]);
+  });
+
+  it("ends a held checkpoint as rejected, so no pass resumes it", async () => {
+    const { clock, store, cli } = await setup();
+    await cli(["add", "--id", "sch_fb", "--title", "Ask", "--cadence", "daily", "--spec", "09:00", "--zone", "Asia/Seoul", "--action", "agent", "--body", "Summarise", "--token-cap", "10"]);
+    clock.advance(12 * HOUR);
+    await runDueSchedules(store, clock.now());
+    await store.recordScheduleRunResult("sch_fb", FIRST, { output: "ok", tokens: 50, cost_usd: null });
+    await store.endScheduleRun("sch_fb", (await stored(store))!.running_since!);
+    clock.advance(24 * HOUR);
+    expect((await runDueSchedules(store, clock.now())).checkpoint).toHaveLength(1);
+    expect(await store.listHeldScheduleRuns()).toHaveLength(1);
+    expect((await cli(["delete", "sch_fb"])).code).toBe(0);
+    expect(await store.listHeldScheduleRuns()).toEqual([]);
+    expect((await store.listScheduleRuns("sch_fb")).map((x) => x.outcome)).toEqual(["fired", "rejected"]);
+  });
+
+  it("succeeds while a run is in flight; that run still records its result and ends without error", async () => {
+    const { clock, store, cli } = await setup();
+    await cli(ADD);
+    clock.advance(12 * HOUR);
+    await runDueSchedules(store, clock.now());
+    const since = (await stored(store))!.running_since!;
+    expect(since).not.toBeNull();
+    expect((await cli(["delete", "sch_fb"])).code).toBe(0);
+    await store.recordScheduleRunResult("sch_fb", FIRST, { output: "done", tokens: 7, cost_usd: null });
+    expect(await store.endScheduleRun("sch_fb", since)).toBe(false);
+    expect(await store.listScheduleRuns("sch_fb")).toMatchObject([{ outcome: "fired", output: "done", tokens: 7 }]);
+  });
+
+  it("an unknown ID fails with a clear message and changes nothing", async () => {
+    const { store, cli } = await setup();
+    await cli(ADD);
+    expect(await cli(["delete", "nope"])).toEqual({ code: 1, lines: ["schedule delete nope refused: no schedule nope"] });
+    expect((await store.listSchedules()).map((s) => s.id)).toEqual(["sch_fb"]);
   });
 });
 

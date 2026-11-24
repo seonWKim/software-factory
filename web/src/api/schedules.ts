@@ -1,5 +1,5 @@
 // The Schedules page: GET /api/v1/schedules (useSchedules), GET /api/v1/schedules/runs?schedule=<id> (useScheduleRuns)
-// and the writes under /api/v1/schedules (postSchedule: add, edit, pause, resume and run), as src/ui/schedules-api.ts
+// and the writes under /api/v1/schedules (postSchedule: add, edit, pause, resume, run and delete), as src/ui/schedules-api.ts
 // answers them (design 08-schedules, 09-dashboard-schedules).
 
 import { t } from "../i18n/index.js";

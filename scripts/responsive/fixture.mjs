@@ -1,7 +1,7 @@
 // The data `npm run check:responsive` looks at: a throwaway SQLite store in a temp dir, seeded with items that
 // stress the layout (long titles, long local IDs, long thread bodies, a phase tree, failed runs, alerts, an
 // object-valued model_by, many commands, rules on with applied and waiting rules, a standing approval that approved
-// three items, three routines: a long name, a paused one, one on the merge trigger), served by the real UI server (dist/ui/server.js) on a free port.
+// three items), served by the real UI server (dist/ui/server.js) on a free port.
 // Nothing here reads factory.config.json, .factory/ or the secrets file: every dependency is built in place.
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -12,7 +12,6 @@ import { requestCalendarSync, runSyncRequests, syncCalendars } from "../../dist/
 import { ALERT_DEDUPE_MS } from "../../dist/core/alarms.js";
 import { SkillRefsStore } from "../../dist/import/import-plugins.js";
 import { saveProject } from "../../dist/core/project-labels.js";
-import { writeRoutine } from "../../dist/core/routines.js";
 import { writeSchedule } from "../../dist/core/schedule.js";
 import { SPEC_GATE, STANDING_APPROVED, STANDING_TIER, ruleId, standingActor } from "../../dist/core/standing.js";
 import { SystemClock } from "../../dist/impl/clock/system-clock.js";
@@ -238,7 +237,6 @@ async function seed(store, storage, dir) {
 
   await seedStanding(store);
   await seedSkill(store, dir);
-  await seedRoutines(store);
   await seedSchedules(store);
 
   // Overrides: an object-valued model_by and a project-level key, with history.
@@ -263,26 +261,6 @@ async function seedSkill(store, dir) {
   const sha256 = createHash("sha256").update(text).digest("hex");
   await new SkillRefsStore(storeSql(store), () => new Date().toISOString()).insert({ source: "claude", kind: "skill", name, path, sha256 }, OWNER);
   await store.createSkillEvalSuite({ id: "suite_responsive_fixture", skill_ref: `${folder}/${name}`, title: "Fixture suite", created_by: OWNER });
-}
-
-/**
- * Three routines, so the Routines page draws its table, row menus and paused Notice (and the screenshot run its New
- * routine Dialog over them): one with a long name on a weekly schedule, one paused on an interval, one on the merge
- * trigger. Plain text: no token-like string. Added through the same core write the API runs.
- */
-async function seedRoutines(store) {
-  const now = new Date();
-  const routines = [
-    { id: "rtn_responsive_long", name: "Weekly review of every documentation page that mentions the dashboard, the settings or the routines and their caps", instruction: `Read each page and list the sentences that no longer match the product. ${"Name the page and the section for each one. ".repeat(4)}`, url: "https://example.com/docs/dashboard/overview", schedule: { kind: "weekly", spec: "mon,fri 09:00" }, zone: "Europe/Paris", run_cap_usd: 2, daily_cap_usd: 5 },
-    { id: "rtn_responsive_paused", name: "Stale pages check", instruction: "List the pages that have not changed in ninety days.", schedule: { kind: "interval", spec: "240" }, run_cap_usd: 1 },
-    { id: "rtn_responsive_merge", name: "After each merge", instruction: "Read the merged change and suggest one follow-up, if any.", trigger: "merge" },
-  ];
-  for (const { id, ...fields } of routines) {
-    const r = await writeRoutine(store, "add", id, fields, OWNER, now);
-    if (!r.ok) throw new Error(`fixture routine ${id} failed: ${r.problem}`);
-  }
-  const paused = await writeRoutine(store, "pause", "rtn_responsive_paused", {}, OWNER, now);
-  if (!paused.ok) throw new Error(`fixture routine pause failed: ${paused.problem}`);
 }
 
 /**
@@ -402,9 +380,11 @@ async function seedCalendar(store, clock) {
   const ok = { events: async (w) => list.filter((e) => e.starts_at < w.to && e.ends_at > w.from) };
   await syncCalendars(db, [{ name: connected, source: ok }], before);
   const day = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
-  const first = new Date(Math.min(monday.getTime(), new Date(now.getFullYear(), now.getMonth(), 1).getTime()));
-  const last = new Date(Math.max(monday.getTime() + 6 * 86_400_000, new Date(now.getFullYear(), now.getMonth() + 1, 0).getTime()));
+  // The Month view's whole weeks (they hold this week): the Monday before the month's first day to the Sunday after its last.
+  const mondayOf = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7));
+  const first = mondayOf(new Date(now.getFullYear(), now.getMonth(), 1));
+  const end = mondayOf(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+  const last = new Date(end.getFullYear(), end.getMonth(), end.getDate() + 6);
   await requestCalendarSync(db, { from: day(first), to: day(last), by: OWNER, nowMs: before });
   await runSyncRequests(db, [{ name: connected, source: ok }], before);
   const failing = { events: async () => { throw new Error(`token refresh failed: invalid_grant for ${LONG_WORD} ${"while reading the calendar list ".repeat(4)}`); } };
@@ -423,7 +403,7 @@ async function seedCalendar(store, clock) {
 
 /**
  * This week's events: first (Monday 09:00) one with a long title, a place, notes written as HTML with a link, a video
- * link, an organizer and attendees; then an all-day event and short ones, two on today.
+ * link, an organizer and attendees; then an all-day event and short ones, five on today (its Month cell shows "+N more").
  */
 function calendarEvents(now) {
   const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
@@ -448,5 +428,10 @@ function calendarEvents(now) {
     { id: "offsite", title: "Team offsite", starts_at: at(2, 0), ends_at: at(3, 0), all_day: true, updated_at: null },
     { id: "one-on-one", title: "Alex Kim <> Mentor", starts_at: at(today, 11, 30), ends_at: at(today, 12), all_day: false, updated_at: null },
     { id: "review", title: "Design review", starts_at: at(today, 17), ends_at: at(today, 18), all_day: false, updated_at: null },
+    // Three more on today, so its Month cell overflows into "+N more" (owner #92: a short meeting with a mixed-script title).
+    { id: "short-meeting", title: "15 min meeting between Yeongjun Kim and 김선우", starts_at: at(today, 9, 15), ends_at: at(today, 9, 30), all_day: false, updated_at: null,
+      details: { calendar: "Work and interviews", location: null, description: null, organizer: null, attendees: [], conference_url: null, link: "https://calendar.google.com/calendar/event?eid=short", time_zone: null } },
+    { id: "lunch", title: "Lunch", starts_at: at(today, 12, 30), ends_at: at(today, 13, 30), all_day: false, updated_at: null },
+    { id: "focus", title: "Focus time", starts_at: at(today, 14), ends_at: at(today, 16), all_day: false, updated_at: null },
   ];
 }

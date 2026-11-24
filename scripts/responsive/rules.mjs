@@ -14,13 +14,18 @@
 //                   Only the outermost such element of a chain is reported.
 //   letter-wrap     text in a box narrower than 12ch breaks a word across lines (the old model_by column, PR #530,
 //                   was 9ch wide).
-//   tall-fixed      a position:fixed or sticky element covers more than 40% of the viewport's height.
+//   tall-fixed      a position:fixed or sticky element covers more than 40% of the viewport's height (an open
+//                   dialog or popover is an overlay the owner opened and closes, so it is left to overlay-bounds).
 //   overlay-bounds  an open dialog, popover, menu, listbox or tooltip extends past the viewport.
 //   small-target    a painted interactive element (button, link, input, select, textarea, summary, or a role of
 //                   button, menuitem, checkbox, radio, switch, tab) is smaller than 24x24 CSS px; links in running
 //                   text count too. An input inside a <label> is measured by the label's box, which clicks it (the
 //                   Checkbox's 16px box sits in a 32px label).
 //   unreachable     the page is taller than the viewport but html or body hides vertical overflow.
+//   panel-collapsed an open dialog's or popover's body ([data-panel-body], [data-dialog-body]) is under
+//                   `minPanelBodyPx` (60px) tall while its content is taller: Safari and the cmux browser drew the
+//                   calendar event popover's body 24px tall under a scrollbar (owner #92) when it grew from a zero
+//                   flex basis. Headless WebKit lays that case out right, so the rule guards the outcome in every engine.
 //
 // The page template's structure (docs/design/09-dashboard-shell.md, design-system/patterns.md), one rule each:
 //
@@ -48,6 +53,11 @@
 //                   inputs, selects, comboboxes; a SegmentedControl as one) are not all one height: a 28px sm Button
 //                   beside the 32px search Input (Work, until 2026-11-24).
 //
+//   disclosure-align a Disclosure (<details>) right under a bordered box (its previous sibling has a left border: a
+//                   bordered list, a table) has its chevron ([data-chevron], else its summary) more than 1px from that
+//                   box's left edge, so the toggle no longer reads as belonging to the list (the audit's "Details"
+//                   13px in from the Host sleeps list, 2026-11-24).
+//
 // `[data-align-skip]` on an element, or on an ancestor inside the row or toolbar, leaves it out of both (a control that
 // is meant to sit off the line, such as a tall preview). Rules in `limits.warnOnly` are reported as warnings: they
 // print but do not fail the check (see LIMITS).
@@ -63,6 +73,7 @@ export const LIMITS = {
   maxTitleLines: 2,
   minTarget: 24,
   rowAlignPx: 3,
+  minPanelBodyPx: 60,
   // Rules that print but do not fail: a new rule lands here while the fix it waits on is in progress, named in a
   // comment. row-align was here until the table and row centring (9a4c1d07) reached main, 2026-11-24.
   warnOnly: [],
@@ -231,8 +242,8 @@ export function checkLayout(limits) {
       }
     }
 
-    // tall-fixed
-    if (s.position === "fixed" || s.position === "sticky") {
+    // tall-fixed (an open dialog or popover is an overlay, held by overlay-bounds instead)
+    if ((s.position === "fixed" || s.position === "sticky") && !el.matches("dialog[open]")) {
       const shown = Math.min(r.bottom, H) - Math.max(r.top, 0);
       if (shown > H * limits.maxFixedShare) {
         fail("tall-fixed", el, `${s.position} element covers ${Math.round(shown)}px of a ${H}px viewport (> ${limits.maxFixedShare * 100}%)`);
@@ -387,6 +398,24 @@ export function checkLayout(limits) {
     controls.forEach((el, i) => {
       if (heights[i] !== main) fail("toolbar-height", el, `${heights[i]}px tall in a toolbar of ${main}px controls`);
     });
+  }
+
+  // disclosure-align
+  for (const d of document.body.querySelectorAll("details")) {
+    const box = d.previousElementSibling;
+    if (!box || !painted(d) || !painted(box) || parseFloat(style(box).borderLeftWidth) === 0) continue;
+    const summary = d.querySelector(":scope > summary");
+    const mark = summary?.querySelector("[data-chevron]") ?? summary;
+    if (!mark || !painted(mark)) continue;
+    const off = mark.getBoundingClientRect().left - box.getBoundingClientRect().left;
+    if (Math.abs(off) > 1) fail("disclosure-align", summary, `chevron ${off > 0 ? "+" : ""}${Math.round(off)}px from the left edge of the bordered box above it`);
+  }
+
+  // panel-collapsed
+  for (const body of document.body.querySelectorAll("dialog[open] [data-panel-body], dialog[open] [data-dialog-body]")) {
+    if (!painted(body)) continue;
+    const [shown, full] = [body.clientHeight, body.scrollHeight];
+    if (shown < Math.min(limits.minPanelBodyPx, full) - 1) fail("panel-collapsed", body, `${shown}px tall showing ${full}px of content, under ${limits.minPanelBodyPx}px`);
   }
 
   return { failures: out, sizes };

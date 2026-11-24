@@ -75,7 +75,7 @@ function DailyChart({ days, selected, onSelect }: { days: readonly SpendDay[]; s
   const pct = (cost: number): string => `${max === 0 ? 0 : (cost / max) * 100}%`;
   const ticks = yTicks(max);
   return (
-    <div className="flex gap-2 pt-2">
+    <div className="flex gap-2">
       <div aria-hidden data-axis="y" className="relative h-32 w-16 shrink-0 text-xs text-text-2 tabular-nums">
         {ticks.map((v, i) => (
           <span key={i} data-tick={i} className="absolute right-0 translate-y-1/2 whitespace-nowrap" style={{ bottom: pct(v) }}>{usd(v)}</span>
@@ -129,7 +129,7 @@ function Tasks({ view, day, onClear }: { view: SpendView; day: string | null; on
   return (
     <CardSection title={t("spend.tasks")} count={v?.items_total}>
       {day !== null && (
-        <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
           <p className="text-sm text-pretty">{t("spend.filtered", { day })}</p>
           <Button size="sm" onClick={onClear}>{t("spend.showAll")}</Button>
         </div>
@@ -141,7 +141,7 @@ function Tasks({ view, day, onClear }: { view: SpendView; day: string | null; on
       ) : (
         <>
           {v.items.length < v.items_total && (
-            <p className="mb-2 text-sm text-pretty">{t("spend.tasksCapped", { shown: v.items.length, total: v.items_total })}</p>
+            <p className="mb-3 text-sm text-pretty">{t("spend.tasksCapped", { shown: v.items.length, total: v.items_total })}</p>
           )}
           <DataTable columns={columns()} rows={v.items} rowKey={(r) => r.work_item_id} label={t("spend.tasks")} empty={day === null ? t("spend.tasksEmpty") : t("spend.dayEmpty", { day })} />
         </>
@@ -176,15 +176,18 @@ export function SpendSection() {
           <Total label={t("spend.week")} total={sum(v.days.filter((d) => d.day >= v.week_start))} budget={{ usd: v.budgets?.weekly_usd ?? null, text: (spent, budget) => t("spend.budgetWeek", { spent, budget }) }} />
           <Total label={t("spend.last30")} total={v.total} />
         </dl>
-        <p className="mt-2 text-xs text-pretty text-text-2">{t("spend.note")}</p>
-        <p data-testid="spend-budget-note" className="mt-1 text-xs text-pretty text-text-2">
-          {t("spend.budgetNote")} <Link href={`${BASE}settings`} className={LINK_CLASS}>{t("spend.budgetLink")}</Link>
-        </p>
-        {unknown > 0 && (
-          <p data-testid="spend-unknown" className="mt-1 text-sm text-pretty">
-            {t(unknown === 1 ? "spend.unknownOne" : "spend.unknownMany", { count: unknown })}
+        {/* The notes under the tiles: one block 12px under them (the tiles' own gap), its lines 4px apart. */}
+        <div data-spend-notes className="mt-3 space-y-1 text-xs text-pretty text-text-2">
+          <p>{t("spend.note")}</p>
+          <p data-testid="spend-budget-note">
+            {t("spend.budgetNote")} <Link href={`${BASE}settings`} className={LINK_CLASS}>{t("spend.budgetLink")}</Link>
           </p>
-        )}
+          {unknown > 0 && (
+            <p data-testid="spend-unknown" className="text-text-1">
+              {t(unknown === 1 ? "spend.unknownOne" : "spend.unknownMany", { count: unknown })}
+            </p>
+          )}
+        </div>
       </CardSection>
       <CardSection title={t("spend.chart")}>
         <DailyChart days={v.days} selected={day} onSelect={setDay} />

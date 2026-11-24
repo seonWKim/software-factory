@@ -207,6 +207,7 @@ The identity comes from your environment (git config, OS user), so anyone who ca
 - `factory schedule resume <id>`: Set a paused schedule's next due time to its first slot after now; refused when not paused. Who: the owner. Prints: the resumed schedule's line.
 - `factory schedule run <id>`: Set the schedule's next due time to now, so the next tick fires it once; refused when paused, writing nothing. Who: the owner. Prints: the schedule's line.
 - `factory schedule runs <id>`: List the schedule's runs, oldest first. Who: the owner. Prints: one line per run: occurrence, outcome, recorded time, tokens, cost.
+- `factory schedule delete <id>`: Remove the schedule, so none of its slots fire again; a run in flight finishes, its past runs and their items stay; refused for an unknown ID. Who: the owner. Prints: the deleted schedule's line.
 
 `task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise`, `reject` and `resolve` work for any work item, a GitHub one included, and only store the command in the command log; the controller reads it on its next poll and applies it with the owner check, so the owner needs no GitHub write access. For a GitHub item the factory also posts one comment on the issue saying who sent which command. That mirror is best effort: while GitHub is down or rate limited the command still applies, and the comment is posted on a later tick. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. `merge` is stored the same way; the controller merges the item's local branch `factory/<id>` into your local base branch with a merge commit, writing no checkout and pushing nothing, and closes the item. Only the owner may send it; it applies only to a local item waiting for a merge, and refuses while the base branch is checked out in a worktree (switch that checkout to another branch first) or when the branch conflicts (the reply lists the files). Generated from the command table, `src/core/command-table.ts`; a test fails when this list differs.
 
@@ -485,6 +486,7 @@ In Slack a command follows a mention of the bot, in the item's thread and with n
 - `@bot schedule resume <id>`: as `factory schedule resume <id>`. Who: the owner.
 - `@bot schedule run <id>`: as `factory schedule run <id>`. Who: the owner.
 - `@bot schedule runs <id>`: as `factory schedule runs <id>`. Who: the owner.
+- `@bot schedule delete <id>`: as `factory schedule delete <id>`. Who: the owner.
 
 To turn it off, drop `"slack"` from `plugins.source`. Several replicas: only one holds the Socket Mode connection at a time (the listener lease); `scripts/slack-app.sh check` reports one more connection while the factory runs.
 

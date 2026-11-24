@@ -131,7 +131,7 @@ function Message({ m, now, open: initial }: { m: ThreadEntry; now: number; open:
       )}
       {long && (
         <div className="px-3 pb-2 sm:px-4">
-          <Button variant="ghost" size="sm" aria-expanded={open} onClick={() => setOpen(!open)}>
+          <Button variant="ghost" size="sm" flush aria-expanded={open} onClick={() => setOpen(!open)}>
             {open ? t("thread.showLess") : t("thread.showMore")}
           </Button>
         </div>
@@ -166,7 +166,7 @@ export function Thread({ entries, now }: { entries: readonly ThreadEntry[]; now:
             ))}
           </ol>
           {earlier > 0 && (
-            <Button variant="ghost" size="sm" className="mt-2" aria-expanded={!collapsed} onClick={() => setAll(collapsed)}>
+            <Button variant="ghost" size="sm" flush className="mt-2" aria-expanded={!collapsed} onClick={() => setAll(collapsed)}>
               {collapsed ? t(earlier === 1 ? "thread.showEarlierOne" : "thread.showEarlier", { count: earlier }) : t("thread.showNewest")}
             </Button>
           )}

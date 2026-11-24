@@ -139,6 +139,12 @@ export interface ScheduleStore {
    * pause, resume or run loses to a claim or another write made since its read. False when no row changed.
    */
   updateSchedule(id: string, read: Timestamp | null, patch: SchedulePatch): Promise<boolean>;
+  /**
+   * One transaction: removes the schedule, so nothing of it comes due again, and ends its runs held at a checkpoint as
+   * `rejected`; its other run rows stay readable and no item is touched. A run in flight finishes (its end changes no
+   * row). False when no schedule had the ID.
+   */
+  deleteSchedule(id: string): Promise<boolean>;
   /** The store's Clock's time: the `now` the CLI's schedule writes decide at (the CLI has no Clock of its own). */
   scheduleNow(): Timestamp;
 }
@@ -262,10 +268,10 @@ async function fileCheckpoint(store: CheckpointStore, project: string, s: Schedu
 // functions. Each write reads the schedule, decides, then writes once through `updateSchedule`, conditional on the
 // `next_due_at` it read: a claim or another write since then makes it change nothing. Pause clears `next_due_at`, so
 // a paused schedule is never listed due and its slots never fire; resume sets the first slot after now; run sets now,
-// so the next tick claims it once.
+// so the next tick claims it once. Delete removes the schedule and its held checkpoints; its past runs stay.
 
 /** The store methods managing schedules reads and writes through. */
-export type ScheduleAdminStore = Pick<ScheduleStore, "listSchedules" | "listScheduleRuns" | "addSchedule" | "updateSchedule" | "scheduleNow">;
+export type ScheduleAdminStore = Pick<ScheduleStore, "listSchedules" | "listScheduleRuns" | "addSchedule" | "updateSchedule" | "deleteSchedule" | "scheduleNow">;
 
 /** The refusal of a write whose condition was lost. */
 export const SCHEDULE_LOST = "changed by another worker, try again";
@@ -284,7 +290,7 @@ export interface ScheduleFields {
 }
 
 /** The writes, each the owner's only. */
-export type ScheduleWrite = "add" | "edit" | "pause" | "resume" | "run";
+export type ScheduleWrite = "add" | "edit" | "pause" | "resume" | "run" | "delete";
 
 /** The action a kind and a body make (the CLI and the HTTP routes): build `body`, agent and feedback `prompt`, which they need. */
 export function scheduleActionOf(kind: string, body: string | undefined): ScheduleActionSpec | { problem: string } {
@@ -325,7 +331,7 @@ export async function createSchedule(store: ScheduleAdminStore, id: string, f: S
 /** Reads the schedule, decides its patch (or a refusal), and writes it once, conditional on the `next_due_at` read. */
 async function decide(store: ScheduleAdminStore, id: string, patchOf: (s: Schedule) => SchedulePatch | string): Promise<ScheduleResult> {
   const s = await findSchedule(store, id);
-  if (s === null) return refused(`no schedule ${id}`);
+  if (s === null) return refused(noSchedule(id));
   const patch = patchOf(s);
   if (typeof patch === "string") return refused(patch);
   if (!(await store.updateSchedule(id, s.next_due_at, patch))) return refused(SCHEDULE_LOST);
@@ -343,6 +349,16 @@ export const resumeSchedule = (store: ScheduleAdminStore, id: string, now: Date)
     const next = firstSlot(s.cadence, s.zone, now, s.created_at);
     return next === null ? "never falls due" : { next_due_at: next };
   });
+
+/** The refusal of a write to an ID no schedule has. */
+const noSchedule = (id: string): string => `no schedule ${id}`;
+
+/** Removes the schedule (deleteSchedule): nothing of it fires again, its past runs stay; refused for an unknown ID. */
+export async function deleteSchedule(store: ScheduleAdminStore, id: string, _now: Date): Promise<ScheduleResult> {
+  const s = await findSchedule(store, id);
+  if (s === null || !(await store.deleteSchedule(id))) return refused(noSchedule(id));
+  return { ok: true, schedule: s };
+}
 
 /** Sets `next_due_at` to `now`, so the next tick claims it once (a running schedule's as `refused`); refused when paused. */
 export const runSchedule = (store: ScheduleAdminStore, id: string, now: Date): Promise<ScheduleResult> =>
@@ -395,7 +411,7 @@ export async function editSchedule(store: ScheduleAdminStore, id: string, f: Sch
 export function writeSchedule(store: ScheduleAdminStore, w: ScheduleWrite, id: string, fields: ScheduleFields, user: UserId, now: Date): Promise<ScheduleResult> {
   if (w === "add") return createSchedule(store, id, fields, user, now);
   if (w === "edit") return editSchedule(store, id, fields, now);
-  return { pause: pauseSchedule, resume: resumeSchedule, run: runSchedule }[w](store, id, now);
+  return { pause: pauseSchedule, resume: resumeSchedule, run: runSchedule, delete: deleteSchedule }[w](store, id, now);
 }
 
 // `factory schedule …` (src/core/local-cli.ts hands the word here, as it stays within its size budget).
@@ -410,7 +426,7 @@ const FLAGS: Readonly<Record<string, keyof ScheduleFields>> = {
 export function parseScheduleArgs(args: readonly string[]): ScheduleCommand | string {
   const [verb = "", ...rest] = args;
   if (verb === "list") return rest.length === 0 ? { verb } : "schedule list takes no arguments";
-  if (verb === "runs" || verb === "pause" || verb === "resume" || verb === "run") {
+  if (verb === "runs" || verb === "pause" || verb === "resume" || verb === "run" || verb === "delete") {
     if (rest.length !== 1 || !rest[0]) return `schedule ${verb} needs one schedule ID`;
     return verb === "runs" ? { verb, id: rest[0] } : { verb, id: rest[0], fields: {} };
   }
@@ -452,13 +468,13 @@ export async function runScheduleCommand(store: ScheduleAdminStore, c: ScheduleC
     return { code: 0, lines: all.length === 0 ? ["no schedules"] : all.map(scheduleLine) };
   }
   if (c.verb === "runs") {
-    if ((await findSchedule(store, c.id)) === null) return fail(`no schedule ${c.id}`);
+    if ((await findSchedule(store, c.id)) === null) return fail(noSchedule(c.id));
     const runs = await store.listScheduleRuns(c.id);
     return { code: 0, lines: runs.length === 0 ? [`no runs of ${c.id}`] : runs.map(runLine) };
   }
   if (!(await isOwner())) return fail(`schedule ${c.verb} refused: only the owner manages schedules; you are ${user}`);
   const r = await writeSchedule(store, c.verb, c.id, c.fields, user, new Date(store.scheduleNow()));
   if (!r.ok) return fail(`schedule ${c.verb} ${c.id} refused: ${r.problem}`);
-  const done = { add: "added", edit: "edited", pause: "paused", resume: "resumed", run: "set to run on the next tick:" }[c.verb];
+  const done = { add: "added", edit: "edited", pause: "paused", resume: "resumed", run: "set to run on the next tick:", delete: "deleted (its past runs stay)" }[c.verb];
   return { code: 0, lines: [`${done} ${scheduleLine(r.schedule)}`] };
 }

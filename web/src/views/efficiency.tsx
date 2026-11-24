@@ -1,7 +1,7 @@
 import { type ReactNode, useState } from "react";
 import { type EfficiencyChart, type EfficiencyFigure, type EfficiencyItem, type EfficiencyTierMerges, type EfficiencyWeek, useEfficiency } from "../api/efficiency.js";
 import { Button } from "../components/ui/button.js";
-import { Card, CardSection } from "../components/ui/card.js";
+import { CARD_INTRO, Card, CardSection } from "../components/ui/card.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { EmptyState } from "../components/ui/notice.js";
@@ -163,7 +163,7 @@ function OwnerSection({ owner, week }: { owner: OwnerFigures | undefined; week: 
   ];
   return (
     <>
-      <p className="mb-2 text-sm text-pretty text-text-2">{t("efficiency.ownerNote", { week })}</p>
+      <p className={CARD_INTRO}>{t("efficiency.ownerNote", { week })}</p>
       <ul className="space-y-3 text-sm">
         {rows.map((r) => (
           <li key={r.key} data-owner={r.key}>
@@ -198,7 +198,7 @@ function TierMerges({ rows }: { rows: EfficiencyTierMerges[] }) {
   ];
   return (
     <>
-      <p className="mb-2 text-sm text-pretty text-text-2">{t("efficiency.mergesNote")}</p>
+      <p className={CARD_INTRO}>{t("efficiency.mergesNote")}</p>
       <DataTable label={t("efficiency.merges")} columns={columns} rows={rows} rowKey={(r) => String(r.tier)} empty={t("efficiency.noMerges")} />
     </>
   );
@@ -218,7 +218,7 @@ export function EfficiencyTab() {
         return (
           <>
             <CardSection title={t("efficiency.finished")}>
-              <p className="mb-2 text-sm text-pretty text-text-2">{t("efficiency.finishedNote")}</p>
+              <p className={CARD_INTRO}>{t("efficiency.finishedNote")}</p>
               <div className="grid gap-3 lg:grid-cols-3">
                 <MiniChart title={t("efficiency.last24h")} chart={v.hours} label={hourLabel} />
                 <MiniChart title={t("efficiency.last14d")} chart={v.days} label={dayLabel} />
@@ -228,7 +228,7 @@ export function EfficiencyTab() {
               {v.runs_without_usage > 0 && <p className="mt-2 text-sm text-pretty text-text-2 tabular-nums">{t("efficiency.runsWithoutUsage", { count: v.runs_without_usage })}</p>}
             </CardSection>
             <CardSection title={t(week.current ? "efficiency.weekSoFar" : "efficiency.week", { week: week.start })}>
-              <p className="mb-2 text-sm text-pretty text-text-2">{t("efficiency.pickWeek")}</p>
+              <p className={CARD_INTRO}>{t("efficiency.pickWeek")}</p>
               <WeekFigures week={week} />
             </CardSection>
             <CardSection title={t("efficiency.owner")}>

@@ -27,30 +27,33 @@ export interface PopoverProps {
 }
 
 /**
- * Where the panel sits: right of the anchor, else left of it, else under it; always inside the window. Beside the
- * anchor its top is the anchor's top; when the panel would run past the window's bottom it flips, its bottom on the
- * anchor's bottom, so a chip low in the window opens a panel that grows up from it, still beside it.
+ * Where the panel sits, always whole inside the window: right of the anchor, else left of it; beside it, its top is
+ * the anchor's top, flipped (its bottom on the anchor's bottom) when it would run past the window's bottom, then
+ * shifted inside the window. With no room on either side it goes under the anchor, flipped over it when it would run
+ * past the bottom and fits above, else on the side with more room, shifted inside. The panel is fixed and rendered
+ * into `document.body`, so no scrolling or clipping box of the page cuts it.
  */
 export function place(anchor: DOMRect, panel: { width: number; height: number }, win = { width: innerWidth, height: innerHeight }): { left: number; top: number } {
   const [w, h] = [win.width, win.height];
   const clamp = (v: number, max: number) => Math.max(GAP_PX, Math.min(v, max - GAP_PX));
-  let left: number;
-  const below = anchor.top + panel.height <= h - GAP_PX;
-  let top = clamp(below ? anchor.top : anchor.bottom - panel.height, h - panel.height);
-  if (anchor.right + GAP_PX + panel.width <= w - GAP_PX) left = anchor.right + GAP_PX;
-  else if (anchor.left - GAP_PX - panel.width >= GAP_PX) left = anchor.left - GAP_PX - panel.width;
-  else {
-    left = clamp(anchor.left, w - panel.width);
-    top = clamp(anchor.bottom + GAP_PX, h - panel.height);
-  }
-  return { left, top };
+  const besideTop = clamp(anchor.top + panel.height <= h - GAP_PX ? anchor.top : anchor.bottom - panel.height, h - panel.height);
+  if (anchor.right + GAP_PX + panel.width <= w - GAP_PX) return { left: anchor.right + GAP_PX, top: besideTop };
+  if (anchor.left - GAP_PX - panel.width >= GAP_PX) return { left: anchor.left - GAP_PX - panel.width, top: besideTop };
+  const left = clamp(anchor.left, w - panel.width);
+  const below = anchor.bottom + GAP_PX;
+  const above = anchor.top - GAP_PX - panel.height;
+  if (below + panel.height <= h - GAP_PX) return { left, top: below };
+  if (above >= GAP_PX) return { left, top: above };
+  return { left, top: clamp(h - anchor.bottom >= anchor.top ? below : above, h - panel.height) };
 }
 
 /**
  * The details of one thing, anchored beside it from `sm` up: a non-modal native `<dialog>` (opened with `show()`, so
  * the page stays usable) rendered into `document.body`, 20rem wide, at most 32rem tall (and the window's height less
  * 8px each side), so it can sit beside its anchor (see `place`), with a header (the whole title and a close icon
- * button) over a body that scrolls, and an optional `footer` pinned under the body. Below `sm` it is a `ModalPanel`
+ * button) over a body that keeps its content height and scrolls only past the max height, and an optional `footer`
+ * pinned under the body. A Popover opened from inside another (an event in a day's list) stacks over it: a press in
+ * the later one does not close the earlier, and Esc closes the top one only. Below `sm` it is a `ModalPanel`
  * (a sheet over the page) with the same whole title and body. Esc, the close button and a press outside it (not on the
  * anchor, which toggles it itself) close it; focus goes into its body on open and back to the anchor on close, unless
  * the owner moved it elsewhere (pressing another chip).
@@ -109,14 +112,17 @@ function AnchoredPanel({ anchor, title, onClose, children, footer }: PopoverProp
     const el = ref.current;
     if (!el) return;
     el.querySelector<HTMLElement>("[data-panel-body]")?.focus({ preventScroll: true });
+    // The popovers open now, in the order they opened (each is appended to body); the last is on top.
+    const open = () => [...document.querySelectorAll("dialog[data-popover][open]")];
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || open().at(-1) !== el) return;
       e.preventDefault();
       close.current();
     };
     const onDown = (e: PointerEvent) => {
       const target = e.target as Node;
-      if (!el.contains(target) && !anchor.current?.contains(target)) close.current();
+      const later = open().slice(open().indexOf(el) + 1);
+      if (!el.contains(target) && !anchor.current?.contains(target) && !later.some((p) => p.contains(target))) close.current();
     };
     addEventListener("keydown", onKey);
     addEventListener("pointerdown", onDown);
@@ -151,7 +157,9 @@ function AnchoredPanel({ anchor, title, onClose, children, footer }: PopoverProp
           <X aria-hidden className="size-4" />
         </Button>
       </header>
-      <div data-panel-body tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3 text-sm outline-none">
+      {/* Its content height (flex: 0 1 auto), shrinking to the max height: never flex-1, whose zero basis Safari and the
+          cmux browser take as the body's height, drawing it 24px tall under a scrollbar (owner #92). */}
+      <div data-panel-body tabIndex={-1} className="min-h-0 flex-initial overflow-y-auto overscroll-contain px-4 py-3 text-sm outline-none">
         {children}
       </div>
       {footer !== undefined && <footer data-panel-footer className="shrink-0 border-t border-border px-4 py-2 text-sm">{footer}</footer>}
