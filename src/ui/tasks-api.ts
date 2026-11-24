@@ -58,7 +58,8 @@ async function shown<T extends { title: string; body?: string | null }>(w: Withh
  * and Upcoming, and `calendar`, each source's last sync time and whether its last sync failed. Each task row carries
  * `projects`, the slugs of its active task projects, and `active_projects` lists the active projects (slug and name)
  * for the page's project switcher, and `close_reason`, a linked task's item's close reason (open or done) when it closed without a merge
- * (closeReasons; else null), and `open_sub_tasks`, how many open sub-tasks it has over every stored task (counted before the
+ * (closeReasons; else null), `reject_reason` (an open task whose item was rejected with no replacement, closeReasons), `link_note`
+ * (`Moved from wi_…` on a task that followed its rejected item's replacement; else null), and `open_sub_tasks`, how many open sub-tasks it has over every stored task (counted before the
  * project filter), so the delete dialog knows before it opens. With `project` (a slug, `?project=`) the views hold only the tasks, open or done, linked to
  * that project: 400 for a value that is not a slug or an archived project, 404 for an unknown one. Reads the stored
  * copy only: no source is called and nothing is written. `csrf_token` and `can_build` for Build this (null and false
@@ -73,9 +74,12 @@ export async function readTasks(d: UiDeps, project: string | null = null): Promi
   const done = (await d.store.listDoneTasks(doneWindow(now, null))).tasks;
   const listed = await shown(w, [...await d.store.listTasks(TASK_LIST_LIMIT), ...done]);
   const slugs = await d.store.listTaskProjectSlugs(listed.map((t) => t.id));
-  const reasons = await closeReasons(d, listed);
+  const reasons = await closeReasons(d, w, listed);
   const subs = await d.store.countOpenSubTasks();
-  const rows = listed.map((t) => ({ ...t, projects: slugs[t.id] ?? [], close_reason: reasons.get(t.id) ?? null, open_sub_tasks: subs[t.id] ?? 0 }));
+  const rows = listed.map((t) => ({
+    ...t, projects: slugs[t.id] ?? [], close_reason: reasons.get(t.id)?.close_reason ?? null, reject_reason: reasons.get(t.id)?.reject_reason ?? null,
+    link_note: (t as Task & { link_note?: string | null }).link_note ?? null, open_sub_tasks: subs[t.id] ?? 0,
+  }));
   const kept = project === null ? rows : rows.filter((t) => t.projects.includes(project));
   const active_projects = await Promise.all((await d.store.listProjects("active")).map(async (p) => ({ slug: p.slug, name: (await w.plain(p.name)).text })));
   const calendar = await readCalendar(storeSql(d.store));
@@ -92,19 +96,27 @@ export async function readTasks(d: UiDeps, project: string | null = null): Promi
 }
 
 /**
- * The close reason of each linked task's work item, open or done, read from the item now (design 02-tasks: nothing is
- * stored on the task), only for an item closed without a merge; a merged item's row shows its state instead. An open
- * task's item closed as rejected or wont_do says so on the row.
+ * The close reason of each linked task's work item, open or done, read from the item now (design 02-tasks), only for an
+ * item closed without a merge; a merged item's row shows its state instead. An open task's item closed as rejected or
+ * wont_do says so on the row. An open task still linked to an item closed as rejected (no replacement took it, design
+ * 02-tasks-build) also gets `reject_reason`, the item's reject reason through the Withholder (`no reason given` when
+ * none was stored); else null.
  */
-async function closeReasons(d: UiDeps, tasks: readonly Task[]): Promise<Map<string, CloseReason>> {
-  const out = new Map<string, CloseReason>();
+async function closeReasons(d: UiDeps, w: Withholder, tasks: readonly Task[]): Promise<Map<string, { close_reason: CloseReason; reject_reason: string | null }>> {
+  const out = new Map<string, { close_reason: CloseReason; reject_reason: string | null }>();
   for (const t of tasks) {
     if (t.work_item_id === null) continue;
     const item = await d.store.getWorkItem(t.work_item_id);
-    if (item?.stage === "CLOSED" && item.close_reason !== null && item.merge_sha === null) out.set(t.id, item.close_reason);
+    if (item?.stage !== "CLOSED" || item.close_reason === null || item.merge_sha !== null) continue;
+    const rejected = item.close_reason === "rejected" && t.done_at === null;
+    const reason = item.spec_feedback?.trim() || NO_REASON;
+    out.set(t.id, { close_reason: item.close_reason, reject_reason: rejected ? (await w.plain(reason)).text : null });
   }
   return out;
 }
+
+/** `reject_reason` of a task whose item was rejected with an empty reason. */
+const NO_REASON = "no reason given";
 
 /**
  * Why a `?project=` filter is refused, or null for none or an active project: 400 for a value that is not a slug or an
