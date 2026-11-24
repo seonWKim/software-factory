@@ -102,6 +102,18 @@ export interface ItemCommand {
   reason: string | null;
   /** The item stopped the same way three times or more: its main action is Revise or Reject, not Retry (primaryOf). */
   repeated_stop?: boolean;
+  /**
+   * Approve only, on an item over its size caps (design 04-split-specs): the size, the caps in force and the proposed
+   * one-time cap, so the Needs you Approve asks for the note the controller would refuse it without. Absent otherwise.
+   */
+  over_cap?: OverCapSizes;
+}
+
+/** An over-cap Approve's figures, as the server's OverCapSizes (src/core/size-cap.ts). */
+export interface OverCapSizes {
+  sizes: { lines: number; files: number };
+  caps: { max_diff_lines: number; max_diff_files: number };
+  one_time_cap: { max_diff_lines: number; max_diff_files: number };
 }
 
 /** A stored proposal with its pending commands, each as its typed line and the item it is for. */

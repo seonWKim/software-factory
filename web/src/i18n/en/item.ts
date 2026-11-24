@@ -1,4 +1,4 @@
-// English text, area: attach. A key's prefix (before its first dot) belongs to this file only.
+// English text, areas: attach, overCap. A key's prefix (before its first dot) belongs to this file only.
 export const item = {
   "attach.addContext": "Add context",
   "attach.attach": "Attach",
@@ -18,4 +18,10 @@ export const item = {
   "attach.label": "Label (optional)",
   "attach.attached": "Attached",
   "attach.readFailed": "The file could not be read or sent.",
+  "overCap.consequence": "This change is over the cap, so approving it needs a note saying why. Approving sets the one-time cap for this item only.",
+  "overCap.size": "Size",
+  "overCap.cap": "Cap",
+  "overCap.oneTimeCap": "One-time cap",
+  "overCap.lines": "{lines} lines in {files} files",
+  "overCap.note": "Why approve it over the cap",
 } as const;

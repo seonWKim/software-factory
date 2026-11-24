@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
 import { Markdown } from "../web/src/components/ui/markdown.js";
+import { NeedActions } from "../web/src/views/item-commands.js";
 
 // The item page (design §9, issue #313): a split parent lists its phases and a phase links back to its parent;
 // the spec triage wrote sits behind "spec written (show)" and renders as markdown, never as escaped JSON; the
@@ -871,5 +872,61 @@ describe("item page: About (the request and the approved spec)", () => {
     const summary = about.querySelector<HTMLElement>("[data-about-request] p")!;
     expect(summary.className).toContain("break-words");
     expect(about.className).toContain("min-w-0");
+  });
+});
+
+describe("Needs you: an over-cap Approve opens the note dialog (design 09-dashboard-item-commands, 2026-11-24)", () => {
+  const OVER = { sizes: { lines: 5000, files: 60 }, caps: { max_diff_lines: 1500, max_diff_files: 40 }, one_time_cap: { max_diff_lines: 5883, max_diff_files: 71 } };
+  const approve = (extra: object = {}) => ({ name: "approve", usage: "/approve", description: "d", allowed: true, reason: null, ...extra });
+  const reject = { name: "reject", usage: "/reject", description: "d", allowed: true, reason: null };
+
+  /** Renders a Needs-you row's actions with `commands`; returns what it sent. */
+  function row(commands: object[]) {
+    const sent: [string, string][] = [];
+    const cmd = { on: true, busy: false, local: {}, send: async (c: string, n: string) => (sent.push([c, n]), true) };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <NeedActions id="wi_1" title="Big change" commands={commands} pr={null} group="approve" checking={false} cmd={cmd} allow={[]} />
+      </QueryClientProvider>,
+    );
+    return sent;
+  }
+  const menuApprove = async () => {
+    fireEvent.click(screen.getByRole("button", { name: "More commands" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Approve" }));
+  };
+
+  it("the menu's Approve opens the dialog with the size, the cap, the one-time cap and a note; Confirm waits for the note and sends it trimmed", async () => {
+    const sent = row([approve({ over_cap: OVER }), reject]);
+    await menuApprove();
+    const dialog = await screen.findByRole("dialog", { name: "Approve Big change" });
+    expect(sent).toEqual([]);
+    const facts = dialog.querySelector("[data-over-cap]")!.textContent;
+    expect(facts).toContain("5000 lines in 60 files");
+    expect(facts).toContain("1500 lines in 40 files");
+    expect(facts).toContain("5883 lines in 71 files");
+    const confirm = within(dialog).getByRole("button", { name: "Approve" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Why approve it over the cap" }), { target: { value: "   " } });
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Why approve it over the cap" }), { target: { value: "  one generated table  " } });
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(sent).toEqual([["approve", "one generated table"]]));
+  });
+
+  it("the p key's hidden button opens the same dialog and sends nothing", async () => {
+    const sent = row([approve({ over_cap: OVER })]);
+    fireEvent.click(document.querySelector<HTMLElement>("[data-shortcut=p]")!);
+    expect(await screen.findByRole("dialog", { name: "Approve Big change" })).toBeTruthy();
+    expect(sent).toEqual([]);
+  });
+
+  it("an Approve that is not over the caps sends at once, with no dialog", async () => {
+    const sent = row([approve(), reject]);
+    await menuApprove();
+    await waitFor(() => expect(sent).toEqual([["approve", ""]]));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
