@@ -20,7 +20,6 @@ import { RULE_WRITES, ownerOf } from "./rules-api.js";
 import { SCHEDULE_DRAFT_PATHS, SCHEDULE_WRITE_PATHS, postSchedule, postScheduleDraft } from "./schedules-api.js";
 import { writeSchedule } from "../core/schedule.js";
 import { draftSchedule, improveSchedule } from "../core/schedule-draft.js";
-import { uiModel } from "./deps.js";
 import { randomUUID } from "node:crypto";
 import { ROUTINE_WRITE_PATHS, postRoutine } from "./routines-api.js";
 import { writeRoutine } from "../core/routines.js";
@@ -73,7 +72,7 @@ const WRITE_ROUTES: readonly WriteRoute[] = [
     matches: (d, p) => Object.hasOwn(SCHEDULE_DRAFT_PATHS, p) && d.pauses !== undefined,
     token: pausesToken,
     run: (d, p, b) => postScheduleDraft(d, SCHEDULE_DRAFT_PATHS[p]!, b, {
-      draft: draftSchedule, improve: improveSchedule, owner: (does) => ownerOf(d, d.pauses!, does), llm: uiModel(d), newId: randomUUID, log: d.pauses!.log,
+      draft: draftSchedule, improve: improveSchedule, owner: (does) => ownerOf(d, d.pauses!, does), llm: d.settings?.ask?.llm ?? null, newId: randomUUID, log: d.pauses!.log,
     }),
   },
   {

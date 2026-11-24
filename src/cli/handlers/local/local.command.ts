@@ -67,8 +67,9 @@ async function draftParts(loaded: ConstructorParameters<typeof Plugins>[0]) {
   return { llm, scanner: await p.scanner(secrets), ...(process.stdin.isTTY ? { ask: terminalAsk } : {}) };
 }
 
-/** A y/N question read from the terminal: only y or yes is a yes. */
-async function terminalAsk(question: string): Promise<boolean> {
+/** A y/N question read from the terminal, after the lines it is about: only y or yes is a yes. */
+async function terminalAsk(shown: readonly string[], question: string): Promise<boolean> {
+  for (const line of shown) console.log(line);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     return /^y(es)?$/i.test((await rl.question(`${question} [y/N] `)).trim());

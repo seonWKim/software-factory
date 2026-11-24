@@ -200,8 +200,8 @@ export interface DraftTerminal {
   llm?: LLMProvider | null;
   /** The egress scan of the words and the model's text. */
   scanner?: Pick<EgressScanner, "scan">;
-  /** A y/N question on the terminal; absent when stdin is no terminal. */
-  ask?: (question: string) => Promise<boolean>;
+  /** A y/N question on the terminal, which prints `shown` (the proposal) before it asks; absent when stdin is no terminal. */
+  ask?: (shown: readonly string[], question: string) => Promise<boolean>;
 }
 
 interface DraftCliDeps extends Omit<DraftDeps, "llm" | "scanner">, DraftTerminal {
@@ -223,10 +223,14 @@ async function runDraftCommand(d: DraftCliDeps, c: DraftCommand, user: UserId, i
   if (!d.llm || !d.scanner) return fail(`schedule ${c.verb} refused: ${NO_MODEL}`);
   const deps: DraftDeps = { llm: d.llm, scanner: d.scanner, newId: d.newId, ...(d.zone ? { zone: d.zone } : {}) };
   const now = () => new Date(d.store.scheduleNow());
+  // The lines still to print after the answer: `shown` unless the ask printed it before its question.
+  let unshown: string[] = [];
   const confirm = async (shown: string[], question: string): Promise<{ code: number; lines: string[] } | null> => {
+    unshown = shown;
     if (c.yes) return null;
     if (!d.ask) return fail(...shown, "nothing was stored: no terminal to ask y/N; run it again with --yes as the last word");
-    return (await d.ask(question)) ? null : { code: 0, lines: [...shown, "nothing was stored"] };
+    unshown = [];
+    return (await d.ask(shown, question)) ? null : { code: 0, lines: ["nothing was stored"] };
   };
   if (c.verb === "draft") {
     const r = await draftSchedule(c.words, deps);
@@ -236,7 +240,7 @@ async function runDraftCommand(d: DraftCliDeps, c: DraftCommand, user: UserId, i
     const asked = await confirm(shown, `Add schedule ${r.value.id}?`);
     if (asked) return asked;
     const added = await createSchedule(d.store, r.value.id, f, user, now());
-    return added.ok ? { code: 0, lines: [...shown, `added ${scheduleLine(added.schedule)}`] } : fail(...shown, `schedule draft refused: ${added.problem}`);
+    return added.ok ? { code: 0, lines: [...unshown, `added ${scheduleLine(added.schedule)}`] } : fail(...unshown, `schedule draft refused: ${added.problem}`);
   }
   const r = await improveSchedule(c.id, { ...deps, store: d.store });
   if (!r.ok) return fail(`schedule improve ${c.id} refused: ${r.reason}`);
@@ -244,5 +248,5 @@ async function runDraftCommand(d: DraftCliDeps, c: DraftCommand, user: UserId, i
   const asked = await confirm(shown, `Write the new text to ${c.id}?`);
   if (asked) return asked;
   const edited = await editSchedule(d.store, c.id, { body: r.value.new }, now());
-  return edited.ok ? { code: 0, lines: [...shown, `edited ${scheduleLine(edited.schedule)}`] } : fail(...shown, `schedule improve ${c.id} refused: ${edited.problem}`);
+  return edited.ok ? { code: 0, lines: [...unshown, `edited ${scheduleLine(edited.schedule)}`] } : fail(...unshown, `schedule improve ${c.id} refused: ${edited.problem}`);
 }

@@ -13,7 +13,7 @@ import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm
 import { HealthMonitor } from "../src/ui/health.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
 import { type UiRequest, respond } from "../src/ui/server.js";
-import { newCsrfToken } from "../src/ui/settings-api.js";
+import { type UiSettings, newCsrfToken } from "../src/ui/settings-api.js";
 import { POST_ONLY } from "../src/ui/write-routes.js";
 import { silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
@@ -38,7 +38,14 @@ async function setup(principal: UserId = OWNER, llm?: LLMProvider | null) {
     },
   }) as FactoryStore;
   const pauses: UiPauses = { principal: async () => principal, authorize: async () => ({ allow: true }), csrfToken: newCsrfToken(), log: silent };
-  const d: PauseDeps = { store: watched, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock), pauses, ...(llm !== undefined ? { llm } : {}) };
+  const d: PauseDeps = { store: watched, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock), pauses };
+  // The routes' model is the Data page's Ask model (compose.ts buildUiParts fills settings.ask).
+  if (llm !== undefined) {
+    d.settings = {
+      base: { file: {}, layers: { defaults: {}, projects: {} }, max_workers: 8 } as unknown as UiSettings["base"],
+      repo: { owner: "o", name: "r" }, actor: OWNER, resolveProject: async () => null, csrfToken: newCsrfToken(), ask: { llm, log: silent },
+    };
+  }
   const send = async (verb: string, body: unknown, over: Partial<UiRequest> = {}) => {
     const r = await respond(d, {
       method: "POST", url: `/api/v1/schedules/${verb}`, host: HOST, origin: ORIGIN, contentType: "application/json", csrfToken: pauses.csrfToken, body: JSON.stringify(body), ...over,

@@ -5,7 +5,6 @@ import { type Run, outcomeTokens } from "../core/types.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
-import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { SharedStorage } from "../interfaces/shared-storage.js";
 import type { UiChanges } from "./changes.js";
 import type { UiCommands } from "./commands.js";
@@ -56,15 +55,7 @@ export interface UiDeps {
   tacit?: UiTacit;
   /** A skill draft's verdicts on the Rules page (rules-api.ts writeSkillVerdict): compose.ts buildUiParts. Absent: each is refused. */
   skillImprove?: UiSkillImprove;
-  /**
-   * The configured model (plugins.llm) for a schedule's Draft and Improve (schedules-api.ts). Absent or null: the Data
-   * page's Ask model, the same plugin compose.ts buildUiParts builds (settings.ask.llm), else both answer 503.
-   */
-  llm?: LLMProvider | null;
 }
-
-/** The UI process's model: `llm`, else the Data page's Ask model (the same plugin, built by buildUiParts); null: none. */
-export const uiModel = (d: Pick<UiDeps, "llm" | "settings">): LLMProvider | null => d.llm ?? d.settings?.ask?.llm ?? null;
 
 /**
  * The skill draft verdicts (src/core/skill-improve.ts), passed in by the composition root as the eval functions are,

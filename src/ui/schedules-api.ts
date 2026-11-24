@@ -7,7 +7,7 @@
 // check (rules-api.ts ownerOf, passed in, 403); a delete of an unknown ID is a 404; any other refusal of the core is a
 // 409 with its reason; else 200 with the schedule (a delete's as it was before it went). POST /api/v1/schedules/draft
 // ({ words }) and /improve ({ id }) pass the same guards, a 400 for a bad body, then the owner check (403) before any
-// model call; no model is a 503, a refusal of the core (src/core/schedule-draft.ts) a 409 with its reason; else 200 with
+// model call; the model is the Data page's Ask model (settings.ask.llm, compose.ts buildUiParts), and none is a 503, a refusal of the core (src/core/schedule-draft.ts) a 409 with its reason; else 200 with
 // the proposal (a draft's ID and add fields, or improve's old and new text). Neither stores anything.
 
 import type { ScheduleFields, ScheduleWrite, writeSchedule } from "../core/schedule.js";

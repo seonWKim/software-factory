@@ -315,13 +315,13 @@ function fakeModel(answer: Record<string, unknown>): LLMProvider & { calls: LLMR
   };
 }
 
-/** A y/N ask that answers `yes` and records each question. */
+/** A y/N ask that answers `yes` and records each question, and the lines printed before it. */
 function askSays(yes: boolean) {
-  const asked: string[] = [];
-  return { asked, ask: async (q: string) => (asked.push(q), yes) };
+  const asked: string[] = [], shownFirst: string[][] = [];
+  return { asked, shownFirst, ask: async (shown: readonly string[], q: string) => (shownFirst.push([...shown]), asked.push(q), yes) };
 }
 
-async function drafting(answer: Record<string, unknown>, ask?: (q: string) => Promise<boolean>) {
+async function drafting(answer: Record<string, unknown>, ask?: (shown: readonly string[], q: string) => Promise<boolean>) {
   const llm = fakeModel(answer);
   const s = await setup({ llm, scanner: new PatternEgressScanner(async () => []), ...(ask ? { ask } : {}) });
   return { ...s, llm };
@@ -340,12 +340,13 @@ describe("parsing `factory schedule draft` and `improve`", () => {
 });
 
 describe("factory schedule draft", () => {
-  it("prints the proposal and asks y/N; y adds it", async () => {
-    const { asked, ask } = askSays(true);
+  it("prints the proposal before it asks y/N; y adds it", async () => {
+    const { asked, shownFirst, ask } = askSays(true);
     const { store, cli } = await drafting(DRAFTED, ask);
     const r = await cli(["draft", ...WORDS.split(" ")]);
     expect(r.code).toBe(0);
-    expect(r.lines).toEqual(expect.arrayContaining(["proposed sch_id", "  cadence: daily 09:00", `  zone: ${machineZone()}`, "  action: feedback", `  text: ${DRAFTED.text}`]));
+    expect(shownFirst).toEqual([expect.arrayContaining(["proposed sch_id", "  cadence: daily 09:00", `  zone: ${machineZone()}`, "  action: feedback", `  text: ${DRAFTED.text}`])]);
+    expect(r.lines).not.toContain("proposed sch_id"); // printed once, before the question
     expect(r.lines.at(-1)).toMatch(/^added sch_id\tDesign review\t/);
     expect(asked).toEqual(["Add schedule sch_id?"]);
     expect(await store.listSchedules()).toEqual([
@@ -354,8 +355,9 @@ describe("factory schedule draft", () => {
   });
 
   it("n, or no terminal without --yes, stores nothing", async () => {
-    const no = await drafting(DRAFTED, askSays(false).ask);
-    expect(await no.cli(["draft", ...WORDS.split(" ")])).toMatchObject({ code: 0, lines: expect.arrayContaining(["proposed sch_id", "nothing was stored"]) });
+    const n = askSays(false), no = await drafting(DRAFTED, n.ask);
+    expect(await no.cli(["draft", ...WORDS.split(" ")])).toMatchObject({ code: 0, lines: ["nothing was stored"] });
+    expect(n.shownFirst).toEqual([expect.arrayContaining(["proposed sch_id"])]);
     expect(await no.store.listSchedules()).toEqual([]);
     const tty = await drafting(DRAFTED);
     const r = await tty.cli(["draft", ...WORDS.split(" ")]);
@@ -385,20 +387,22 @@ describe("factory schedule improve", () => {
     const a = yes === undefined ? undefined : askSays(yes);
     const s = await drafting({ text: REVISED }, a?.ask);
     await s.cli([...ADD.map((w) => (w === "build" ? "feedback" : w)), "--body", "look at the design"]);
-    return { ...s, asked: a?.asked ?? [] };
+    return { ...s, asked: a?.asked ?? [], shownFirst: a?.shownFirst ?? [] };
   }
   const prompt = async (store: ScheduleStore) => (await stored(store))!.action!.settings.prompt;
 
-  it("prints the old and new text, asks y/N, and edits only on y", async () => {
+  it("prints the old and new text before it asks y/N, and edits only on y", async () => {
     const yes = await improving(true);
     const r = await yes.cli(["improve", "sch_fb"]);
     expect(r.code).toBe(0);
-    expect(r.lines.slice(0, 4)).toEqual(["old:", "  look at the design", "new:", `  ${REVISED}`]);
+    expect(yes.shownFirst).toEqual([["old:", "  look at the design", "new:", `  ${REVISED}`]]);
+    expect(r.lines.at(-1)).toMatch(/^edited sch_fb\t/);
     expect(yes.asked).toEqual(["Write the new text to sch_fb?"]);
     expect(await prompt(yes.store)).toBe(REVISED);
 
     const no = await improving(false);
-    expect(await no.cli(["improve", "sch_fb"])).toMatchObject({ code: 0, lines: expect.arrayContaining(["old:", "new:", "nothing was stored"]) });
+    expect(await no.cli(["improve", "sch_fb"])).toMatchObject({ code: 0, lines: ["nothing was stored"] });
+    expect(no.shownFirst).toEqual([expect.arrayContaining(["old:", "new:"])]);
     expect(await prompt(no.store)).toBe("look at the design");
 
     const tty = await improving();
