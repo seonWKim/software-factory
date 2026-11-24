@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { SNOOZE_MS, type RoutineInput, addRoutine, fingerprint } from "../src/core/routines.js";
+import { ROUTINES, SNOOZE_MS, type RoutineInput, addRoutine, carrierItem, fingerprint, routineRunKey } from "../src/core/routines.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { newStore } from "./helpers/store.js";
+import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // The routine store (src/impl/store/sql/routines.ts) behind addRoutine: a routine's first slot comes from the
 // injected Clock; a routine with both a schedule and a trigger, or neither, is refused and stores nothing;
@@ -56,5 +56,45 @@ describe("routines in the store", () => {
     expect((await store.listRoutineSuggestions("rt_1"))[0]).toMatchObject({ state: "snoozed" });
     clock.advance(1);
     expect((await store.listRoutineSuggestions("rt_1"))[0]).toMatchObject({ state: "pending", snoozed_until: "2026-12-07T10:00:00.000Z" });
+  });
+});
+
+describe("editing and deleting a routine in the store", () => {
+  it("editRoutine writes only the fields given, and only while the marks still equal the ones read", async () => {
+    const clock = new FakeClock("2026-11-23T10:00:00.000Z");
+    const { store } = await newStore(clock);
+    const a = await addRoutine(store, input(), clock.now());
+    if (!a.ok) throw new Error(a.problem);
+    const read = { next_due_at: a.routine.next_due_at, last_run_at: a.routine.last_run_at };
+    expect(await store.editRoutine("rt_1", { ...read, last_run_at: "2026-11-23T09:00:00.000Z" as never }, { name: "Other" })).toBe(false);
+    expect(await store.getRoutine("rt_1")).toEqual(a.routine);
+    expect(await store.editRoutine("rt_1", read, {})).toBe(false);
+    expect(await store.editRoutine("nope", read, { name: "Other" })).toBe(false);
+    const fields = { name: "Licence", schedule: null, trigger: "merge" as const, url: "https://example.com/", daily_cap_usd: null, next_due_at: null };
+    expect(await store.editRoutine("rt_1", read, fields)).toBe(true);
+    expect(await store.getRoutine("rt_1")).toEqual({ ...a.routine, ...fields });
+    // The marks moved: an edit on the old marks loses.
+    expect(await store.editRoutine("rt_1", read, { name: "Again" })).toBe(false);
+    expect(await store.editRoutine("rt_1", { next_due_at: null, last_run_at: null }, { schedule: { kind: "interval", spec: "60" }, trigger: null, zone: "Asia/Seoul" })).toBe(true);
+    expect(await store.getRoutine("rt_1")).toMatchObject({ schedule: { kind: "interval", spec: "60" }, trigger: null, zone: "Asia/Seoul", name: "Licence", instruction: "Check the license." });
+  });
+
+  it("deleteRoutine removes the routine and its suggestions, keeps other routines' suggestions and its runs", async () => {
+    const clock = new FakeClock("2026-11-23T10:00:00.000Z");
+    const { store } = await newStore(clock);
+    await addRoutine(store, input(), clock.now());
+    await addRoutine(store, input({ id: "rt_2" }), clock.now());
+    const r = (await store.getRoutine("rt_1"))!;
+    const { item } = await store.createWorkItem(carrierItem(r, PROJECT_KEY), ROUTINES);
+    const { run } = await store.enqueueRun({ work_item_id: item.id, kind: "routine", idempotency_key: routineRunKey("rt_1", "s"), input: { routine: { instruction: r.instruction, url: null } } });
+    await store.addRoutineSuggestions("rt_1", run.id, [{ fingerprint: "f", text: "a" }]);
+    await store.addRoutineSuggestions("rt_2", "run_2", [{ fingerprint: "f", text: "a" }]);
+    expect(await store.deleteRoutine("rt_1")).toBe(true);
+    expect(await store.getRoutine("rt_1")).toBeNull();
+    expect(await store.listRoutineSuggestions("rt_1")).toEqual([]);
+    expect((await store.listRoutineSuggestions("rt_2")).map((s) => s.text)).toEqual(["a"]);
+    expect((await store.listRuns(item.id)).map((x) => x.id)).toContain(run.id);
+    expect(await store.deleteRoutine("rt_1")).toBe(false);
+    expect((await store.listRoutines()).map((x) => x.id)).toEqual(["rt_2"]);
   });
 });

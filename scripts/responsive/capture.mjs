@@ -4,8 +4,9 @@
 // server and opens headless Chrome through the check's driver (cdp.mjs). Nothing is written to disk but the fixture's
 // and Chrome's temp folders, both removed on exit: every image goes back to the worker on stdout.
 //
-// Protocol, one JSON object per line. In, on stdin: the shots, {"shoot": {path, width, height, theme}}, where a path's
-// ":item" and ":run" stand for the fixture's item and run IDs. Out first: {"ready": true} or {"error", "unavailable": true};
+// Protocol, one JSON object per line. In, on stdin: the shots, {"shoot": {path, width, height, theme, open?}}, where a path's
+// ":item" and ":run" stand for the fixture's item and run IDs, and `open` is the value of the `data-capture-open` attribute of
+// the button to click once the page is drawn, to open a dialog (the shot fails, naming it, when no dialog opens). Out first: {"ready": true} or {"error", "unavailable": true};
 // then one line per shot, in order: {"png": <base64>} or {"error"}. stdin closing ends the script.
 //
 // Each shot is the whole page (decision 2026-11-24): the page is laid out at the shot's fixed height, then the window
@@ -25,7 +26,27 @@ const FULL_HEIGHT = `(() => {
   const column = root ? window.innerHeight - root.clientHeight + root.scrollHeight : 0;
   return Math.ceil(Math.max(document.documentElement.scrollHeight, column));
 })()`;
+/** Whether a dialog is open: the dashboard's modals are native <dialog> elements mounted open. */
+const DIALOG_OPEN = `Boolean(document.querySelector("dialog[open]"))`;
 const frames = `new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))`;
+
+/**
+ * Clicks the button marked `data-capture-open="<name>"` (waiting for the page to draw it) and waits for a dialog to be
+ * drawn and its reads to settle; throws a reason when there is no button or no dialog within five seconds.
+ */
+async function openDialog(page, name) {
+  const click = `(() => { const b = document.querySelector(${JSON.stringify(`[data-capture-open="${name}"]:not([disabled])`)}); if (b) b.click(); return Boolean(b); })()`;
+  let clicked = false;
+  for (let i = 0; i < 50; i++) {
+    clicked ||= await page.eval(click);
+    if (clicked && (await page.eval(DIALOG_OPEN))) {
+      await page.idle();
+      return page.eval(frames);
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(`the ${name} dialog did not open${clicked ? "" : ": no enabled button is marked for it"}`);
+}
 
 async function main() {
   const chrome = findChrome();
@@ -55,6 +76,7 @@ async function main() {
         await metrics(shoot.height);
         await page.goto(`${fixture.url}/app/${at(shoot.path)}`);
         await page.eval(frames);
+        if (shoot.open) await openDialog(page, shoot.open);
         const full = Math.max(shoot.height, await page.eval(FULL_HEIGHT));
         if (full > shoot.height) {
           await metrics(full);

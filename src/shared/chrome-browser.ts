@@ -46,7 +46,7 @@ export function chromeBrowser(env: Readonly<Record<string, string | undefined>> 
       if (pagesTs.exit_code !== 0) throw new CaptureUnavailable(`the checkout has no ${PAGES_TS}`);
       const pages = capturePages(pagesTs.stdout);
       const shots = shotsOf(pages);
-      const stdin = shots.map((s) => `${JSON.stringify({ shoot: { path: s.page.path, width: s.width, height: s.height, theme: s.theme } })}\n`).join("");
+      const stdin = shots.map((s) => `${JSON.stringify({ shoot: { path: s.page.path, ...(s.page.open ? { open: s.page.open } : {}), width: s.width, height: s.height, theme: s.theme } })}\n`).join("");
       const r = await exec(["node", "--disable-warning=ExperimentalWarning", CAPTURE_SCRIPT], { env: cmdEnv, stdin, signal });
       const [first, ...replies] = r.stdout.split("\n").filter((l) => l.trim() !== "").map(parse);
       const exited = `the capture script exited${r.stderr.trim() ? `: ${r.stderr.trim().split("\n").at(-1)}` : ""}`;
@@ -56,7 +56,7 @@ export function chromeBrowser(env: Readonly<Record<string, string | undefined>> 
       const session: BrowserSession = {
         pages,
         async shoot(page, at) {
-          const reply = replies[shots.findIndex((s) => s.page.path === page.path && s.width === at.width && s.theme === at.theme)];
+          const reply = replies[shots.findIndex((s) => s.page.name === page.name && s.width === at.width && s.theme === at.theme)];
           if (!reply) throw new Error(exited);
           if (typeof reply.png !== "string") throw new Error(reply.error ?? "no image");
           return Buffer.from(reply.png, "base64");

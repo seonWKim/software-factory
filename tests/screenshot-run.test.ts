@@ -73,7 +73,7 @@ describe("the capture set", () => {
     const storage = new MemoryStorage();
     const out = await captureAll(f.browser, storage, { item_id: "it1", run_id: "run1", exec: noExec, signal });
     expect(out.reason).toBeNull();
-    const pages = ["floor", "items", "settings", "item", "transcript"];
+    const pages = ["floor", "items", "settings", "item", "transcript", "settings-integrations", "settings-advanced"];
     expect([...new Set(out.captures.map((c) => c.page))]).toEqual(pages);
     for (const page of pages) {
       expect(out.captures.filter((c) => c.page === page).map((c) => `${c.width}-${c.theme}`)).toEqual(["390-light", "390-dark", "1280-light", "1280-dark"]);
@@ -119,7 +119,57 @@ describe("the capture set", () => {
     const real = await readFile(join(import.meta.dirname, "..", "web", "src", "pages.ts"), "utf8");
     const pages = capturePages(real).map((p) => p.name);
     expect(pages).toEqual(expect.arrayContaining(["items", "settings", "item", "transcript"]));
-    expect(pages.slice(-2)).toEqual(["item", "transcript"]);
+    // Every sidebar page keeps its default-URL capture, then the item and transcript pages, as before the tabs.
+    expect(pages.indexOf("transcript")).toBe(pages.indexOf("item") + 1);
+    expect(pages.slice(0, pages.indexOf("item"))).not.toContain("item");
+  });
+
+  it("adds one capture per non-default tab of each tabbed page, named <page>-<tab>, and the Evals dialog last", async () => {
+    const real = await readFile(join(import.meta.dirname, "..", "web", "src", "pages.ts"), "utf8");
+    const pages = capturePages(real);
+    const named = new Map(pages.map((p) => [p.name, p]));
+    const tabs = ["settings-integrations", "settings-advanced", "plugins-skills", "plugins-tools", "plugins-models", "health-runs", "health-cost", "health-review"];
+    expect(tabs.every((n) => named.has(n))).toBe(true);
+    expect(named.get("settings-integrations")).toEqual({ name: "settings-integrations", path: "settings?tab=integrations" });
+    expect(named.get("plugins-skills")?.open).toBeUndefined();
+    // A page's default tab keeps its existing capture and gets no second one.
+    expect(["settings-general", "plugins-mcp", "health-overview"].some((n) => named.has(n))).toBe(false);
+    expect(named.get("plugins-skills-evals")).toEqual({ name: "plugins-skills-evals", path: "plugins?tab=skills", open: "evals" });
+    expect(pages.at(-1)?.name).toBe("plugins-skills-evals");
+    // A checkout whose sidebar lacks a tabbed page has none of its tabs; a page with no tabs gains nothing.
+    expect(capturePages(PAGES_TS).map((p) => p.name).filter((n) => n.startsWith("plugins") || n.startsWith("health"))).toEqual([]);
+    expect(capturePages(PAGES_TS).filter((p) => p.path === "items" || p.path === "")).toEqual([{ name: "floor", path: "" }, { name: "items", path: "items" }]);
+  });
+
+  it("the Evals dialog is captured at 390 and 1280, light and dark, under its own name", async () => {
+    const real = await readFile(join(import.meta.dirname, "..", "web", "src", "pages.ts"), "utf8");
+    const session: BrowserSession = { pages: capturePages(real), async shoot() { return PNG; }, async close() {} };
+    const out = await captureAll({ async open() { return session; } }, new MemoryStorage(), { item_id: "it1", run_id: "run1", exec: noExec, signal });
+    expect(out.reason).toBeNull();
+    for (const page of ["settings-integrations", "plugins-skills", "plugins-skills-evals"]) {
+      expect(out.captures.filter((c) => c.page === page).map((c) => `${c.width}-${c.theme}`)).toEqual(["390-light", "390-dark", "1280-light", "1280-dark"]);
+    }
+    // The tab and its dialog differ in the key's page name, so neither overwrites the other.
+    expect(out.captures.find((c) => c.page === "plugins-skills-evals")?.key).toBe("it1/run1/plugins-skills-evals-390-light.png");
+  });
+
+  it("a shot with an open step carries it to the capture script, which clicks the marked button and fails the shot when no dialog opens", async () => {
+    const script = await readFile(join(import.meta.dirname, "..", "scripts", "responsive", "capture.mjs"), "utf8");
+    expect(script).toContain("data-capture-open");
+    expect(script).toContain("dialog[open]");
+    expect(script).toMatch(/did not open/);
+    // The step runs after the page is drawn and before its full height is measured.
+    expect(script.indexOf("openDialog(page, shoot.open)")).toBeGreaterThan(script.indexOf("page.goto("));
+    expect(script.indexOf("openDialog(page, shoot.open)")).toBeLessThan(script.indexOf("page.eval(FULL_HEIGHT)"));
+    const real = await readFile(join(import.meta.dirname, "..", "web", "src", "views", "plugins.tsx"), "utf8");
+    expect(real).toContain('data-capture-open="evals"');
+  });
+
+  it("the fixture seeds one imported skill with a SKILL.md and an eval suite, so the Skills tab has a row with Evals", async () => {
+    const fixture = await readFile(join(import.meta.dirname, "..", "scripts", "responsive", "fixture.mjs"), "utf8");
+    expect(fixture).toMatch(/SKILL\.md/);
+    expect(fixture).toMatch(/SkillRefsStore/);
+    expect(fixture).toMatch(/createSkillEvalSuite\(/);
   });
 });
 
@@ -175,10 +225,32 @@ describe("the Chrome browser", () => {
     const out = await captureAll(chromeBrowser(), storage, { item_id: "i", run_id: "r", exec: s.exec, signal });
     expect(s.calls.map((c) => c.cmd)).toEqual(["test -f scripts/responsive/capture.mjs", "cat web/src/pages.ts", "node --disable-warning=ExperimentalWarning scripts/responsive/capture.mjs"]);
     const shots = s.calls[2]!.stdin!.trim().split("\n").map((l) => JSON.parse(l) as { shoot: { path: string } });
-    expect(shots.map((x) => x.shoot.path)).toEqual(expect.arrayContaining(["", "items", "settings", "items/:item", "items/:item/runs/:run"]));
+    expect(shots.map((x) => x.shoot.path)).toEqual(expect.arrayContaining(["", "items", "settings", "items/:item", "items/:item/runs/:run", "settings?tab=integrations"]));
     expect(out.captures.map((c) => c.page)).toEqual(["floor", "floor", "floor", "floor", "items", "items", "items", "items"]);
     expect(out.reason).toBe("the capture of settings at 390px, light failed: boom");
     expect(Buffer.from(storage.data.get("i/r/items-1280-dark.png")!).toString()).toBe("items@1280dark");
+  });
+
+  it("sends a dialog shot's open step on stdin; a dialog that does not open fails that shot with its reason and keeps the captures before it", async () => {
+    const real = await readFile(join(import.meta.dirname, "..", "web", "src", "pages.ts"), "utf8");
+    let stdin = "";
+    const exec: RunExec = async (cmd, o) => {
+      if (cmd[0] === "test") return { exit_code: 0, stdout: "", stderr: "" };
+      if (cmd[0] === "cat") return { exit_code: 0, stdout: real, stderr: "" };
+      stdin = o.stdin ?? "";
+      const replies = stdin.trim().split("\n").map((l) => {
+        const { shoot } = JSON.parse(l) as { shoot: { open?: string } };
+        return line(shoot.open ? { error: `the ${shoot.open} dialog did not open` } : { png: Buffer.from("x").toString("base64") });
+      });
+      return { exit_code: 0, stdout: line({ ready: true }) + replies.join(""), stderr: "" };
+    };
+    const out = await captureAll(chromeBrowser(), new MemoryStorage(), { item_id: "i", run_id: "r", exec, signal });
+    const sent = stdin.trim().split("\n").map((l) => (JSON.parse(l) as { shoot: { path: string; open?: string } }).shoot);
+    expect(sent.filter((x) => x.open).map((x) => `${x.path}:${x.open}`)).toEqual(Array(4).fill("plugins?tab=skills:evals"));
+    expect(sent.filter((x) => !x.open).every((x) => !("open" in x))).toBe(true);
+    expect(out.reason).toBe("the capture of plugins-skills-evals at 390px, light failed: the evals dialog did not open");
+    expect(out.captures.map((c) => c.page)).toContain("plugins-skills");
+    expect(out.captures.map((c) => c.page)).not.toContain("plugins-skills-evals");
   });
 
   it("a script that reports Chrome missing, a checkout with no script, or a script that stops short is a reason", async () => {
@@ -306,7 +378,7 @@ describe("the screenshot run and its review", () => {
     await f.opened[0]!(["echo", "in-sandbox"], { env: {} });
     expect(h.sandbox.commands).toContain("echo in-sandbox");
     expect(data).toMatchObject({ reason: null, review_run_id: run.input?.review_run_id });
-    expect((data.captures as unknown[]).length).toBe(5 * 4);
+    expect((data.captures as unknown[]).length).toBe(capturePages(PAGES_TS).length * 4);
     expect([...h.storage.data.keys()].every((k) => k.startsWith(`${it1.id}/${run.id}/`))).toBe(true);
   });
 
