@@ -68,7 +68,7 @@ import { checkToolchainEnv, codeVersion, readRestarts, uiCommandsActor, uiUserId
 import { type Loaded, loadConfig, localProject, resolvedConfig } from "./load-config.js";
 import { reviewReplay } from "./golden-replay.js";
 import { skillImproveWiring } from "./skill-evals.js";
-import { holdSkillDraft, promoteSkillDraft, rejectSkillDraft } from "./core/skill-improve.js";
+import { holdSkillDraft, promoteSkillDraft, rejectSkillDraft, withHandOff } from "./core/skill-improve.js";
 import { Cleaner, type CleanupStore, agentTempRoots, cleanupConfig, hostProcesses } from "./cleanup/index.js";
 import { RUN_FOLDER } from "./setup-paths.js";
 
@@ -256,7 +256,7 @@ export async function build(
   // The bus and the tick generators the roles run on (RFC 0015 §5, design 10-event-driven).
   const bus = await createPlugin(registry, "bus", sel.bus, base);
   const ticks = await createPlugin(registry, "ticks", sel.ticks, base);
-  const tacit = await LiveTacit.start(sel.tacit, (name) => createPlugin(registry, "tacit", name, base), new ConsoleLogger(clock, "tacit"));
+  const { holder: tacit, handOff: tacitHandOff } = await withHandOff((build) => LiveTacit.start(sel.tacit, build, new ConsoleLogger(clock, "tacit")), (name) => createPlugin(registry, "tacit", name, base));
   const calendars = new LiveCalendars(async (name) => createPlugin(registry, "calendar", name, { ...base, secrets: await new Plugins({ ...loaded, plugins: { ...sel, calendars: [name] } }).secrets(), clock }), new ConsoleLogger(clock, "calendar"));
   // The worker's ExecutionEngine (RFC 0015 §7): one per worker loop, built by the pool.
   const engines = await createPlugin(registry, "engine", sel.engine, { ...base, store });
@@ -339,7 +339,7 @@ export async function build(
     cpus: availableParallelism(),
     models: { table: loaded.model_by, names: loaded.models },
     reviewReplay: reviewReplay({ sandbox, runner, scanner, clock, models: { table: loaded.model_by } }), // the improve run's golden replay (design 07)
-    skillImprove: skillImproveWiring(store, loaded, { sandbox, runner, llm, scanner }), // skill drafts (design 07); undefined without capabilities.skill_folders
+    skillImprove: skillImproveWiring(store, loaded, { sandbox, runner, llm, scanner }), tacit: tacitHandOff, // skill drafts, undefined without capabilities.skill_folders, and their hand-off to the owner's ledger (design 07)
     awake, capability, guidance: joinGuidance([new PackGuidance(loaded.packs), new LearnedRules(tacit)]), // packs' rules, then promoted rules (design 07)
     settings, learned,
     engines,
