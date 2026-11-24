@@ -61,6 +61,10 @@ export type NewRoutine = Omit<Routine, "cap_raise" | "paused" | "last_run_at">;
 /** What a fire or a skip moves, conditional on the values it read. */
 export interface RoutineMarks { next_due_at: Timestamp | null; last_run_at: Timestamp | null }
 export type RoutinePatch = Partial<RoutineMarks & { paused: boolean }>;
+/** The fields an owner may change on a routine. */
+export type RoutineFields = Partial<Pick<Routine, "name" | "instruction" | "url" | "schedule" | "zone" | "trigger" | "run_cap_usd" | "daily_cap_usd">>;
+/** What an edit writes: the fields changed, and the next slot a changed form moves. */
+export type RoutineEdit = RoutineFields & Partial<Pick<Routine, "next_due_at">>;
 
 export type SuggestionState = "pending" | "accepted" | "dismissed" | "snoozed";
 
@@ -98,6 +102,10 @@ export interface RoutineStore {
   listRoutines(): Promise<Routine[]>;
   /** Applies `patch` only while the routine's marks still equal `read`: false when another write came first. */
   updateRoutine(id: string, read: RoutineMarks, patch: RoutinePatch): Promise<boolean>;
+  /** Writes only the fields given, only while the routine's marks still equal `read`: false when another write came first, or with no field. */
+  editRoutine(id: string, read: RoutineMarks, fields: RoutineEdit): Promise<boolean>;
+  /** Removes the routine and its suggestions in one transaction; the runs on its carrier item stay. False when it was not stored. */
+  deleteRoutine(id: string): Promise<boolean>;
   /** Adds `usd` to the routine's cap for `day` (a new day starts from 0), once per `hold_key`: false when already raised for it. */
   raiseRoutineCap(id: string, r: { hold_key: string; usd: number; day: string }): Promise<boolean>;
   /**
