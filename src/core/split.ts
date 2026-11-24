@@ -73,14 +73,14 @@ export function atSizeCheckpoint(spec: SizeEstimate & { phases?: readonly unknow
 
 /**
  * The size checkpoint's note above the spec's footer: the estimate, the threshold, and what the owner can reply, with
- * the one-time cap `/approve <why>` stores (`approveOverCapText`).
+ * the one-time cap `/approve <why>` stores (`approveOverCapText` with `estimateCap`).
  */
 export function sizeCheckpointNote(est: SizeEstimate, limits: SplitLimits): string {
-  const t = splitThresholds(limits);
+  const t = splitThresholds(limits), sizes = { lines: est.estimated_lines, files: est.estimated_files };
   return (
     `This spec waits for \`/approve\` at the size checkpoint: its estimate (${est.estimated_lines} lines, ${est.estimated_files} files) ` +
     `is over ${SPLIT_PERCENT}% of a cap (${t.lines} lines or ${t.files} files) and it has no phases. ` +
-    `${approveOverCapText({ lines: est.estimated_lines, files: est.estimated_files }, limits, "implement it as one change")} ` +
+    `${approveOverCapText(sizes, limits, estimateCap(sizes, limits), "implement it as one change")} ` +
     `Or reply \`/revise <feedback>\` to ask for ${MIN_PHASES} to ${MAX_PHASES} phases.`
   );
 }
@@ -92,18 +92,25 @@ export interface Sizes {
 }
 
 /**
- * The one-time cap an over-cap `/approve` proposes for `sizes` (design 04-split-specs, 2026-11-24): each cap raised
- * just enough that the size is within SPLIT_PERCENT of it, so the approved size is no longer at its size checkpoint;
- * never below the cap in force.
+ * The one-time cap an over-cap `/approve` at `too_large` proposes for the blocked diff's `sizes` (design 04-split-specs,
+ * 2026-11-24): each cap raised just enough that the size is within SPLIT_PERCENT of it, so a rerun's diff has room to
+ * differ from the blocked one; never below the cap in force.
  */
 export function proposedCap(sizes: Sizes, caps: SplitLimits): SplitLimits {
   const up = (n: number, cap: number) => Math.max(cap, Math.ceil((n * 100) / SPLIT_PERCENT));
   return { max_diff_lines: up(sizes.lines, caps.max_diff_lines), max_diff_files: up(sizes.files, caps.max_diff_files) };
 }
 
-/** What `/approve <why>` does over the caps (`does`): the size, the caps in force and the proposed one-time cap, in one sentence. */
-export function approveOverCapText(sizes: Sizes, caps: SplitLimits, does: string): string {
-  const p = proposedCap(sizes, caps);
+/**
+ * The one-time cap an over-cap `/approve` at the spec gate stores (design 04-split-specs, 2026-11-24): the estimate
+ * itself, each cap never below the cap in force, so the count the estimate is under (often the files) is not lowered.
+ */
+export function estimateCap(sizes: Sizes, caps: SplitLimits): SplitLimits {
+  return { max_diff_lines: Math.max(caps.max_diff_lines, sizes.lines), max_diff_files: Math.max(caps.max_diff_files, sizes.files) };
+}
+
+/** What `/approve <why>` does over the caps (`does`): the size, the caps in force and the one-time cap `p` it stores, in one sentence. */
+export function approveOverCapText(sizes: Sizes, caps: SplitLimits, p: SplitLimits, does: string): string {
   return (
     `Reply \`/approve <why>\` to ${does} over the cap: ${sizes.lines} lines in ${sizes.files} files against ` +
     `\`max_diff_lines\` = ${caps.max_diff_lines} and \`max_diff_files\` = ${caps.max_diff_files}, with a one-time cap of ` +
@@ -134,7 +141,8 @@ export function overCap(
   spec: (SizeEstimate & { phases?: readonly unknown[] }) | null, settings: SplitLimits,
 ): OverCap | { sizes: null } | null {
   const caps = sizeCaps(it, settings), project_cap = sizeCaps({ project: it.project }, settings);
-  const over = (at: OverCap["at"], sizes: Sizes): OverCap => ({ at, sizes, caps, project_cap, one_time_cap: proposedCap(sizes, caps) });
+  const over = (at: OverCap["at"], sizes: Sizes): OverCap =>
+    ({ at, sizes, caps, project_cap, one_time_cap: at === "spec" ? estimateCap(sizes, caps) : proposedCap(sizes, caps) });
   if (it.blocked_reason === TOO_LARGE) {
     const run = runs.filter((r) => r.kind === "implement" && r.outcome?.status === "failed" && r.outcome.error_code === "diff_too_large").at(-1);
     const sizes = run?.outcome?.status === "failed" ? parseSizeDetail(run.outcome.detail) : null;
@@ -326,7 +334,7 @@ export function suggestSplit(diff: { lines: number; files: number; paths: readon
 export function suggestedSplit(detail: string, paths: readonly string[], limits: { max_diff_lines: number; max_diff_files: number }): string[] {
   const size = parseSizeDetail(detail);
   if (!size) return [];
-  const approve = [approveOverCapText(size, limits, "run the implementer again on the same spec"), ""];
+  const approve = [approveOverCapText(size, limits, proposedCap(size, limits), "run the implementer again on the same spec"), ""];
   const phases = suggestSplit({ ...size, paths }, limits);
   if (phases.length === 0) return approve;
   const out = [

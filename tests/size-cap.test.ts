@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { OVER_CAP_NO_SIZE, SIZE_CAP_APPROVED, overCapApproval, overCapNoteRequired, sizeCaps, storedProjectCaps } from "../src/core/size-cap.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
-import { TOO_LARGE, atSizeCheckpoint, overCap, proposedCap, sizeCheckpointNote, suggestedSplit } from "../src/core/split.js";
+import { TOO_LARGE, atSizeCheckpoint, estimateCap, overCap, proposedCap, sizeCheckpointNote, suggestedSplit } from "../src/core/split.js";
 import { sizeDetail } from "../src/core/diff-gate.js";
 import type { Run } from "../src/core/types.js";
 
@@ -45,16 +45,24 @@ describe("size checkpoint of a triage answer", () => {
     expect(note).toContain("`/revise <feedback>`");
   });
 
-  it("its note names `/approve <why>` with the size, the caps and the proposed one-time cap", () => {
-    const note = sizeCheckpointNote({ estimated_lines: 1400, estimated_files: 12 }, project);
+  it("its note names `/approve <why>` with the size, the caps and the estimate as the one-time cap", () => {
+    const note = sizeCheckpointNote({ estimated_lines: 2000, estimated_files: 12 }, project);
     expect(note).toContain("`/approve <why>`");
-    expect(note).toContain("1400 lines in 12 files against `max_diff_lines` = 1500 and `max_diff_files` = 40");
-    expect(note).toContain("one-time cap of 1648 lines and 40 files");
+    expect(note).toContain("2000 lines in 12 files against `max_diff_lines` = 1500 and `max_diff_files` = 40");
+    expect(note).toContain("one-time cap of 2000 lines and 40 files");
   });
 });
 
 // An over-cap `/approve` (design 04-split-specs, 2026-11-24).
-describe("proposedCap", () => {
+describe("estimateCap: the spec gate's one-time cap", () => {
+  it("is the estimate, each cap never below the cap in force", () => {
+    expect(estimateCap({ lines: 2000, files: 12 }, project)).toEqual({ max_diff_lines: 2000, max_diff_files: 40 });
+    expect(estimateCap({ lines: 2000, files: 55 }, project)).toEqual({ max_diff_lines: 2000, max_diff_files: 55 });
+    expect(estimateCap({ lines: 1400, files: 12 }, project)).toEqual(project);
+  });
+});
+
+describe("proposedCap: the too_large one-time cap", () => {
   it("raises each cap just enough that the size is no longer at its size checkpoint, never below the cap in force", () => {
     expect(proposedCap({ lines: 1400, files: 12 }, project)).toEqual({ max_diff_lines: 1648, max_diff_files: 40 });
     expect(proposedCap({ lines: 5000, files: 60 }, project)).toEqual({ max_diff_lines: 5883, max_diff_files: 71 });
@@ -67,14 +75,14 @@ describe("proposedCap", () => {
 
 describe("overCap: whether an /approve is over the item's caps", () => {
   const gate = { project: "o/r", stage: "READY" as const, blocked_reason: "spec_pending" };
-  const big = { estimated_lines: 1400, estimated_files: 12 };
+  const big = { estimated_lines: 2000, estimated_files: 12 };
   const failed = (detail: string, error_code = "diff_too_large") =>
     ({ kind: "implement", outcome: { status: "failed", error_code, detail, infra: false } }) as unknown as Run;
   const tooLarge = { project: "o/r", stage: "RUNNING" as const, blocked_reason: TOO_LARGE };
 
-  it("at the spec gate, a spec at its size checkpoint: its estimate", () => {
+  it("at the spec gate, a spec at its size checkpoint: its estimate, stored as the one-time cap", () => {
     expect(overCap(gate, [], big, project)).toEqual({
-      at: "spec", sizes: { lines: 1400, files: 12 }, caps: project, project_cap: project, one_time_cap: { max_diff_lines: 1648, max_diff_files: 40 },
+      at: "spec", sizes: { lines: 2000, files: 12 }, caps: project, project_cap: project, one_time_cap: { max_diff_lines: 2000, max_diff_files: 40 },
     });
     expect(overCap({ ...gate, blocked_reason: "max_revisions" }, [], big, project)).toMatchObject({ at: "spec" });
   });
@@ -101,15 +109,15 @@ describe("overCap: whether an /approve is over the item's caps", () => {
 });
 
 describe("overCapApproval", () => {
-  const over = overCap({ project: "o/r", stage: "READY", blocked_reason: "spec_pending" }, [], { estimated_lines: 1400, estimated_files: 12 }, project)!;
+  const over = overCap({ project: "o/r", stage: "READY", blocked_reason: "spec_pending" }, [], { estimated_lines: 2000, estimated_files: 12 }, project)!;
   const actor = { kind: "user" as const, id: "local:me" as never };
   const approved = { patch: { stage: "RUNNING" as const }, detail: { note: "why" } };
 
   it("refuses with no note, or a blank one, with the size, the caps and the proposed cap", () => {
     for (const note of [null, "", "  \n "]) expect(overCapApproval(over, actor, note, approved)).toEqual({ refuse: overCapNoteRequired(over as never) });
     const text = overCapNoteRequired(over as never);
-    expect(text).toContain("1400 lines in 12 files is over the cap (`max_diff_lines` = 1500, `max_diff_files` = 40)");
-    expect(text).toContain("reply `/approve <why>` to approve a one-time cap of 1648 lines and 40 files, so nothing was stored");
+    expect(text).toContain("2000 lines in 12 files is over the cap (`max_diff_lines` = 1500, `max_diff_files` = 40)");
+    expect(text).toContain("reply `/approve <why>` to approve a one-time cap of 2000 lines and 40 files, so nothing was stored");
   });
 
   it("refuses at too_large when the blocked run recorded no size, note or not", () => {
@@ -118,11 +126,11 @@ describe("overCapApproval", () => {
 
   it("with a note: the approval's own transition gets the one-time cap and the size_cap_approved record", () => {
     const d = overCapApproval(over, actor, " why ", approved);
-    expect(d).toMatchObject({ patch: { stage: "RUNNING", size_cap: { max_diff_lines: 1648, max_diff_files: 40 } }, detail: { note: "why" } });
+    expect(d).toMatchObject({ patch: { stage: "RUNNING", size_cap: { max_diff_lines: 2000, max_diff_files: 40 } }, detail: { note: "why" } });
     const detail = (d as { detail: Record<string, unknown> }).detail;
     expect(typeof detail[SIZE_CAP_APPROVED]).toBe("string");
     expect(JSON.parse(detail[SIZE_CAP_APPROVED] as string)).toEqual({
-      actor: "local:me", sizes: { lines: 1400, files: 12 }, project_cap: project, one_time_cap: { max_diff_lines: 1648, max_diff_files: 40 }, note: "why",
+      actor: "local:me", sizes: { lines: 2000, files: 12 }, project_cap: project, one_time_cap: { max_diff_lines: 2000, max_diff_files: 40 }, note: "why",
     });
   });
 

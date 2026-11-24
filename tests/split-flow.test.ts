@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
-import { PHASE_HOLD, PHASES_OPEN, SPLIT_FILING, phaseMarker } from "../src/core/split.js";
+import { PHASE_HOLD, PHASES_OPEN, SPLIT_FILING, phaseMarker, sizeCaps } from "../src/core/split.js";
 import { REFUSED_ATTEMPTS } from "../src/outbound/outbound.js";
 import type { RunOutcome, SourceRef, UserId, WorkItem } from "../src/core/types.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
@@ -191,16 +191,16 @@ describe("split spec flow", () => {
   it("a large estimate without phases waits at the spec gate with its size checkpoint note", async () => {
     const f = await setup();
     const item = await f.intake(72);
-    await f.finish("triage", f.triaged({ ...smallSpec, tier: 1, estimated_lines: 1400 }));
+    await f.finish("triage", f.triaged({ ...smallSpec, tier: 1, estimated_lines: 2000 }));
     // Tier 1 would be approved without a person; over the threshold it waits for /approve instead.
     expect(await f.get(item)).toMatchObject({ stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
     const spec = f.source.comments.find((c) => c.marker.startsWith("<!-- factory:spec:"))!;
     expect(spec.body).toContain("at the size checkpoint");
-    expect(spec.body).toContain("1400 lines");
+    expect(spec.body).toContain("2000 lines");
     expect(spec.body.indexOf("at the size checkpoint")).toBeLessThan(spec.body.indexOf("Commands you can reply with now:"));
-    // The note names /approve with the size, the cap and the proposed one-time cap (design 04-split-specs, 2026-11-24).
+    // The note names /approve with the size, the cap and the estimate as the one-time cap (design 04-split-specs, 2026-11-24).
     expect(spec.body).toContain("`/approve <why>`");
-    expect(spec.body).toContain("one-time cap of 1648 lines and 40 files");
+    expect(spec.body).toContain("one-time cap of 2000 lines and 40 files");
     // Over the cap with no note: one reply, nothing stored.
     const before = (await f.get(item)).version;
     await f.approve(issueRef(72));
@@ -210,14 +210,16 @@ describe("split spec flow", () => {
     expect(await f.get(item)).toMatchObject({ version: before, stage: "READY", blocked_reason: "spec_pending", size_cap: null });
     // With a note: the spec's approval stores the estimate's one-time cap and its record in the same transition.
     await f.approve(issueRef(72), "one change keeps the migration atomic");
-    expect(await f.get(item)).toMatchObject({ stage: "RUNNING", blocked_on: "none", size_cap: { max_diff_lines: 1648, max_diff_files: 40 } });
+    expect(await f.get(item)).toMatchObject({ stage: "RUNNING", blocked_on: "none", size_cap: { max_diff_lines: 2000, max_diff_files: 40 } });
     const approved = (await f.store.listStateChanges(item.id)).filter((c) => c.reason === "spec_approved");
     expect(approved).toHaveLength(1);
-    expect(approved[0]!.changes.size_cap).toEqual({ from: null, to: { max_diff_lines: 1648, max_diff_files: 40 } });
+    expect(approved[0]!.changes.size_cap).toEqual({ from: null, to: { max_diff_lines: 2000, max_diff_files: 40 } });
     expect(JSON.parse(String(approved[0]!.detail!.size_cap_approved))).toEqual({
-      actor: "github:1", sizes: { lines: 1400, files: 4 }, project_cap: { max_diff_lines: 1500, max_diff_files: 40 },
-      one_time_cap: { max_diff_lines: 1648, max_diff_files: 40 }, note: "one change keeps the migration atomic",
+      actor: "github:1", sizes: { lines: 2000, files: 4 }, project_cap: { max_diff_lines: 1500, max_diff_files: 40 },
+      one_time_cap: { max_diff_lines: 2000, max_diff_files: 40 }, note: "one change keeps the migration atomic",
     });
+    // Later implement runs read the one-time cap through sizeCaps (src/core/size-cap.ts).
+    expect(sizeCaps(await f.get(item), { max_diff_lines: 1500, max_diff_files: 40 })).toEqual({ max_diff_lines: 2000, max_diff_files: 40 });
     expect(f.source.subIssues).toEqual([]);
   });
 
