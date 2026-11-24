@@ -6,7 +6,7 @@
 // the composition root (write-routes.ts) hands each handler as `events`. Every refusal comes before the store write.
 
 import type { LocalEvent, LocalEventFields, LocalEvents } from "../calendar/index.js";
-import type { ApiResult } from "./api.js";
+import { type ApiResult, apiError } from "./api.js";
 import type { UiDeps } from "./deps.js";
 import { Withholder } from "./withhold.js";
 
@@ -16,8 +16,7 @@ export const LOCAL_EVENT_DELETE_PATH = "/api/v1/calendar/local-events/delete";
 
 const FIELDS = ["title", "starts_at", "ends_at", "all_day", "repeats"] as const;
 const OFF = { status: 503, value: { error: "Events are off: this server is not on loopback, so it needs ui.user_id." } } as const;
-const refused = (status: 400 | 404, error: string): ApiResult => ({ status, value: { error } });
-const unknown = (id: string) => refused(404, `no event ${id}: it was deleted, or the page is out of date; reload it`);
+const unknown = (id: string) => apiError(404, `no event ${id}: it was deleted, or the page is out of date; reload it`);
 
 /** The body as an object with only `allowed` keys, or the reason it is refused. */
 function fieldsOf(body: unknown, allowed: readonly string[]): Record<string, unknown> | { error: string } {
@@ -48,10 +47,10 @@ export async function writeLocalEvent(d: UiDeps, body: unknown, events: LocalEve
   const actor = d.commands?.actor ?? null;
   if (actor === null) return OFF;
   const b = fieldsOf(body, ["id", ...FIELDS]);
-  if ("error" in b) return refused(400, String(b.error));
-  if (b.id !== undefined && !events.isId(b.id)) return refused(400, "id must be le_ and 8 to 64 letters, digits, _ or -");
+  if ("error" in b) return apiError(400, String(b.error));
+  if (b.id !== undefined && !events.isId(b.id)) return apiError(400, "id must be le_ and 8 to 64 letters, digits, _ or -");
   const fields = checked(events, {}, b);
-  if ("error" in fields) return refused(400, fields.error);
+  if ("error" in fields) return apiError(400, fields.error);
   const id = (b.id as string | undefined) ?? null;
   return shown(d, await events.add({ id, fields, by: actor, nowMs: d.clock.now().getTime() }));
 }
@@ -60,13 +59,13 @@ export async function writeLocalEvent(d: UiDeps, body: unknown, events: LocalEve
 export async function writeLocalEventEdit(d: UiDeps, body: unknown, events: LocalEvents): Promise<ApiResult> {
   if ((d.commands?.actor ?? null) === null) return OFF;
   const b = fieldsOf(body, ["id", ...FIELDS]);
-  if ("error" in b) return refused(400, String(b.error));
-  if (!events.isId(b.id)) return refused(400, "id must be a local event ID");
-  if (!FIELDS.some((k) => b[k] !== undefined)) return refused(400, `name at least one of ${FIELDS.join(", ")}`);
+  if ("error" in b) return apiError(400, String(b.error));
+  if (!events.isId(b.id)) return apiError(400, "id must be a local event ID");
+  if (!FIELDS.some((k) => b[k] !== undefined)) return apiError(400, `name at least one of ${FIELDS.join(", ")}`);
   const stored = await events.get(b.id);
   if (stored === null) return unknown(b.id);
   const fields = checked(events, stored, b);
-  if ("error" in fields) return refused(400, fields.error);
+  if ("error" in fields) return apiError(400, fields.error);
   const edited = await events.edit(b.id, fields, d.clock.now().getTime());
   return edited === null ? unknown(b.id) : shown(d, edited);
 }
@@ -75,8 +74,8 @@ export async function writeLocalEventEdit(d: UiDeps, body: unknown, events: Loca
 export async function writeLocalEventDelete(d: UiDeps, body: unknown, events: LocalEvents): Promise<ApiResult> {
   if ((d.commands?.actor ?? null) === null) return OFF;
   const b = fieldsOf(body, ["id"]);
-  if ("error" in b) return refused(400, String(b.error));
-  if (!events.isId(b.id)) return refused(400, "id must be a local event ID");
+  if ("error" in b) return apiError(400, String(b.error));
+  if (!events.isId(b.id)) return apiError(400, "id must be a local event ID");
   return (await events.remove(b.id)) ? { status: 200, value: { id: b.id, deleted: true } } : unknown(b.id);
 }
 
