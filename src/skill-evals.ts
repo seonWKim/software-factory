@@ -272,7 +272,13 @@ export function skillImproveWiring(store: FactoryStore, loaded: Loaded, plugins:
   const folders = capabilitiesConfig(loaded.file).skill_folders;
   if (folders.length === 0) return undefined;
   const prompt = () => readFile(join(loaded.codeRoot, "prompts", "skill-improve.md"), "utf8").catch(() => null);
-  return improveWiring({ ...wiringOf(store, loaded), plugins: async () => plugins }, skillImproveConfig(loaded.file), folders.map((f) => skillFolderPath(f, loaded.root)), prompt);
+  // The composition root passes no clock: a replay's wall time reads the configured Clock, as wiringOf's plugins do.
+  const withClock = async (): Promise<SkillEvalPlugins> => {
+    if (plugins.now) return plugins;
+    const clock = await new Plugins(loaded).clock();
+    return { ...plugins, now: () => clock.now().getTime() };
+  };
+  return improveWiring({ ...wiringOf(store, loaded), plugins: withClock }, skillImproveConfig(loaded.file), folders.map((f) => skillFolderPath(f, loaded.root)), prompt);
 }
 
 /**

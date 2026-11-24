@@ -23,6 +23,7 @@ import { newStore } from "./helpers/store.js";
 import { type SkillEvalWiring, improveWiring, runFigures, runSkillEvalFor, scratchRunFor, skillImproveWiring } from "../src/skill-evals.js";
 import { SKILL_IMPROVE_DEFAULTS } from "../src/core/skill-improve-config.js";
 import type { Loaded } from "../src/load-config.js";
+import { REGISTRY, withPlugin } from "../src/plugins.js";
 import { readFile } from "node:fs/promises";
 
 vi.mock("../src/runtime/skill-evals/replay.js", async (load) => {
@@ -374,5 +375,23 @@ describe("the eval wiring (runSkillEvalFor)", () => {
     const plugins = { sandbox: new FakeSandbox(), runner: new FakeRunner({}), llm: new FakeLLM(() => yesNo("yes")), scanner: cleanScanner };
     expect(skillImproveWiring(store, { file: {} } as unknown as Loaded, plugins)).toBeUndefined();
     expect(skillImproveWiring(store, { file: { capabilities: { skill_folders: [] } } } as unknown as Loaded, plugins)).toBeUndefined();
+  });
+
+  it("the improve wiring's replays store their wall time from the configured Clock, though the composition root passes none", async () => {
+    const store = await suiteWith({ c1: { input: "good", expected: ["a"] } });
+    const { folder } = await wiring(store, new FakeLLM(() => yesNo("yes")));
+    let t = 0;
+    const registry = withPlugin(REGISTRY, "clock", "stepping", () => ({ now: () => new Date((t += 250)), sleep: async () => {} }));
+    const loaded = {
+      root: tmp, codeRoot: join(import.meta.dirname, ".."), file: { capabilities: { skill_folders: ["skills"] } },
+      config: { repo: { owner: "o", name: "r", ...REPO }, deny_paths: [".env"], run_timeout_ms: 1000 },
+      registry, plugins: { clock: "stepping", sandbox: "local" },
+    } as unknown as Loaded;
+    const plugins = { sandbox: new FakeSandbox(), runner: new FakeRunner({ implement: () => ({ output: "did it" }) }), llm: new FakeLLM(() => yesNo("yes")), scanner: cleanScanner };
+
+    const run = await skillImproveWiring(store, loaded, plugins)!.rerun({ skill_ref: "skills/tests-first", model_class: "standard", created_by: OWNER }, signal());
+
+    expect(folder).toBe(join(tmp, "skills", "tests-first"));
+    expect(await store.listSkillEvalReplays(run!.id)).toEqual([expect.objectContaining({ case_id: "c1", wall_ms: 250 })]);
   });
 });
