@@ -1,5 +1,5 @@
-// The evals page's reads (design 06-measurement, 09-dashboard-evals): GET /api/v1/evals/<skill>/runs, /grid and
-// /compare?a=&b=, the same fields as the CLI's --json, and Run now's POST /api/v1/evals/<skill>/runs. <skill> is the
+// The evals page's reads (design 06-measurement, 09-dashboard-evals): GET /api/v1/evals/<skill>/runs, /grid,
+// /versions and /diff?a=&b=, the same fields as the CLI's --json, and Run now's POST /api/v1/evals/<skill>/runs. <skill> is the
 // skill_ref, URL-encoded. A null figure means none was recorded, never 0. The Plugins page's Evals card (design
 // 09-dashboard-settings) also reads /suite and writes through POST /api/v1/evals/write (postEvalWrite), with
 // GET /api/v1/pauses's csrf_token.
@@ -25,21 +25,47 @@ export interface EvalRun {
   errored: number | null;
 }
 
-/** One run as the grid and compare show it. */
+/** One run as the grid shows it. */
 export interface EvalRunSummary extends Omit<EvalRun, "id"> {
   run_id: string;
 }
 
-/** Two runs, b − a, the noise band and whether the gap is inside it; all three null without two pass rates. */
-export interface EvalComparison {
-  a: EvalRunSummary;
-  b: EvalRunSummary;
-  gap: number | null;
-  noise_band: number | null;
-  within_noise: boolean | null;
+/** One version of the skill (GET /api/v1/evals/<skill>/versions), newest first: its latest linked run's pass rate and the change since the previous version. */
+export interface SkillVersionRow {
+  version: number;
+  /** The folder hash, as eval runs store it: a version's key in the diff read. */
+  folder_hash: string;
+  created_at: string;
+  /** The newest version is the current one. */
+  current: boolean;
+  run_id: string | null;
+  pass_rate: number | null;
+  /** pass_rate − the previous version's, as a fraction; null when either has none. */
+  change: number | null;
 }
 
-const base = (skill: string, read: "runs" | "grid" | "compare" | "suite"): string => `/api/v1/evals/${encodeURIComponent(skill)}/${read}`;
+/** One line of the unified diff. */
+export interface DiffLine {
+  op: "same" | "removed" | "added";
+  text: string;
+}
+
+/** One case's verdict in each of the two versions' latest runs; null where a version has none. */
+export interface VersionCaseResult {
+  case_id: string;
+  a: string | null;
+  b: string | null;
+}
+
+/** GET /api/v1/evals/<skill>/diff?a=<hash>&b=<hash>: both versions' rows, the line diff of their SKILL.md texts and the case results. */
+export interface SkillVersionDiff {
+  a: SkillVersionRow;
+  b: SkillVersionRow;
+  lines: DiffLine[];
+  cases: VersionCaseResult[];
+}
+
+const base = (skill: string, read: "runs" | "grid" | "suite" | "versions" | "diff"): string => `/api/v1/evals/${encodeURIComponent(skill)}/${read}`;
 
 /** Read again every 30 seconds while the page is open. */
 const POLL_MS = 30_000;
@@ -50,10 +76,13 @@ export const useEvalRuns = (skill: string) => useApi<{ runs: EvalRun[] }>(base(s
 /** One row per skill version and model class: that pair's newest run. */
 export const useEvalGrid = (skill: string) => useApi<{ rows: EvalRunSummary[] }>(base(skill, "grid"), POLL_MS);
 
-/** Two runs of the skill compared; reads nothing until both are picked. */
-export function useEvalCompare(skill: string, a: string | null, b: string | null) {
-  const url = a && b ? `${base(skill, "compare")}?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}` : null;
-  return useQuery({ queryKey: [url], queryFn: () => getJson<EvalComparison>(url!), enabled: url !== null });
+/** The skill's versions, newest first; `unlinked` holds the IDs of runs that match no version. */
+export const useSkillVersions = (skill: string) => useApi<{ versions: SkillVersionRow[]; unlinked: string[] }>(base(skill, "versions"), POLL_MS);
+
+/** Two versions' diff by folder hash; reads nothing until both are picked. */
+export function useSkillDiff(skill: string, a: string | null, b: string | null) {
+  const url = a && b ? `${base(skill, "diff")}?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}` : null;
+  return useQuery({ queryKey: [url], queryFn: () => getJson<SkillVersionDiff>(url!), enabled: url !== null });
 }
 
 /** The skill_refs that have a suite (GET /api/v1/evals); read once when the page opens, never polled. */

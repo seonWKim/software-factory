@@ -5,6 +5,7 @@
 
 import { checkCommands, commandText } from "./checks.js";
 import type { FactoryConfig } from "./config.js";
+import { STAMP_PLACEHOLDER } from "./migration-stamps.js";
 import { isCovered } from "./policy.js";
 
 /**
@@ -61,6 +62,7 @@ function parseEntry(e: unknown, line: string | undefined, at: string, commands: 
   }
   if (keys === "test_file" || (keys === "new,test_file" && o.new === true)) {
     if (typeof o.test_file !== "string" || !isTestFile(o.test_file)) return `${at}.test_file: must be a repo-relative path under tests/`;
+    if (o.test_file.includes(STAMP_PLACEHOLDER)) return `${at}.test_file: a \`${STAMP_PLACEHOLDER}\` file has no name yet; check the line with a check command`;
     return { line, test_file: o.test_file, ...(o.new === true ? { new: true as const } : {}) };
   }
   if (keys === "manual,reason" && o.manual === true) return { line, manual: true, reason: (o.reason as string).trim() };
@@ -117,7 +119,7 @@ const isStr = (v: unknown): v is string => typeof v === "string";
 const isStrs = (v: unknown): v is string[] => Array.isArray(v) && v.every(isStr);
 
 /** An exact file under tests/ (no folder, no glob): a name triage checks against the repo's files. */
-const isExactTestPath = (p: string): boolean => p.startsWith("tests/") && !/[*?[]/.test(p) && /\/[^/]*\.[^/]+$/.test(p);
+const isExactTestPath = (p: string): boolean => p.startsWith("tests/") && !/[*?[]/.test(p) && !p.includes(STAMP_PLACEHOLDER) && /\/[^/]*\.[^/]+$/.test(p);
 
 /** The decision that names one swap of an unknown test file for the closest existing one. */
 const swapDecision = (file: string, closest: string) => ({
