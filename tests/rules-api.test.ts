@@ -8,7 +8,11 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import type { TacitEntryDetail, TacitLedger, TacitPendingEntry } from "../src/interfaces/tacit-ledger.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
-import { readRuleEntry, readRules } from "../src/ui/rules-api.js";
+import { RULE_WRITES, SKILL_VERDICT_PATH, readRuleEntry, readRules, writeSkillVerdict } from "../src/ui/rules-api.js";
+import { readProposals } from "../src/ui/improve-api.js";
+import { SKILL_IMPROVE_DEFAULTS } from "../src/core/skill-improve-config.js";
+import type { SkillImproveWiring } from "../src/core/skill-improve.js";
+import type { SkillDraftState } from "../src/interfaces/skill-draft-store.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { enqueueImprove, manualWindow } from "../src/core/improver.js";
 import { ASK_PROPOSAL, type AskRow, OWNER_ASK, type ProposalRow, proposalText } from "../src/core/owner-asks.js";
@@ -97,5 +101,116 @@ describe("GET /api/v1/rules: the improve report's owner asks (design 07-improve-
     ]);
     expect(report.proposals).toEqual([{ reason: "spec_pending", run_length: 10, text: expect.stringContaining("`/standing`") }]);
     expect(await (d.store as FactoryStore).listStandingRules()).toEqual([]);
+  });
+});
+
+// Skill drafts (design 09-dashboard-rules-waiting): their rows in GET /api/v1/proposals and their verdicts on the Rules
+// page, POST /api/v1/rules/skill-verdict, which calls the verdict core (src/core/skill-improve.ts) with a fake wiring.
+describe("skill drafts: the proposals list and the Rules page's verdict", () => {
+  /** In-memory SKILL.md files under /repo/skills (and one outside); the re-run is counted, no model is called. */
+  function fakeWiring() {
+    const files = new Map([["/repo/skills/a", "SKILL A"], ["/repo/other/c", "SKILL C"]]);
+    const reruns: string[] = [];
+    const wiring: SkillImproveWiring = {
+      config: SKILL_IMPROVE_DEFAULTS, skill_folders: ["/repo/skills"], folderOf: (ref) => `/repo/${ref}`, prompt: async () => null,
+      readSkill: async (f) => files.get(f) ?? null, writeSkill: async (f, t) => void files.set(f, t), version: async () => "v1", newId: () => "n1",
+      scratch: async () => null, rerun: async (r) => (reruns.push(r.skill_ref), null),
+    };
+    return { wiring, files, reruns };
+  }
+
+  async function setup(o: { owner?: boolean; wired?: boolean } = {}) {
+    const d = await deps([], async () => null);
+    const f = fakeWiring();
+    const as = o.owner === false ? ("local:someone@example.com" as UserId) : OWNER;
+    const pauses: UiPauses = { ...d.pauses!, principal: async () => as };
+    const sd: PauseDeps = { ...d, pauses, settings: { ...d.settings!, resolveProject: async () => PROJECT }, ...(o.wired === false ? {} : { skillImprove: f.wiring }) };
+    const store = sd.store as FactoryStore;
+    const add = (id: string, state: SkillDraftState, skill_ref = "skills/a", project_key = PROJECT.key) => store.addSkillDraft({
+      id, project_key, skill_ref, state, tokens: 10,
+      detail: { draft: "NEW A", model_class: "standard", failed_checks: ["cites the source", `names ${SECRET}`], baseline_run: { id: "r0", pass_rate: 0.5 }, scratch_run: { id: "r1", pass_rate: 0.9 }, ...(state === "tried" ? { reason: "no_gain" } : {}) },
+    });
+    const verdict = (id: string, v: string) => writeSkillVerdict(sd, pauses, { id, verdict: v });
+    return { ...f, sd, store, add, verdict };
+  }
+
+  it("GET /api/v1/proposals lists the project's skill drafts beside the entity proposals, each with its state, reason, path, why and time", async () => {
+    const { sd, add } = await setup();
+    await add("skd_p", "proposed");
+    await add("skd_h", "held");
+    await add("skd_t", "tried");
+    await add("skd_x", "proposed", "skills/a", "github:other");
+    const v = (await readProposals(sd)).value as { proposals: unknown[]; skills: Record<string, unknown>[] };
+    expect(v.proposals).toEqual([]);
+    const byId = Object.fromEntries(v.skills.map((s) => [s.id, s]));
+    expect(Object.keys(byId).sort()).toEqual(["skd_h", "skd_p", "skd_t"]);
+    expect(byId.skd_p).toMatchObject({ state: "proposed", reason: null, skill_ref: "skills/a", before: 0.5, after: 0.9, created_at: expect.any(String) });
+    expect(byId.skd_t).toMatchObject({ state: "tried", reason: "no_gain" });
+    // Only a proposed or held draft offers a verdict; Hold only a proposed one.
+    expect(byId.skd_p!.verdicts).toEqual(["promote", "hold", "reject"]);
+    expect(byId.skd_h!.verdicts).toEqual(["promote", "reject"]);
+    expect(byId.skd_t!.verdicts).toEqual([]);
+    // The why is the failed checks, through the Withholder; the draft text never leaves.
+    expect(byId.skd_p!.why).toMatch(/^\[withheld: /);
+    expect(JSON.stringify(v)).not.toContain(SECRET);
+    expect(JSON.stringify(v)).not.toContain("NEW A");
+  });
+
+  it("is one of the Rules page's write routes", () => {
+    expect(RULE_WRITES[SKILL_VERDICT_PATH]).toBe(writeSkillVerdict);
+  });
+
+  it("promote writes the draft to SKILL.md, re-runs the suite through the wiring and answers promoted", async () => {
+    const { add, verdict, files, reruns, store } = await setup();
+    await add("skd_p", "proposed");
+    expect(await verdict("skd_p", "promote")).toEqual({ status: 200, value: { id: "skd_p", state: "promoted" } });
+    expect(files.get("/repo/skills/a")).toBe("NEW A");
+    expect(reruns).toEqual(["skills/a"]);
+    expect((await store.getSkillDraft("skd_p"))!.detail).toMatchObject({ old_text: "SKILL A" });
+  });
+
+  it("hold and reject change only the draft's state", async () => {
+    const { add, verdict, files, store } = await setup();
+    await add("skd_p", "proposed");
+    expect((await verdict("skd_p", "hold")).value).toEqual({ id: "skd_p", state: "held" });
+    expect((await verdict("skd_p", "reject")).value).toEqual({ id: "skd_p", state: "rejected" });
+    expect((await store.getSkillDraft("skd_p"))!.state).toBe("rejected");
+    expect(files.get("/repo/skills/a")).toBe("SKILL A");
+  });
+
+  it("a verdict the core refuses changes nothing and answers the core's reason", async () => {
+    const { add, verdict, files, reruns, store } = await setup();
+    await add("skd_t", "tried");
+    await add("skd_out", "proposed", "other/c");
+    for (const v of ["promote", "hold", "reject"]) {
+      const r = await verdict("skd_t", v);
+      expect(r).toEqual({ status: 409, value: { error: "skill draft skd_t is tried: nothing changed" } });
+    }
+    expect(await verdict("skd_out", "promote")).toEqual({ status: 409, value: { error: "other/c is not inside capabilities.skill_folders: nothing written" } });
+    expect((await store.getSkillDraft("skd_t"))!.state).toBe("tried");
+    expect((await store.getSkillDraft("skd_out"))!.state).toBe("proposed");
+    expect(files.get("/repo/other/c")).toBe("SKILL C");
+    expect(reruns).toEqual([]);
+  });
+
+  it("only the owner judges: anyone else gets 403 and nothing is written", async () => {
+    const { add, verdict, files, store } = await setup({ owner: false });
+    await add("skd_p", "proposed");
+    for (const v of ["promote", "hold", "reject"]) expect((await verdict("skd_p", v)).status).toBe(403);
+    expect((await store.getSkillDraft("skd_p"))!.state).toBe("proposed");
+    expect(files.get("/repo/skills/a")).toBe("SKILL A");
+  });
+
+  it("refuses a bad body (400), another project's draft (404) and Promote with no skill wiring (409), each with nothing written", async () => {
+    const { add, verdict, store, sd } = await setup({ wired: false });
+    await add("skd_p", "proposed");
+    await add("skd_x", "proposed", "skills/a", "github:other");
+    expect((await verdict("skd_p", "retire")).status).toBe(400);
+    expect((await verdict("skd_x", "hold")).status).toBe(404);
+    expect((await verdict("skd_none", "hold")).status).toBe(404);
+    expect((await verdict("skd_p", "promote")).status).toBe(409);
+    expect((await store.getSkillDraft("skd_p"))!.state).toBe("proposed");
+    expect((await store.getSkillDraft("skd_x"))!.state).toBe("proposed");
+    expect(sd.skillImprove).toBeUndefined();
   });
 });
