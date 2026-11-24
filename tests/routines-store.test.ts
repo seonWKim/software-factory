@@ -98,3 +98,58 @@ describe("editing and deleting a routine in the store", () => {
     expect((await store.listRoutines()).map((x) => x.id)).toEqual(["rt_2"]);
   });
 });
+
+describe("the routine store on the schedule tables", () => {
+  const routineRows = (store: { db: { all: (q: string) => Promise<Record<string, unknown>[]> } }) =>
+    store.db.all("SELECT id, title, action_kind, cadence_kind, trigger_kind, paused, cap_hold_key FROM controller_schedules WHERE action_kind = 'check_page' ORDER BY id");
+
+  it("each method reads and writes only the Check a page rows of controller_schedules and controller_schedule_suggestions", async () => {
+    const clock = new FakeClock("2026-11-23T10:00:00.000Z");
+    const { store } = await newStore(clock);
+    // A plain schedule with an ID a routine method is asked about: never read or written as a routine.
+    await store.addSchedule({ id: "sch_1", title: "Nightly", cadence: { kind: "daily", spec: "02:00" }, zone: "UTC", created_by: OWNER, created_at: clock.now().toISOString() as never, next_due_at: null });
+    const a = await addRoutine(store, input(), clock.now());
+    const b = await addRoutine(store, input({ id: "rt_2", schedule: null, trigger: "merge" }), clock.now());
+    if (!a.ok || !b.ok) throw new Error("not stored");
+    expect(await routineRows(store)).toEqual([
+      { id: "rt_1", title: "License", action_kind: "check_page", cadence_kind: "daily", trigger_kind: null, paused: null, cap_hold_key: null },
+      { id: "rt_2", title: "License", action_kind: "check_page", cadence_kind: null, trigger_kind: "merge", paused: null, cap_hold_key: null },
+    ]);
+    expect(await store.getRoutine("sch_1")).toBeNull();
+    expect((await store.listRoutines()).map((r) => r.id)).toEqual(["rt_1", "rt_2"]);
+    expect((await store.listSchedules()).map((s) => s.id)).toEqual(["sch_1"]);
+    expect((await store.listDueSchedules("2026-12-31T00:00:00.000Z" as never)).map((s) => s.id)).toEqual([]);
+
+    const marks = { next_due_at: null, last_run_at: null };
+    expect(await store.updateRoutine("sch_1", marks, { paused: true })).toBe(false);
+    expect(await store.updateRoutine("rt_2", marks, { paused: true, last_run_at: "2026-11-23T10:00:00.000Z" as never })).toBe(true);
+    expect(await store.editRoutine("sch_1", marks, { name: "x" })).toBe(false);
+    expect(await store.editRoutine("rt_2", { next_due_at: null, last_run_at: "2026-11-23T10:00:00.000Z" as never }, { name: "Merged" })).toBe(true);
+    expect(await store.raiseRoutineCap("sch_1", { hold_key: "h1", usd: 1, day: "2026-11-23" })).toBe(false);
+    expect(await store.raiseRoutineCap("rt_2", { hold_key: "h1", usd: 1, day: "2026-11-23" })).toBe(true);
+    expect(await store.getRoutine("rt_2")).toMatchObject({ name: "Merged", paused: true, last_run_at: "2026-11-23T10:00:00.000Z", cap_raise: { usd: 1, day: "2026-11-23", hold_key: "h1" } });
+    expect((await routineRows(store))[1]).toEqual({ id: "rt_2", title: "Merged", action_kind: "check_page", cadence_kind: null, trigger_kind: "merge", paused: 1, cap_hold_key: "h1" });
+
+    await store.addRoutineSuggestions("rt_2", "run_1", [{ fingerprint: "f", text: "a" }]);
+    const [s] = await store.listRoutineSuggestions("rt_2");
+    expect(await store.decideRoutineSuggestion(s!.id, { to: "dismissed", by: OWNER })).toBe(true);
+    expect(await store.getRoutineSuggestion(s!.id)).toMatchObject({ routine_id: "rt_2", state: "dismissed" });
+    expect(await store.db.all("SELECT id, schedule_id, state FROM controller_schedule_suggestions")).toEqual([{ id: s!.id, schedule_id: "rt_2", state: "dismissed" }]);
+
+    expect(await store.deleteRoutine("sch_1")).toBe(false);
+    expect(await store.deleteRoutine("rt_2")).toBe(true);
+    expect(await store.db.all("SELECT id FROM controller_schedule_suggestions")).toEqual([]);
+    expect((await store.listSchedules()).map((x) => x.id)).toEqual(["sch_1"]);
+    // The routine tables are left in place and unused.
+    expect(await store.db.all("SELECT id FROM controller_routines")).toEqual([]);
+    expect(await store.db.all("SELECT id FROM controller_routine_suggestions")).toEqual([]);
+  });
+
+  it("refuses a routine ID a schedule holds", async () => {
+    const clock = new FakeClock("2026-11-23T10:00:00.000Z");
+    const { store } = await newStore(clock);
+    await store.addSchedule({ id: "rt_1", title: "Nightly", cadence: { kind: "daily", spec: "02:00" }, zone: "UTC", created_by: OWNER, created_at: clock.now().toISOString() as never, next_due_at: null });
+    await expect(addRoutine(store, input(), clock.now())).rejects.toThrow(/schedule's/);
+    expect(await store.listRoutines()).toEqual([]);
+  });
+});
