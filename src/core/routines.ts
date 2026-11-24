@@ -1,6 +1,6 @@
 // Routines (phase 2 of 3): an owner-set instruction the factory runs on a schedule or on a trigger, as a read-only
-// `routine` run, whose findings come back as suggestions for the owner. Pure, apart from addRoutine's one store
-// write: every time comes in as an argument, read from the injected Clock by the caller.
+// `routine` run, whose findings come back as suggestions for the owner. Pure, apart from the managing writes (addRoutine,
+// writeRoutine), each one conditional store write: every time comes in as an argument, read from the injected Clock.
 //
 // - Form: a routine has a schedule (a cadence in a zone, src/core/schedule-cadence.ts) or a trigger (`merge`: a change
 //   merged since its last run), never both and never neither.
@@ -61,6 +61,10 @@ export type NewRoutine = Omit<Routine, "cap_raise" | "paused" | "last_run_at">;
 /** What a fire or a skip moves, conditional on the values it read. */
 export interface RoutineMarks { next_due_at: Timestamp | null; last_run_at: Timestamp | null }
 export type RoutinePatch = Partial<RoutineMarks & { paused: boolean }>;
+/** The fields an owner may change on a routine. */
+export type RoutineFields = Partial<Pick<Routine, "name" | "instruction" | "url" | "schedule" | "zone" | "trigger" | "run_cap_usd" | "daily_cap_usd">>;
+/** What an edit writes: the fields changed, and the next slot a changed form moves. */
+export type RoutineEdit = RoutineFields & Partial<Pick<Routine, "next_due_at">>;
 
 export type SuggestionState = "pending" | "accepted" | "dismissed" | "snoozed";
 
@@ -98,6 +102,10 @@ export interface RoutineStore {
   listRoutines(): Promise<Routine[]>;
   /** Applies `patch` only while the routine's marks still equal `read`: false when another write came first. */
   updateRoutine(id: string, read: RoutineMarks, patch: RoutinePatch): Promise<boolean>;
+  /** Writes only the fields given, only while the routine's marks still equal `read`: false when another write came first, or with no field. */
+  editRoutine(id: string, read: RoutineMarks, fields: RoutineEdit): Promise<boolean>;
+  /** Removes the routine and its suggestions in one transaction; the runs on its carrier item stay. False when it was not stored. */
+  deleteRoutine(id: string): Promise<boolean>;
   /** Adds `usd` to the routine's cap for `day` (a new day starts from 0), once per `hold_key`: false when already raised for it. */
   raiseRoutineCap(id: string, r: { hold_key: string; usd: number; day: string }): Promise<boolean>;
   /**
@@ -145,6 +153,90 @@ export async function addRoutine(store: Pick<RoutineStore, "addRoutine">, input:
   if (problem) return { ok: false, problem };
   const created_at = now.toISOString() as Timestamp;
   return { ok: true, routine: await store.addRoutine({ ...input, created_at, next_due_at: firstDue(input, now) }) };
+}
+
+// Managing routines (design 08-routines): the /api/v1/routines writes. Each reads the routine, decides, then writes
+// once, conditional on the marks it read, so a fire or another write since then makes it change nothing. Pause and
+// resume set `paused`; resume also moves a scheduled routine's next slot to the first after now. Run now sets a
+// scheduled routine's `next_due_at` to now, so the kernel's due path (dueSlot, routinePlans) fires it on the next
+// tick and afterSlot moves the slot on: there is no second path. A trigger routine has no next slot to move.
+
+/** The store methods managing routines reads and writes through. */
+export type RoutineAdminStore = Pick<RoutineStore, "addRoutine" | "getRoutine" | "updateRoutine" | "editRoutine" | "deleteRoutine">;
+/** The writes, each the owner's only. */
+export type RoutineWrite = "add" | "edit" | "pause" | "resume" | "delete" | "run";
+/** A write's result: the routine as stored (as it was, for a delete), or why nothing was written. */
+export type RoutineResult = { ok: true; routine: Routine } | { ok: false; problem: string };
+/** The refusal of a write whose condition was lost. */
+export const ROUTINE_LOST = "changed by another worker, try again";
+/** The refusal of Run now on a trigger routine. */
+export const NO_NEXT_SLOT = "a trigger routine has no next slot: it runs on its trigger";
+
+const refused = (problem: string): RoutineResult => ({ ok: false, problem });
+const marksOf = (r: Routine): RoutineMarks => ({ next_due_at: r.next_due_at, last_run_at: r.last_run_at });
+/** A scheduled routine's first slot after `now`, an interval counted from its creation (as afterSlot counts it); null for a trigger routine. */
+const slotAfter = (r: Pick<Routine, "schedule" | "zone" | "created_at">, now: Date): Timestamp | null =>
+  r.schedule === null ? null : ((nextDue(r.schedule, r.zone, now, new Date(r.created_at))?.toISOString() ?? null) as Timestamp | null);
+
+/** Stores a new routine from `fields` (zone UTC when not given); refused when it is not a routine or its ID is already stored. */
+export async function createRoutine(store: RoutineAdminStore, id: string, f: RoutineFields, created_by: UserId, now: Date): Promise<RoutineResult> {
+  const exists = `routine ${id} is already stored`;
+  if (await store.getRoutine(id)) return refused(exists);
+  const r = await addRoutine(store, {
+    id, created_by, name: f.name ?? "", instruction: f.instruction ?? "", url: f.url ?? null, schedule: f.schedule ?? null, zone: f.zone ?? "UTC",
+    trigger: f.trigger ?? null, run_cap_usd: f.run_cap_usd ?? null, daily_cap_usd: f.daily_cap_usd ?? null,
+  }, now);
+  // Another worker stored the ID between the read and the insert: theirs stays.
+  return r.ok && r.routine.created_at !== now.toISOString() ? refused(exists) : r;
+}
+
+/** Reads the routine, decides its write (or a refusal), and writes it once, conditional on the marks read. */
+async function decide(store: RoutineAdminStore, id: string, write: (r: Routine) => { patch: RoutinePatch } | { edit: RoutineEdit } | string): Promise<RoutineResult> {
+  const r = await store.getRoutine(id);
+  if (r === null) return refused(`no routine ${id}`);
+  const w = write(r);
+  if (typeof w === "string") return refused(w);
+  const done = "patch" in w ? await store.updateRoutine(id, marksOf(r), w.patch) : await store.editRoutine(id, marksOf(r), w.edit);
+  return done ? { ok: true, routine: { ...r, ...("patch" in w ? w.patch : w.edit) } } : refused(ROUTINE_LOST);
+}
+
+/**
+ * Changes only the fields given; refused with no field, or when the routine they make fails routineProblem. A
+ * changed schedule, zone or trigger on an unpaused routine sets `next_due_at` to its first slot after `now` (none for
+ * a trigger routine); a paused routine stays paused, and its resume sets the slot.
+ */
+export function editRoutine(store: RoutineAdminStore, id: string, f: RoutineFields, now: Date): Promise<RoutineResult> {
+  if (Object.values(f).every((v) => v === undefined)) return Promise.resolve(refused("nothing to change: give at least one field"));
+  return decide(store, id, (r) => {
+    const next = { ...r, ...Object.fromEntries(Object.entries(f).filter(([, v]) => v !== undefined)) } as Routine;
+    const problem = routineProblem(next);
+    if (problem) return problem;
+    const edit: RoutineEdit = { ...f };
+    if (f.schedule !== undefined || f.zone !== undefined || f.trigger !== undefined) {
+      if (next.schedule === null) edit.next_due_at = null;
+      else if (!r.paused) edit.next_due_at = slotAfter(next, now);
+    }
+    return { edit };
+  });
+}
+
+/** Removes the routine and its suggestions; its runs stay on its carrier item. Refused for an unknown ID. */
+async function removeRoutine(store: RoutineAdminStore, id: string): Promise<RoutineResult> {
+  const r = await store.getRoutine(id);
+  return r !== null && (await store.deleteRoutine(id)) ? { ok: true, routine: r } : refused(`no routine ${id}`);
+}
+
+/** One write, as the HTTP routes run it; `fields` only for add and edit. */
+export function writeRoutine(store: RoutineAdminStore, w: RoutineWrite, id: string, fields: RoutineFields, user: UserId, now: Date): Promise<RoutineResult> {
+  if (w === "add") return createRoutine(store, id, fields, user, now);
+  if (w === "edit") return editRoutine(store, id, fields, now);
+  if (w === "delete") return removeRoutine(store, id);
+  return decide(store, id, (r) => {
+    if (w === "pause") return r.paused ? "already paused" : { patch: { paused: true } };
+    if (w === "resume") return !r.paused ? "not paused" : { patch: { paused: false, ...(r.schedule === null ? {} : { next_due_at: slotAfter(r, now) }) } };
+    if (r.paused) return "paused";
+    return r.schedule === null ? NO_NEXT_SLOT : { patch: { next_due_at: now.toISOString() as Timestamp } };
+  });
 }
 
 /**

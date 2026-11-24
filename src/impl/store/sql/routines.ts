@@ -1,12 +1,13 @@
 // Routines (src/core/routines.ts): the RoutineStore methods over `controller_routines` and
 // `controller_routine_suggestions`, as SqlRoutineStore, which SqlFactoryStore extends, so these methods add no line to
 // sql-factory-store.ts's budget. Every routine write is one UPDATE conditional on what the caller read (its marks, the
-// hold a raise answers); a suggestion's answer is conditional on it reading pending. A snooze that has run out reads
+// hold a raise answers); a delete removes the routine and its suggestions in one transaction, and keeps its runs; a
+// suggestion's answer is conditional on it reading pending. A snooze that has run out reads
 // as pending, by the store's injected Clock, with no write.
 
 import type { CadenceKind } from "../../../core/schedule-cadence.js";
 import type {
-  NewRoutine, Routine, RoutineMarks, RoutinePatch, RoutineStore, RoutineSuggestion, RoutineTrigger, SuggestionDecision, SuggestionState,
+  NewRoutine, Routine, RoutineEdit, RoutineMarks, RoutinePatch, RoutineStore, RoutineSuggestion, RoutineTrigger, SuggestionDecision, SuggestionState,
 } from "../../../core/routines.js";
 import type { Timestamp, UserId } from "../../../core/types.js";
 import type { Row, SqlDriver, SqlValue } from "../../../state/index.js";
@@ -72,6 +73,28 @@ export class SqlRoutineStore extends SqlAttachmentStore implements RoutineStore 
     if (patch.next_due_at !== undefined) cols.push(["next_due_at", patch.next_due_at]);
     if (patch.last_run_at !== undefined) cols.push(["last_run_at", patch.last_run_at]);
     if (patch.paused !== undefined) cols.push(["paused", patch.paused ? 1 : null]);
+    return this.writeOnMarks(id, read, cols);
+  }
+
+  async editRoutine(id: string, read: RoutineMarks, fields: RoutineEdit): Promise<boolean> {
+    const cols: [string, SqlValue][] = [];
+    for (const k of ["name", "instruction", "url", "zone", "run_cap_usd", "daily_cap_usd", "next_due_at"] as const) {
+      if (fields[k] !== undefined) cols.push([k, fields[k]]);
+    }
+    if (fields.schedule !== undefined) cols.push(["cadence_kind", fields.schedule?.kind ?? null], ["cadence_spec", fields.schedule?.spec ?? null]);
+    if (fields.trigger !== undefined) cols.push(["trigger_kind", fields.trigger]);
+    return this.writeOnMarks(id, read, cols);
+  }
+
+  async deleteRoutine(id: string): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
+      await tx.run("DELETE FROM controller_routine_suggestions WHERE routine_id = ?", [id]);
+      return (await tx.run("DELETE FROM controller_routines WHERE id = ?", [id])) === 1;
+    });
+  }
+
+  /** One UPDATE of `cols`, only while the routine's marks still equal `read`; false with no column or no row changed. */
+  private async writeOnMarks(id: string, read: RoutineMarks, cols: readonly [string, SqlValue][]): Promise<boolean> {
     if (cols.length === 0) return false;
     const [due, dueArgs] = equals("next_due_at", read.next_due_at), [last, lastArgs] = equals("last_run_at", read.last_run_at);
     const sql = `UPDATE controller_routines SET ${cols.map(([c]) => `${c} = ?`).join(", ")} WHERE id = ? AND ${due} AND ${last}`;
