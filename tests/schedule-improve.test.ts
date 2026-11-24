@@ -1,10 +1,9 @@
 // The improve schedule action (design 08-schedules, 07-self-improvement): an occurrence queues the daily improve run
-// of its slot's UTC day under the controller's daily key, so a second occurrence that day queues none. Setup adds
-// the Daily improve run schedule once when `improver.daily_trigger` is off; `schedule add` and `edit` still refuse
-// the improve kind. No model and no remote service: the fake runner has no script.
+// of its slot's UTC day under the controller's daily key, so a second occurrence that day queues none.
+// `schedule add` and `edit` still refuse the improve kind; the setup step's tests are in guided.test.ts.
+// No model and no remote service: the fake runner has no script.
 
 import { describe, expect, it } from "vitest";
-import { addImproveSchedule, type ImproveScheduleDeps } from "../src/cli/handlers/setup/guided.js";
 import { agentAction } from "../src/controller/units/schedule/plugins/agent/agent-action.js";
 import { buildAction } from "../src/controller/units/schedule/plugins/build/build-action.js";
 import { feedbackAction } from "../src/controller/units/schedule/plugins/feedback/feedback-action.js";
@@ -12,7 +11,7 @@ import { improveAction } from "../src/controller/units/schedule/plugins/improve/
 import { scheduledAction } from "../src/core/controller-deps.js";
 import { dailyImproveKey, dailyWindow, enqueueImprove, listImproveRuns } from "../src/core/improver.js";
 import { improverConfig, improverProblems } from "../src/core/proposals.js";
-import { type NewSchedule, type Schedule, addSchedule, writeSchedule } from "../src/core/schedule.js";
+import { addSchedule, writeSchedule } from "../src/core/schedule.js";
 import type { Timestamp, UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -87,77 +86,6 @@ describe("improver.daily_trigger", () => {
       expect(() => improverConfig({ improver: { daily_trigger: bad } }), String(bad)).toThrow(/improver\.daily_trigger/);
       expect(improverProblems({ improver: { daily_trigger: bad } }).join("\n")).toMatch(/improver\.daily_trigger/);
     }
-  });
-});
-
-/** A fake schedule store: the setup step's reads and its insert. */
-function fakeStore(o: { owner?: UserId | null; stored?: string[] } = {}) {
-  const rows: Schedule[] = (o.stored ?? []).map((id) => ({ id } as Schedule));
-  const store: ImproveScheduleDeps["store"] = {
-    getOwner: async () => (o.owner === undefined ? ME : o.owner),
-    listSchedules: async () => rows,
-    addSchedule: async (s: NewSchedule) => {
-      const row = { running_since: null, skip_when_busy: false, action: null, token_cap: null, ...s } as Schedule;
-      rows.push(row);
-      return row;
-    },
-  };
-  return { store, rows };
-}
-
-function deps(over: Partial<ImproveScheduleDeps> & { daily_trigger?: boolean | undefined; schedule_action?: string } = {}) {
-  const lines: string[] = [];
-  const { daily_trigger, schedule_action, ...rest } = over;
-  const d: ImproveScheduleDeps = {
-    store: fakeStore().store,
-    config: { improver: improverConfig(daily_trigger === undefined ? {} : { improver: { daily_trigger } }) },
-    plugins: schedule_action === undefined ? {} : { schedule_action },
-    zone: "Asia/Seoul",
-    now: new Date("2026-11-22T12:00:00.000Z"),
-    print: (l) => void lines.push(l),
-    ...rest,
-  };
-  return { d, lines };
-}
-
-describe("setup: the Daily improve run schedule", () => {
-  it("with the flag off adds improve-daily once: Daily improve run, action improve, daily 09:00 in the machine's zone, by the owner", async () => {
-    const { store, rows } = fakeStore();
-    const { d } = deps({ store, daily_trigger: false, schedule_action: "routed" });
-    expect((await addImproveSchedule(d)).ok).toBe(true);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      id: "improve-daily", title: "Daily improve run", action: { kind: "improve", settings: {} },
-      cadence: { kind: "daily", spec: "09:00" }, zone: "Asia/Seoul", created_by: ME,
-    });
-    // Run again: the ID is stored, nothing more is added.
-    const again = await addImproveSchedule(d);
-    expect(again.ok).toBe(true);
-    expect(again.line).toMatch(/already stored/);
-    expect(rows.map((r) => r.id)).toEqual(["improve-daily"]);
-  });
-
-  it("adds nothing when the ID is stored already, or when the flag is on or unset", async () => {
-    for (const daily_trigger of [true, undefined]) {
-      const { store, rows } = fakeStore();
-      expect((await addImproveSchedule(deps({ store, daily_trigger, schedule_action: "routed" }).d)).ok).toBe(true);
-      expect(rows, String(daily_trigger)).toEqual([]);
-    }
-    const { store, rows } = fakeStore({ stored: ["improve-daily"] });
-    await addImproveSchedule(deps({ store, daily_trigger: false, schedule_action: "routed" }).d);
-    expect(rows.map((r) => r.id)).toEqual(["improve-daily"]);
-  });
-
-  it("with plugins.schedule_action not routed, warns naming it and still adds the schedule", async () => {
-    const { store, rows } = fakeStore();
-    const { d, lines } = deps({ store, daily_trigger: false });
-    expect((await addImproveSchedule(d)).ok).toBe(true);
-    expect(lines.join("\n")).toMatch(/plugins\.schedule_action/);
-    expect(rows.map((r) => r.id)).toEqual(["improve-daily"]);
-    // Routed: no warning.
-    const routedRun = deps({ store: fakeStore().store, daily_trigger: false, schedule_action: "routed" });
-    await addImproveSchedule(routedRun.d);
-    expect(routedRun.lines).toEqual([]);
   });
 });
 
