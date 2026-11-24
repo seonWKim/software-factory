@@ -285,13 +285,22 @@ describe("top bar", () => {
     expect(within(header).getByRole("button", { name: "Search" }).closest(".shrink-0")).toBeTruthy();
   });
 
-  it("holds only the mode, Stop all agents, Search and More (Refresh, Appearance): no revision or Theme button (issue #79)", async () => {
+  it("holds only the mode, Stop all agents, Search and More (Refresh, the Appearance choices): no revision or Theme button (issue #79)", async () => {
     await atWidth(1024, async (header) => {
       expect(within(header).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Stop all agents", "Search", "More"]);
       fireEvent.click(within(header).getByRole("button", { name: "More" }));
-      expect(within(header).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Refresh", "Appearance"]);
-      fireEvent.click(within(header).getByRole("menuitem", { name: "Appearance" }));
-      expect(location.pathname + location.hash).toBe("/app/settings#appearance");
+      const menu = within(header).getByRole("menu");
+      expect(within(menu).getAllByRole("menuitem").map((m) => [m.textContent, m.getAttribute("aria-keyshortcuts")])).toEqual([["Refresh", "r"]]);
+      // Appearance is a group of the three theme choices, the current one checked; picking one applies it in place.
+      expect(menu.textContent).toContain("Appearance");
+      expect(within(menu).getAllByRole("menuitemradio").map((m) => [m.textContent, m.getAttribute("aria-checked")])).toEqual([["System", "true"], ["Light", "false"], ["Dark", "false"]]);
+      const path = location.pathname;
+      fireEvent.click(within(menu).getByRole("menuitemradio", { name: "Dark" }));
+      expect(document.documentElement.classList.contains("dark")).toBe(true);
+      expect(location.pathname).toBe(path);
+      fireEvent.click(within(header).getByRole("button", { name: "More" }));
+      expect(within(header).getByRole("menuitemradio", { name: "Dark" }).getAttribute("aria-checked")).toBe("true");
+      fireEvent.click(within(header).getByRole("menuitemradio", { name: "System" }));
       expect(within(header).queryByTestId("factory-rev")).toBeNull();
       expect(header.textContent).not.toContain("Factory version");
     });

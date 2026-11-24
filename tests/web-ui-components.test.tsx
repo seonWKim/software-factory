@@ -216,14 +216,16 @@ describe("OverflowMenu and Tooltip", () => {
     expect(button.textContent).not.toContain("⋯");
     expect(button.querySelector("[data-testid=ic]")).toBeTruthy();
     fireEvent.click(button);
-    expect(screen.getAllByRole("menuitem").map((i) => i.getAttribute("aria-checked"))).toEqual(["true", "false"]);
+    // A pick list's items are menuitemradio: aria-checked is not valid on a plain menuitem.
+    expect(screen.getAllByRole("menuitemradio").map((i) => i.getAttribute("aria-checked"))).toEqual(["true", "false"]);
   });
 
   it("closes on Esc and on a click outside", () => {
     render(<OverflowMenu label="More" items={[{ label: "Edit", onSelect: vi.fn() }]} />);
     fireEvent.click(screen.getByRole("button", { name: "More" }));
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "More" }));
     fireEvent.click(screen.getByRole("button", { name: "More" }));
     fireEvent.mouseDown(document.body);
     expect(screen.queryByRole("menu")).toBeNull();

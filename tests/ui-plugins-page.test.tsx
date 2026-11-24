@@ -13,6 +13,8 @@ import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 // loaded by a specifier the node check skips.
 const PAGE_MODULE = "../web/src/views/plugins.js";
 const { PluginsPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { PluginsPage: FunctionComponent };
+const NAV_MODULE = "../web/src/nav.js";
+const { NavProvider } = (await import(/* @vite-ignore */ NAV_MODULE)) as { NavProvider: FunctionComponent<{ value: (to: string) => void; children?: unknown }> };
 
 // The Plugins page (design 09-dashboard-app, 2026-11-16): MCP, Skills and Tools tabs over GET /api/v1/plugins and a
 // Models tab (the provider entries, moved from Settings) over GET /api/v1/settings/capabilities, the selected tab in the
@@ -138,6 +140,29 @@ describe("Plugins page", () => {
     expect(within(section).queryByRole("link")).toBeNull();
     expect(screen.queryByRole("searchbox")).toBeNull();
     expect(capabilityReads).toBe(1);
+  });
+
+  it("Models: an Off row's menu offers the switch and opens Settings' file setting for its kind; the row in use says In use (owner #90)", async () => {
+    const off = { kind: "provider" as const, id: "llm:openai-compatible", name: "llm:openai-compatible", detail: "api.example.com", enabled: false, roles: [], last_used: null, models: [] };
+    capabilities.capabilities.push(off);
+    try {
+      history.replaceState(null, "", "/app/plugins?tab=models");
+      const went: string[] = [];
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(createElement(QueryClientProvider, { client }, createElement(NavProvider, { value: (to: string) => went.push(to) }, createElement(PluginsPage))));
+      const table = await screen.findByRole("table", { name: "Models" });
+      expect(screen.getByRole("region", { name: "Models" }).textContent).toContain("One agent runner and one model provider are in use at a time.");
+      const [used, other] = rowsOf(table);
+      fireEvent.click(within(used!).getByRole("button", { name: "More for runner:claude-code" }));
+      expect((within(used!).getByRole("menuitem", { name: "In use" }) as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+      fireEvent.click(within(other!).getByRole("button", { name: "More for llm:openai-compatible" }));
+      fireEvent.click(within(other!).getByRole("menuitem", { name: "Use this provider" }));
+      // The llm kind's row of Settings > Advanced's file settings, with this name picked (no new write path here).
+      expect(went).toEqual(["/app/settings?tab=advanced&use=llm%3Aopenai-compatible"]);
+    } finally {
+      capabilities.capabilities.pop();
+    }
   });
 
   it("opening /app/plugins?tab=models selects Models", async () => {

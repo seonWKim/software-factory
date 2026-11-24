@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { API, type FileKeysView, type ItemDetail, type SettingsView, type SettingsWrite, postSettings, useApi } from "../api.js";
 import { Table } from "../components/ui/parts.js";
 import { Button } from "../components/ui/button.js";
@@ -21,6 +21,10 @@ import { SettingsRow } from "./settings-row.js";
 import { withNodes } from "./standing.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { Card, CardSection } from "../components/ui/card.js";
+import { useUrlParam } from "../lib/url-param.js";
+
+/** `settings?tab=advanced&use=<kind>:<name>` (the Plugins page's Models menu): opens that plugin kind's confirm with the name picked. */
+export const USE_PARAM = "use";
 
 // The Settings page's write pieces (useWrite, Outcome) and its typed form of the file-only keys (design 08-settings,
 // phase 3 of "Settings without editing factory.config.json"). Each file-only key has a typed control and a restart
@@ -330,11 +334,12 @@ export function KeyNameDetails({ name, guard }: { name: string; guard?: boolean 
  * the confirm flag. A `member` row edits one member of the key's object (one plugin kind of `plugins`) and writes the
  * object whole, its other members kept.
  */
-function FileKey({ name, member, label, help, spec, value, token, danger, guard }: { name: string; member?: string; label: string; help: string; spec: Spec; value: Json | undefined; token: string; danger: boolean; guard?: boolean }) {
+function FileKey({ name, member, label, help, spec, value, token, danger, guard, preset }: { name: string; member?: string; label: string; help: string; spec: Spec; value: Json | undefined; token: string; danger: boolean; guard?: boolean; preset?: string | undefined }) {
   const { busy, error, done, filed, write, fail } = useWrite(token);
-  const [draft, setDraft] = useState<Draft | null>(null);
+  // `preset` (a member's choice named by the `use` URL parameter) starts with that choice picked and its confirm open.
+  const [draft, setDraft] = useState<Draft | null>(preset ?? null);
   /** The value the confirm Dialog asks about; null while it is closed. */
-  const [asking, setAsking] = useState<Json | null>(null);
+  const [asking, setAsking] = useState<Json | null>(() => (preset !== undefined && member !== undefined ? { ...(isObject(value) ? value : {}), [member]: preset } : null));
   const own = member === undefined ? value : isObject(value) ? value[member] : undefined;
   const shown = draft ?? toDraft(spec, own);
   const send = async (next: Json): Promise<boolean> => {
@@ -445,6 +450,16 @@ export function FileKeysSection({ view }: { view: SettingsView }) {
   const modelByShape = file("model_by") ?? parse(view.keys.find((k) => k.key === "model_by")?.default_value ?? null);
   const specOf = (key: string): Spec | undefined => (key === "model_by" ? tierSpec(modelByShape) : SPECS[key]);
   const common = { token: view.csrf_token };
+  // `use=<kind>:<name>`: read once, then dropped from the address so a reload does not ask again.
+  const [use, setUse] = useUrlParam(USE_PARAM);
+  const [wanted] = useState(use);
+  useEffect(() => {
+    if (use !== null) setUse(null);
+  }, []);
+  const presetFor = (p: FileKeysView["plugins"][number]): string | undefined => {
+    const name = wanted?.startsWith(`${p.kind}:`) ? wanted.slice(p.kind.length + 1) : undefined;
+    return name !== undefined && p.names.includes(name) && pluginSpec(p, plugins).kind === "choice" ? name : undefined;
+  };
   return (
     <Card title={t("settings.file.title")} count={fk.editable.length}>
       <p className={SETTINGS_INTRO}>{t("settings.file.intro")}</p>
@@ -452,7 +467,7 @@ export function FileKeysSection({ view }: { view: SettingsView }) {
         {fk.editable.flatMap(({ key }) => {
           if (key === "plugins") {
             return fk.plugins.map((p) => (
-              <FileKey key={`plugins.${p.kind}`} {...common} name="plugins" member={p.kind} label={keyLabel(`plugin.${p.kind}`)} help={t("settings.file.pluginHelp")} spec={pluginSpec(p, plugins)} value={plugins} danger={p.guard} guard={p.guard} />
+              <FileKey key={`plugins.${p.kind}`} {...common} name="plugins" member={p.kind} label={keyLabel(`plugin.${p.kind}`)} help={t("settings.file.pluginHelp")} spec={pluginSpec(p, plugins)} value={plugins} danger={p.guard} guard={p.guard} preset={presetFor(p)} />
             ));
           }
           const spec = specOf(key);

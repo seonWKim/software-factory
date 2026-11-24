@@ -115,8 +115,8 @@ export function UpdateNote({ factory }: { factory: FactoryState | null | undefin
 }
 
 /**
- * The running revision in the sidebar footer (design 09-dashboard-shell): "Factory version" over its short form and
- * "up to date" or "N behind" when the status file says (a separate code checkout); the tooltip says what the hash is.
+ * The running revision in the sidebar footer (design 09-dashboard-shell), one quiet line at the labels' left edge: its
+ * short form and "up to date" or "N behind" ("Factory version" for screen readers and in the tooltip) when the status file says (a separate code checkout); the tooltip says what the hash is.
  * Shown with the full sidebar (from `lg`); the icon sidebar has no room, and Health's code row names it there.
  * Hidden without a factory status or a running revision.
  */
@@ -126,9 +126,10 @@ export function FactoryRevision({ factory }: { factory: FactoryState | null | un
   const behind = factory.behind ?? null;
   const text = behind === null ? rev : behind === 0 ? t("update.revCurrent", { rev }) : t("update.revBehind", { rev, count: behind });
   return (
-    <p className="px-2 text-xs text-text-2 max-lg:hidden">
-      <span className="block">{t("update.revLabel")}</span>
-      <span data-testid="factory-rev" title={t("update.revTooltip")} className="block truncate font-mono">{text}</span>
+    // One quiet line, starting where the sidebar labels start (after the row's 8px padding, 16px icon and 8px gap).
+    <p title={t("update.revTooltip")} className="truncate pl-8 text-xs text-text-2 max-lg:hidden">
+      <span className="sr-only">{t("update.revLabel")} </span>
+      <span data-testid="factory-rev" className="font-mono">{text}</span>
     </p>
   );
 }

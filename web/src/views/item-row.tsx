@@ -1,3 +1,4 @@
+import { Copy } from "lucide-react";
 import type { KeyboardEventHandler, ReactNode, Ref } from "react";
 import { copyToClipboard } from "../components/ui/copy.js";
 import { announceStatus } from "../components/ui/dialog.js";
@@ -28,6 +29,7 @@ export const ROW_SPACE: Readonly<Record<"list" | "tree", Readonly<Record<RowVari
 /** The "⋯" menu's Copy ID: writes `id` to the clipboard and says so; with no clipboard it does nothing. */
 export const copyIdItem = (id: string): MenuItem => ({
   label: t("copy.id"),
+  icon: Copy,
   onSelect: () => {
     void copyToClipboard(id).then((ok) => ok && announceStatus(t("copy.done")));
   },

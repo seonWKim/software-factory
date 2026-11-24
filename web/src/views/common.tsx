@@ -1,3 +1,4 @@
+import { ExternalLink } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { API, type ItemRow as Item, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Session, type Why, mergeCheckLabel, showsMerge, useApi } from "../api.js";
 import { IdDetails } from "../components/ui/copy.js";
@@ -249,7 +250,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
 const head = () => ({ badge: t("col.state"), title: t("col.item"), why: t("col.why"), project: t("tasks.project"), worker: t("col.worker"), age: t("col.since"), actions: t("col.pr") });
 
 /** A "⋯" menu item that opens `url` in a new tab. */
-const openItem = (label: string, url: string): MenuItem => ({ label, onSelect: () => void window.open(url, "_blank", "noopener,noreferrer") });
+const openItem = (label: string, url: string): MenuItem => ({ label, icon: ExternalLink, onSelect: () => void window.open(url, "_blank", "noopener,noreferrer") });
 
 /** An item's PR as "PR #N": a link out when it has a stored link, plain text otherwise. */
 export function PrLink({ number, url, className }: { number: string; url: string | null; className?: string }) {
