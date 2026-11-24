@@ -1,13 +1,14 @@
 import { withoutUiCheck, type ModelClass, requiredTier, CHECKS_FAILED_RUN, type CheckResult, type DoneCheckResult, TOOLCHAIN_MISSING, PrePushSelection, checkedLines, manualLines, IMPLEMENT_SCHEMA, type NeedsHuman, SPEC_CONFLICT, findingLine, parseImplement, parseReview, CHECKS_ENV, branchFor, wipBranchFor, type Run, type WorkItem, type SandboxHandle, type ToolCallContext } from "./legacy-imports.js";
-import { type ContinueWip, type DiffBudget, type FixContext, LOOP_STARTS, MAX_PR_FILES, NO_COMMITS_DETAIL, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, WIP_TEXT_CHARS, continues, fenced, gitIdentity, prTitle, renderBudget, renderContinueNewSession, renderMergeCheckFailure, renderNewSessionResume, renderRequest, renderSessionResume, renderWorkItem, runCommits, specQuery, tail } from "../../support.js";
+import { type ContinueWip, type FixContext, LOOP_STARTS, MAX_PR_FILES, NO_COMMITS_DETAIL, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, WIP_TEXT_CHARS, continues, fenced, gitIdentity, prTitle, renderBudget, renderContextContinue, renderContinueNewSession, renderMergeCheckFailure, renderNewSessionResume, renderRequest, renderSessionResume, renderWorkItem, runCommits, specQuery, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
+import type { AgentRunResult } from "../../../interfaces/agent-runner.js";
 import { RESUME_LOST } from "../../bundle.js";
 import { decisionsSection } from "../../../shared/command-notes.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 import { repairedAnswer, type KeepWork } from "./implement-repair.js";
 import { syncBase } from "./implement-sync.js";
 import { RATCHET_LISTS, checksBeforePush, fixStep, gateHooks, itemCaps, prePushGates } from "./implement-checks.js";
-import { commitWorktree, keepStopped, keepWip, overBudget, pauseImplement, preflight, restoreWip, resumeWip, saveRunBundle, watchDiff } from "./implement-wip.js";
+import { CONTEXT_CEILING_TOKENS, type DiffBudget, commitWorktree, contextCeiling, endSession, keepStopped, keepWip, overBudget, pauseImplement, preflight, restoreWip, resumeWip, saveRunBundle, watchDiff } from "./implement-wip.js";
 
 /**
  * The implement run. Before any agent: the preflight (push access, PR API, base fetch). A retry whose input
@@ -67,18 +68,16 @@ async function implement(
       // The item's size caps, as the size gate reads them (design §4, issue #217).
       const limits = await itemCaps(w, item);
       const budget = renderBudget(limits);
-      const prompt = plan?.session || kept
+      // The full prompt of a new session; `more`: the section that says where it starts.
+      const fullPrompt = async (more: string) => w.withIndex(
+        [renderWorkItem(item, { includeSpec: true }), newCheckFiles(item), renderRequest(item), budget, notes, feedback, previous, more].filter(Boolean).join("\n\n"),
+        specQuery(item),
+      );
+      let prompt = plan?.session || kept
         ? [renderSessionResume(plan ? plan.state.head : continued?.head ?? null, plan ? null : "stopped"), budget].join("\n\n")
-        : await w.withIndex(
-          [
-            renderWorkItem(item, { includeSpec: true }), newCheckFiles(item), renderRequest(item), budget, notes, feedback, previous,
-            plan ? renderNewSessionResume(restored ? plan.state.head : null) : "",
-            continued ? renderContinueNewSession(continued.head) : "",
-          ].filter(Boolean).join("\n\n"),
-          specQuery(item),
-        );
+        : await fullPrompt(plan ? renderNewSessionResume(restored ? plan.state.head : null) : continued ? renderContinueNewSession(continued.head) : "");
       const mode = (await PrePushSelection.open(w.d.store, w.cfg.repo, item.project, () => {})).mode; // the stored test selection mode, per step
-      // The mid-run diff check: every DIFF_CHECK_MS on the clock while the agent step runs.
+      // The mid-run diff check: every DIFF_CHECK_MS on the clock while the agent step runs, over all its sessions.
       const watch: DiffBudget = { limits, stop: new AbortController(), over: null };
       const stopWatch = new AbortController();
       const watching = watchDiff(w, run, handle, baseSha, dirs, watch, stopWatch.signal);
@@ -86,23 +85,42 @@ async function implement(
       // workdir. Never the owner's checkout or its .git (architecture §5).
       const turn = async () => ({ model_class: model, output_schema: IMPLEMENT_SCHEMA, writable_paths: [],
         env_allowlist: gitIdentity(w.cfg.agent_git_identity), gate_hooks: await gateHooks(w, run, item, start, baseSha, mode) });
-      const result = await w.agent(run, item, handle, AbortSignal.any([signal, watch.stop.signal]), { prompt, ...(await turn()) },
-        plan ? `resumed-${ctx.lease_token}` : undefined, {
-        pausable: true, resume: plan?.session ?? kept,
-      }).catch(async (err: unknown) => {
-        stopWatch.abort();
-        await watching;
-        // Stopped for its budget, not for its lease: an agent abort the budget caused is diff_too_large. Any other
-        // failure of the step (a flagged transcript, an agent error) keeps its own code.
-        const stopped = err instanceof RunPaused || (err instanceof RunFailure && err.code === "lease_lost");
-        if (watch.over && stopped && !signal.aborted) throw await overBudget(w, run, item, handle, ctx, start, dirs, watch);
-        if (err instanceof RunPaused) throw await pauseImplement(w, run, item, handle, ctx, start, dirs, err);
-        // A usage limit, a stall or a timeout stopped the agent mid-work: its work goes to a wip branch.
-        if (err instanceof RunFailure && STOPPED_CODES.includes(err.code) && !signal.aborted) {
-          throw await keepStopped(w, run, item, handle, ctx, start, dirs, err);
+      // The context ceiling (design §5 Restarts): a session whose one model call reaches CONTEXT_CEILING_TOKENS is
+      // stopped and the run continues in a new session from its WIP head. A session that never reaches it is the only one.
+      let result: AgentRunResult;
+      for (let session = 0, from = start, resume = plan?.session ?? kept; ; session++, resume = null) {
+        const ceiling = contextCeiling(w, run);
+        const name = [plan && session === 0 ? `resumed-${ctx.lease_token}` : "", session > 0 ? `session-${session + 1}` : ""].filter(Boolean).join("-") || undefined;
+        const r = await w.agent(run, item, handle, AbortSignal.any([signal, watch.stop.signal, ceiling.stop.signal]),
+          { prompt, ...(await turn()), on_context: ceiling.on_context }, name, { pausable: true, resume }).catch(async (err: unknown) => {
+          const stopped = err instanceof RunPaused || (err instanceof RunFailure && err.code === "lease_lost");
+          // Stopped at the ceiling, not for its budget or its lease: the next session starts from the WIP head.
+          if (ceiling.reached !== null && !watch.over && stopped && !signal.aborted) return null;
+          stopWatch.abort();
+          await watching;
+          // Stopped for its budget, not for its lease: an agent abort the budget caused is diff_too_large. Any other
+          // failure of the step (a flagged transcript, an agent error) keeps its own code.
+          if (watch.over && stopped && !signal.aborted) throw await overBudget(w, run, item, handle, ctx, start, dirs, watch);
+          if (err instanceof RunPaused) throw await pauseImplement(w, run, item, handle, ctx, start, dirs, err);
+          // A usage limit, a stall or a timeout stopped the agent mid-work: its work goes to a wip branch.
+          if (err instanceof RunFailure && STOPPED_CODES.includes(err.code) && !signal.aborted) {
+            throw await keepStopped(w, run, item, handle, ctx, start, dirs, err);
+          }
+          throw err;
+        });
+        if (r !== null) {
+          result = r;
+          break;
         }
-        throw err;
-      }).finally(() => stopWatch.abort());
+        const ended = await endSession(w, run, item, handle, ctx, start, from, dirs, session === 0).catch(async (err: unknown) => {
+          stopWatch.abort();
+          await watching;
+          throw err;
+        });
+        from = ended.head;
+        prompt = await fullPrompt(renderContextContinue(ended.head, ended.commits, CONTEXT_CEILING_TOKENS));
+      }
+      stopWatch.abort();
       await watching;
       // A runner that finished the step although the check had stopped it: the run still fails, before any sync.
       if (watch.over) throw await overBudget(w, run, item, handle, ctx, start, dirs, watch);
