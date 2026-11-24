@@ -45,7 +45,8 @@ function answer(from: string, to: string): CalendarEvents {
     const date = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
     if (date > to) break;
     const ok = date >= synced.from && date <= synced.to;
-    days.push({ date, synced: ok, events: ok ? (events[date] ?? []) : [] });
+    // The owner's own events show whether or not the day is synced, as the real read lists them.
+    days.push({ date, synced: ok, events: (events[date] ?? []).filter((e) => ok || e.source === "local") });
   }
   return { from, to, days, calendar, sync_pending: pending?.from === from && pending.to === to };
 }
@@ -112,9 +113,9 @@ describe("Calendar page", () => {
     await within(toolbar).findByRole("button", { name: "Sync" }, SLOW);
     expect(within(toolbar).getAllByRole("radio").map((b) => b.textContent)).toEqual(["Week", "Month"]);
     // Previous, Next and Sync are icon buttons: their names are their aria-labels.
-    expect(within(toolbar).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Previous week", "Today", "Next week", "Sync"]);
+    expect(within(toolbar).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Previous week", "Today", "Next week", "Sync", "New event"]);
     const order = [...toolbar.querySelectorAll("[role=radiogroup], button:not([role=radio]), h2")].map((e) => e.tagName === "H2" ? "period" : e.getAttribute("aria-label") ?? e.textContent);
-    expect(order).toEqual(["Calendar view", "Previous week", "Today", "Next week", "period", "Sync"]);
+    expect(order).toEqual(["Calendar view", "Previous week", "Today", "Next week", "period", "Sync", "New event"]);
     expect(document.querySelectorAll("[data-calendar-toolbar]")).toHaveLength(1);
     expect(toolbar.closest("[data-page-toolbar]")).not.toBeNull();
     expect(toolbar.closest("section")).toBeNull();
@@ -367,6 +368,18 @@ describe("Calendar page", () => {
     expect(link.getAttribute("href")).toBe("/app/settings?tab=integrations#calendar");
     // No calendar connected: nothing to sync, so no Sync button.
     expect(screen.queryByRole("button", { name: "Sync" })).toBeNull();
+  });
+
+  it("with no calendar connected the grid shows the local events and no day is shaded; a note above it links to Settings", async () => {
+    calendar = [];
+    synced = { from: "9999-01-01", to: "9999-01-01" };
+    events = { "2026-11-13": [{ ...ev("mine", "09:30", "local"), repeats: "none" }] };
+    show();
+    await shownRange("2026-11-09", "2026-11-15");
+    expect(entries()).toEqual(["local:mine"]);
+    expect(document.querySelectorAll("[data-not-synced]")).toHaveLength(0);
+    expect(screen.getByRole("status").textContent).toContain("No calendar is connected");
+    expect(screen.getByRole("button", { name: "New event" })).toBeTruthy();
   });
 
   /** The Sync buttons on the page, by their name: the toolbar's icon button by its aria-label, the note's by its text. */

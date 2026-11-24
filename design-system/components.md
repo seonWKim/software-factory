@@ -85,7 +85,7 @@ The slot for a page's controls, right under its `PageHeader` (`notice.tsx`): `ta
 
 ## Input
 
-A one-line field, 32 px high with padding-x 12 px, on the shared field classes of `control.ts` (1 px `border-strong` border, radius `control`, `surface` background, `text-sm`, placeholder in `text-3`). Variants (`type`): `text` (default), `search`, `number`; not for radios (see Radio). One size. States: default, with placeholder, focus-visible (2 px `focus` outline), `disabled` (opacity 0.5).
+A one-line field, 32 px high with padding-x 12 px, on the shared field classes of `control.ts` (1 px `border-strong` border, radius `control`, `surface` background, `text-sm`, placeholder in `text-3`). Variants (`type`): `text` (default), `search`, `number`, `date`, `time` (the browser's own picker, on the same field classes); not for radios (see Radio). One size. States: default, with placeholder, focus-visible (2 px `focus` outline), `disabled` (opacity 0.5).
 
 ## Textarea
 
