@@ -5,6 +5,7 @@ import { type Column, DataTable } from "../components/ui/data-table.js";
 import { BANNER_LINK_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { Tooltip } from "../components/ui/menu.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
+import { STAT_NOTE, StatTile } from "../components/ui/stat-tile.js";
 import { locale, t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { tokens } from "../lib/format.js";
@@ -31,12 +32,10 @@ function sum(days: readonly SpendDay[]): SpendTotals {
 /** One period's cost and tokens. */
 function Total({ label, total, budget }: { label: string; total: SpendTotals; budget?: { text: (spent: string, budget: string) => string; usd: number | null } }) {
   return (
-    <div data-total={label} className="min-w-0 rounded-box border border-border bg-surface p-3">
-      <dt className="text-xs text-text-2">{label}</dt>
-      <dd className="mt-1 text-lg font-semibold tabular-nums">{usd(total.cost_usd)}</dd>
-      <dd className="text-xs text-text-2 tabular-nums">{t("spend.tokens", { tokens: tokens(total.tokens) })}</dd>
-      {budget && <dd data-budget className="text-xs text-text-2 tabular-nums">{budget.usd === null ? t("spend.noBudget") : budget.text(usd(total.cost_usd), budgetUsd(budget.usd))}</dd>}
-    </div>
+    <StatTile data-total={label} label={label} value={usd(total.cost_usd)}>
+      <dd className={STAT_NOTE}>{t("spend.tokens", { tokens: tokens(total.tokens) })}</dd>
+      {budget && <dd data-budget className={STAT_NOTE}>{budget.usd === null ? t("spend.noBudget") : budget.text(usd(total.cost_usd), budgetUsd(budget.usd))}</dd>}
+    </StatTile>
   );
 }
 

@@ -18,6 +18,7 @@ import { EfficiencyTab } from "./efficiency.js";
 import { Improve } from "./rules-improve.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
+import { StatTile } from "../components/ui/stat-tile.js";
 import { Tabs } from "../components/ui/tabs.js";
 import { cn } from "../lib/cn.js";
 import { useUrlParam } from "../lib/url-param.js";
@@ -196,12 +197,7 @@ export function ActivityPage() {
               [t("col.tokens"), tokens(o.last_24h.tokens)],
               [t("activity.openItems"), String(o.open)],
             ].map(([k, v, href]) => (
-              <div key={k} className="rounded-control border border-border px-3 py-2">
-                <dt className="text-xs text-text-2">{k}</dt>
-                <dd className="text-lg font-semibold tabular-nums">
-                  {href ? <Link href={href} className={cn("min-w-6", LINK_CLASS)}>{v}</Link> : v}
-                </dd>
-              </div>
+              <StatTile key={k} label={k} value={href ? <Link href={href} className={cn("min-w-6", LINK_CLASS)}>{v}</Link> : v} />
             ))}
           </dl>
         </Card>

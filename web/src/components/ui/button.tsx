@@ -1,4 +1,4 @@
-import type { ComponentProps } from "react";
+import { type ComponentProps, createContext, useContext } from "react";
 import { cn } from "../../lib/cn.js";
 import { DISABLED, FOCUS } from "./control.js";
 
@@ -53,6 +53,13 @@ export function buttonClass({ variant = "secondary", size = "md", solid = false,
   );
 }
 
+/**
+ * True inside a PageToolbar's row (notice.tsx): there every control shares the one toolbar height (CONTROL_HEIGHT.md,
+ * the search Input's and the SegmentedControl's 32px), so a `sm` Button is drawn `md`.
+ */
+export const InToolbar = createContext(false);
+
 export function Button({ className, variant = "secondary", size = "md", solid = false, type = "button", ...props }: ButtonProps) {
-  return <button type={type} className={buttonClass({ variant, size, solid, className })} {...props} />;
+  const toolbar = useContext(InToolbar);
+  return <button type={type} className={buttonClass({ variant, size: toolbar && size === "sm" ? "md" : size, solid, className })} {...props} />;
 }

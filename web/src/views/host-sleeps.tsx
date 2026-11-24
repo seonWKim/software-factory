@@ -1,5 +1,5 @@
 import type { HostSleepRow } from "../api.js";
-import { Card } from "../components/ui/card.js";
+import { CARD_INTRO, Card } from "../components/ui/card.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { EmptyState } from "../components/ui/notice.js";
@@ -94,7 +94,7 @@ export function HostSleeps({ sleeps, now }: { sleeps: readonly HostSleepRow[]; n
       ) : (
         <>
           {groups.some((g) => g.runs.size > 0) && (
-            <p data-testid="keep-awake-hint" className="mb-3 text-sm text-text-2">
+            <p data-testid="keep-awake-hint" className={CARD_INTRO}>
               {t("health.sleepHint")} <Link href={`${BASE}settings?tab=advanced`} className={LINK_CLASS}>{t("health.sleepHintLink")}</Link>
             </p>
           )}

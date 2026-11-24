@@ -14,8 +14,10 @@
 // last scheduled sync's (calendar-sync.ts syncWindow, the one the sync itself asks for) or one of its on-demand syncs'
 // (calendar_synced_ranges); a source never synced leaves every day not synced. The page shows such a day as not
 // synced, never as an empty one. `sync_pending` says whether a sync request for exactly `from` through `to` waits.
+// Each event carries its `starts_at`, `ends_at` and `details` (src/calendar/event-details.ts) for the page's detail
+// view; every text in them passes the egress scan as the title does.
 
-import { type SourceSync, type SyncedRange, rangeError, readCalendar, syncWindow } from "../calendar/index.js";
+import { type EventDetails, type EventPerson, type SourceSync, type SyncedRange, rangeError, readCalendar, syncWindow } from "../calendar/index.js";
 import { calendarDays, dayBounds } from "../core/tasks.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import type { ApiResult } from "./api.js";
@@ -37,6 +39,18 @@ async function connectedCalendars(d: UiDeps): Promise<ReadonlySet<string>> {
   return new Set((await d.settings?.calendar?.flow.listed()) ?? []);
 }
 
+/** Every text of an event's details through the egress scan (Withholder), as its title; null stays null. */
+async function shownDetails(w: Withholder, d: EventDetails | null): Promise<EventDetails | null> {
+  if (d === null) return null;
+  const plain = async (v: string | null) => (v === null ? null : (await w.plain(v)).text);
+  const who = async (p: EventPerson): Promise<EventPerson> => ({ ...p, name: await plain(p.name), email: await plain(p.email) });
+  return {
+    calendar: await plain(d.calendar), location: await plain(d.location), description: await plain(d.description),
+    organizer: d.organizer ? await who(d.organizer) : null, attendees: await Promise.all((d.attendees ?? []).map(who)),
+    conference_url: await plain(d.conference_url), link: await plain(d.link), time_zone: await plain(d.time_zone),
+  };
+}
+
 /** GET /api/v1/calendar/events: 400 with the reason for a bad range; else 200 with each day's events and synced flag. */
 export async function readCalendarEvents(d: UiDeps, from: string | null, to: string | null): Promise<ApiResult> {
   const error = rangeError(from, to);
@@ -47,7 +61,7 @@ export async function readCalendarEvents(d: UiDeps, from: string | null, to: str
   const sources = [...connected].sort().map((source) => rows.get(source) ?? { source, synced_at: null, failed: false });
   const w = new Withholder(d.scanner);
   const kept = stored.events.filter((e) => connected.has(e.source));
-  const events = await Promise.all(kept.map(async (e) => ({ ...e, title: (await w.plain(e.title)).text })));
+  const events = await Promise.all(kept.map(async (e) => ({ ...e, title: (await w.plain(e.title)).text, details: await shownDetails(w, e.details) })));
   const days = calendarDays(events, from!, to!).map((day) => ({ ...day, synced: synced(sources, stored.ranges, day.date) }));
   const pending = stored.pending.some((p) => p.from === from && p.to === to);
   return { status: 200, value: { from, to, days, calendar: sources, sync_pending: pending } };

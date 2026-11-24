@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { type EvalCase, type EvalWrite, type EvalWritten, type TriedCase, postEvalWrite, useEvalRuns, useEvalSuite, useEvalsToken } from "../api/evals.js";
+import { CARD_INTRO } from "../components/ui/card.js";
 import { Clamp } from "../components/ui/clamp.js";
 import { Badge } from "../components/ui/badge.js";
 import { Button } from "../components/ui/button.js";
@@ -242,7 +243,7 @@ export function EvalsCard({ path }: { path: string }) {
   const name = skillName(path);
   return (
     <>
-      <p className="mb-4 max-w-[75ch] text-sm text-pretty text-text-2">{t("evals.cardIntro")}</p>
+      <p className={CARD_INTRO}>{t("evals.cardIntro")}</p>
       {q.isError ? (
         <ErrorNote error={q.error} onRetry={() => void q.refetch()} />
       ) : !q.data ? (

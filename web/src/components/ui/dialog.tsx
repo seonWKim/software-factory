@@ -187,6 +187,8 @@ export interface ModalPanelProps {
   /** Keys the panel's content handles before Esc closes it (a list's arrows). */
   onKeyDown?: (e: KeyboardEvent<HTMLDialogElement>) => void;
   children: ReactNode;
+  /** A line pinned under the scrolling body (a link out): it stays in view however long the body is. */
+  footer?: ReactNode;
 }
 
 const PANEL_SIZE = { md: "max-w-lg", lg: "max-w-2xl" } as const;
@@ -196,7 +198,7 @@ const PANEL_SIZE = { md: "max-w-lg", lg: "max-w-2xl" } as const;
  * icon Button at its right; the body scrolls by itself. Same mechanics as Dialog: Esc, a click outside and the close
  * button close it; focus goes to its first field, else to the body, and back to the opener on close.
  */
-export function ModalPanel({ title, header, size = "lg", placement = "center", onClose, returnFocusTo, onKeyDown, children }: ModalPanelProps) {
+export function ModalPanel({ title, header, size = "lg", placement = "center", onClose, returnFocusTo, onKeyDown, children, footer }: ModalPanelProps) {
   const titleId = useId();
   return (
     <Modal
@@ -223,6 +225,7 @@ export function ModalPanel({ title, header, size = "lg", placement = "center", o
       <div data-panel-body tabIndex={-1} className="min-h-0 overflow-y-auto overscroll-contain px-5 py-4 text-sm outline-none">
         {children}
       </div>
+      {footer !== undefined && <footer data-panel-footer className="shrink-0 border-t border-border px-5 py-3 text-sm">{footer}</footer>}
     </Modal>
   );
 }

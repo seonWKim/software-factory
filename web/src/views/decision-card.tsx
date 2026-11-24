@@ -3,7 +3,7 @@ import { API, type CommandReply, type ItemCommand, type ItemDetail, type ThreadE
 import { Clamp } from "../components/ui/clamp.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
-import { CARD_TITLE, SUB_TITLE } from "../components/ui/card.js";
+import { CARD_PAD, CARD_TITLE, SUB_TITLE } from "../components/ui/card.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { OverflowMenu } from "../components/ui/menu.js";
 import { Textarea } from "../components/ui/textarea.js";
@@ -160,7 +160,7 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
   };
 
   return (
-    <section aria-label={t("decide.title")} data-decide data-decision-card className="mt-3 space-y-3 rounded-card border border-pill-warn-fg bg-pill-warn-bg p-3 text-text-1">
+    <section aria-label={t("decide.title")} data-decide data-decision-card className={cn("mt-6 space-y-3 rounded-card border border-pill-warn-fg bg-pill-warn-bg text-text-1", CARD_PAD)}>
       <div data-decision-question>
         <h2 className={cn("mb-1", CARD_TITLE)}>{t("decide.title")}</h2>
         {question}

@@ -6,6 +6,7 @@ import { type Column, DataTable } from "../components/ui/data-table.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { EmptyState } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
+import { STAT_LABEL, STAT_TILE, STAT_VALUE } from "../components/ui/stat-tile.js";
 import type { MessageKey } from "../i18n/en.js";
 import { locale, t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
@@ -42,9 +43,9 @@ function MiniChart({ title, chart, label, selected, onSelect }: {
   const max = Math.max(...chart.bars.map((b) => b.count), 0);
   const pct = (n: number): string => `${max === 0 ? 0 : (n / max) * 100}%`;
   return (
-    <div data-chart={title} className="min-w-0 rounded-box border border-border bg-surface p-3">
-      <p className="text-xs text-text-2">{title}</p>
-      <p className="mt-1 text-lg font-semibold tabular-nums">{t("efficiency.total", { count: chart.total })}</p>
+    <div data-chart={title} className={STAT_TILE}>
+      <p className={STAT_LABEL}>{title}</p>
+      <p className={STAT_VALUE}>{t("efficiency.total", { count: chart.total })}</p>
       <ol aria-label={title} className="mt-2 flex h-16 items-end gap-px">
         {chart.bars.map((b) => {
           const text = t("efficiency.bar", { when: label(b.start), count: b.count });
