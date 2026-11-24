@@ -1,5 +1,7 @@
 ## History
 
+- **A skill's text never stored** (2026-11-15 to 2026-11-24): an imported skill was only its `ext_skill_refs` pointer with the SHA-256 of its SKILL.md; a changed file overwrote that hash, so the old text and the time of the change were lost, and a skill's SKILL.md was not egress-scanned on import. Replaced 2026-11-24 by `ext_skill_versions` (phase 1 of local-task-tk_45d03d0b-a597-4f0d-8dc7-b1f13880cef0).
+
 - **"MCP server <name>: did not start"** (until 2026-11-20, wi_1a2e8925, "Runners and Plugins pages in plain words"). Before: the Tools tab's row of an imported server that did not start read "MCP server <name>: did not start"; now "Couldn't start <name>".
 - **MCP servers stored as copies; a changed skill file a new row; user-level Claude Code and Codex configs only** (2026-11-15 to 2026-11-16, phase 1). An MCP server's allow-listed descriptor (`command`, `args`, `url`, env and header key names) was copied into `ext_packs_entries.descriptor` (NOT NULL) and a changed entry was a second row; `ext_skill_refs` was unique on (`source`, `path`, `sha256`), so an edited SKILL.md re-imported added a second row; only `~/.claude.json`, `~/.claude/skills`, `~/.codex/config.toml` and `~/.codex/skills` were read, and `--from claude|codex` picked a source. Replaced 2026-11-16 by the pointer decision at the top.
 - **New topic file** (2026-11-15). No earlier decision: the factory did not read Claude Code or Codex configs.

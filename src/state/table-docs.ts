@@ -8,4 +8,5 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   ext_packs_approvals: "Every approval or refusal of an extension pack, by whom and when.",
   ext_skill_refs: "Skills and commands imported from Claude Code and Codex, one per source and path: kind, name, path and SHA-256, never the text.",
   ext_mcp_tool_lists: "Tool names of approved imported MCP servers, listed once per description by a worker; never descriptions or error text.",
+  ext_skill_versions: "Every version of an imported skill, one per changed folder hash: the skill folder's hash, its full SKILL.md text, its source and when the import saw it.",
 };

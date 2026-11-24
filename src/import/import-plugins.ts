@@ -1,21 +1,26 @@
 // `factory plugins import` storage (design 11-plugin-import), shared by the CLI and the Plugins page's Import. Every
 // item is stored as a pointer, never a copy:
 // - a skill or command: one `ext_skill_refs` row per (source, path) with its kind, name and SHA-256; a changed file
-//   updates that row (`updated skill <name>`), never adds a second one;
+//   updates that row (`updated skill <name>`), never adds a second one. A skill's SKILL.md text goes through the egress
+//   scan first (a failure is refused: no ref, no version); then, when its folder hash (capabilities skillVersion) is
+//   not its latest version's, the next `ext_skill_versions` row keeps the text. A command gets no version;
 // - an MCP server, after the same three scans `factory pack add` runs (pack-scans.ts): one pending
 //   `ext_packs_entries` pointer row (source, file, key and the SHA-256 of its allow-listed descriptor) through
 //   PackEntriesStore.storePointer. A changed entry is pending again. No command, args, env or URL is stored.
 // Nothing here starts, approves or grants an MCP server, and nothing writes to a scanned file.
 
 import { createHash } from "node:crypto";
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { insertOrSkip } from "../bus/index.js";
 import type { Loaded } from "../load-config.js";
 import { Plugins } from "../plugin-set.js";
 import { cliUserConfig } from "../core/config.js";
 import { type CliEnvironment, cliIdentity } from "../core/local-cli.js";
+import { SqlSkillEvalStore } from "../impl/store/sql/skill-evals.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
+import { skillVersion } from "../runtime/capabilities/capabilities.js";
+import type { Timestamp } from "../core/types.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import { PackEntriesStore, canonicalJson, descriptionHash } from "../packs/pack-entries.store.js";
 import { scanDescriptor } from "../packs/pack-scans.js";
@@ -25,6 +30,9 @@ import type { Found, FoundFile, FoundMcpServer } from "./scan.js";
 export type ImportOutcome =
   | { readonly outcome: "stored" | "updated" | "already_added"; readonly item: Found }
   | { readonly outcome: "refused"; readonly item: Found; readonly rules: readonly string[] };
+
+/** A ref's ID: it follows from the unique key, so a rerun or a second worker makes the same row. */
+export const skillRefId = (s: Pick<FoundFile, "source" | "path">): string => `sr_${createHash("sha256").update(`${s.source}\n${s.path}`).digest("hex").slice(0, 32)}`;
 
 export class SkillRefsStore {
   constructor(
@@ -36,8 +44,7 @@ export class SkillRefsStore {
   /** Stores the pointer, or updates the one stored for its source and path when its SHA-256 (or kind) changed. */
   async insert(s: FoundFile, added_by: string): Promise<"stored" | "updated" | "already_added"> {
     const at = this.now();
-    // The ID follows from the unique key, so a rerun or a second worker makes the same row.
-    const id = `sr_${createHash("sha256").update(`${s.source}\n${s.path}`).digest("hex").slice(0, 32)}`;
+    const id = skillRefId(s);
     if (await insertOrSkip(
       this.db,
       "ext_skill_refs (id, source, kind, name, path, sha256, added_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -92,10 +99,28 @@ async function importServer(d: ImportDeps, item: FoundMcpServer, shared: boolean
   return { outcome: r.outcome, item };
 }
 
-/** Stores one item; an MCP server that fails a scan is refused and not stored. `shared`: sharedKeys of the scan. */
+/**
+ * A skill: its SKILL.md text is egress-scanned (a failure is refused, nothing stored), its ref stored or updated, and
+ * the next version recorded when the folder hash changed. An unreadable file or folder records no version and does
+ * not fail the import. A command is only its ref. Skill files are read, never written.
+ */
+async function importFile(d: ImportDeps, item: FoundFile): Promise<ImportOutcome> {
+  const text = item.kind === "skill" ? await readFile(item.path, "utf8").catch(() => null) : null;
+  if (text !== null) {
+    const scan = await d.scanner.scan("tool_result", text);
+    if (!scan.clean) return { outcome: "refused", item, rules: [...new Set(scan.findings.map((f) => f.rule))] };
+  }
+  const outcome = await new SkillRefsStore(d.db, d.now).insert(item, d.added_by);
+  const folder_hash = text === null ? null : await skillVersion(dirname(item.path)).catch(() => null);
+  if (text !== null && folder_hash !== null) {
+    await new SqlSkillEvalStore(d.db, () => d.now() as Timestamp).recordSkillVersion({ ref_id: skillRefId(item), folder_hash, text, source: item.source });
+  }
+  return { outcome, item };
+}
+
+/** Stores one item; an MCP server or skill that fails a scan is refused and not stored. `shared`: sharedKeys of the scan. */
 export async function importItem(d: ImportDeps, item: Found, shared: ReadonlySet<string>): Promise<ImportOutcome> {
-  if (item.kind === "mcp_server") return importServer(d, item, shared.has(item.name));
-  return { outcome: await new SkillRefsStore(d.db, d.now).insert(item, d.added_by), item };
+  return item.kind === "mcp_server" ? importServer(d, item, shared.has(item.name)) : importFile(d, item);
 }
 
 /**
