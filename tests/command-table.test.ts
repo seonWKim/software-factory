@@ -129,6 +129,20 @@ describe("the command table", () => {
     });
   });
 
+  it("schedule draft and improve follow delete, the owner's, with no chat form, and SET_UP.md's CLI list has both", () => {
+    const names = ["delete", "draft", "improve"].map((v) => `schedule ${v}`);
+    const at = names.map((n) => COMMAND_TABLE.findIndex((c) => c.name === n));
+    expect(at.every((i) => i >= 0)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    const setup = readFileSync(new URL("../SET_UP.md", import.meta.url), "utf8");
+    for (const n of names.slice(1)) {
+      const c = COMMAND_TABLE.find((x) => x.name === n)!;
+      expect(c, n).toMatchObject({ who: "owner", group: "schedule", chat_args: "no_chat", chat: "", item: false, edge: false });
+      expect(setup).toContain(`- \`factory ${n} ${c.args}\`: ${c.does}.`);
+      expect(parseChatCommand(n)).toBeNull();
+    }
+  });
+
   it("every item command is a command the dashboard may send", () => {
     for (const c of COMMAND_TABLE.filter((x) => x.item)) expect(APP_COMMANDS, c.name).toContain(c.name);
   });
