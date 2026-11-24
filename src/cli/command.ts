@@ -9,6 +9,8 @@ import { loadedIdentity } from "./support.js";
 
 /** The registry and the local owner check, for a command that builds plugins or checks the owner itself (attach, alarm). */
 export { Plugins, localAuth, ownerRefusal } from "../compose.js";
+/** The routine writes, the same core function the routine API calls (`factory routine`). */
+export { writeRoutine, type CliIdentity, type FactoryStore, type Routine, type RoutineFields, type RoutineWrite } from "../compose.js";
 
 /** What a command is called with: by main.ts, by another command (setup runs settings) or by a test. */
 export interface CommandCall {
