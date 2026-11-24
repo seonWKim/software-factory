@@ -67,6 +67,7 @@ export const tasks = {
   "tasks.closedRejected": "Rejected",
   "tasks.closedNotPlanned": "Not planned",
   "tasks.closedOther": "Closed",
+  "tasks.notBuilt": "Not built: {reason}",
   "tasks.reopen": "Reopen",
   "tasks.inIntake": "{title} is in intake as {id}.",
   "tasks.build": "Build this",
