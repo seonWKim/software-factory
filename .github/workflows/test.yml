@@ -59,6 +59,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The check's WebKit pass (scripts/responsive/webkit.mjs) needs playwright-core's WebKit and its system libraries.
+      - name: WebKit for the responsive check
+        run: npx playwright-core install --with-deps webkit
       - name: npm run check:responsive
         run: npm run check:responsive
       - name: Screenshots of the failures

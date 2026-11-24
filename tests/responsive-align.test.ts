@@ -151,11 +151,10 @@ describe("check:responsive row-align", () => {
     expect(found("row-align")).toEqual([]);
   });
 
-  it("is a warning while it is in LIMITS.warnOnly, and a failure once it leaves it", () => {
+  it("is a failure, and only a warning while LIMITS.warnOnly names it", () => {
     pageOf([row(box("aligned", "button", 8, 32))]);
-    expect(LIMITS.warnOnly).toContain("row-align");
-    expect(found("row-align")[0]!.warn).toBe(true);
-    expect(found("row-align", { ...LIMITS, warnOnly: [] })[0]!.warn).toBeUndefined();
+    expect(found("row-align")[0]!.warn).toBeUndefined();
+    expect(found("row-align", { ...LIMITS, warnOnly: ["row-align"] })[0]!.warn).toBe(true);
   });
 });
 

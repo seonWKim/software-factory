@@ -8,6 +8,8 @@
 // page with that heading at the same viewport and theme). One line per failure; a
 // screenshot of each failing page/viewport/theme, failing elements outlined, under .playwright-mcp/responsive/.
 // A console error or a failed request (scripts/responsive/console.mjs) at a page/viewport/theme fails it too.
+// Then the same pages and rules in headless WebKit at 1280 and 390 wide, light and dark (scripts/responsive/webkit.mjs),
+// the engine the owner reads the dashboard in; skipped with a note when WebKit is not installed (npm run setup:webkit).
 //
 // Usage: npm run check:responsive [-- --page settings]   (needs `npm run build` first; the npm script builds)
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -16,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { findChrome, launch } from "./responsive/cdp.mjs";
 import { startFixture } from "./responsive/fixture.mjs";
 import { LIMITS, checkLayout } from "./responsive/rules.mjs";
+import { WEBKIT_VIEWPORTS, webkitPass } from "./responsive/webkit.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SHOTS = join(ROOT, ".playwright-mcp", "responsive");
@@ -133,14 +136,25 @@ async function main() {
     }
   } finally {
     await browser.close();
+  }
+  const chromeSecs = ((Date.now() - started) / 1000).toFixed(1);
+  const webkitStarted = Date.now();
+  let webkit;
+  try {
+    webkit = await webkitPass({ url: fixture.url, pages, prepare: (name) => PREPARE[name], openDetails: OPEN_DETAILS, shots: SHOTS });
+  } finally {
     await fixture.close();
   }
+  failures.push(...webkit.failures);
+  warnings.push(...webkit.warnings);
+  const webkitSecs = ((Date.now() - webkitStarted) / 1000).toFixed(1);
+  if (webkit.skipped) console.log(`check:responsive: WebKit pass skipped: ${webkit.skipped}`);
 
   const secs = ((Date.now() - started) / 1000).toFixed(1);
   for (const line of warnings) console.log(`warn  ${line}`);
   if (warnings.length > 0) console.log(`check:responsive: ${warnings.length} warning(s) from ${LIMITS.warnOnly.join(", ")} (not failing)`);
   for (const line of failures) console.log(line);
-  const summary = `${pages.length} pages x ${VIEWPORTS.length} viewports x ${THEMES.length} themes = ${checks} checks in ${secs}s`;
+  const summary = `${pages.length} pages x ${VIEWPORTS.length} viewports x ${THEMES.length} themes = ${checks} checks in ${chromeSecs}s, WebKit ${WEBKIT_VIEWPORTS.length} viewports x ${THEMES.length} themes = ${webkit.checks} checks in ${webkitSecs}s, ${secs}s in all`;
   if (failures.length === 0) {
     console.log(`check:responsive: ok (${summary})`);
     return 0;

@@ -62,9 +62,9 @@ export const LIMITS = {
   maxTitleLines: 2,
   minTarget: 24,
   rowAlignPx: 3,
-  // row-align warns only until the shared table/list row centring lands (the DataTable cell and ItemRow baseline fix,
-  // in progress 2026-11-24): today every top-aligned table cell with a button fails it. Remove it from here then.
-  warnOnly: ["row-align"],
+  // Rules that print but do not fail: a new rule lands here while the fix it waits on is in progress, named in a
+  // comment. row-align was here until the table and row centring (9a4c1d07) reached main, 2026-11-24.
+  warnOnly: [],
 };
 
 /**
