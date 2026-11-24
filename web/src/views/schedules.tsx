@@ -19,6 +19,7 @@ import { ACTION_TEXT, CADENCE_TEXT, OUTCOME_TEXT, STATE_TEXT } from "./schedules
 // paused (pause clears the next run), and posts pause or resume; its "⋯" menu holds Run now (off while paused) and Edit.
 // Pressing a row's title selects it and shows its runs in a second Card (GET /api/v1/schedules/runs). New schedule, the
 // page's one primary action, and Edit open one Dialog (schedules/form.tsx). A refusal shows in a Notice above the table.
+// The Cards follow the PageHeader as siblings, spaced by the Card's own top margin as on the other pages (no flex gap).
 
 const when = (at: string) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 const stateOf = (s: ScheduleRow) => (s.next_due_at === null ? "paused" : s.running_since !== null ? "running" : "waiting");
@@ -135,19 +136,17 @@ export function SchedulesPage() {
           onClose={close}
         />
       )}
-      <div className="flex flex-col gap-6">
-        <Card label={t("schedules.listLabel")}>
-          <div className="space-y-3">
-            {form === null && w.error !== null && <Notice tone="bad">{w.error}</Notice>}
-            {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={3} label="loading.schedules" onRetry={() => void q.refetch()} /> : (
-              <ScheduleRows rows={rows} selected={selected} onSelect={setSelected} onEdit={(s, el) => { opener.current = el; w.setError(null); setForm({ schedule: s }); }} w={w} />
-            )}
-          </div>
-        </Card>
-        <Card title={chosen === null ? t("schedules.runs.label") : t("schedules.runsTitle", { title: chosen.title })}>
-          {chosen === null ? <p className="text-sm text-text-2">{t("schedules.runsPick")}</p> : <RunsTable key={chosen.id} id={chosen.id} />}
-        </Card>
-      </div>
+      <Card label={t("schedules.listLabel")}>
+        <div className="space-y-3">
+          {form === null && w.error !== null && <Notice tone="bad">{w.error}</Notice>}
+          {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={3} label="loading.schedules" onRetry={() => void q.refetch()} /> : (
+            <ScheduleRows rows={rows} selected={selected} onSelect={setSelected} onEdit={(s, el) => { opener.current = el; w.setError(null); setForm({ schedule: s }); }} w={w} />
+          )}
+        </div>
+      </Card>
+      <Card title={chosen === null ? t("schedules.runs.label") : t("schedules.runsTitle", { title: chosen.title })}>
+        {chosen === null ? <p className="text-sm text-text-2">{t("schedules.runsPick")}</p> : <RunsTable key={chosen.id} id={chosen.id} />}
+      </Card>
     </>
   );
 }

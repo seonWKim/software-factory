@@ -10,12 +10,12 @@ import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
 import { t } from "../i18n/index.js";
 import { DeleteRoutineDialog, RoutineDialog, newRoutineId } from "./routines/form.js";
-import { CADENCE_TEXT } from "./routines/labels.js";
+import { repeatsText } from "./routines/labels.js";
 
 // The Routines page (design 09-dashboard-routines, over 08-routines): every routine in a DataTable inside a Card, read
 // through GET /api/v1/routines. Each row's Switch is on while the routine is not paused and posts pause or resume; its
-// "⋯" menu holds Run now, Edit and Delete. Pressing a row's name selects it and shows its details in a second Card, with a warn
-// Notice while it is paused; with no routine there is no second Card, only the table's empty state. The Cards follow
+// "⋯" menu holds Run now, Edit and Delete. Pressing a row's name (DataTable's `select`) marks the row as current and
+// shows its details in a second Card, with a warn Notice while it is paused; with no routine there is no second Card, only the table's empty state. The Cards follow
 // the PageHeader as siblings, spaced by the Card's own top margin as on the other pages (no flex gap on top of it). New routine and Edit open one Dialog; Delete asks in a Dialog before it posts. A refusal
 // shows in a Notice above the table.
 
@@ -55,18 +55,12 @@ type Opener = HTMLElement | null;
 
 function RoutineRows({ rows, selected, onSelect, onEdit, onDelete, w }: { rows: readonly RoutineRow[]; selected: string | null; onSelect: (id: string) => void; onEdit: (r: RoutineRow, opener: Opener) => void; onDelete: (r: RoutineRow, opener: Opener) => void; w: Writes }) {
   const columns: Column<RoutineRow>[] = [
-    {
-      key: "name",
-      header: t("routines.col.name"),
-      render: (r) => (
-        <Button variant="ghost" size="sm" aria-pressed={r.id === selected} aria-label={t("routines.select", { name: r.name })} className="-ml-2 max-w-full text-left" onClick={() => onSelect(r.id)}>
-          <span className="truncate">{r.name}</span>
-        </Button>
-      ),
-    },
-    { key: "repeats", header: t("routines.col.repeats"), render: (r) => (r.schedule === null ? t("routines.onMerge") : t(CADENCE_TEXT[r.schedule.kind], { spec: r.schedule.spec })) },
+    // The name takes the room the other columns leave and is cut to one line (its details Card has it whole); Repeats
+    // and Next run stay on one line. `max-w-0` with `w-full` is what lets a table cell shrink below its text.
+    { key: "name", header: t("routines.col.name"), className: "w-full max-w-0" },
+    { key: "repeats", header: t("routines.col.repeats"), render: (r) => repeatsText(r.schedule), className: "whitespace-nowrap" },
     // Never empty: below `sm` each row is a card whose labels show even for an empty cell.
-    { key: "next", header: t("routines.col.next"), render: (r) => (r.paused ? t("routines.nextPaused") : r.next_due_at === null ? t("routines.nextOnMerge") : when(r.next_due_at)) },
+    { key: "next", header: t("routines.col.next"), render: (r) => (r.paused ? t("routines.nextPaused") : r.next_due_at === null ? t("routines.nextOnMerge") : when(r.next_due_at)), className: "whitespace-nowrap" },
     {
       key: "active",
       header: t("routines.col.active"),
@@ -87,7 +81,7 @@ function RoutineRows({ rows, selected, onSelect, onEdit, onDelete, w }: { rows: 
       ),
     },
   ];
-  return <DataTable columns={columns} rows={rows} rowKey={(r) => r.id} label={t("routines.listLabel")} empty={t("routines.empty")} dataKey />;
+  return <DataTable columns={columns} rows={rows} rowKey={(r) => r.id} label={t("routines.listLabel")} empty={t("routines.empty")} dataKey select={{ key: selected, onSelect, label: (r) => t("routines.select", { name: r.name }) }} />;
 }
 
 function Detail({ r }: { r: RoutineRow }) {

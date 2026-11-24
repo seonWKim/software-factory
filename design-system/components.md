@@ -31,7 +31,7 @@ A data table at `sm` and up; below it, one card per row. Props: `head`, `label`,
 
 ## Tr
 
-One row of a `Table`: a `<tr>`, or a card below `sm` (first cell the title, the second alone under it, the rest with their column names from the third column; a cell with nothing in it is not listed).
+One row of a `Table`: a `<tr>`, or a card below `sm` (first cell the title, the second alone under it, the rest with their column names from the third column; a cell with nothing in it is not listed). States: default, `current` (the row whose details the page shows: `aria-current="true"`, a `surface-2` fill and a 2 px `nav-active` bar at its start, as the sidebar marks the current page; the row's height does not change).
 
 ## Td
 
@@ -39,7 +39,7 @@ One cell of a `Tr`; in a card it wraps and drops width classes. Data attributes 
 
 ## DataTable
 
-A `Table` built from `columns` and `rows`, on `Table`, `Tr` and `Td`. A column is `{ key, header, render?, numeric?, className? }` (`className` is added to the column's cells). With `dataKey` each row carries `data-key` set to its `rowKey`, for links and tests that find a row by it. States: number columns right-aligned in `tabular-nums` (header too); a column empty in every row left out; cards below `SM_PX`; no rows shows `empty`.
+A `Table` built from `columns` and `rows`, on `Table`, `Tr` and `Td`. A column is `{ key, header, render?, numeric?, className? }` (`className` is added to the column's cells). With `dataKey` each row carries `data-key` set to its `rowKey`, for links and tests that find a row by it. With `select` (`{ key, onSelect, label }`) the rows are selectable: the first cell is a plain text button (`font-medium`, underlined on hover, 28 px tall and pulled up 4 px so its text sits on the other cells' line, the shared `FOCUS` ring, `aria-pressed`, named by `label(row)`) that calls `onSelect` with the row's key, and the row whose key is `select.key` is `current` (Tr). Never a ghost Button in the cell: its pressed fill is a pill and it sits below the other cells. States: number columns right-aligned in `tabular-nums` (header too); a column empty in every row left out; cards below `SM_PX`; no rows shows `empty`; with `select`, one row or none current.
 
 ## Chart
 
@@ -155,7 +155,7 @@ The one pager for a long list (`web/src/components/ui/pagination.tsx`, a `nav` l
 
 ## Dialog
 
-The native modal `<dialog>`, opened on mount and closed on unmount, rendered into `document.body`: radius `card`, padding 24 px, a `text-base` semibold title, optional children and a one-line `consequence`, and a right-aligned ButtonRow footer with Cancel (secondary Button) before the confirm. Variants: default (confirm is a `primary` Button), `danger` (confirm is a `danger` Button with `solid`). States: open, `confirmDisabled`, with an `error` (shown in the dialog, role alert). Esc and a click on the backdrop cancel; Enter in a one-line field confirms; focus returns to `returnFocusTo`, else to the element focused when it opened. `announceStatus` shows a short status line after a send.
+The native modal `<dialog>`, opened on mount and closed on unmount, rendered into `document.body`: radius `card`, padding 24 px, a `text-base` semibold title, a body (optional children, a one-line `consequence` and the `error`, 12 px apart), and a right-aligned ButtonRow footer with Cancel (secondary Button) before the confirm. At most the window's height less 16 px each side; when the content is taller only the body scrolls, so the title and the footer (Cancel and the confirm) stay in view, also on a phone. Variants: default (confirm is a `primary` Button), `danger` (confirm is a `danger` Button with `solid`). States: open, `confirmDisabled`, with an `error` (shown in the dialog, role alert). Esc and a click on the backdrop cancel; Enter in a one-line field confirms; focus returns to `returnFocusTo`, else to the element focused when it opened. `announceStatus` shows a short status line after a send.
 
 ## ModalPanel
 

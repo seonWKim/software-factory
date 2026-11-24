@@ -59,15 +59,24 @@ export function Table({ head, children, label, numeric }: { head: readonly strin
   );
 }
 
-/** One row of a Table: a `<tr>`, or a card below `sm`. Data attributes go on either. */
-export function Tr({ children, ...attrs }: { children: ReactNode } & { [data: `data-${string}`]: string | undefined }) {
+/** The selected row (`current`): a `surface-2` fill and a 2px `nav-active` bar at its start, as the sidebar marks the current page. */
+// Written out whole so Tailwind finds each class: on a <tr> the bar is drawn by its first cell.
+const CURRENT_TR = "bg-surface-2 [&>td:first-child]:shadow-[inset_2px_0_0_var(--color-nav-active)]";
+const CURRENT_LI = "bg-surface-2 shadow-[inset_2px_0_0_var(--color-nav-active)]";
+
+/**
+ * One row of a Table: a `<tr>`, or a card below `sm`. Data attributes go on either. `current` marks the row the page
+ * shows details of (`aria-current="true"`, the selected-row fill and bar); its height does not change.
+ */
+export function Tr({ children, current = false, ...attrs }: { children: ReactNode; current?: boolean } & { [data: `data-${string}`]: string | undefined }) {
   const { head, cards } = useContext(TableMode);
-  if (!cards) return <tr {...attrs}>{children}</tr>;
+  const mark = current ? { "aria-current": "true" as const } : {};
+  if (!cards) return <tr {...attrs} {...mark} className={current ? CURRENT_TR : undefined}>{children}</tr>;
   // Cells left out with `cond && <Td>` are dropped here, as they are from `head`.
   const [title, ...cells] = Children.toArray(children);
   const [under, ...rest] = cells;
   return (
-    <li {...attrs} className="min-w-0 px-3 py-2 text-sm">
+    <li {...attrs} {...mark} className={cn("min-w-0 px-3 py-2 text-sm", current && CURRENT_LI)}>
       <div className="min-w-0 font-medium break-words">{title}</div>
       {under !== undefined && <div className="mt-1 min-w-0">{under}</div>}
       {rest.length > 0 && (

@@ -115,6 +115,22 @@ describe("Dialog", () => {
     expect(classes("Do it")).not.toContain("bg-failed");
   });
 
+  it("only the body scrolls: the title and the Cancel and confirm footer sit outside it, so a tall form keeps its buttons in view", () => {
+    render(<Host onConfirm={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "open it" }));
+    const dialog = screen.getByRole("dialog");
+    const body = dialog.querySelector<HTMLElement>("[data-dialog-body]")!;
+    const footer = dialog.querySelector<HTMLElement>("[data-dialog-footer]")!;
+    expect(body.className.split(/\s+/)).toEqual(expect.arrayContaining(["overflow-y-auto", "min-h-0", "flex-1"]));
+    expect(body.contains(screen.getByRole("textbox", { name: "Field" }))).toBe(true);
+    expect(body.contains(footer)).toBe(false);
+    expect(within(footer).getAllByRole("button").map((b) => b.textContent)).toEqual(["Cancel", "Do it"]);
+    expect(footer.className).toContain("shrink-0");
+    // The dialog itself does not scroll, else the footer scrolls away with the body.
+    expect(dialog.className).not.toMatch(/\boverflow-y-auto\b/);
+    expect(dialog.className).toContain("overflow-hidden");
+  });
+
   it("the dialog and the stylesheet carry no hard-coded colours, and the dialog fills a phone with a 16 px gutter", () => {
     const dialog = readFileSync("web/src/components/ui/dialog.tsx", "utf8");
     for (const text of [dialog, readFileSync("web/src/index.css", "utf8")]) expect(text).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(|oklch\(/i);

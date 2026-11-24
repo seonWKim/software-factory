@@ -206,8 +206,9 @@ describe("design tokens", () => {
     const dialog = ui("dialog.tsx");
     expect(dialog).not.toMatch(/\bconst (BUTTON|DANGER)\b/);
     expect(dialog).toMatch(/rounded-card/);
-    expect(dialog).toMatch(/\bp-6\b/);
-    expect(dialog).toMatch(/<ButtonRow className="justify-end">/);
+    // space-6 around the content: the title, the scrolling body and the footer each carry their side of it.
+    expect(dialog).toMatch(/\bpx-6 pt-6\b/);
+    expect(dialog).toMatch(/<ButtonRow data-dialog-footer className="shrink-0 justify-end px-6 pb-6">/);
   });
 
   it("no file under web/src uses a default radius or an arbitrary type size", () => {
