@@ -3,14 +3,14 @@
 // object-valued model_by, many commands, rules on with applied and waiting rules, a standing approval that approved
 // three items), served by the real UI server (dist/ui/server.js) on a free port.
 // Nothing here reads factory.config.json, .factory/ or the secrets file: every dependency is built in place.
-import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { requestCalendarSync, runSyncRequests, syncCalendars } from "../../dist/calendar/index.js";
 import { ALERT_DEDUPE_MS } from "../../dist/core/alarms.js";
-import { SkillRefsStore } from "../../dist/import/import-plugins.js";
+import { SkillRefsStore, skillRefId } from "../../dist/import/import-plugins.js";
+import { skillVersion } from "../../dist/runtime/capabilities/capabilities.js";
 import { saveProject } from "../../dist/core/project-labels.js";
 import { writeSchedule } from "../../dist/core/schedule.js";
 import { SPEC_GATE, STANDING_APPROVED, STANDING_TIER, ruleId, standingActor } from "../../dist/core/standing.js";
@@ -25,6 +25,7 @@ import { UiCalendar } from "../../dist/ui/calendar-api.js";
 import { HealthMonitor } from "../../dist/ui/health.js";
 import { newCsrfToken, storeProjectResolver } from "../../dist/ui/settings-api.js";
 import { startUi } from "../../dist/ui/server.js";
+import { seedSkill } from "./skill-evals.mjs";
 
 const REPO = { owner: "acme-platform-infrastructure", name: "very-long-repository-name-for-layout-checks" };
 const PROJECT = { key: "github:github.com:R_kgDOresponsive0000000000001", label: `github.com/${REPO.owner}/${REPO.name}` };
@@ -236,31 +237,14 @@ async function seed(store, storage, dir) {
   await store.pauseClaims(new Date(Date.now() + 3_600_000).toISOString(), "model_stall");
 
   await seedStanding(store);
-  await seedSkill(store, dir);
+  const skill = await seedSkill(store, dir, OWNER, { SkillRefsStore, skillVersion, skillRefId, storeSql });
   await seedSchedules(store);
 
   // Overrides: an object-valued model_by and a project-level key, with history.
   await store.setSettingOverride({ key: "model_by", project: "", value: JSON.stringify({ ...MODEL_BY, review: "strong" }), actor: OWNER });
   await store.setSettingOverride({ key: "max_diff_files", project: PROJECT.key, value: "40", actor: OWNER });
 
-  return { item: busy.id, parent: parent.id, run: failed.id };
-}
-
-/**
- * One imported skill with an eval suite: the Plugins page's Skills tab shows a row whose Evals button is on (a row needs its
- * SKILL.md path, which only an imported skill has), so the screenshot run can open the Evals dialog (design 04-screenshots).
- * The skill's ref is its skills folder joined with its name, as the page keys a suite.
- */
-async function seedSkill(store, dir) {
-  const name = "fixture-review";
-  const folder = join(dir, "skills");
-  const path = join(folder, name, "SKILL.md");
-  mkdirSync(join(folder, name), { recursive: true });
-  const text = `---\ndescription: Reviews a change against the repository's rules and names each broken one.\n---\n\n# ${name}\n`;
-  writeFileSync(path, text);
-  const sha256 = createHash("sha256").update(text).digest("hex");
-  await new SkillRefsStore(storeSql(store), () => new Date().toISOString()).insert({ source: "claude", kind: "skill", name, path, sha256 }, OWNER);
-  await store.createSkillEvalSuite({ id: "suite_responsive_fixture", skill_ref: `${folder}/${name}`, title: "Fixture suite", created_by: OWNER });
+  return { item: busy.id, parent: parent.id, run: failed.id, skill };
 }
 
 /**

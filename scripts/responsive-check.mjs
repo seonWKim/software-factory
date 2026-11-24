@@ -72,6 +72,14 @@ const PREPARE = {
   "popover-week": openCalendar(false, '[data-capture-open="calendar-event"]'),
   "popover-month": openCalendar(true, '[data-capture-open="calendar-event"]'),
   "popover-more": openCalendar(true, "[data-more]"),
+  // The Evals page's Compare ModalPanel (its DiffView and case table), opened through the Compare Button's attribute.
+  // The Button is disabled until the versions load, so it is pressed once it is enabled.
+  "evals-compare": `(async () => {
+  const wait = async (find) => { for (const end = Date.now() + 3000; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) { const el = find(); if (el) return el; } return null; };
+  (await wait(() => document.querySelector('[data-capture-open="evals-compare"]:not(:disabled)')))?.click();
+  await wait(() => document.querySelector("dialog[open]"));
+  await new Promise((r) => setTimeout(r, 150));
+})()`,
 };
 const OPEN_DETAILS = `document.querySelectorAll("details").forEach((d) => (d.open = true))`;
 
@@ -102,6 +110,9 @@ async function main() {
     { name: "popover-week", path: "calendar" },
     { name: "popover-month", path: "calendar" },
     { name: "popover-more", path: "calendar" },
+    // The Evals page of the fixture skill (two versions, the newer one current) and its open Compare dialog.
+    { name: "evals", path: `evals/${enc(fixture.pages.skill)}` },
+    { name: "evals-compare", path: `evals/${enc(fixture.pages.skill)}` },
   ].filter((p) => only === null || p.name === only);
 
   await rm(SHOTS, { recursive: true, force: true });
