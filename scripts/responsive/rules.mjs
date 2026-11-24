@@ -49,6 +49,7 @@
 //                   control or badge; a control on a later line (a details line) is not compared, and a nested row's
 //                   controls belong to the nested row. A control that wraps onto lines of its own is measured by its
 //                   first line. A 28px button in a top-aligned table cell is 5px low; a 32px "⋯" is 7px low.
+//                   An open menu, listbox, dialog or popover inside the row is an overlay and is not compared.
 //   toolbar-height  in a toolbar ([role=toolbar], or PageToolbar's control row [data-toolbar]), the controls (buttons,
 //                   inputs, selects, comboboxes; a SegmentedControl as one) are not all one height: a 28px sm Button
 //                   beside the 32px search Input (Work, until 2026-11-24).
@@ -339,10 +340,14 @@ export function checkLayout(limits) {
   // row-align
   const ROWS = "tbody > tr, [data-row], [data-list-row], [data-item-row], [role=row], ul[data-cards] > li";
   const ALIGNED = "button, a[href], input:not([type=hidden]), select, [role=switch], [role=checkbox], [role=combobox], [data-level], [data-status]";
+  // An open menu, listbox, dialog or popover floats over the row (OverflowMenu's list is `fixed` but stays the row's
+  // DOM descendant): an overlay, not row content, so neither its items nor its text are measured against the row.
+  const OVERLAY = "[role=menu], [role=listbox], [role=dialog], dialog, [data-popover]";
   const skipped = (el, within) => {
     for (let e = el; e; e = e.parentElement) {
       if (e.getAttribute("data-align-skip") !== null) return true;
       if (e === within) return false;
+      if (e.matches(OVERLAY)) return true;
     }
     return false;
   };

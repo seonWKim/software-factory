@@ -13,11 +13,11 @@ const { checkLayout, LIMITS } = (await import(pathToFileURL(join(ROOT, "scripts"
   LIMITS: Limits;
 };
 
-/** What a stand-in is, for `matches` and `closest`: a row, an aligned control or badge, a toolbar, a radiogroup. */
-type Kind = "row" | "aligned" | "toolbar" | "radiogroup" | "plain";
+/** What a stand-in is, for `matches` and `closest`: a row, an aligned control or badge, a toolbar, a radiogroup, an open menu or popover. */
+type Kind = "row" | "aligned" | "toolbar" | "radiogroup" | "overlay" | "plain";
 /** Which kind a selector of rules.mjs asks for, by a token only that selector has. */
 const kindOf = (sel: string): Kind | null =>
-  sel.includes("tbody > tr") ? "row" : sel.includes("[data-level]") ? "aligned" : sel.includes("[data-toolbar]") ? "toolbar" : sel === "[role=radiogroup]" ? "radiogroup" : null;
+  sel.includes("tbody > tr") ? "row" : sel.includes("[data-level]") ? "aligned" : sel.includes("[data-toolbar]") ? "toolbar" : sel === "[role=radiogroup]" ? "radiogroup" : sel.includes("[data-popover]") ? "overlay" : null;
 
 interface Node {
   kind: Kind;
@@ -143,6 +143,20 @@ describe("check:responsive row-align", () => {
   it("skips a control marked data-align-skip, or inside a box marked so", () => {
     pageOf([row(box("aligned", "button", 8, 32, { attrs: { "data-align-skip": "" } }), box("plain", "div", 0, 41, { attrs: { "data-align-skip": "" }, kids: [box("aligned", "button", 8, 28)] }))]);
     expect(found("row-align")).toEqual([]);
+  });
+
+  it("does not judge an open menu's items inside a row, but still a misaligned control in that row", () => {
+    // A ⋯ menu opened in a table card: its list is `fixed` over the row but stays the row's DOM descendant. Its 28px
+    // items (one 13px above the line's centre, one 16px below, as CI's Schedules card at 390 had) and its group label
+    // are an overlay, not row content.
+    const menu = box("overlay", "ul", -14, 70, {
+      attrs: { role: "menu" },
+      kids: [box("plain", "li", -14, 4, { text: [-14, 4] }), box("aligned", "button", -10, 28), box("aligned", "button", 19, 28)],
+    });
+    pageOf([row(box("aligned", "button", 1, 32), menu)]);
+    expect(found("row-align")).toEqual([]);
+    pageOf([row(box("aligned", "button", 8, 32), box("overlay", "ul", 15, 70, { attrs: { role: "menu" }, kids: [box("aligned", "button", 19, 28)] }))]);
+    expect(found("row-align").map((f) => f.detail.split(" ")[1])).toEqual(["+7px"]);
   });
 
   it("leaves a nested row's controls to the nested row", () => {
