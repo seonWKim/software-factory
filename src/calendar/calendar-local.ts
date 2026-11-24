@@ -1,0 +1,210 @@
+// The owner's own events (design 02-tasks-calendar, local events, 2026-11-24): `calendar_local_events`, one row per
+// event the owner added, with its repeat (none, daily, weekly or monthly, no end date). Add, edit and delete write
+// that table only; an edit or a delete of a repeating event applies to the whole series (owner answer 1). The read
+// expands each repeat inside the range asked (expandLocalEvents, pure): an occurrence keeps the first start's local
+// time of day and its length, in this process's time zone, as core/tasks.ts does for a day. Time comes from the
+// caller's injected Clock, as `nowMs`.
+
+import { randomUUID } from "node:crypto";
+import type { SqlExecutor } from "../state/index.js";
+
+/** The source name the calendar read gives the owner's local events. */
+const LOCAL_SOURCE = "local";
+const REPEATS = ["none", "daily", "weekly", "monthly"] as const;
+export type Repeat = (typeof REPEATS)[number];
+/** The longest title taken: an event title is a line, not a document. */
+const MAX_LOCAL_TITLE = 500;
+/** A caller-chosen event ID: `le_` and 8 to 64 URL-safe characters, so a retried add stores one event. */
+const LOCAL_ID = /^le_[A-Za-z0-9_-]{8,64}$/;
+/** An ISO instant with its zone: `YYYY-MM-DDTHH:MM`, optional seconds and fraction, then `Z` or `±HH:MM`. */
+const INSTANT = /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/;
+const DAY_MS = 86_400_000;
+
+/** The fields of an event the owner sets. Times are ISO instants. */
+export interface LocalEventFields {
+  readonly title: string;
+  readonly starts_at: string;
+  readonly ends_at: string;
+  readonly all_day: boolean;
+  readonly repeats: Repeat;
+}
+
+/** One stored local event. `created_by` is the identity that added it, never a display name. */
+export interface LocalEvent extends LocalEventFields {
+  readonly id: string;
+  readonly created_by: string;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+/** One occurrence as the calendar read places it: the stored event's fields at that occurrence's instants. */
+export interface LocalOccurrence {
+  readonly source: typeof LOCAL_SOURCE;
+  readonly id: string;
+  readonly title: string;
+  readonly starts_at: string;
+  readonly ends_at: string;
+  readonly all_day: boolean;
+  readonly repeats: Repeat;
+  readonly details: null;
+}
+
+/** This process's time zone, the one every local day of the calendar read is counted in. */
+export function processTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+/** Whether `v` is an ISO instant with its zone, on a real calendar day. */
+function isInstant(v: unknown): v is string {
+  if (typeof v !== "string") return false;
+  const m = INSTANT.exec(v);
+  if (m === null || Number.isNaN(Date.parse(v))) return false;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const day = new Date(Date.UTC(y, mo - 1, d));
+  return day.getUTCFullYear() === y && day.getUTCMonth() === mo - 1 && day.getUTCDate() === d;
+}
+
+/** Why the fields are refused (empty or long title, unknown repeat, bad instant, end not after start), or null. */
+function localEventError(f: Record<string, unknown>): string | null {
+  if (typeof f.title !== "string" || f.title.trim() === "") return "title must be a non-empty string";
+  if (f.title.length > MAX_LOCAL_TITLE) return `title must be at most ${MAX_LOCAL_TITLE} characters`;
+  if (!isInstant(f.starts_at)) return "starts_at must be an ISO instant, e.g. 2026-11-24T09:00:00Z";
+  if (!isInstant(f.ends_at)) return "ends_at must be an ISO instant, e.g. 2026-11-24T10:00:00Z";
+  if (typeof f.all_day !== "boolean") return "all_day must be true or false";
+  if (typeof f.repeats !== "string" || !(REPEATS as readonly string[]).includes(f.repeats)) return `repeats must be one of ${REPEATS.join(", ")}`;
+  if (Date.parse(f.ends_at) <= Date.parse(f.starts_at)) return "ends_at must be after starts_at";
+  return null;
+}
+
+/** Whether `id` is a caller-chosen local event ID. */
+const isLocalEventId = (id: unknown): id is string => typeof id === "string" && LOCAL_ID.test(id);
+
+const iso = (v: string) => new Date(Date.parse(v)).toISOString();
+
+function row(r: Record<string, unknown>): LocalEvent {
+  return {
+    id: String(r.id), title: String(r.title), starts_at: String(r.starts_at), ends_at: String(r.ends_at), all_day: Number(r.all_day) === 1,
+    repeats: String(r.repeats) as Repeat, created_by: String(r.created_by), created_at: String(r.created_at), updated_at: String(r.updated_at),
+  };
+}
+
+/** The stored event `id`, or null. */
+async function getLocalEvent(db: SqlExecutor, id: string): Promise<LocalEvent | null> {
+  const [r] = await db.all("SELECT * FROM calendar_local_events WHERE id = ?", [id]);
+  return r === undefined ? null : row(r);
+}
+
+/**
+ * Stores one event (fields checked by localEventError first) under `id` (a new `le_` ID when null), its instants
+ * normalised to UTC ISO. Safe to run twice: a second add under the same ID writes nothing and answers the stored one.
+ */
+async function addLocalEvent(db: SqlExecutor, a: { id: string | null; fields: LocalEventFields; by: string; nowMs: number }): Promise<LocalEvent> {
+  const id = a.id ?? `le_${randomUUID()}`;
+  const now = new Date(a.nowMs).toISOString();
+  const f = a.fields;
+  await db.run(
+    "INSERT OR IGNORE INTO calendar_local_events (id, title, starts_at, ends_at, all_day, repeats, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [id, f.title.trim(), iso(f.starts_at), iso(f.ends_at), f.all_day ? 1 : 0, f.repeats, a.by, now, now],
+  );
+  return (await getLocalEvent(db, id))!;
+}
+
+/** Replaces the fields of event `id`, the whole series for a repeating one; null when no such event is stored. */
+async function editLocalEvent(db: SqlExecutor, id: string, fields: LocalEventFields, nowMs: number): Promise<LocalEvent | null> {
+  const changed = await db.run(
+    "UPDATE calendar_local_events SET title = ?, starts_at = ?, ends_at = ?, all_day = ?, repeats = ?, updated_at = ? WHERE id = ?",
+    [fields.title.trim(), iso(fields.starts_at), iso(fields.ends_at), fields.all_day ? 1 : 0, fields.repeats, new Date(nowMs).toISOString(), id],
+  );
+  return changed === 1 ? getLocalEvent(db, id) : null;
+}
+
+/** Deletes event `id`, with every occurrence of its repeat; false when no such event was stored. */
+async function deleteLocalEvent(db: SqlExecutor, id: string): Promise<boolean> {
+  return (await db.run("DELETE FROM calendar_local_events WHERE id = ?", [id])) === 1;
+}
+
+/** The owner's local events on one store driver: the write routes' operations, handed to them by the composition root. */
+export interface LocalEvents {
+  /** Why the fields are refused, or null (localEventError). */
+  check(fields: Record<string, unknown>): string | null;
+  /** Whether `id` is a local event ID. */
+  isId(id: unknown): id is string;
+  get(id: string): Promise<LocalEvent | null>;
+  add(a: { id: string | null; fields: LocalEventFields; by: string; nowMs: number }): Promise<LocalEvent>;
+  edit(id: string, fields: LocalEventFields, nowMs: number): Promise<LocalEvent | null>;
+  remove(id: string): Promise<boolean>;
+}
+
+/** The local events stored through `db`. */
+export function localEvents(db: SqlExecutor): LocalEvents {
+  return {
+    check: localEventError, isId: isLocalEventId,
+    get: (id) => getLocalEvent(db, id), add: (a) => addLocalEvent(db, a), edit: (id, f, nowMs) => editLocalEvent(db, id, f, nowMs), remove: (id) => deleteLocalEvent(db, id),
+  };
+}
+
+/** The local days `from` through `to` (YYYY-MM-DD) as instants: local midnight of `from`, local midnight after `to`. */
+function rangeBounds(from: string, to: string): { from: number; to: number } {
+  const [fy, fm, fd] = from.split("-").map(Number) as [number, number, number];
+  const [ty, tm, td] = to.split("-").map(Number) as [number, number, number];
+  return { from: new Date(fy, fm - 1, fd).getTime(), to: new Date(ty, tm - 1, td + 1).getTime() };
+}
+
+/** The stored events that can have an occurrence in the local days `from` through `to`: one read, no write. */
+export async function readLocalEvents(db: SqlExecutor, from: string, to: string): Promise<LocalEvent[]> {
+  const b = rangeBounds(from, to);
+  const rows = await db.all(
+    "SELECT * FROM calendar_local_events WHERE starts_at < ? AND (repeats <> 'none' OR ends_at > ?) ORDER BY starts_at, id",
+    [new Date(b.to).toISOString(), new Date(b.from).toISOString()],
+  );
+  return rows.map(row);
+}
+
+/** The occurrence `n` steps after the first start, in local wall-clock time; null for a month without that day. */
+function nthStart(first: Date, repeats: Exclude<Repeat, "none">, n: number): Date | null {
+  const [y, m, d] = [first.getFullYear(), first.getMonth(), first.getDate()];
+  const time = [first.getHours(), first.getMinutes(), first.getSeconds(), first.getMilliseconds()] as const;
+  if (repeats !== "monthly") return new Date(y, m, d + n * (repeats === "daily" ? 1 : 7), ...time);
+  const at = new Date(y, m + n, d, ...time);
+  return at.getDate() === d ? at : null;
+}
+
+/** The first step worth trying for a range starting at `fromMs`: a few steps early, never below 0. */
+function firstStep(first: Date, repeats: Exclude<Repeat, "none">, lengthMs: number, fromMs: number): number {
+  const days = Math.floor((fromMs - first.getTime() - lengthMs) / DAY_MS) - 2;
+  if (days <= 0) return 0;
+  return repeats === "daily" ? days : repeats === "weekly" ? Math.floor(days / 7) : Math.floor(days / 31);
+}
+
+/**
+ * Each occurrence of `events` that overlaps the local days `from` through `to`, by start, then ID. A repeat steps a
+ * day, a week or a month from the first start's local date at its local time of day; a monthly one on the 29th to
+ * 31st skips the months without that day. A timed occurrence keeps the first's length; an all-day one its number of
+ * days, ending at a local midnight. Pure.
+ */
+export function expandLocalEvents(events: readonly LocalEvent[], from: string, to: string): LocalOccurrence[] {
+  const b = rangeBounds(from, to);
+  const out: LocalOccurrence[] = [];
+  for (const e of events) {
+    const first = new Date(Date.parse(e.starts_at));
+    const lengthMs = Date.parse(e.ends_at) - first.getTime();
+    const lengthDays = Math.max(1, Math.round(lengthMs / DAY_MS));
+    const endOf = (s: Date) => (e.all_day ? new Date(s.getFullYear(), s.getMonth(), s.getDate() + lengthDays) : new Date(s.getTime() + lengthMs));
+    const push = (s: Date, end: Date) => {
+      if (s.getTime() < b.to && end.getTime() > b.from) {
+        out.push({ source: LOCAL_SOURCE, id: e.id, title: e.title, starts_at: s.toISOString(), ends_at: end.toISOString(), all_day: e.all_day, repeats: e.repeats, details: null });
+      }
+    };
+    if (e.repeats === "none") {
+      push(first, new Date(Date.parse(e.ends_at)));
+      continue;
+    }
+    for (let n = firstStep(first, e.repeats, lengthMs, b.from); ; n++) {
+      const s = nthStart(first, e.repeats, n);
+      if (s === null) continue;
+      if (s.getTime() >= b.to) break;
+      push(s, endOf(s));
+    }
+  }
+  return out.sort((x, y) => x.starts_at.localeCompare(y.starts_at) || x.id.localeCompare(y.id));
+}
