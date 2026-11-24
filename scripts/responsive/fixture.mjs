@@ -1,20 +1,23 @@
 // The data `npm run check:responsive` looks at: a throwaway SQLite store in a temp dir, seeded with items that
 // stress the layout (long titles, long local IDs, long thread bodies, a phase tree, failed runs, alerts, an
-// object-valued model_by, many commands), served by the real UI server (dist/ui/server.js) on a free port.
+// object-valued model_by, many commands, rules on with applied and waiting rules, a standing approval that approved
+// three items), served by the real UI server (dist/ui/server.js) on a free port.
 // Nothing here reads factory.config.json, .factory/ or the secrets file: every dependency is built in place.
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { syncCalendars } from "../../dist/calendar/index.js";
 import { ALERT_DEDUPE_MS } from "../../dist/core/alarms.js";
 import { saveProject } from "../../dist/core/project-labels.js";
+import { SPEC_GATE, STANDING_APPROVED, STANDING_TIER, ruleId, standingActor } from "../../dist/core/standing.js";
 import { SystemClock } from "../../dist/impl/clock/system-clock.js";
 import { PatternEgressScanner } from "../../dist/impl/egress/pattern-egress-scanner.js";
 import { SqlFactoryStore } from "../../dist/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../../dist/impl/store/sqlite/sqlite-driver.js";
 import { storeSql } from "../../dist/impl/store/sql/store-sql.js";
 import { FsSharedStorage } from "../../dist/impl/storage/fs-shared-storage.js";
+import { checkAgentsHome, tacitLedgerAt } from "../../dist/impl/tacit/agents-home-tacit-ledger.js";
 import { UiCalendar } from "../../dist/ui/calendar-api.js";
 import { HealthMonitor } from "../../dist/ui/health.js";
 import { newCsrfToken, storeProjectResolver } from "../../dist/ui/settings-api.js";
@@ -54,8 +57,9 @@ const local = (id) => ({ type: "local", id, link: `local:${id}` });
 
 /**
  * Seeds the store and starts the UI on 127.0.0.1 with a free port. Returns its URL, the pages to check and close().
- * `extend({ store, csrfToken, owner })` returns more UI dependencies (the idle agents' sandbox adds `tacit` and
- * `pauses`); the responsive check adds none.
+ * `extend({ store, csrfToken, owner })` returns more UI dependencies, which replace the fixture's own (the idle agents'
+ * sandbox adds `pauses` and its own `tacit`); the responsive check adds none. The fixture's `tacit` is the Rules page on
+ * a seeded agents home in the temp dir (seedRulesHome).
  */
 export async function startFixture(extend = () => ({})) {
   const dir = await mkdtemp(join(tmpdir(), "sf-responsive-"));
@@ -97,6 +101,7 @@ export async function startFixture(extend = () => ({})) {
       },
       storage,
       commands: { actor: OWNER, source: "config", token: csrfToken, allowed: async () => ({ allow: true }), localMerge: true },
+      tacit: rulesOn(seedRulesHome(join(dir, "agents"))),
       ...(await extend({ store, csrfToken, owner: OWNER })),
     },
     0,
@@ -227,11 +232,96 @@ async function seed(store, storage) {
   await store.recordAlert({ pattern: "zero_tokens", pattern_key: "zero_tokens:responsive", error_code: "agent_error", count: 3, detail: null }, ALERT_DEDUPE_MS);
   await store.pauseClaims(new Date(Date.now() + 3_600_000).toISOString(), "model_stall");
 
+  await seedStanding(store);
+
   // Overrides: an object-valued model_by and a project-level key, with history.
   await store.setSettingOverride({ key: "model_by", project: "", value: JSON.stringify({ ...MODEL_BY, review: "strong" }), actor: OWNER });
   await store.setSettingOverride({ key: "max_diff_files", project: PROJECT.key, value: "40", actor: OWNER });
 
   return { item: busy.id, parent: parent.id, run: failed.id };
+}
+
+/** How many items the standing approval approved in the last 7 days: more than the two its Rules page row names before "+N more". */
+const STANDING_ITEMS = 3;
+
+/** One standing approval (`spec-t1`) that is on, and the items it approved in the last 7 days, as the controller records them. */
+async function seedStanding(store) {
+  const rule = await store.putStandingRule({ gate: SPEC_GATE, tier: STANDING_TIER, enabled: true, set_by: OWNER });
+  for (let n = 1; n <= STANDING_ITEMS; n++) {
+    const it = await make(store, `local-standing-${n}-${"5ade".repeat(6)}`, `Approved by the standing rule ${n}: ${LONG_TITLE.slice(0, 60)}`);
+    await patch(store, it, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", tier: STANDING_TIER });
+    const cur = await store.getWorkItem(it.id);
+    const detail = { standing_rule: ruleId(rule.gate, rule.tier), gate: rule.gate, tier: rule.tier, kind: "spec", owner_id: rule.set_by };
+    const r = await store.transition({ id: it.id, expected_version: cur.version, patch: { blocked_on: "none", blocked_reason: null }, actor: standingActor(rule.gate, rule.tier), reason: STANDING_APPROVED, detail });
+    if (!r.ok) throw new Error(`fixture transition ${STANDING_APPROVED} failed: ${r.reason}`);
+  }
+}
+
+/** The Rules page's waiting entries, as `evolve pending` prints them: one class and one proposal, each with a long title. */
+const PENDING_TEXT = [
+  "## proposals (open) 1",
+  `- P-0042 [edit-asset] prompts/review.md — Ask the reviewer to name the page and width of each broken rule in ${LONG_WORD}`,
+  "## proposals (held) 0",
+  "## tacit Pending 1",
+  "- C-101 open every summary with the answer before any detail, even in a long thread",
+  "## tacit Held 0",
+  "",
+].join("\n");
+
+/** The Rules page's applied rules (In effect): two promoted rules and one encoded elsewhere. */
+const RULES_TEXT = [
+  "# Rules",
+  "",
+  "## C-090 keep existing CLI flags",
+  "- 기본값: Keep every existing CLI flag working; add a new flag instead of changing what an old one means.",
+  "- 예외: a flag the owner asked to remove.",
+  "- 범위: scripts/ and src/cli/",
+  "- 근거: 인시던트 T-1, T-2 / 판정일 2026-11-13",
+  "",
+  `## C-091 one value per row in ${LONG_WORD}`,
+  "- 기본값: Show one value per row; put the rest behind a disclosure.",
+  "- 근거: 인시던트 T-3 / 판정일 2026-11-20",
+  "",
+  "## 다른 곳에 인코딩된 규칙",
+  "- C-009 → CLAUDE.md",
+  "",
+].join("\n");
+
+/**
+ * A throwaway agents home under `dir` for the Rules page, as scripts/idle-agents/sandbox.mjs wires a real one: the
+ * rules file (applied rules) and stub `bin/tacit`, `bin/evolve` and `bin/sync-agents` that print fixed text for the
+ * forms the page reads (`evolve pending`, `evolve show <id>`, `tacit show --active --unclustered`) and change nothing.
+ * Node scripts, so they run wherever this fixture's node does.
+ */
+function seedRulesHome(dir) {
+  mkdirSync(join(dir, "bin"), { recursive: true });
+  mkdirSync(join(dir, "private", "tacit"), { recursive: true });
+  writeFileSync(join(dir, "private", "tacit", "rules.md"), RULES_TEXT);
+  const show = {
+    "C-101": ["### C-101 summary first", "- 인시던트: T-4, T-5", "- 초안: 기본값: Open every summary with the answer. / 예외: 없음", "- 범위: software", "", "# incidents", "# verdicts", ""].join("\n"),
+    "P-0042": ["# P-0042 page and width", "target: prompts/review.md", "current: Name the rule.", "proposed: Name the rule, the page and the width.", ""].join("\n"),
+  };
+  const outputs = {
+    tacit: { "show --active --unclustered": "# active, unclustered\n" },
+    evolve: { pending: PENDING_TEXT, ...Object.fromEntries(Object.entries(show).map(([id, text]) => [`show ${id}`, text])) },
+    "sync-agents": {},
+  };
+  for (const [cli, out] of Object.entries(outputs)) {
+    const file = join(dir, "bin", cli);
+    writeFileSync(file, `#!${process.execPath}\nconst out = ${JSON.stringify(out)}[process.argv.slice(2).join(" ")];\nif (out !== undefined) process.stdout.write(out);\n`);
+    chmodSync(file, 0o755);
+  }
+  return dir;
+}
+
+/** The UI's Rules dependency with the `agents-home` ledger on at `home` (AGENTS_HOME for its CLIs only; this process's env is left alone). */
+function rulesOn(home) {
+  const env = { AGENTS_HOME: home };
+  return {
+    ledger: tacitLedgerAt(env),
+    settings: { refresh: async () => {}, values: () => ({ integrations: { tacit: "agents-home" } }) },
+    home: () => checkAgentsHome(env),
+  };
 }
 
 /**

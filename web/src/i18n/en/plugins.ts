@@ -14,7 +14,6 @@ export const plugins = {
   "plugins.colSource": "Source",
   "plugins.colStatus": "Status",
   "plugins.colAction": "Action",
-  "plugins.colFolder": "Folder",
   "plugins.colOrigin": "Origin",
   "plugins.colReadOnly": "Read-only",
   "plugins.colRoles": "Roles",
