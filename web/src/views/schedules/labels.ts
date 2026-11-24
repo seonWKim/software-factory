@@ -21,6 +21,7 @@ export const ACTION_TEXT: Record<ActionKind, MessageKey> = {
   build: "schedules.actionKind.build",
   agent: "schedules.actionKind.agent",
   feedback: "schedules.actionKind.feedback",
+  improve: "schedules.actionKind.improve",
 };
 
 /** What each action does, one sentence, for the detail Card and the line under a title that has no text of its own. */
@@ -28,6 +29,7 @@ export const ACTION_ABOUT: Record<ActionKind, MessageKey> = {
   build: "schedules.actionAbout.build",
   agent: "schedules.actionAbout.agent",
   feedback: "schedules.actionAbout.feedback",
+  improve: "schedules.actionAbout.improve",
 };
 
 export const OUTCOME_TEXT: Record<ScheduleRunRow["outcome"], MessageKey> = {

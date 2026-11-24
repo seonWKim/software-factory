@@ -3,7 +3,7 @@
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import {
-  type DesignLearningSource, FIX_SPEC_APPROVED, type FilingDeps, LEARNINGS_HEAD, LEARNINGS_PATH, captureDesignLearning, captureKey, enqueueImprove, fileProposals,
+  type DesignLearningSource, FIX_SPEC_APPROVED, type FilingDeps, LEARNINGS_HEAD, LEARNINGS_PATH, captureDesignLearning, captureKey, dailyTriggerOn, enqueueImprove, fileProposals,
   fileReport, isDesignFinding, markerKey, renderLine, settleOutcomes, triggerImprove, utcDay,
 } from "../../../core/improver.js";
 import type { FiledPattern, Run, SourceRef, Timestamp, WorkItem } from "../kernel.js";
@@ -48,9 +48,11 @@ export class ImproveUnit {
   /**
    * Queues the improve run of the current UTC day on the project's system work item. The run's key holds the
    * day, so a second tick, a restart or another replica queues nothing more; `improveDay` only saves this
-   * process the store write once the day's run is there.
+   * process the store write once the day's run is there. Off with `improver.daily_trigger` false: an `improve`
+   * schedule queues the day's run under the same key (design 08-schedules).
    */
   private async dailyStep(): Promise<void> {
+    if (!dailyTriggerOn(this.c.k.cfg.improver)) return;
     const day = utcDay(this.c.k.d.clock.now());
     if (this.improveDay === day) return;
     const { run, created } = await enqueueImprove(this.c.k.d, this.c.k.project(), "daily");
