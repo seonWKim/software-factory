@@ -5,11 +5,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { EvalComparison, EvalRun, EvalRunSummary } from "../web/src/api/evals.js";
+import type { EvalRun, EvalRunSummary, SkillVersionDiff, SkillVersionRow } from "../web/src/api/evals.js";
 import { BASE, evalsRoute, routeFor } from "../web/src/pages.js";
 
-// The evals page at evals/<skill> (design 09-dashboard-evals): Trend, Grid and Compare in that order, "no run" in an
-// empty grid cell, plain words only (no run, suite or skill ID), and Run now in the header, whose Dialog posts one run.
+// The evals page at evals/<skill> (design 09-dashboard-evals): header, Versions, Compare Button, Grid and Trend in that
+// order, "no run" in an empty grid cell, plain words only (hashes and run IDs only under a version's Details), Compare's
+// ModalPanel with its DiffView, and Run now in the header, whose Dialog posts one run.
 // The reads and the POST are a fake fetch.
 
 // A variable path keeps the view's JSX out of the test type check, as the Efficiency page test does.
@@ -37,7 +38,17 @@ const GRID = [RUNS[0]!, RUNS[2]!].map(summary);
 
 let runs: EvalRun[] = RUNS;
 let grid: EvalRunSummary[] = GRID;
-let comparison: EvalComparison | null = null;
+const VERSIONS: SkillVersionRow[] = [
+  { version: 3, folder_hash: "hash-c", created_at: "2026-11-22T10:00:00.000Z", current: true, run_id: "run_zzz9", pass_rate: 0.9, change: 0.3 },
+  { version: 2, folder_hash: "hash-b", created_at: "2026-11-16T10:00:00.000Z", current: false, run_id: "run_xxx7", pass_rate: 0.6, change: -0.1 },
+  { version: 1, folder_hash: "hash-a", created_at: "2026-11-09T10:00:00.000Z", current: false, run_id: null, pass_rate: null, change: null },
+];
+const DIFF = (a: string, b: string): SkillVersionDiff => ({
+  a: VERSIONS.find((v) => v.folder_hash === a)!, b: VERSIONS.find((v) => v.folder_hash === b)!,
+  lines: [{ op: "same", text: "# Review" }, { op: "removed", text: "Be brief." }, { op: "added", text: "Be thorough." }],
+  cases: [{ case_id: "case_one1", a: "pass", b: "fail" }, { case_id: "case_two2", a: null, b: "errored" }],
+});
+let versions: SkillVersionRow[] = VERSIONS;
 let fail = false;
 let urls: string[] = [];
 let posts: { url: string; body: unknown; token: string | null }[] = [];
@@ -58,10 +69,10 @@ beforeEach(() => {
     if (fail) return json(500, { error: "boom" });
     if (url === `/api/v1/evals/${enc}/runs`) return json(200, { runs });
     if (url === `/api/v1/evals/${enc}/grid`) return json(200, { rows: grid });
-    if (url.startsWith(`/api/v1/evals/${enc}/compare?`)) {
+    if (url === `/api/v1/evals/${enc}/versions`) return json(200, { versions, unlinked: [] });
+    if (url.startsWith(`/api/v1/evals/${enc}/diff?`)) {
       const q = new URL(url, "http://x").searchParams;
-      const pick = (id: string | null) => summary(runs.find((r) => r.id === id)!);
-      return json(200, comparison ?? { a: pick(q.get("a")), b: pick(q.get("b")), gap: 0.4, noise_band: 0.22, within_noise: false });
+      return json(200, DIFF(q.get("a")!, q.get("b")!));
     }
     return json(404, { error: "Not found." });
   }));
@@ -70,7 +81,7 @@ beforeEach(() => {
 afterEach(() => {
   runs = RUNS;
   grid = GRID;
-  comparison = null;
+  versions = VERSIONS;
   fail = false;
   postAnswer = () => json(200, { run_id: "run_new1", status: "passed" });
   cleanup();
@@ -101,18 +112,54 @@ describe("evals route", () => {
 });
 
 describe("evals page", () => {
-  it("shows Trend, Grid and Compare in that order under the skill's name, with Run now as the header's one primary action", async () => {
+  it("shows the header, Versions, the Compare Button, the Grid and Trend in that order, with Run now as the one primary Button", async () => {
     const { container } = show();
-    await screen.findByRole("region", { name: "Compare two runs" }, SLOW);
+    await screen.findByRole("list", { name: "Versions of this skill, newest first" }, SLOW);
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("review-plan");
-    expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Pass rate over time", "Latest run per version and model class", "Compare two runs"]);
+    expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Versions", "Latest run per version and model class", "Pass rate over time"]);
     const header = container.querySelector("header")!;
     expect(within(header).getAllByRole("button").map((b) => b.textContent)).toEqual(["Run now"]);
-    // The one primary Button on the page is Run now (the Button's primary variant is the accent fill).
     const primary = [...container.querySelectorAll("button")].filter((b) => b.className.includes("bg-accent"));
     expect(primary.map((b) => b.textContent)).toEqual(["Run now"]);
-    // Beside Run now, the only controls are the two pickers.
-    expect(screen.getAllByRole("combobox")).toHaveLength(2);
+    // The Compare Button is secondary, in a ButtonRow between the versions Card and the Grid Card.
+    const compare = screen.getByRole("button", { name: "Compare versions" });
+    expect(compare.className).not.toContain("bg-accent");
+    const versionsCard = screen.getByRole("region", { name: "Versions" });
+    const grid = screen.getByRole("region", { name: "Latest run per version and model class" });
+    expect(versionsCard.compareDocumentPosition(compare) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(compare.compareDocumentPosition(grid) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The run Compare card is gone: no run pickers on the page.
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Compare two runs" })).toBeNull();
+  });
+
+  it("lists versions newest first as ListRows with pass rate, change and date, the current one with a Badge", async () => {
+    show();
+    const list = await screen.findByRole("list", { name: "Versions of this skill, newest first" }, SLOW);
+    const rows = [...list.querySelectorAll("[data-list-row]")];
+    expect(rows.map((r) => r.getAttribute("data-version"))).toEqual(["3", "2", "1"]);
+    expect(rows[0]!.textContent).toContain("Version 3");
+    expect(rows[0]!.textContent).toContain("Pass rate 90%");
+    expect(rows[0]!.textContent).toContain("+30 points since the version before");
+    expect(rows[0]!.textContent).toContain("Saved Nov 22");
+    expect(rows[1]!.textContent).toContain("−10 points");
+    expect(rows[2]!.textContent).toContain("Pass rate no pass rate");
+    expect(rows[2]!.textContent).toContain("no change to show");
+    expect(within(list).getAllByText("Current")).toHaveLength(1);
+    expect(rows[0]!.querySelector("[data-level]")!.textContent).toBe("Current");
+    expect(rows[1]!.querySelector("[data-level]")).toBeNull();
+  });
+
+  it("shows a version's folder hash and run ID only inside its Details", async () => {
+    const { container } = show();
+    const list = await screen.findByRole("list", { name: "Versions of this skill, newest first" }, SLOW);
+    expect(container.textContent).not.toMatch(/hash-|run_/);
+    const row = list.querySelector("[data-version=\"3\"]")!;
+    fireEvent.click(within(row as HTMLElement).getByText("Details"));
+    const details = row.querySelector("details")!;
+    expect(details.textContent).toContain("hash-c");
+    expect(details.textContent).toContain("run_zzz9");
+    expect(row.querySelector("summary")!.textContent).toBe("Details");
   });
 
   it("draws Trend with the Chart, oldest run first, skipping a run with no pass rate", async () => {
@@ -142,49 +189,51 @@ describe("evals page", () => {
     expect(table.querySelector("[data-level]")).toBeTruthy();
   });
 
-  it("Compare starts on the two newest runs with a pass rate and shows both, the gap, the noise band and the verdict", async () => {
+  it("Compare opens a ModalPanel on the two newest versions with the unified diff and each case's result", async () => {
     show();
-    const table = await screen.findByRole("table", { name: "Compare two runs" }, SLOW);
-    expect(urls.some((u) => u.includes("/compare?a=run_xxx7&b=run_zzz9"))).toBe(true);
-    const cells = (name: string) => within(within(table).getByRole("row", { name: new RegExp(name) })).getAllByRole("cell").map((c) => c.textContent);
-    expect(cells("Pass rate")).toEqual(["Pass rate", "60%", "90%", "+40 points"]);
-    expect(cells("Model class").slice(1, 3)).toEqual(["strong", "standard"]);
-    expect(cells("Noise band")[3]).toBe("±22 points");
-    expect(cells("Within noise")[3]).toBe("No");
-    // The pickers show dates, model classes and pass rates; run IDs are only values.
-    expect(screen.getByRole("combobox", { name: "First run" }).textContent).toMatch(/strong, 60%/);
-    expect(screen.getByRole("combobox", { name: "Second run" }).textContent).toMatch(/standard, 90%/);
+    fireEvent.click(await screen.findByRole("button", { name: "Compare versions" }, SLOW));
+    const panel = await screen.findByRole("dialog", { name: "Compare versions" }, SLOW);
+    await within(panel).findByRole("group", { name: "What changed in SKILL.md" }, SLOW);
+    expect(urls.some((u) => u.includes("/diff?a=hash-b&b=hash-c"))).toBe(true);
+    expect(within(panel).getByRole("combobox", { name: "First version" }).textContent).toContain("Version 2");
+    expect(within(panel).getByRole("combobox", { name: "Second version" }).textContent).toContain("Version 3");
+    // One column, each line marked − or +, an unchanged line with no mark.
+    const lines = [...panel.querySelectorAll("[data-diff-view] li")].map((li) => [li.getAttribute("data-op"), li.textContent]);
+    expect(lines).toEqual([["same", " # Review"], ["removed", "−Be brief."], ["added", "+Be thorough."]]);
+    const table = within(panel).getByRole("table", { name: "Result of each case" });
+    const rows = within(table).getAllByRole("row").slice(1).map((r) => within(r).getAllByRole("cell").map((c) => c.textContent));
+    expect(rows).toEqual([["Case 1", "Passed", "Failed"], ["Case 2", "no result", "Could not judge"]]);
+    expect(panel.textContent).not.toMatch(/case_|hash-/);
   });
 
-  it("picking another run reads that comparison", async () => {
+  it("picking another version reads that diff", async () => {
     show();
-    await screen.findByRole("table", { name: "Compare two runs" }, SLOW);
-    fireEvent.click(screen.getByRole("combobox", { name: "First run" }));
-    fireEvent.click(screen.getByRole("option", { name: /standard, 50%/ }));
-    await vi.waitFor(() => expect(urls.some((u) => u.includes("/compare?a=run_www6&b=run_zzz9"))).toBe(true), SLOW);
+    fireEvent.click(await screen.findByRole("button", { name: "Compare versions" }, SLOW));
+    const panel = await screen.findByRole("dialog", { name: "Compare versions" }, SLOW);
+    fireEvent.click(within(panel).getByRole("combobox", { name: "First version" }));
+    fireEvent.click(screen.getByRole("option", { name: "Version 1" }));
+    await vi.waitFor(() => expect(urls.some((u) => u.includes("/diff?a=hash-a&b=hash-c"))).toBe(true), SLOW);
   });
 
-  it("says when the gap cannot be judged", async () => {
-    comparison = { a: summary(RUNS[3]!), b: summary(RUNS[0]!), gap: null, noise_band: null, within_noise: null };
+  it("Compare is off with fewer than two versions", async () => {
+    versions = [VERSIONS[0]!];
     show();
-    const table = await screen.findByRole("table", { name: "Compare two runs" }, SLOW);
-    expect(table.textContent).toContain("Not enough replays to say");
+    const button = await screen.findByRole("button", { name: "Compare versions" }, SLOW);
+    expect((button as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("shows plain words only: no run, suite or skill ID, no snake_case name", async () => {
     const { container } = show();
-    await screen.findByRole("table", { name: "Compare two runs" }, SLOW);
+    await screen.findByRole("list", { name: "Versions of this skill, newest first" }, SLOW);
     const text = container.textContent!;
     expect(text).not.toMatch(/run_|suite_|sha-|skills\/|SKILL\.md|wi_/);
     expect(text).not.toMatch(/[a-z]+_[a-z]+/);
   });
 
-  it("Compare needs two runs with a pass rate", async () => {
-    runs = [RUNS[0]!, RUNS[1]!];
-    grid = [GRID[0]!];
+  it("says when the skill has no saved versions", async () => {
+    versions = [];
     show();
-    expect(await screen.findByText("Compare needs two runs with a pass rate.", undefined, SLOW)).toBeTruthy();
-    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(await screen.findByText("This skill has no saved versions yet.", undefined, SLOW)).toBeTruthy();
   });
 
   it("shows Loading while reading, an empty state with no runs, and an error note when a read fails", async () => {
