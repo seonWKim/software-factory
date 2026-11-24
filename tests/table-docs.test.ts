@@ -25,3 +25,17 @@ describe("controller table docs: skill improvement tables", () => {
     for (const t of NEW_TABLES) expect(tableDoc(t), t).toMatchObject({ owner: "controller", description: TABLE_DOCS[t] });
   });
 });
+
+describe("controller table docs: skill eval version columns", () => {
+  const COLUMNS = [
+    "controller_skill_eval_runs.suite_version", "controller_skill_eval_runs.judge_version", "controller_skill_eval_runs.factory_version",
+    "controller_skill_eval_suites.version",
+    "controller_skill_eval_replays.transcript", "controller_skill_eval_replays.answer", "controller_skill_eval_replays.input_tokens",
+    "controller_skill_eval_replays.output_tokens", "controller_skill_eval_replays.cost_usd", "controller_skill_eval_replays.wall_ms",
+    "controller_skill_eval_cases.seed", "controller_skill_eval_cases.mcp",
+  ];
+
+  it("describes every column the versions migration adds, one sentence each", () => {
+    for (const c of COLUMNS) expect(TABLE_DOCS[c], c).toMatch(/^\S[^\n]*\.$/);
+  });
+});

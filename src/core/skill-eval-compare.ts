@@ -11,6 +11,9 @@ export interface SkillEvalRunSummary {
   started_at: string;
   status: string;
   skill_version: string | null;
+  suite_version: number | null;
+  judge_version: string | null;
+  factory_version: string | null;
   model_class: string | null;
   judge_model_class: string | null;
   replays: number | null;
@@ -18,17 +21,25 @@ export interface SkillEvalRunSummary {
   errored: number | null;
 }
 
-/** Two runs side by side: b − a, the noise band and whether the gap is inside it; all three null without two pass rates. */
+/**
+ * Two runs side by side: b − a, the noise band and whether the gap is inside it. Not comparable (with the reason, and
+ * the three null) when they ran on different suite or judge versions, or one has none recorded; the three are also
+ * null without two pass rates.
+ */
 export interface SkillEvalComparison {
   a: SkillEvalRunSummary;
   b: SkillEvalRunSummary;
+  comparable: boolean;
+  /** Why the runs are not comparable; null when they are. */
+  reason: string | null;
   gap: number | null;
   noise_band: number | null;
   within_noise: boolean | null;
 }
 
 const summary = (r: SkillEvalRun): SkillEvalRunSummary => ({
-  run_id: r.id, started_at: r.started_at, status: r.status, skill_version: r.skill_version, model_class: r.model_class,
+  run_id: r.id, started_at: r.started_at, status: r.status, skill_version: r.skill_version, suite_version: r.suite_version,
+  judge_version: r.judge_version, factory_version: r.factory_version, model_class: r.model_class,
   judge_model_class: r.judge_model_class, replays: r.replays, pass_rate: r.pass_rate, errored: r.errored,
 });
 
@@ -61,10 +72,26 @@ export function noiseBand(a: { pass_rate: number; replays: number }, b: { pass_r
   return 2 * Math.sqrt(variance(a) + variance(b));
 }
 
-/** Compares run b against run a: within noise when |b − a| is no more than the noise band. */
+type Versioned = Pick<SkillEvalRun, "suite_id" | "suite_version" | "judge_version">;
+
+/** Why two runs cannot be set side by side, or null when they can: the same suite and suite version, the same judge version. */
+export function notComparableReason(a: Versioned, b: Versioned): string | null {
+  if ([a, b].some((r) => r.suite_version === null || r.judge_version === null)) return "one run has no version recorded";
+  if (a.suite_id !== b.suite_id || a.suite_version !== b.suite_version) return "the suite versions differ";
+  if (a.judge_version !== b.judge_version) return "the judge versions differ";
+  return null;
+}
+
+/**
+ * Compares run b against run a: within noise when |b − a| is no more than the noise band. Runs notComparableReason
+ * names get no gap, noise band or within-noise figure.
+ */
 export function compareSkillEvalRuns(a: SkillEvalRun, b: SkillEvalRun): SkillEvalComparison {
-  if (!measured(a) || !measured(b)) return { a: summary(a), b: summary(b), gap: null, noise_band: null, within_noise: null };
+  const reason = notComparableReason(a, b);
+  const none = { gap: null, noise_band: null, within_noise: null };
+  if (reason !== null) return { a: summary(a), b: summary(b), comparable: false, reason, ...none };
+  if (!measured(a) || !measured(b)) return { a: summary(a), b: summary(b), comparable: true, reason: null, ...none };
   const gap = b.pass_rate - a.pass_rate;
   const noise_band = noiseBand(a, b);
-  return { a: summary(a), b: summary(b), gap, noise_band, within_noise: Math.abs(gap) <= noise_band };
+  return { a: summary(a), b: summary(b), comparable: true, reason: null, gap, noise_band, within_noise: Math.abs(gap) <= noise_band };
 }

@@ -2,14 +2,14 @@
 // extends. Each method is one transaction; times come from the store's injected Clock. A duplicate key is "already
 // there": the stored row is returned.
 
-import type { SkillEvalCase, SkillEvalReplay, SkillEvalRun, SkillEvalRunFigures, SkillEvalRunStatus, SkillEvalStore, SkillEvalSuite, SkillVersion } from "../../../interfaces/skill-eval-store.js";
+import type { SkillEvalCase, SkillEvalReplay, SkillEvalRun, SkillEvalRunFigures, SkillEvalRunStart, SkillEvalRunStatus, SkillEvalStore, SkillEvalSuite, SkillVersion } from "../../../interfaces/skill-eval-store.js";
 import type { Timestamp, UserId } from "../../../core/types.js";
-import type { Row, SqlDriver } from "../../../state/index.js";
+import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
 import { SqlScheduleStore } from "./schedules.js";
 
 const SUITE_COLUMNS = "id, skill_ref, title, created_by, created_at";
 const CASE_COLUMNS = "id, suite_id, input, expected, created_at";
-const RUN_COLUMNS = "id, suite_id, status, started_at, finished_at, created_by, skill_version";
+const RUN_COLUMNS = "id, suite_id, status, started_at, finished_at, created_by, skill_version, suite_version, judge_version, factory_version";
 /** A run as read back: its columns and its figures (null until recorded). */
 const RUN_READ = `${RUN_COLUMNS}, model_class, judge_model_class, replays, pass_rate, errored`;
 const REPLAY_COLUMNS = "run_id, case_id, verdict, detail, recorded_at";
@@ -24,12 +24,16 @@ const rowToCase = (r: Row): SkillEvalCase => ({ id: String(r.id), suite_id: Stri
 const rowToRun = (r: Row): SkillEvalRun => ({
   id: String(r.id), suite_id: String(r.suite_id), status: String(r.status) as SkillEvalRunStatus, started_at: ts(r.started_at),
   finished_at: r.finished_at == null ? null : ts(r.finished_at), created_by: String(r.created_by) as UserId,
-  skill_version: textOrNull(r.skill_version), model_class: textOrNull(r.model_class), judge_model_class: textOrNull(r.judge_model_class),
+  skill_version: textOrNull(r.skill_version), suite_version: numberOrNull(r.suite_version), judge_version: textOrNull(r.judge_version),
+  factory_version: textOrNull(r.factory_version), model_class: textOrNull(r.model_class), judge_model_class: textOrNull(r.judge_model_class),
   replays: numberOrNull(r.replays), pass_rate: numberOrNull(r.pass_rate), errored: numberOrNull(r.errored),
 });
 const rowToVersion = (r: Row): SkillVersion => ({
   ref_id: String(r.ref_id), version: Number(r.version), folder_hash: String(r.folder_hash), text: String(r.text), source: String(r.source), created_at: ts(r.created_at),
 });
+/** Gives a suite its next version, inside the transaction of the case change that calls for it. */
+const bumpSuiteVersion = (tx: SqlExecutor, suite_id: string) => tx.run("UPDATE controller_skill_eval_suites SET version = version + 1 WHERE id = ?", [suite_id]);
+
 const rowToReplay = (r: Row): SkillEvalReplay => ({ run_id: String(r.run_id), case_id: String(r.case_id), verdict: String(r.verdict), detail: JSON.parse(String(r.detail)), recorded_at: ts(r.recorded_at) });
 
 /** SkillEvalStore over a SqlDriver; `evalStamp` is the store's injected Clock's time. */
@@ -52,7 +56,8 @@ export class SqlSkillEvalStore extends SqlScheduleStore implements SkillEvalStor
 
   addSkillEvalCase(c: Omit<SkillEvalCase, "created_at">): Promise<SkillEvalCase> {
     return this.db.transaction(async (tx) => {
-      await tx.run(`INSERT OR IGNORE INTO controller_skill_eval_cases (${CASE_COLUMNS}) VALUES (?, ?, ?, ?, ?)`, [c.id, c.suite_id, JSON.stringify(c.input), JSON.stringify(c.expected), this.evalStamp()]);
+      const added = await tx.run(`INSERT OR IGNORE INTO controller_skill_eval_cases (${CASE_COLUMNS}) VALUES (?, ?, ?, ?, ?)`, [c.id, c.suite_id, JSON.stringify(c.input), JSON.stringify(c.expected), this.evalStamp()]);
+      if (added === 1) await bumpSuiteVersion(tx, c.suite_id);
       const [row] = await tx.all(`SELECT ${CASE_COLUMNS} FROM controller_skill_eval_cases WHERE id = ?`, [c.id]);
       return rowToCase(row!);
     });
@@ -91,17 +96,28 @@ export class SqlSkillEvalStore extends SqlScheduleStore implements SkillEvalStor
     return this.db.transaction(async (tx) => {
       await tx.run("UPDATE controller_skill_eval_cases SET input = ?, expected = ? WHERE id = ?", [JSON.stringify(c.input), JSON.stringify(c.expected), id]);
       const [row] = await tx.all(`SELECT ${CASE_COLUMNS} FROM controller_skill_eval_cases WHERE id = ?`, [id]);
-      return row ? rowToCase(row) : null;
+      if (!row) return null;
+      await bumpSuiteVersion(tx, String(row.suite_id));
+      return rowToCase(row);
     });
   }
 
   deleteSkillEvalCase(id: string): Promise<boolean> {
-    return this.db.transaction(async (tx) => (await tx.run("DELETE FROM controller_skill_eval_cases WHERE id = ?", [id])) === 1);
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx.all("SELECT suite_id FROM controller_skill_eval_cases WHERE id = ?", [id]);
+      if (!row || (await tx.run("DELETE FROM controller_skill_eval_cases WHERE id = ?", [id])) !== 1) return false;
+      await bumpSuiteVersion(tx, String(row.suite_id));
+      return true;
+    });
   }
 
-  startSkillEvalRun(r: Pick<SkillEvalRun, "id" | "suite_id" | "created_by"> & { skill_version?: string | null }): Promise<SkillEvalRun> {
+  startSkillEvalRun(r: SkillEvalRunStart): Promise<SkillEvalRun> {
     return this.db.transaction(async (tx) => {
-      await tx.run(`INSERT OR IGNORE INTO controller_skill_eval_runs (${RUN_COLUMNS}) VALUES (?, ?, 'running', ?, NULL, ?, ?)`, [r.id, r.suite_id, this.evalStamp(), r.created_by, r.skill_version ?? null]);
+      // The suite's version as it is in this transaction; an unknown suite gives null.
+      await tx.run(
+        `INSERT OR IGNORE INTO controller_skill_eval_runs (${RUN_COLUMNS}) VALUES (?, ?, 'running', ?, NULL, ?, ?, (SELECT version FROM controller_skill_eval_suites WHERE id = ?), ?, ?)`,
+        [r.id, r.suite_id, this.evalStamp(), r.created_by, r.skill_version ?? null, r.suite_id, r.judge_version ?? null, r.factory_version ?? null],
+      );
       const [row] = await tx.all(`SELECT ${RUN_READ} FROM controller_skill_eval_runs WHERE id = ?`, [r.id]);
       return rowToRun(row!);
     });
