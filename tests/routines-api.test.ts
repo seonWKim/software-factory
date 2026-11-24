@@ -5,7 +5,7 @@
 // next_due_at, and the kernel's existing due path fires it on the next tick.
 
 import { describe, expect, it } from "vitest";
-import { NO_NEXT_SLOT, carrierSource } from "../src/core/routines.js";
+import { NO_NEXT_SLOT, carrierSource, queueRoutineRun } from "../src/core/routines.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -13,6 +13,7 @@ import { LocalSource } from "../src/impl/source/local-source.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { tickAt } from "../src/shared/ticks/tick-generator.js";
+import { scheduledAction } from "../src/core/controller-deps.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
 import { type UiRequest, respond } from "../src/ui/server.js";
@@ -103,12 +104,11 @@ describe("POST /api/v1/routines/…", () => {
     expect(await store.getRoutine("rt_1")).toMatchObject({ paused: true, schedule: { kind: "daily", spec: "21:00" }, next_due_at: "2026-11-23T11:00:00.000Z" });
   });
 
-  it("Run now on an active routine sets next_due_at to now, and the kernel's due path fires it on the next tick", async () => {
+  it("Run now on an active routine sets next_due_at to now, and the schedule pass fires it on the next tick", async () => {
     const { clock, store, send } = await setup();
-    const controller = new ControllerRole({ store, sources: [new LocalSource(store)], auth: new FakeAuth(), clock, config, log: silent, scanner: new PatternEgressScanner(async () => []) });
+    const controller = new ControllerRole({ store, sources: [new LocalSource(store)], auth: new FakeAuth(), clock, config, log: silent, scanner: new PatternEgressScanner(async () => []) , schedule_action: scheduledAction(store, { run: async (s, at) => void (await queueRoutineRun(store, config.project.key, s.id, at)) }, silent, config.project.key) });
     const tick = async () => {
-      const u = await controller.unit("routines");
-      await controller.kernel.commit(u.decide(await u.load(controller.kernel.reader, tickAt("tick", 1, clock.now().getTime()))));
+      await (await controller.unit("schedule")).scheduleStep(tickAt("tick", 1, clock.now().getTime()));
     };
     await send("add", ADD);
     await tick();
