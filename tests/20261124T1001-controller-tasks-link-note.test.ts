@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
-import migration from "../src/controller/migrations/20261124T1001-controller-tasks-link-note.migration.js";
+import migration from "../src/controller/migrations/20261124T1002-controller-tasks-link-note.migration.js";
 import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver, tableColumns } from "../src/state/index.js";
 import { newStore } from "./helpers/store.js";
 
 // A moved task's note (design 02-tasks-build): the nullable `link_note` on controller_tasks. Additive, no backfill (a
 // task closed by hand, or any other existing task, keeps its state), rerun-safe.
 
-const ID = "20261124T1001-controller-tasks-link-note";
+const ID = "20261124T1002-controller-tasks-link-note";
 const mdb = (db: SqlDriver): MigrationDb => ({ dialect: "sqlite", all: (q, p) => db.all(q, p), run: (q, p) => db.run(q, p) });
 
-describe("20261124T1001-controller-tasks-link-note on an existing SQLite database", () => {
+describe("20261124T1002-controller-tasks-link-note on an existing SQLite database", () => {
   it("a fresh store has the column and the migration recorded", async () => {
     const { store } = await newStore();
     expect(await tableColumns(mdb(store.db), "controller_tasks")).toContain("link_note");
