@@ -113,6 +113,24 @@ describe("ItemRow", () => {
   });
 });
 
+describe("ItemTable fits its box (design 09-dashboard-item-runs, 2026-11-24)", () => {
+  // A table's column is never narrower than its longest unbreakable word: with `break-words` (overflow-wrap:
+  // break-word) an unbroken identifier in a title or an error's Details kept the title column at its 28rem cap, and at
+  // 768-1024px the actions column (Open, "⋯") sat past the window's right edge. `wrap-anywhere` lets the column shrink
+  // to its 10rem floor.
+  it("lets the title cell and its second line break a long unbroken word, so the actions column stays in the window", () => {
+    const long = "configuration_loader_with_an_unbroken_identifier_that_never_has_a_space_in_it";
+    const table = render(<ItemTable label="T" empty="none" head={{ badge: "S", title: "I", why: "W", project: "P", worker: "K", age: "A", actions: "X" }}
+      rows={[{ key: "a", itemId: "wi_1", title: long, href: "/app/items/wi_1", second: <code>{long}</code>, copyId: "run_1" }]} />).container;
+    const title = table.querySelector<HTMLElement>("[data-cell-title]")!;
+    const second = table.querySelector<HTMLElement>("[data-row-second]")!;
+    for (const el of [title, second]) {
+      expect(classes(el).has("wrap-anywhere")).toBe(true);
+      expect(classes(el).has("break-words")).toBe(false);
+    }
+  });
+});
+
 describe("the lists render ItemRow", () => {
   it("Work's table: every row has data-item-id, no raw ID in its text, and keeps its narrow-screen cards", () => {
     width(SM_PX);
