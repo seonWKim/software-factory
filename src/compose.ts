@@ -24,8 +24,7 @@ import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
 import { type LearnedSettingsSource, LiveSettings, maxWorkers, workerCount } from "./core/settings.js";
 import { settingsBase } from "./core/settings-base.js";
-import { READ_TOOLS, WorkerPool } from "./worker/index.js";
-import type { LocalRoute } from "./worker/index.js";
+import { type LocalRoute, READ_TOOLS, WorkerPool } from "./worker/index.js";
 import { type BrokerDeps, Plugins } from "./plugin-set.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
@@ -545,6 +544,7 @@ export function ownerRefusal(loaded: Loaded, store: FactoryStore, user: UserId, 
 }
 
 export type { CliEnvironment, CliIdentity, FactoryStore }; // for the CLI component (src/cli/command.ts)
+export { writeRoutine, type Routine, type RoutineFields, type RoutineWrite } from "./core/routines.js"; // `factory routine`
 
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. `local` and `learned` as the worker pool's (Plugins.localRoute; 08-settings). */
 export interface SessionParts {
