@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import {
   API, type ImportItem, type ImportResult, type ItemDetail, type McpStatus, type PluginsView,
   getPluginsImport, postPackAdd, postPackApproval, postPluginsImport, postSettings, useApi,
@@ -7,9 +7,11 @@ import {
 import { Button } from "../components/ui/button.js";
 import { Checkbox } from "../components/ui/checkbox.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
-import { Dialog, announceStatus } from "../components/ui/dialog.js";
+import { CopyButton } from "../components/ui/copy.js";
+import { Dialog, ModalPanel, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
+import { Tooltip } from "../components/ui/menu.js";
 import { EMPTY_BOX, Notice, PageHeader, PageToolbar } from "../components/ui/notice.js";
 import { cn } from "../lib/cn.js";
 import { ErrorNote, Loading, type StoredFlags, useRefetchWhile } from "../components/ui/parts.js";
@@ -19,6 +21,7 @@ import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { When, useNow } from "./common.js";
 import { ModelsTab } from "./plugins-models.js";
+import { skillName } from "./evals.js";
 import { EvalsCard } from "./plugins-evals.js";
 import { MergeButton } from "./merge-button.js";
 import { withNodes } from "./standing.js";
@@ -42,7 +45,10 @@ import { Card, SUB_TITLE } from "../components/ui/card.js";
 //   added, refused with its rules) until the owner closes it, and the stored rows show on the tab at once, marked New.
 // - The Skills tab lists the skill folders' skills and the imported ones, each with its source (Folder, Claude Code,
 //   Codex); an imported one shows its SKILL.md path and, when its file is missing or changed, that state. A row with a
-//   SKILL.md path has Evals, which opens the Evals card (plugins-evals.tsx) for that path under the table.
+//   SKILL.md path has Evals, which opens the Evals content (plugins-evals.tsx) for that path in a modal panel; closing it
+//   returns focus to that row's button. The table has no Folder column: Path shows the SKILL.md path (else the folder) on
+//   one line, cut in the middle, with the full value in a tooltip and a Copy button. Empty Roles and Last used show a
+//   muted dash with a tooltip on this tab.
 // - An action's notice (approve, revoke, add, import, skill folder edit) shows on the tab it came from, in plain words;
 //   changing tab clears it and the New marks, and the next action replaces both.
 // - Add on MCP and Tools: a pack folder or one descriptor file (`add`), as `factory pack add`. Add on Skills, and
@@ -121,10 +127,39 @@ function NameCell({ name, description, fresh = false, href }: { name: string; de
   );
 }
 
-const Roles = ({ roles }: { roles: readonly string[] }) => <span className="text-xs text-pretty">{roles.length > 0 ? roles.join(", ") : t("plugins.noRole")}</span>;
+/** An empty value as a muted dash that says why in its tooltip (and its accessible name). */
+const EmptyDash = ({ why }: { why: string }) => (
+  <Tooltip text={why}>
+    <span tabIndex={0} aria-label={why} className="text-xs text-text-2">—</span>
+  </Tooltip>
+);
 
-function LastUsed({ at, now }: { at: string | null; now: number }) {
+/** `dash`: an empty list is the muted dash, not a sentence (the Skills tab, where the columns stay narrow). */
+const Roles = ({ roles, dash = false }: { roles: readonly string[]; dash?: boolean }) =>
+  roles.length === 0 && dash ? <EmptyDash why={t("plugins.noRole")} /> : <span className="text-xs text-pretty">{roles.length > 0 ? roles.join(", ") : t("plugins.noRole")}</span>;
+
+function LastUsed({ at, now, dash = false }: { at: string | null; now: number; dash?: boolean }) {
+  if (!at && dash) return <EmptyDash why={t("plugins.never")} />;
   return <span className="text-xs tabular-nums whitespace-nowrap">{at ? <When at={at} now={now} /> : t("plugins.never")}</span>;
+}
+
+const PATH_KEEP = { head: 14, tail: 26 } as const;
+
+/** A path on one line, cut in the middle when long; the full value in a tooltip, with a Copy button beside it.
+ *  A screen reader (and the row's text) gets the full path; the cut text is for the eye only. */
+function PathText({ value }: { value: string }) {
+  const long = value.length > PATH_KEEP.head + PATH_KEEP.tail + 1;
+  const shown = long ? `${value.slice(0, PATH_KEEP.head)}…${value.slice(-PATH_KEEP.tail)}` : value;
+  return (
+    <span className="flex items-center whitespace-nowrap">
+      <Tooltip text={value} align="start">
+        <span tabIndex={0} className="font-mono text-xs">
+          {long ? <><span aria-hidden="true">{shown}</span><span className="sr-only">{value}</span></> : value}
+        </span>
+      </Tooltip>
+      <CopyButton value={value} what={t("plugins.colPath")} />
+    </span>
+  );
 }
 
 const STATUS: Record<McpStatus, { label: MessageKey; level: string | undefined }> = {
@@ -438,8 +473,9 @@ const SKILL_STATE: Record<"missing" | "changed", MessageKey> = { missing: "plugi
 function SkillsTab({ view, query, now, report, fresh }: { view: PluginsView; query: string; now: number; report: Reporter; fresh: Fresh }) {
   type Row = PluginsView["skills"][number];
   const suites = new Set(useEvalSuites().data?.skills ?? []);
-  // The SKILL.md path whose Evals card is open, under the table; none at first.
+  // The SKILL.md path whose Evals panel is open; none at first. `opener` is the row button that opened it, which gets focus back.
   const [evals, setEvals] = useState<string | null>(null);
+  const opener = useRef<HTMLElement | null>(null);
   /** The eval page of a row whose folder joined with its name is a suite's skill_ref. */
   const evalHref = (r: Row): string | undefined => {
     const key = `${r.folder}/${r.name}`;
@@ -448,25 +484,27 @@ function SkillsTab({ view, query, now, report, fresh }: { view: PluginsView; que
   const columns: Column<Row>[] = [
     { key: "name", header: t("plugins.colName"), render: (r) => <NameCell name={r.name} description={r.description} href={evalHref(r)} fresh={r.source !== undefined && (fresh?.has(freshKey("skill", r.name, r.source)) ?? false)} /> },
     { key: "source", header: t("plugins.colSource"), render: (r) => <span className="text-xs whitespace-nowrap">{t(r.source ? SOURCE[r.source] : "plugins.sourceFolder")}</span> },
-    { key: "folder", header: t("plugins.colFolder"), render: (r) => <span className="font-mono text-xs wrap-anywhere">{r.folder}</span> },
     {
       key: "path",
       header: t("plugins.colPath"),
-      render: (r) =>
-        r.path === undefined ? null : (
-          <div className="flex min-w-0 flex-col items-start gap-0.5">
-            <span className="font-mono text-xs wrap-anywhere">{r.path}</span>
-            {(r.state === "missing" || r.state === "changed") && <Badge level="needs_you">{t(SKILL_STATE[r.state])}</Badge>}
-          </div>
-        ),
+      render: (r) => (
+        <div className="flex min-w-0 flex-col items-start gap-0.5">
+          <PathText value={r.path ?? r.folder} />
+          {(r.state === "missing" || r.state === "changed") && <Badge level="needs_you">{t(SKILL_STATE[r.state])}</Badge>}
+        </div>
+      ),
     },
-    { key: "roles", header: t("plugins.colRoles"), render: (r) => <Roles roles={r.roles} /> },
-    { key: "last_used", header: t("plugins.colLastUsed"), render: (r) => <LastUsed at={r.last_used} now={now} /> },
+    { key: "roles", header: t("plugins.colRoles"), render: (r) => <Roles roles={r.roles} dash /> },
+    { key: "last_used", header: t("plugins.colLastUsed"), render: (r) => <LastUsed at={r.last_used} now={now} dash /> },
     {
       key: "evals",
       header: t("evals.open"),
       render: (r) => (
-        <Button size="sm" disabled={r.path === undefined} title={r.path === undefined ? t("evals.noPath") : undefined} aria-label={t("evals.openLabel", { name: r.name })} aria-pressed={r.path !== undefined && evals === r.path} onClick={() => r.path !== undefined && setEvals(r.path)}>
+        <Button size="sm" disabled={r.path === undefined} title={r.path === undefined ? t("evals.noPath") : undefined} aria-label={t("evals.openLabel", { name: r.name })} onClick={(e) => {
+          if (r.path === undefined) return;
+          opener.current = e.currentTarget;
+          setEvals(r.path);
+        }}>
           {t("evals.open")}
         </Button>
       ),
@@ -476,7 +514,11 @@ function SkillsTab({ view, query, now, report, fresh }: { view: PluginsView; que
     <>
       <TabList view={view} tab="skills" report={report} query={query} rows={view.skills} how="plugins.emptySkills"
         table={(rows, empty) => <DataTable label={t("plugins.tabSkills")} columns={columns} rows={rows} rowKey={(r) => `${r.source ?? "folder"}\n${r.folder}\n${r.name}`} empty={empty} />} />
-      {evals !== null && <EvalsCard key={evals} path={evals} onClose={() => setEvals(null)} />}
+      {evals !== null && (
+        <ModalPanel key={evals} title={t("evals.cardTitle", { name: skillName(evals) })} returnFocusTo={opener} onClose={() => setEvals(null)}>
+          <EvalsCard path={evals} />
+        </ModalPanel>
+      )}
       <SkillFolders view={view} report={report} />
     </>
   );

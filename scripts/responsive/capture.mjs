@@ -7,6 +7,10 @@
 // Protocol, one JSON object per line. In, on stdin: the shots, {"shoot": {path, width, height, theme}}, where a path's
 // ":item" and ":run" stand for the fixture's item and run IDs. Out first: {"ready": true} or {"error", "unavailable": true};
 // then one line per shot, in order: {"png": <base64>} or {"error"}. stdin closing ends the script.
+//
+// Each shot is the whole page (decision 2026-11-24): the page is laid out at the shot's fixed height, then the window
+// grows to the content's full height and the capture takes all of it. The dashboard's shell is one window high and its
+// content column scrolls (`[data-scroll-root]`), so the document alone is never taller than the window.
 import { createInterface } from "node:readline";
 import { findChrome, launch } from "./cdp.mjs";
 
@@ -15,6 +19,13 @@ console.log = console.error;
 console.warn = console.error;
 const out = (msg) => process.stdout.write(`${JSON.stringify(msg)}\n`);
 const message = (e) => (e instanceof Error ? e.message : String(e)).split("\n")[0];
+/** The content's full height in CSS pixels: the document's, or the window less the scroll column's box plus all it scrolls. */
+const FULL_HEIGHT = `(() => {
+  const root = document.querySelector("[data-scroll-root]");
+  const column = root ? window.innerHeight - root.clientHeight + root.scrollHeight : 0;
+  return Math.ceil(Math.max(document.documentElement.scrollHeight, column));
+})()`;
+const frames = `new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))`;
 
 async function main() {
   const chrome = findChrome();
@@ -40,10 +51,17 @@ async function main() {
       const { shoot } = JSON.parse(line);
       try {
         await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: shoot.theme }] });
-        await page.send("Emulation.setDeviceMetricsOverride", { width: shoot.width, height: shoot.height, deviceScaleFactor: 1, mobile: false });
+        const metrics = (height) => page.send("Emulation.setDeviceMetricsOverride", { width: shoot.width, height, deviceScaleFactor: 1, mobile: false });
+        await metrics(shoot.height);
         await page.goto(`${fixture.url}/app/${at(shoot.path)}`);
-        await page.eval(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))`);
-        const { data } = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
+        await page.eval(frames);
+        const full = Math.max(shoot.height, await page.eval(FULL_HEIGHT));
+        if (full > shoot.height) {
+          await metrics(full);
+          await page.eval(frames);
+        }
+        const clip = { x: 0, y: 0, width: shoot.width, height: full, scale: 1 };
+        const { data } = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true, clip });
         out({ png: data });
       } catch (e) {
         out({ error: message(e) });

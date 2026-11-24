@@ -414,4 +414,10 @@ describe("prompts/review.md", () => {
     expect(text).toMatch(/check it against `design-system\/patterns\.md`[\s\S]*each broken rule is a finding of kind `code` that names the rule by\s+its number/);
     expect(text).toMatch(/A capture that did not happen is listed under `unverified` as\s+`screenshots not captured: <reason>`; it never changes the verdict/);
   });
+
+  it("asks the screenshot review for one changed_pages entry per changed page, saying whether its changed section appeared", () => {
+    expect(text).toMatch(/full page/);
+    expect(text).toMatch(/In `changed_pages`, list each page the diff changes once: the page, the section it changes, and\s+`shown`/);
+    expect(text).toMatch(/A section that appears in no capture is `shown: false`; the factory lists it under\s+`unverified`/);
+  });
 });
