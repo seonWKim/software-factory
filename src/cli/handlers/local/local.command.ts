@@ -1,4 +1,4 @@
-import { CLI_TOP_WORDS, HELP_WORD, cliName, cliUsageLines, parseLocalCliArgs, resolveItem, runLocalCli } from "../../../core/local-cli.js";
+import { CLI_TOP_WORDS, HELP_WORD, cliName, cliUsageLines, parseLocalCliArgs, resolveItem, runLocalCli, storedProjectCaps } from "../../../core/local-cli.js";
 import { defineCommand } from "../../command.js";
 import { buildLocalCliDeps } from "./deps.js";
 import { lastRefusedLines, refusalHint } from "./refused.js";
@@ -24,7 +24,7 @@ export default defineCommand({
     // The wrapper's command name (FACTORY_CLI_NAME, else `factory`), read as src/main.ts reads it for the sentence form.
     const cli = cliName(process.env);
     return ctx.withStore(async (store, loaded) => {
-      const r = await runLocalCli(await buildLocalCliDeps(store, loaded, identity, cli, action), action);
+      const r = await runLocalCli(await buildLocalCliDeps(store, loaded, identity, cli, action, storedProjectCaps), action);
       // A refused command's answer for the CLI sender (design 04-gate-commands, 2026-11-13), under the item's full ID.
       if (r.code === 0 && (action.action === "show" || action.action === "command")) {
         const item = await resolveItem(store, action.id);

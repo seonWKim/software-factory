@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
-import { type CliAction, type LocalCliDeps, storedProjectCaps } from "../../../core/local-cli.js";
+import type { CliAction, LocalCliDeps, storedProjectCaps as StoredProjectCaps } from "../../../core/local-cli.js";
 import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
 import { Plugins, type CliIdentity, type FactoryStore } from "../../command.js";
@@ -15,6 +15,7 @@ export async function buildLocalCliDeps(
   identity: CliIdentity,
   cli: string,
   action: CliAction,
+  storedProjectCaps: typeof StoredProjectCaps, // passed in: a second runtime import of src/core here would add a feature→legacy edge (kinds ratchet)
 ): Promise<LocalCliDeps> {
   const { owner, name } = loaded.config.repo;
   // `schedule draft` and `improve` only: the configured model (null when it cannot be built: the feature is off), the
