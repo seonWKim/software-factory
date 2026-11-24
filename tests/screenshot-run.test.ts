@@ -137,6 +137,7 @@ describe("the capture set", () => {
     expect(named.get("plugins-skills-evals")).toEqual({ name: "plugins-skills-evals", path: "plugins?tab=skills", open: "evals" });
     // A dialog on a page with no tabs is named <page>-<dialog> and opened from the page's default URL.
     expect(named.get("routines-new-routine")).toEqual({ name: "routines-new-routine", path: "routines", open: "new-routine" });
+    expect(named.get("schedules-new-schedule")).toEqual({ name: "schedules-new-schedule", path: "schedules", open: "new-schedule" });
     expect(pages.at(-1)?.name).toBe("plugins-skills-evals");
     // A checkout whose sidebar lacks a tabbed page has none of its tabs; a page with no tabs gains nothing.
     expect(capturePages(PAGES_TS).map((p) => p.name).filter((n) => n.startsWith("plugins") || n.startsWith("health"))).toEqual([]);
@@ -167,6 +168,8 @@ describe("the capture set", () => {
     expect(real).toContain('data-capture-open="evals"');
     const routines = await readFile(join(import.meta.dirname, "..", "web", "src", "views", "routines.tsx"), "utf8");
     expect(routines).toContain('data-capture-open="new-routine"');
+    const schedules = await readFile(join(import.meta.dirname, "..", "web", "src", "views", "schedules.tsx"), "utf8");
+    expect(schedules).toContain('data-capture-open="new-schedule"');
   });
 
   it("the fixture seeds one imported skill with a SKILL.md and an eval suite, so the Skills tab has a row with Evals", async () => {
@@ -258,7 +261,7 @@ describe("the Chrome browser", () => {
     };
     const out = await captureAll(chromeBrowser(), new MemoryStorage(), { item_id: "i", run_id: "r", exec, signal });
     const sent = stdin.trim().split("\n").map((l) => (JSON.parse(l) as { shoot: { path: string; open?: string } }).shoot);
-    expect(sent.filter((x) => x.open).map((x) => `${x.path}:${x.open}`)).toEqual([...Array(4).fill("routines:new-routine"), ...Array(4).fill("plugins?tab=skills:evals")]);
+    expect(sent.filter((x) => x.open).map((x) => `${x.path}:${x.open}`)).toEqual([...Array(4).fill("routines:new-routine"), ...Array(4).fill("schedules:new-schedule"), ...Array(4).fill("plugins?tab=skills:evals")]);
     expect(sent.filter((x) => !x.open).every((x) => !("open" in x))).toBe(true);
     expect(out.reason).toBe("the capture of plugins-skills-evals at 390px, light failed: the evals dialog did not open");
     expect(out.captures.map((c) => c.page)).toContain("plugins-skills");

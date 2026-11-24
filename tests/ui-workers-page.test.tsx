@@ -197,7 +197,7 @@ describe("plain words on the Runners tab and the Plugins page", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Tools" }));
     const tools = await screen.findByRole("table", { name: "Tools" });
     // A tool's name is the identifier agents call it by (git.store_branch): the scan skips it, not its description.
-    const text = visibleText(document.body, "td:first-child > div > span:first-child");
+    const text = visibleText(document.body, "td:first-child > [data-cell-line] > div > span:first-child");
     expect(text).toContain("Can change things · not given to any agent");
     expect(text).toContain("Couldn't start chrome-devtools");
     expect(INTERNAL_WORDS.exec(text)?.[0] ?? null).toBeNull();

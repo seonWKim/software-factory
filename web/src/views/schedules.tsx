@@ -12,6 +12,7 @@ import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
 import { t } from "../i18n/index.js";
 import { ScheduleDialog, newScheduleId } from "./schedules/form.js";
+import { ScheduleDetail, TitleCell, when } from "./schedules/detail.js";
 import { repeatsText } from "../lib/repeats.js";
 import { ACTION_TEXT, OUTCOME_TEXT, STATE_TEXT } from "./schedules/labels.js";
 
@@ -19,12 +20,12 @@ import { ACTION_TEXT, OUTCOME_TEXT, STATE_TEXT } from "./schedules/labels.js";
 // read through GET /api/v1/schedules. Repeats reads in plain words through the shared formatter (lib/repeats.ts, as on
 // Routines); a paused schedule's Next run says Paused. Each row's Switch is on while the schedule has a next run and off while it is
 // paused (pause clears the next run), and posts pause or resume; its "⋯" menu holds Run now (off while paused) and Edit.
-// Pressing a row's title (DataTable's `select`) marks the row as current and shows its runs in a second Card
-// (GET /api/v1/schedules/runs). New schedule, the page's one primary action, and Edit open one Dialog
+// Each title has one muted line under it saying what the schedule does (schedules/detail.tsx). Pressing a row's title
+// (DataTable's `select`) marks the row as current and shows a detail Card (what it does, its settings, its last and next
+// run) above its runs (GET /api/v1/schedules/runs). New schedule, the page's one primary action, and Edit open one Dialog
 // (schedules/form.tsx). A refusal shows in a Notice above the table.
 // The Cards follow the PageHeader as siblings, spaced by the Card's own top margin as on the other pages (no flex gap).
 
-const when = (at: string) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 const stateOf = (s: ScheduleRow) => (s.next_due_at === null ? "paused" : s.running_since !== null ? "running" : "waiting");
 
 /** The writes the page sends, with the one error they share and a reread after each. */
@@ -72,7 +73,7 @@ function RunsTable({ id }: { id: string }) {
 
 function ScheduleRows({ rows, selected, onSelect, onEdit, w }: { rows: readonly ScheduleRow[]; selected: string | null; onSelect: (id: string) => void; onEdit: (s: ScheduleRow, opener: HTMLElement | null) => void; w: Writes }) {
   const columns: Column<ScheduleRow>[] = [
-    { key: "title", header: t("schedules.col.title") },
+    { key: "title", header: t("schedules.col.title"), render: (s) => <TitleCell s={s} /> },
     { key: "cadence", header: t("schedules.col.cadence"), render: (s) => repeatsText(s.cadence), className: "whitespace-nowrap" },
     { key: "next", header: t("schedules.col.next"), render: (s) => (s.next_due_at === null ? t("schedules.nextPaused") : when(s.next_due_at)) },
     { key: "status", header: t("schedules.col.status"), render: (s) => <Badge level={stateOf(s)}>{t(STATE_TEXT[stateOf(s)])}</Badge> },
@@ -119,7 +120,7 @@ export function SchedulesPage() {
       <PageHeader
         title={t("page.schedules")}
         description={t("schedules.description")}
-        actions={<Button ref={addButton} variant="primary" disabled={!w.ready} onClick={() => { opener.current = addButton.current; setForm({ schedule: null }); }}>{t("schedules.new")}</Button>}
+        actions={<Button ref={addButton} variant="primary" data-capture-open="new-schedule" disabled={!w.ready} onClick={() => { opener.current = addButton.current; setForm({ schedule: null }); }}>{t("schedules.new")}</Button>}
       />
       {form !== null && (
         <ScheduleDialog
@@ -139,6 +140,11 @@ export function SchedulesPage() {
           )}
         </div>
       </Card>
+      {chosen !== null && (
+        <Card title={chosen.title} label={t("schedules.detail.label", { title: chosen.title })}>
+          <ScheduleDetail key={chosen.id} s={chosen} />
+        </Card>
+      )}
       <Card title={chosen === null ? t("schedules.runs.label") : t("schedules.runsTitle", { title: chosen.title })}>
         {chosen === null ? <p className="text-sm text-text-2">{t("schedules.runsPick")}</p> : <RunsTable key={chosen.id} id={chosen.id} />}
       </Card>

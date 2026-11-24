@@ -420,11 +420,11 @@ describe("DataTable", () => {
     setWidth(SM_PX);
     render(table());
     expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Name", "Count", "Id"]);
-    const cell = screen.getByText("22");
+    const cell = screen.getByText("22").closest("td")!;
     expect(cell.className).toContain("tabular-nums");
     expect(cell.className).toContain("sm:text-right");
     expect(screen.getByText("Count").className).toContain("text-right");
-    expect(screen.getByText("x1").className).not.toContain("text-right");
+    expect(screen.getByText("x1").closest("td")!.className).not.toContain("text-right");
   });
 
   it("keeps a column that has one value", () => {
@@ -503,7 +503,11 @@ describe("ListRow", () => {
     const row = screen.getByTestId("row");
     expect(row.tagName).toBe("LI");
     const parts = [...row.children];
-    expect(parts[0]!.tagName).toBe("INPUT");
+    // The leading control and the menu are both pulled up 6px, so their 32px boxes centre on the title's 20px line.
+    expect(parts[0]!.matches("[data-row-leading]")).toBe(true);
+    expect(parts[0]!.firstElementChild!.tagName).toBe("INPUT");
+    expect(parts[0]!.className).toContain("-mt-1.5");
+    expect(parts[2]!.className).toContain("-mt-1.5");
     expect(parts[1]!.textContent).toBe("Full title2 itemsextra");
     expect(parts[1]!.querySelector("[data-details]")!.textContent).toBe("2 items");
     expect(parts[2]!.matches("[data-row-menu]")).toBe(true);

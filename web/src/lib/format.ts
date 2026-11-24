@@ -141,6 +141,14 @@ export function duration(ms: number): string {
   return parts.length > 0 ? parts.join(" ") : withUnit(0, "s");
 }
 
+/**
+ * How long something has run, for a running clock (Work's tree and Running now): `duration` to the second from a minute
+ * on (188458 → "3m 8s"), every unit below it (8458 → "8s 458ms").
+ */
+export function elapsed(ms: number): string {
+  return Number.isFinite(ms) && ms >= 60_000 ? duration(Math.floor(ms / 1000) * 1000) : duration(ms);
+}
+
 /** True only for an absolute http: or https: URL: the only links the app draws from stored text. */
 export function isHttpUrl(url: string | null | undefined): url is string {
   if (!url) return false;
