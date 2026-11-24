@@ -1,5 +1,5 @@
 import { type RefObject, useId, useState } from "react";
-import { ACTION_KINDS, CADENCE_KINDS, type ActionKind, type CadenceKind, type ScheduleFields, type ScheduleRow, actionText } from "../../api.js";
+import { ACTION_KINDS, CADENCE_KINDS, type ActionKind, type CadenceKind, type ScheduleFields, type ScheduleRow, actionText, isWritableKind } from "../../api.js";
 import { Dialog, announceStatus } from "../../components/ui/dialog.js";
 import { Field } from "../../components/ui/field.js";
 import { Input } from "../../components/ui/input.js";
@@ -41,8 +41,9 @@ function fieldsOf(v: Values, was: ScheduleRow | null): ScheduleFields {
     f.spec = v.spec;
   }
   if (changed("zone")) f.zone = v.zone;
-  // A changed kind sends its text too: the server builds the action from both.
-  if (changed("action") || changed("body")) {
+  // A changed kind sends its text too: the server builds the action from both. A kind the form can't write (improve,
+  // added by setup) is never sent, so saving keeps it.
+  if (isWritableKind(v.action) && (changed("action") || changed("body"))) {
     f.action = v.action;
     f.body = v.body;
   }
@@ -107,10 +108,11 @@ export function ScheduleDialog({ schedule, busy, error, returnFocusTo, onSave, o
       <Field label={t("schedules.form.action")} htmlFor={id("action")}>
         <Select id={id("action")} value={v.action} onChange={(e) => set("action", e.target.value as ActionKind)}>
           {ACTION_KINDS.map((k) => <option key={k} value={k}>{t(ACTION_TEXT[k])}</option>)}
+          {!isWritableKind(v.action) && <option value={v.action} disabled>{t(ACTION_TEXT[v.action])}</option>}
         </Select>
       </Field>
-      <Field label={t("schedules.form.body")} htmlFor={id("body")} help={t(v.action === "build" ? "schedules.form.bodyBuild" : "schedules.form.bodyPrompt")}>
-        <Textarea id={id("body")} rows={5} value={v.body} onChange={(e) => set("body", e.target.value)} />
+      <Field label={t("schedules.form.body")} htmlFor={id("body")} help={t(!isWritableKind(v.action) ? "schedules.form.bodyNone" : v.action === "build" ? "schedules.form.bodyBuild" : "schedules.form.bodyPrompt")}>
+        <Textarea id={id("body")} rows={5} value={v.body} disabled={!isWritableKind(v.action)} onChange={(e) => set("body", e.target.value)} />
       </Field>
       <Field label={t("schedules.form.skipWhenBusy")} htmlFor={id("skip")} help={t("schedules.form.skipHelp")}>
         <Switch id={id("skip")} checked={v.skip} onCheckedChange={(on) => set("skip", on)} />
