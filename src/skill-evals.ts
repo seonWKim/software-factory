@@ -192,7 +192,9 @@ function passportedRunner(runner: AgentRunner, t: ReplayTools): Pick<AgentRunner
  * `model_class`. When the skill's `tools:` front matter names a tool (and the sandbox is not `noop`, which refuses it),
  * the plugins are built with the configured broker behind G2: its read-only tools go to skillEvalReplay as
  * `broker_tools`, and each replay run holds a run passport narrowed to its granted tools. A named tool the broker does
- * not serve read-only still errors the case `tool_not_served`.
+ * not serve read-only still errors the case `tool_not_served`. A replay run holds no `worker_runs` lease, so a real
+ * broker answers its tool call `lease_lost` until the follow-up "replay lease rule" (a broker lease rule for replay
+ * runs, filed as its own issue) lands.
  */
 async function engineOf(d: SkillEvalWiring, skill: string, system_prompt: string, model_class: ModelClass): Promise<Engine> {
   const named = frontMatterTools(system_prompt).length > 0 && d.sandbox_plugin !== "noop";
