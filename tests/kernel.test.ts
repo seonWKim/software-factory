@@ -9,8 +9,8 @@ import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 /** A kernel over `forge` (and `store`, else none: no store call is made). Signals are discovered from an empty folder. */
-function kernel(forge: FakeForge | null, store: unknown = {}) {
-  const deps = { store, clock: { now: () => new Date() }, config, scanner: cleanScanner, log: silent, auth: {}, forge } as unknown as ControllerDeps;
+function kernel(forge: FakeForge | null, store: unknown = {}, sources: unknown[] = []) {
+  const deps = { store, clock: { now: () => new Date() }, config, scanner: cleanScanner, log: silent, auth: {}, forge, sources } as unknown as ControllerDeps;
   const none = async () => { throw new Error("unused"); };
   return new Kernel(deps, { record: none, announce: none, emit: none, actions: none, byKey: none }, { beforeMerge: none }, mkdtempSync(join(tmpdir(), "sf-kernel-")));
 }
@@ -42,6 +42,27 @@ describe("Kernel reader: the forge's optional CI calls", () => {
     expect(reader.forge).not.toHaveProperty("rerunFailedJobs");
     expect(reader.forge).not.toHaveProperty("failedJobLog");
     expect(kernel(null).reader.forge).toBeNull();
+  });
+});
+
+describe("Kernel filingSource: the one lookup of the source that files an item", () => {
+  it("returns the first source in config order that can file, bound, and filer() names its type", async () => {
+    const filed: unknown[] = [];
+    const chat = { type: "chat" };
+    const tracker = { type: "tracker", async fileIssue(this: { type: string }, input: unknown) { filed.push([this.type, input]); return { id: "T-1" }; } };
+    const other = { type: "other", async fileIssue() { throw new Error("not the first filer"); } };
+    const k = kernel(null, {}, [chat, tracker, other]);
+    const source = k.filingSource();
+    expect(source?.type).toBe("tracker");
+    expect(await source!.fileIssue({ title: "t" } as never)).toEqual({ id: "T-1" });
+    expect(filed).toEqual([["tracker", { title: "t" }]]);
+    expect(k.filer()).toBe("tracker");
+  });
+
+  it("returns null, and filer() null, when no source can file", () => {
+    const k = kernel(null, {}, [{ type: "chat" }]);
+    expect(k.filingSource()).toBeNull();
+    expect(k.filer()).toBeNull();
   });
 });
 

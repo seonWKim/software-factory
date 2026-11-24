@@ -7,8 +7,8 @@ import { type Run, type RunKind, type Timestamp, type WorkItemId, outcomeCost, r
 import type { FactoryStore } from "../interfaces/factory-store.js";
 
 export const DAY_MS = 24 * 3_600_000;
-/** The run kinds whose agent reports a cost: the same kinds the status page's cost table counts. */
-export const SPEND_KINDS: readonly RunKind[] = ["triage", "implement", "review", "resolve", "update"];
+/** The run kinds whose agent reports a cost: the same kinds the status page's cost table counts, a routine's runs included. */
+export const SPEND_KINDS: readonly RunKind[] = ["triage", "implement", "review", "resolve", "update", "routine"];
 /** The most items a day names as its top items. */
 export const SPEND_DAY_TOP = 3;
 /** The longest range one read covers, in days. */

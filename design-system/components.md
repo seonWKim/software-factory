@@ -135,7 +135,7 @@ A native `input type=checkbox` drawn from the tokens: a 16 px box (`size-4`) ins
 
 ## Switch
 
-A `role=switch` button with `aria-checked`, 24 px high (the smallest target) around a drawn 20 by 36 px track; the thumb moves by a class. Controlled by `checked` and `onCheckedChange`. One size. States: on (`text-1` track), off (`border-strong` track), focus-visible, `disabled`.
+A `role=switch` button with `aria-checked`, 24 px high (the smallest target) around a drawn 20 by 36 px track; the thumb moves by a class. Controlled by `checked` and `onCheckedChange`. One size. States: on (`text-1` track), off (`border-strong` track), focus-visible, `readOnly` (keeps the on or off colour, stays focusable, ignores clicks, `aria-readonly`; never faded; pair it with a lock and a description saying where to change it), `disabled` (`opacity-50`, for a switch busy with a write).
 
 ## SegmentedControl
 

@@ -14,7 +14,8 @@ import type { UiDeps } from "../src/ui/server.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { CAPTURE_ENV, captureEnv, chromeBrowser } from "../src/shared/chrome-browser.js";
 import {
-  type BrowserSession, CaptureUnavailable, type RunExec, SCREENSHOT_SIZES, SCREENSHOT_THEMES, type ScreenshotBrowser, captureAll, capturePages, screenshotKey,
+  type BrowserSession, CaptureUnavailable, type RunExec, SCREENSHOT_SIZES, SCREENSHOT_THEMES, type ScreenshotBrowser, captureAll, capturePages, parseScreenshotReview,
+  screenshotKey, sectionNotShownLine,
 } from "../src/shared/screenshots.js";
 import { Worker } from "../src/worker/index.js";
 import { loadRunKinds } from "../src/worker/run-kind.js";
@@ -90,6 +91,28 @@ describe("the capture set", () => {
     expect(SCREENSHOT_SIZES.map((s) => s.width)).toEqual([390, 1280]);
     expect([...SCREENSHOT_THEMES]).toEqual(["light", "dark"]);
     expect(screenshotKey("it", "run", "settings", 1280, "dark")).toBe("it/run/settings-1280-dark.png");
+  });
+
+  it("captures the whole page: laid out at the fixed height, then the window grows to the content's full height", async () => {
+    const script = await readFile(join(import.meta.dirname, "..", "scripts", "responsive", "capture.mjs"), "utf8");
+    const at = (s: string) => script.indexOf(s);
+    expect(script).toContain("[data-scroll-root]");
+    expect(at("metrics(shoot.height)")).toBeGreaterThan(-1);
+    // In order: the fixed height for layout, the page, its full height measured, the window grown to it, the capture with it as the clip.
+    const steps = ["metrics(shoot.height)", "page.goto(", "page.eval(FULL_HEIGHT)", "metrics(full)", "height: full", "Page.captureScreenshot"].map(at);
+    expect(steps.every((s) => s > -1)).toBe(true);
+    expect([...steps].sort((a, b) => a - b)).toEqual(steps);
+  });
+
+  it("the fixture seeds rules on (applied and waiting rules) and one standing approval with three approved items", async () => {
+    const fixture = await readFile(join(import.meta.dirname, "..", "scripts", "responsive", "fixture.mjs"), "utf8");
+    expect(fixture).toMatch(/AGENTS_HOME/);
+    expect(fixture).toMatch(/## tacit Pending/);
+    expect(fixture).toMatch(/## proposals \(open\)/);
+    expect(fixture).toMatch(/- 기본값: /);
+    expect(fixture).toMatch(/putStandingRule\(/);
+    expect(fixture).toMatch(/STANDING_APPROVED/);
+    expect(fixture).toMatch(/STANDING_ITEMS = 3/);
   });
 
   it("reads the sidebar pages from the checkout's web/src/pages.ts, as check:responsive does", async () => {
@@ -346,6 +369,41 @@ describe("the screenshot run and its review", () => {
     expect(more).toEqual([]);
     expect(comment).toContain("- breaks decision rule 1 on items at 390px, dark");
     expect(await h.state(it1)).toEqual(before);
+  });
+
+  it("lists, per changed page, whether its changed section appeared; a section that did not is listed under unverified", async () => {
+    const h = await harness();
+    h.runner.script.review = () => ({ output: { verdict: "pass", tier: 2, findings: [], summary: "two pages", changed_pages: [
+      { page: "rules", section: "Waiting for you", shown: true },
+      { page: "tasks", section: "Needs you, Check group", shown: false },
+    ] } });
+    const it1 = await h.inReview();
+    await h.review(it1, "pass");
+    const captures = [{ page: "rules", width: 1280, theme: "light", key: `${it1.id}/run_x/rules-1280-light.png` }];
+    await h.storage.put(captures[0]!.key, PNG);
+    await h.finish("screenshot", { status: "succeeded", summary: "", data: { captures, reason: null } });
+    await h.controller.tickRuns();
+    while (await h.worker.tick()) await h.controller.tickRuns();
+    await h.controller.tickRuns();
+    expect(h.runner.specs[0]!.prompt).toContain("`changed_pages`");
+    expect((h.runner.specs[0]!.output_schema as { properties: Record<string, unknown> }).properties.changed_pages).toBeDefined();
+    const done = (await h.runs(it1, "review")).find((r) => r.input?.screenshot_review === true)!;
+    const stored = done.outcome?.status === "succeeded" ? parseScreenshotReview(done.outcome.data.screenshot_review) : null;
+    expect(stored?.pages).toEqual([
+      { page: "rules", section: "Waiting for you", shown: true },
+      { page: "tasks", section: "Needs you, Check group", shown: false },
+    ]);
+    expect(stored?.unverified).toContain(sectionNotShownLine({ page: "tasks", section: "Needs you, Check group" }));
+    expect(stored?.unverified.some((u) => u.includes("Waiting for you"))).toBe(false);
+    const [comment] = await h.comments(it1);
+    expect(comment).toMatch(/Changed pages:\n- rules: Waiting for you: shown in the screenshots\n- tasks: Needs you, Check group: not shown in the screenshots/);
+    expect(comment).toContain(`- ${sectionNotShownLine({ page: "tasks", section: "Needs you, Check group" })}`);
+  });
+
+  it("reads a stored screenshot review with no pages (an older one) as none, and drops a malformed page entry", () => {
+    expect(parseScreenshotReview({ findings: [], unverified: [], summary: "" })?.pages).toEqual([]);
+    expect(parseScreenshotReview({ findings: [], unverified: [], summary: "", pages: [{ page: " rules ", section: "In effect", shown: true }, { page: "x" }, { page: "", section: "s", shown: false }] })?.pages)
+      .toEqual([{ page: "rules", section: "In effect", shown: true }]);
   });
 
   it("a finished screenshot run and screenshot review add their tokens to the item's token_cost", async () => {

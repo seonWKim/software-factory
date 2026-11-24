@@ -24,6 +24,10 @@ import { FakeAuth } from "./helpers/fakes/runner.js";
 import { FakeSlackPollSource, FakeSource } from "./helpers/fakes/source.js";
 import { alice, cleanScanner, config, issueRef, silent, slackRef, triageSpec } from "./helpers/fakes/config.js";
 import { pipeline } from "./helpers/harness.js";
+import { ROUTINE_CAP, addRoutine, carrierSource, holdSource } from "../src/core/routines.js";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { LocalSource } from "../src/impl/source/local-source.js";
+import { tickAt } from "../src/shared/ticks/tick-generator.js";
 import { newStore, PROJECT_KEY, system, w1 } from "./helpers/store.js";
 
 describe("parseComment", () => {
@@ -1085,5 +1089,109 @@ describe("/approve over the cap at too_large", () => {
     expect(JSON.parse(String(change.detail!.size_cap_approved))).toEqual({
       actor: `local:${ME}`, sizes: { lines: 5000, files: 60 }, project_cap: CAPS, one_time_cap: { max_diff_lines: 5883, max_diff_files: 71 }, note: "the generated table is one file",
     });
+  });
+});
+
+describe("/approve and /reject at a routine's daily cap", () => {
+  const OWNER = "github:1" as UserId;
+  const HOUR = 3_600_000;
+
+  /** A routine every hour from 08:59 (first slot 09:59) with a $1 daily cap; each run costs $0.60. */
+  async function harness() {
+    const clock = new FakeClock("2026-11-23T08:59:00.000Z");
+    const { store } = await newStore(clock);
+    const controller = new ControllerRole({ store, sources: [new LocalSource(store)], auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const added = await addRoutine(store, {
+      id: "rt_1", name: "License", instruction: "Check the license.", url: null, schedule: { kind: "interval", spec: "60" }, zone: "UTC", trigger: null,
+      run_cap_usd: null, daily_cap_usd: 1, created_by: OWNER,
+    }, clock.now());
+    if (!added.ok) throw new Error(added.problem);
+    const tick = async () => {
+      const u = await controller.unit("routines");
+      await controller.kernel.commit(u.decide(await u.load(controller.kernel.reader, tickAt("tick", 1, clock.now().getTime()))));
+    };
+    const runs = async () => {
+      const carrier = await store.getWorkItemBySource("local", carrierSource("rt_1").id);
+      return carrier ? (await store.listRuns(carrier.id)).filter((r) => r.kind === "routine") : [];
+    };
+    const queued = async () => (await runs()).filter((r) => r.status === "queued").map((r) => r.idempotency_key);
+    const finish = async () => {
+      const run = (await store.claimRun({ worker_id: w1, kinds: ["routine"], lease_ms: 60_000 }))!;
+      const usage = { input_tokens: 10, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: 0.6, model: null };
+      await store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "s", data: { routine: { verdict: "pass", findings: [], summary: "s" }, usage } });
+      await controller.tickRuns();
+    };
+    const hold = (slot: string) => store.getWorkItemBySource("local", holdSource("rt_1", slot).id);
+    let n = 0;
+    /** `/<name> <text>` on `id`, as the CLI stores it, then the controller's command poll. */
+    const command = async (id: WorkItemId, name: string, text = "") => {
+      await store.appendCliCommand({ key: `cli:routine-${++n}`, actor: "local:1", command: name, args: { item: id, ...(text ? { text } : {}) } });
+      await controller.tickCommands();
+    };
+    /** The first run, at 09:59, finished: $0.60 spent today. */
+    clock.advance(HOUR);
+    await tick();
+    await finish();
+    return { clock, store, tick, queued, finish, hold, command, runs };
+  }
+
+  it("holds the run that would pass the cap; /approve raises it by the last run's cost and runs it; the cap holds again after", async () => {
+    const h = await harness();
+    h.clock.advance(HOUR);
+    await h.tick();
+    await h.tick();
+    expect(await h.queued()).toEqual([]);
+    const held = (await h.hold("2026-11-23T10:59:00.000Z"))!;
+    expect(held).toMatchObject({ stage: "NEW", blocked_on: "human", blocked_reason: ROUTINE_CAP, requester_id: OWNER });
+    expect(held.problem).toContain("Reply `/approve` to raise today's cap by $0.60");
+    await h.command(held.id, "approve");
+    expect(await h.store.getWorkItem(held.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+    expect((await h.store.listStateChanges(held.id)).at(-1)).toMatchObject({ reason: "routine_cap_approved", detail: { routine_id: "rt_1", raised_usd: 0.6 } });
+    expect((await h.store.getRoutine("rt_1"))!.cap_raise).toEqual({ usd: 0.6, day: "2026-11-23", hold_key: held.source.id });
+    await h.tick();
+    expect(await h.queued()).toEqual(["routine:rt_1:2026-11-23T10:59:00.000Z"]);
+    await h.finish();
+    // $1.20 spent of a $1.60 cap: another $0.60 run would pass it, so the next slot is held too.
+    h.clock.advance(HOUR);
+    await h.tick();
+    expect(await h.queued()).toEqual([]);
+    expect(await h.hold("2026-11-23T11:59:00.000Z")).toMatchObject({ blocked_on: "human", blocked_reason: ROUTINE_CAP });
+  });
+
+  it("/reject skips the held run and the cap still holds; the next day's slot runs", async () => {
+    const h = await harness();
+    h.clock.advance(HOUR);
+    await h.tick();
+    const held = (await h.hold("2026-11-23T10:59:00.000Z"))!;
+    await h.command(held.id, "reject", "not today");
+    expect(await h.store.getWorkItem(held.id)).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
+    expect((await h.store.listStateChanges(held.id)).at(-1)).toMatchObject({ reason: "routine_cap_rejected" });
+    await h.tick();
+    expect(await h.queued()).toEqual([]);
+    expect(await h.store.getRoutine("rt_1")).toMatchObject({ next_due_at: "2026-11-23T11:59:00.000Z", cap_raise: null });
+    h.clock.advance(HOUR);
+    await h.tick();
+    const again = (await h.hold("2026-11-23T11:59:00.000Z"))!;
+    expect(again).toMatchObject({ blocked_on: "human", blocked_reason: ROUTINE_CAP });
+    h.clock.set(new Date("2026-11-24T00:30:00.000Z"));
+    await h.tick();
+    expect(await h.queued()).toEqual([]); // a held slot waits for its answer, a new day included
+    await h.command(again.id, "reject");
+    await h.tick();
+    expect(await h.store.getRoutine("rt_1")).toMatchObject({ next_due_at: "2026-11-24T00:59:00.000Z" });
+    h.clock.advance(30 * 60_000);
+    await h.tick();
+    expect(await h.queued()).toEqual(["routine:rt_1:2026-11-24T00:59:00.000Z"]);
+  });
+
+  it("refuses any other command on a hold item, and changes nothing", async () => {
+    const h = await harness();
+    h.clock.advance(HOUR);
+    await h.tick();
+    const held = (await h.hold("2026-11-23T10:59:00.000Z"))!;
+    await h.command(held.id, "retry");
+    expect(await h.store.getWorkItem(held.id)).toMatchObject({ stage: "NEW", blocked_on: "human", version: held.version });
+    expect((await h.store.listItemMessages(held.id)).map((m) => m.body).join("\n")).toContain("a routine's held run takes `/approve`");
+    expect((await h.store.getRoutine("rt_1"))!.cap_raise).toBeNull();
   });
 });

@@ -215,13 +215,20 @@ describe("Plugins page", () => {
   it("the Skills tab shows each row's source (Folder, Claude Code or Codex), an imported row's path, and a missing or changed file", async () => {
     const imported = (name: string, source: "claude" | "codex", state: "ok" | "missing" | "changed") =>
       ({ name, folder: `/home/me/.${source}/skills`, description: null, roles: [], last_used: null, source, path: `/home/me/.${source}/skills/${name}/SKILL.md`, state });
-    view = { ...FULL, skills: [...FULL.skills, imported("review", "claude", "ok"), imported("ship", "codex", "missing"), imported("old", "claude", "changed")] };
+    view = { ...FULL, skills: [...FULL.skills, imported("review", "claude", "ok"), imported("ship", "codex", "missing"), imported("old", "claude", "changed"), imported("long-skill-name", "claude", "ok")] };
     history.replaceState(null, "", "/app/plugins?tab=skills");
     show();
     const rows = rowsOf(await screen.findByRole("table", { name: "Skills" }));
     const cells = (r: HTMLElement) => [...r.querySelectorAll("td")].map((td) => td.textContent);
-    expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toEqual(expect.arrayContaining(["Source", "Folder", "Path"]));
-    expect(cells(rows[0]!)).toEqual(expect.arrayContaining(["Folder", "/home/me/.claude/skills"]));
+    expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toEqual(expect.arrayContaining(["Source", "Path"]));
+    expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).not.toContain("Folder");
+    // A row with no SKILL.md path shows its folder in the Path cell; a long path is cut in the middle, in full in its Copy button.
+    expect(rows[0]!.textContent).toContain("/home/me/.claude/skills");
+    expect(cells(rows[4]!).join(" ")).toMatch(/…s\/long-skill-name\/SKILL\.md/);
+    expect(within(rows[4]!).getByRole("button", { name: "Copy Path" })).toBeTruthy();
+    // Empty Roles and Last used are a muted dash with their reason as its name.
+    expect(within(rows[1]!).getByLabelText("Not used by any agent").textContent).toBe("—");
+    expect(within(rows[1]!).getByLabelText("Not in recent runs").textContent).toBe("—");
     expect(rows[1]!.textContent).toContain("Claude Code");
     expect(rows[1]!.textContent).toContain("/home/me/.claude/skills/review/SKILL.md");
     expect(rows[2]!.textContent).toContain("Codex");
