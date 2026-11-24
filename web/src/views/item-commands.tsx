@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, type RefObject, useId, useRef, useState } from "react";
 import {
-  API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, POLL_MS, getJson,
+  API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, type OverCapSizes, POLL_MS, getJson,
   alreadyQueued, mergeInFlight, mergeReturned, plainRefusal, showsMerge, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
@@ -9,6 +9,7 @@ import { ButtonRow } from "../components/ui/button-row.js";
 import { copyToClipboard } from "../components/ui/copy.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
+import { KeyValue } from "../components/ui/key-value.js";
 import { Radio } from "../components/ui/radio.js";
 import { type MenuItem, OverflowMenu } from "../components/ui/menu.js";
 import { Select } from "../components/ui/select.js";
@@ -40,6 +41,8 @@ import { AddContextActions } from "./item-attachments.js";
 
 /** Every command that opens a dialog from a button: reject and revise (their forms), and verdict (its Accept, Changes or Reject choice). */
 export const DIALOGS = ["reject", "revise", "verdict"];
+/** A Needs-you Approve over the item's size caps (its `over_cap`) opens OverCapApproveDialog: the controller refuses it without a note. */
+const opensDialog = (c: ItemCommand): boolean => DIALOGS.includes(c.name) || (c.name === "approve" && c.over_cap !== undefined);
 /** The commands the item's "…" menu holds (on the DecisionCard too): they are rare, so they are no buttons in its row. */
 export const MENU = ["reject", "verdict"];
 export type FormName = "reject" | "revise" | "verdict";
@@ -325,6 +328,38 @@ function VerdictDialog({ title, busy, error, returnFocusTo, onSend, onClose }: C
   );
 }
 
+/**
+ * The over-cap Approve dialog (design 09-dashboard-item-commands, 2026-11-24): the size, the caps in force and the
+ * proposed one-time cap, in the words of the controller's refusal (overCapNoteRequired), and the note saying why.
+ * Confirm stays off until the note has text; it sends `approve` with the trimmed note, as `factory approve <id> <why>`.
+ */
+function OverCapApproveDialog({ title, over, busy, error, returnFocusTo, onSend, onClose }: CommandDialogProps & { over: OverCapSizes }) {
+  const [note, setNote] = useState("");
+  const uid = useId();
+  const size = (lines: number, files: number) => t("overCap.lines", { lines, files });
+  return (
+    <Dialog
+      title={title}
+      consequence={t("overCap.consequence")}
+      confirmLabel={commandLabel("approve")}
+      confirmDisabled={busy || note.trim() === ""}
+      error={error}
+      returnFocusTo={returnFocusTo}
+      onConfirm={() => onSend(note.trim())}
+      onClose={onClose}
+    >
+      <KeyValue data-over-cap items={[
+        { key: "size", term: t("overCap.size"), value: size(over.sizes.lines, over.sizes.files) },
+        { key: "cap", term: t("overCap.cap"), value: size(over.caps.max_diff_lines, over.caps.max_diff_files) },
+        { key: "one-time", term: t("overCap.oneTimeCap"), value: size(over.one_time_cap.max_diff_lines, over.one_time_cap.max_diff_files) },
+      ]} />
+      <Field label={t("overCap.note")} htmlFor={`${uid}-note`}>
+        <Textarea id={`${uid}-note`} rows={3} value={note} onChange={(e) => setNote(e.target.value)} className="w-full" />
+      </Field>
+    </Dialog>
+  );
+}
+
 /** A Needs-you row's primary button label, in sentence case; `resolve` answers what the item asked. */
 const PRIMARY_LABEL: Record<string, MessageKey> = { approve: "needs.actApprove", retry: "needs.actRetry", resolve: "needs.actAnswer" };
 /** The label of a primary that allows a permission ask's paths (it sends them as `+paths`). */
@@ -407,14 +442,14 @@ export function useMergeReply(id: string, group: NeedActionsProps["group"], merg
  * A Needs-you row's actions (design §9, issues #453, #513): always one primary button, then the "⋯" menu last. The
  * primary is Merge on a merge row, else the command the state asks for (Approve, Retry or Answer, the first the
  * viewer may send), else "Open" to the item page. The menu holds every other command and the Why text's allow
- * entries; one the viewer may not send stays, disabled, with its reason. Reject, revise and verdict open a dialog
- * (outside the row, so the row never grows); the others send at once. A send re-reads the list, so the row moves on;
+ * entries; one the viewer may not send stays, disabled, with its reason. Reject, revise, verdict and an over-cap
+ * Approve (OverCapApproveDialog) open a dialog (outside the row, so the row never grows); the others send at once. A send re-reads the list, so the row moves on;
  * a failed send shows its error in the cell (or, with `inlineErrors` false, where the row puts SendErrors), a sent
  * one in a short status message that outlives the row.
  */
 export function NeedActions({ id, title, commands, pr, group, merge, checking, cmd, allow, inlineErrors = true, extra = [], label }: NeedActionsProps) {
   const { on, busy, local, send: post } = cmd;
-  const [open, setOpen] = useState<FormName | null>(null);
+  const [open, setOpen] = useState<FormName | "approve" | null>(null);
   const wrap = useRef<HTMLSpanElement>(null);
   // The OverflowMenu owns its button, so the dialogs hand focus back to it by looking it up when they close.
   const moreButton = { get current() { return wrap.current?.querySelector<HTMLElement>("[aria-haspopup=menu]") ?? null; } } as RefObject<HTMLElement | null>;
@@ -429,7 +464,7 @@ export function NeedActions({ id, title, commands, pr, group, merge, checking, c
   };
   const canRetry = commands.some((c) => c.name === "retry" && c.allowed);
   const rest = [
-    ...others.map((c) => menuEntry(id, c, off, () => (DIALOGS.includes(c.name) ? setOpen(c.name as FormName) : void send(c.name, withPaths(c, ""))))),
+    ...others.map((c) => menuEntry(id, c, off, () => (opensDialog(c) ? setOpen(c.name as FormName | "approve") : void send(c.name, withPaths(c, ""))))),
     ...allow.map((a) => ({ label: a.label, action: "retry", item: id, disabled: off || !canRetry, onSelect: () => void send("retry", a.note) })),
   ];
   // Applied at once (Approve): the row's label, e.g. "Approved", until the list's next read moves the row on.
@@ -438,12 +473,13 @@ export function NeedActions({ id, title, commands, pr, group, merge, checking, c
   // list's next read moves the row on, so a click never looks like nothing happened.
   const sentLocal = primary ? local[primary.name] : undefined;
   const sent = sentLocal !== undefined && "seq" in sentLocal && !sentLocal.refusal ? sentLocal : null;
-  // Revise or Reject as the main action (a repeated stop, primaryOf) opens its dialog, as its menu entry does.
+  // Revise or Reject as the main action (a repeated stop, primaryOf), or an over-cap Approve, opens its dialog, as its menu entry does.
   const sendPrimary = () => {
     if (!primary) return;
-    if (DIALOGS.includes(primary.name)) setOpen(primary.name as FormName);
+    if (opensDialog(primary)) setOpen(primary.name as FormName | "approve");
     else void send(primary.name, withPaths(primary, ""));
   };
+  const approve = commands.find((c) => c.name === "approve");
   // A disabled Merge says why in its label ("Merge: 1 conflicting file"), as a disabled command's menu entry does.
   const mergeLabel = checking ? t("needs.checking") : queued ? (merge?.reason ?? t("commands.merging")) : merging ? t("commands.merging")
     : merge && !merge.enabled && merge.reason ? `${t("commands.merge")}: ${merge.reason}` : t("commands.merge");
@@ -471,7 +507,18 @@ export function NeedActions({ id, title, commands, pr, group, merge, checking, c
       ))}
       {sent !== null && !sent.label && <OutcomeText outcome={{ tone: "status", text: t("commands.sentWaiting") }} />}
       {inlineErrors && <SendErrors local={local} />}
-      {open !== null && (
+      {open === "approve" && approve?.over_cap && (
+        <OverCapApproveDialog
+          title={`${commandLabel("approve")} ${title}`}
+          over={approve.over_cap}
+          busy={off}
+          error={local.approve && "error" in local.approve ? local.approve.error : null}
+          returnFocusTo={moreButton}
+          onSend={(note) => void send("approve", withPaths(approve, note))}
+          onClose={() => setOpen(null)}
+        />
+      )}
+      {open !== null && open !== "approve" && (
         <CommandDialog
           command={open}
           title={title}
