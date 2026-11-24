@@ -86,6 +86,8 @@ export default defineCommand({
         // The Rules page (GET /api/v1/rules, POST /api/v1/rules/verdict): the tacit ledger's list and verdict, owner only;
         // a live holder, switched by the `integrations` setting before each Rules request.
         tacit: parts.tacit,
+        // A skill draft's Promote on the Rules page (POST /api/v1/rules/skill-verdict): the skill wiring, absent without capabilities.skill_folders.
+        skillImprove: parts.skillImprove,
         // Migrate now, Start and Restart now (POST /api/v1/migrate and /api/v1/supervisor): the supervisor's request file,
         // behind the resume route's owner check.
         migrate: parts.migrate,

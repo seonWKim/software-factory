@@ -1,6 +1,7 @@
 import { ScrollText } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useRef, useState } from "react";
+import { PROPOSALS_API, type ProposalsView } from "../api/proposals.js";
 import { API, type AppliedRule, type RetiredRule, type RuleRow, type RuleVerdict, type RulesView, type StandingView, postSettings, useApi } from "../api.js";
 import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { Button } from "../components/ui/button.js";
@@ -22,7 +23,8 @@ import { AgentsHomePicker } from "./agents-home-picker.js";
 import { Applied, AppliedSearch, hasAppliedTools } from "./rules-applied.js";
 import { Pushbacks } from "./rules-pushbacks.js";
 import { EntryDetail } from "./rules-detail.js";
-import { GROUPS, PROSE, ROW_PAD, RULE_STATE, VERDICTS, isClass, muted, proposalLine } from "./rules-shared.js";
+import { GROUPS, LIST, PROSE, ROW_PAD, RULE_STATE, VERDICTS, isClass, muted, proposalLine } from "./rules-shared.js";
+import { SkillDrafts, waitingSkills } from "./rules-skills.js";
 import { VerdictDialog } from "./rules-verdict.js";
 import { ApprovalsSection, StandingProposal, StandingRule } from "./standing.js";
 
@@ -211,8 +213,6 @@ function Retired({ retired }: { retired: RetiredRule[] }) {
   );
 }
 
-const LIST = "divide-y divide-border rounded-control border border-border";
-
 /** A titled part of the page's Details disclosure: an h3 and its content, not a section of its own. */
 function DetailsPart({ title, children, ...rest }: { title: string; children: ReactNode; [data: `data-${string}`]: string | boolean }) {
   return (
@@ -226,6 +226,8 @@ function DetailsPart({ title, children, ...rest }: { title: string; children: Re
 export function RulesPage() {
   const rules = useApi<RulesView>(API.rules);
   const standing = useApi<StandingView>(API.standing);
+  // The skill drafts waiting for a verdict, from the proposals list; a failed read shows none.
+  const skills = waitingSkills(useApi<ProposalsView>(PROPOSALS_API.list).data?.skills);
   // The applied-rules search, in the toolbar's second row (the page's one filter).
   const [query, setQuery] = useState("");
   // Each Suggest press is a new round of reads in the applied rules; 0 until the first press.
@@ -234,18 +236,24 @@ export function RulesPage() {
   const title = t("page.rules");
   if (rules.isError) return <><PageHeader title={title} width="read" /><ErrorNote error={rules.error} /></>;
   if (!v) return <><PageHeader title={title} width="read" /><Loading rows={3} label="loading.rules" onRetry={() => void rules.refetch()} /></>;
+  // Rule and skill verdicts are the owner's: the token only when the page's user may judge.
+  const token = v.judge === null ? v.csrf_token : null;
   if (!v.enabled) {
     return (
       <>
         <PageHeader title={title} width="read" />
         <div className="space-y-4">
           <LedgerOff view={v} />
+          {skills.length > 0 && (
+            <Card title={t("rules.waitingForYou")} count={skills.length}>
+              <SkillDrafts rows={skills} token={token} />
+            </Card>
+          )}
           <ApprovalsSection />
         </div>
       </>
     );
   }
-  const token = v.judge === null ? v.csrf_token : null;
   // Only an entry the ledger has not judged waits; a judged one is decided.
   const waiting = v.entries.filter((e) => e.judged === null);
   const decided = v.entries.filter((e) => e.judged !== null);
@@ -255,7 +263,7 @@ export function RulesPage() {
   const off = sv?.rules.filter((r) => !r.enabled) ?? [];
   const proposals = sv?.proposals ?? [];
   const standingToken = sv?.csrf_token ?? null;
-  const waitCount = waiting.length + proposals.length;
+  const waitCount = waiting.length + proposals.length + skills.length;
   const inEffect = on.length + applied.length;
   const excerpts = (v as RulesView & { excerpts?: Record<string, Excerpt> }).excerpts;
   const onRows = on.map((r) => <StandingRule key={r.rule} rule={r} token={standingToken} />);
@@ -285,6 +293,7 @@ export function RulesPage() {
             </ul>
           </CardSection>
         )}
+        <SkillDrafts rows={skills} token={token} />
         {GROUPS.map((g) => {
           const entries = waiting.filter((e) => isClass(e.id) === g.classes);
           return (

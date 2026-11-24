@@ -40,6 +40,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RULE_VERDICTS, type RuleVerdict } from "../core/learned-rules.js";
+import type { SkillVerdict } from "../core/skill-improve.js";
 import { isHotspot } from "../core/hotspots.js";
 import { errorText } from "../core/log.js";
 import { type RetireRule, retireSuggestions } from "../core/rule-retirement.js";
@@ -63,6 +64,7 @@ export const RULE_VERDICT_PATH = "/api/v1/rules/verdict";
 export const RULE_ENTRY_PATH = "/api/v1/rules/entry";
 export const RULE_EDIT_PATH = "/api/v1/rules/edit";
 export const PUSHBACK_DISMISS_PATH = "/api/v1/rules/pushbacks/dismiss";
+export const SKILL_VERDICT_PATH = "/api/v1/rules/skill-verdict";
 
 /** The longest reason and rule text (each of wording, default and exception) a verdict takes. */
 export const MAX_REASON = 1000;
@@ -121,7 +123,7 @@ export async function uiTacit(
 export const RULES_PLUGIN = "agents-home";
 
 /** The page's user when they are the local owner, else why not; `does` names the act (`judges rules`). */
-export async function ownerOf(d: PauseDeps, p: UiPauses, does: string): Promise<{ user: UserId } | { error: string }> {
+export async function ownerOf(d: Pick<PauseDeps, "store">, p: UiPauses, does: string): Promise<{ user: UserId } | { error: string }> {
   const user = await p.principal();
   if (user === null) return { error: "No factory user acts from this page: link your local account or set cli_user." };
   // The owner check first (as every check): a solo store's first local identity becomes its owner there.
@@ -547,9 +549,51 @@ export async function writePushbackDismiss(d: PauseDeps, p: UiPauses, body: unkn
   return { status: 200, value: { id } };
 }
 
+/** The verdicts a skill draft takes (src/core/skill-improve.ts). */
+const SKILL_VERDICTS = ["promote", "hold", "reject"] as const;
+
+/** The POST body as a skill verdict, or why it is not one. */
+function skillVerdictOf(body: unknown): { id: string; verdict: (typeof SKILL_VERDICTS)[number] } | string {
+  const b = bodyOf(body, ["id", "verdict"]);
+  if (typeof b === "string") return b;
+  if (typeof b.id !== "string" || b.id.trim() === "") return "id must be a skill draft ID";
+  const verdict = SKILL_VERDICTS.find((x) => x === b.verdict);
+  return verdict ? { id: b.id.trim(), verdict } : `verdict must be one of ${SKILL_VERDICTS.join(", ")}`;
+}
+
+/** What a skill verdict reads: the store, the configured project and, for Promote, the skill wiring. */
+export type SkillVerdictDeps = Pick<PauseDeps, "store" | "settings" | "skillImprove">;
+
+/**
+ * One verdict on a skill draft (design 09-dashboard-rules-waiting): POST /api/v1/rules/skill-verdict with `{ id, verdict }`
+ * after the request guards, and `factory improve skill <id> <verdict>`, so both give the same result. 400 for a bad body,
+ * 403 for anyone but the owner and 404 for no draft of the configured project (nothing written), 409 with the core's
+ * reason when it refuses (another state, a skill outside capabilities.skill_folders) or Promote has no skill wiring;
+ * else 200 with the draft's state. Promote re-runs the skill's suite before it answers.
+ */
+export async function writeSkillVerdict(d: SkillVerdictDeps, p: UiPauses, body: unknown): Promise<ApiResult> {
+  const v = skillVerdictOf(body);
+  if (typeof v === "string") return { status: 400, value: { error: v } };
+  const who = await ownerOf(d, p, "judges skill changes");
+  if ("error" in who) return { status: 403, value: { error: who.error } };
+  const draft = await d.store.getSkillDraft(v.id);
+  const project = d.settings ? await d.settings.resolveProject() : null;
+  if (!draft || project === null || draft.project_key !== project.key) return { status: 404, value: { error: "No such skill draft in this project." } };
+  const s = d.skillImprove;
+  if (!s) return { status: 409, value: { error: "Skill verdicts are not wired in this process: nothing written" } };
+  const r: SkillVerdict = v.verdict === "hold" ? await s.hold(d.store, v.id)
+    : v.verdict === "reject" ? await s.reject(d.store, v.id)
+    : s.wiring ? await s.promote({ store: d.store, wiring: s.wiring, signal: new AbortController().signal }, v.id, who.user)
+    : { refused: "Promote needs capabilities.skill_folders and a model: no skill is wired here, nothing written" };
+  if ("refused" in r) return { status: 409, value: { error: r.refused } };
+  p.log.info("skill verdict", { id: v.id, verdict: v.verdict, actor: who.user, state: r.draft.state });
+  return { status: 200, value: { id: v.id, state: r.draft.state } };
+}
+
 /** The Rules page's write routes by path (server.ts): each behind the write guards, then its own owner check. */
 export const RULE_WRITES: Readonly<Record<string, (d: PauseDeps, p: UiPauses, body: unknown) => Promise<ApiResult>>> = {
   [RULE_VERDICT_PATH]: writeRuleVerdict,
   [RULE_EDIT_PATH]: writeRuleEdit,
   [PUSHBACK_DISMISS_PATH]: writePushbackDismiss,
+  [SKILL_VERDICT_PATH]: writeSkillVerdict,
 };
