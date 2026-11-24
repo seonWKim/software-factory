@@ -65,7 +65,7 @@ async function implement(
       const notes = [await w.approverNotes(item), decisionsSection(await w.d.store.listStateChanges(item.id), fenced)].filter(Boolean).join("\n\n");
       const feedback = await prFeedback(w, item, run);
       // The item's size caps, as the size gate reads them (design §4, issue #217).
-      const limits = itemCaps(w, item);
+      const limits = await itemCaps(w, item);
       const budget = renderBudget(limits);
       const prompt = plan?.session || kept
         ? [renderSessionResume(plan ? plan.state.head : continued?.head ?? null, plan ? null : "stopped"), budget].join("\n\n")
@@ -84,9 +84,9 @@ async function implement(
       const watching = watchDiff(w, run, handle, baseSha, dirs, watch, stopWatch.signal);
       // The spec of the step's turns, built per turn. writable_paths: none, as the run's git folder is inside its
       // workdir. Never the owner's checkout or its .git (architecture §5).
-      const turn = () => ({ model_class: model, output_schema: IMPLEMENT_SCHEMA, writable_paths: [],
-        env_allowlist: gitIdentity(w.cfg.agent_git_identity), gate_hooks: gateHooks(w, run, item, start, baseSha, mode) });
-      const result = await w.agent(run, item, handle, AbortSignal.any([signal, watch.stop.signal]), { prompt, ...turn() },
+      const turn = async () => ({ model_class: model, output_schema: IMPLEMENT_SCHEMA, writable_paths: [],
+        env_allowlist: gitIdentity(w.cfg.agent_git_identity), gate_hooks: await gateHooks(w, run, item, start, baseSha, mode) });
+      const result = await w.agent(run, item, handle, AbortSignal.any([signal, watch.stop.signal]), { prompt, ...(await turn()) },
         plan ? `resumed-${ctx.lease_token}` : undefined, {
         pausable: true, resume: plan?.session ?? kept,
       }).catch(async (err: unknown) => {
@@ -107,7 +107,7 @@ async function implement(
       // A runner that finished the step although the check had stopped it: the run still fails, before any sync.
       if (watch.over) throw await overBudget(w, run, item, handle, ctx, start, dirs, watch);
       const keep: KeepWork = (f, next) => keepStopped(w, run, item, handle, ctx, start, dirs, f, next);
-      const out = await repairedAnswer(w, run, item, handle, signal, turn(), parseImplement, result, keep);
+      const out = await repairedAnswer(w, run, item, handle, signal, await turn(), parseImplement, result, keep);
       await w.distrustAgentGit(handle, dirs);
       // The agent asked for a human (data, not a failure): no sync, no gates, no push, no PR. Its commits go with the run folder; none is kept on a wip branch.
       if (out.value.needs_human) return { needs_human: out.value.needs_human };

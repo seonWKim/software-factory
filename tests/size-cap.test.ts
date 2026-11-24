@@ -1,24 +1,73 @@
 import { describe, expect, it } from "vitest";
-import { OVER_CAP_NO_SIZE, SIZE_CAP_APPROVED, overCapApproval, overCapNoteRequired, sizeCaps, storedProjectCaps } from "../src/core/size-cap.js";
-import { PROJECT_KEY, newStore } from "./helpers/store.js";
+import { OVER_CAP_NO_SIZE, SIZE_CAP_APPROVED, itemSizeCaps, oneTimeCap, overCapApproval, overCapNoteRequired, sizeCaps, storedProjectCaps } from "../src/core/size-cap.js";
+import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 import { TOO_LARGE, atSizeCheckpoint, estimateCap, overCap, proposedCap, sizeCheckpointNote, suggestedSplit } from "../src/core/split.js";
 import { sizeDetail } from "../src/core/diff-gate.js";
-import type { Run } from "../src/core/types.js";
+import type { Run, StateChangeDetail } from "../src/core/types.js";
 
 const project = { max_diff_lines: 1500, max_diff_files: 40 };
 
+/** A state change holding a `size_cap_approved` record whose one-time cap is `cap`. */
+const approvedWith = (cap: { max_diff_lines: number; max_diff_files: number }): { detail: StateChangeDetail } => ({
+  detail: { [SIZE_CAP_APPROVED]: JSON.stringify({ actor: "local:me", sizes: { lines: 1, files: 1 }, project_cap: project, one_time_cap: cap, note: "why" }) },
+});
+
 describe("sizeCaps: an item's size caps through one function", () => {
-  it("uses the project settings for an item without a one-time cap", () => {
-    expect(sizeCaps({ project: "o/r" }, project)).toEqual(project);
-    expect(sizeCaps({ project: "o/r", size_cap: null }, project)).toEqual(project);
+  it("uses the project settings for an item without a size_cap_approved record", () => {
+    expect(sizeCaps([], project)).toEqual(project);
+    expect(sizeCaps([{ detail: null }, { detail: { note: "x" } }], project)).toEqual(project);
   });
 
-  it("uses the item's one-time cap when it has one", () => {
-    expect(sizeCaps({ project: "o/r", size_cap: { max_diff_lines: 3000, max_diff_files: 60 } }, project)).toEqual({ max_diff_lines: 3000, max_diff_files: 60 });
+  it("uses the one-time cap of the item's latest size_cap_approved record", () => {
+    const first = approvedWith({ max_diff_lines: 2000, max_diff_files: 40 }), latest = approvedWith({ max_diff_lines: 3000, max_diff_files: 60 });
+    expect(sizeCaps([first], project)).toEqual({ max_diff_lines: 2000, max_diff_files: 40 });
+    expect(sizeCaps([first, { detail: null }, latest, { detail: { note: "later" } }], project)).toEqual({ max_diff_lines: 3000, max_diff_files: 60 });
+  });
+
+  it("an unreadable record is no one-time cap", () => {
+    expect(oneTimeCap([{ detail: { [SIZE_CAP_APPROVED]: "not json" } }])).toBeNull();
+    expect(oneTimeCap([{ detail: { [SIZE_CAP_APPROVED]: JSON.stringify({ one_time_cap: { max_diff_lines: "x" } }) } }])).toBeNull();
+    expect(sizeCaps([{ detail: { [SIZE_CAP_APPROVED]: "{}" } }], project)).toEqual(project);
   });
 
   it("returns only the two caps, never the rest of the settings", () => {
-    expect(sizeCaps({ project: "o/r" }, { ...project, floors: [] } as typeof project)).toEqual(project);
+    expect(sizeCaps([], { ...project, floors: [] } as typeof project)).toEqual(project);
+  });
+});
+
+describe("itemSizeCaps: the one-time cap read from the store", () => {
+  const record = (cap: { max_diff_lines: number; max_diff_files: number }) => {
+    const over = { at: "spec" as const, sizes: { lines: cap.max_diff_lines, files: 1 }, caps: project, project_cap: project, one_time_cap: cap };
+    return (overCapApproval(over, { kind: "user", id: "local:me" as never }, "why", { patch: { stage: "RUNNING" as const }, detail: {} as StateChangeDetail }) as { detail: StateChangeDetail }).detail;
+  };
+
+  it("an approved item uses its one-time cap; another item in the same project uses the project caps", async () => {
+    const { store } = await newStore();
+    const { item: approved } = await store.createWorkItem(issue(1), system);
+    const { item: other } = await store.createWorkItem(issue(2), system);
+    expect(other.project).toBe(approved.project);
+    const r = await store.transition({ id: approved.id, expected_version: approved.version, actor: system, reason: "spec_approved", patch: { stage: "RUNNING" }, detail: record({ max_diff_lines: 2000, max_diff_files: 40 }) });
+    expect(r).toMatchObject({ ok: true });
+    expect(await itemSizeCaps(store, approved.id, project)).toEqual({ max_diff_lines: 2000, max_diff_files: 40 });
+    expect(await itemSizeCaps(store, other.id, project)).toEqual(project);
+  });
+
+  it("a database that still has the size_cap column: items read and write, the column stays unused, and an item approved before keeps its cap from its record", async () => {
+    const { store } = await newStore();
+    await store.db.run("ALTER TABLE controller_work_items ADD COLUMN size_cap TEXT");
+    const { item: before } = await store.createWorkItem(issue(1), system);
+    // Approved before this change: the column and the record both hold the cap; no backfill runs.
+    const old = { max_diff_lines: 5883, max_diff_files: 71 };
+    await store.db.run("UPDATE controller_work_items SET size_cap = ? WHERE id = ?", [JSON.stringify(old), before.id]);
+    expect(await store.transition({ id: before.id, expected_version: before.version, actor: system, reason: "spec_approved", patch: { stage: "RUNNING" }, detail: record(old) })).toMatchObject({ ok: true });
+    const { item: after } = await store.createWorkItem(issue(2), system);
+    expect(await store.transition({ id: after.id, expected_version: after.version, actor: system, reason: "seed", patch: { stage: "RUNNING", allowed_paths: ["src/"] } })).toMatchObject({ ok: true });
+    const read = (await store.getWorkItem(after.id))!;
+    expect(read).toMatchObject({ stage: "RUNNING", allowed_paths: ["src/"] });
+    expect(read).not.toHaveProperty("size_cap");
+    expect(await store.db.all("SELECT size_cap FROM controller_work_items WHERE id = ?", [after.id])).toEqual([{ size_cap: null }]);
+    expect(await itemSizeCaps(store, before.id, project)).toEqual(old);
+    expect(await itemSizeCaps(store, after.id, project)).toEqual(project);
   });
 });
 
@@ -32,9 +81,9 @@ describe("size checkpoint of a triage answer", () => {
   });
 
   it("is read against the item's one-time cap when it has one", () => {
-    const item = { project: "o/r", size_cap: { max_diff_lines: 3000, max_diff_files: 60 } };
-    expect(atSizeCheckpoint({ estimated_lines: 1400, estimated_files: 20 }, sizeCaps(item, project))).toBe(false);
-    expect(atSizeCheckpoint({ estimated_lines: 1400, estimated_files: 20 }, sizeCaps({ project: "o/r" }, project))).toBe(true);
+    const changes = [approvedWith({ max_diff_lines: 3000, max_diff_files: 60 })];
+    expect(atSizeCheckpoint({ estimated_lines: 1400, estimated_files: 20 }, sizeCaps(changes, project))).toBe(false);
+    expect(atSizeCheckpoint({ estimated_lines: 1400, estimated_files: 20 }, sizeCaps([], project))).toBe(true);
   });
 
   it("its note names the estimate, the threshold and the replies", () => {
@@ -74,42 +123,42 @@ describe("proposedCap: the too_large one-time cap", () => {
 });
 
 describe("overCap: whether an /approve is over the item's caps", () => {
-  const gate = { project: "o/r", stage: "READY" as const, blocked_reason: "spec_pending" };
+  const gate = { stage: "READY" as const, blocked_reason: "spec_pending" };
   const big = { estimated_lines: 2000, estimated_files: 12 };
   const failed = (detail: string, error_code = "diff_too_large") =>
     ({ kind: "implement", outcome: { status: "failed", error_code, detail, infra: false } }) as unknown as Run;
-  const tooLarge = { project: "o/r", stage: "RUNNING" as const, blocked_reason: TOO_LARGE };
+  const tooLarge = { stage: "RUNNING" as const, blocked_reason: TOO_LARGE };
 
   it("at the spec gate, a spec at its size checkpoint: its estimate, stored as the one-time cap", () => {
-    expect(overCap(gate, [], big, project)).toEqual({
+    expect(overCap(gate, [], [], big, project)).toEqual({
       at: "spec", sizes: { lines: 2000, files: 12 }, caps: project, project_cap: project, one_time_cap: { max_diff_lines: 2000, max_diff_files: 40 },
     });
-    expect(overCap({ ...gate, blocked_reason: "max_revisions" }, [], big, project)).toMatchObject({ at: "spec" });
+    expect(overCap({ ...gate, blocked_reason: "max_revisions" }, [], [], big, project)).toMatchObject({ at: "spec" });
   });
 
   it("not over: a spec under the threshold, one with phases, no spec, or an item not at the gate", () => {
-    expect(overCap(gate, [], { estimated_lines: 1275, estimated_files: 34 }, project)).toBeNull();
-    expect(overCap(gate, [], { ...big, phases: [1, 2] }, project)).toBeNull();
-    expect(overCap(gate, [], null, project)).toBeNull();
-    expect(overCap({ ...gate, stage: "RUNNING", blocked_reason: "floor_tier" }, [], big, project)).toBeNull();
+    expect(overCap(gate, [], [], { estimated_lines: 1275, estimated_files: 34 }, project)).toBeNull();
+    expect(overCap(gate, [], [], { ...big, phases: [1, 2] }, project)).toBeNull();
+    expect(overCap(gate, [], [], null, project)).toBeNull();
+    expect(overCap({ ...gate, stage: "RUNNING", blocked_reason: "floor_tier" }, [], [], big, project)).toBeNull();
   });
 
   it("the caps in force are the item's: under its one-time cap the spec is not over", () => {
-    expect(overCap({ ...gate, size_cap: { max_diff_lines: 3000, max_diff_files: 60 } }, [], big, project)).toBeNull();
+    expect(overCap(gate, [], [approvedWith({ max_diff_lines: 3000, max_diff_files: 60 })], big, project)).toBeNull();
   });
 
   it("at too_large: the newest diff_too_large run's diff size; none recorded is { sizes: null }", () => {
     const runs = [failed(sizeDetail({ lines: 2000, files: 30 }, project)), failed("other", "no_commits"), failed(sizeDetail({ lines: 5000, files: 60 }, project))];
-    expect(overCap(tooLarge, runs, null, project)).toEqual({
+    expect(overCap(tooLarge, runs, [], null, project)).toEqual({
       at: "too_large", sizes: { lines: 5000, files: 60 }, caps: project, project_cap: project, one_time_cap: { max_diff_lines: 5883, max_diff_files: 71 },
     });
-    expect(overCap(tooLarge, [failed("the diff is too large")], null, project)).toEqual({ sizes: null });
-    expect(overCap(tooLarge, [], null, project)).toEqual({ sizes: null });
+    expect(overCap(tooLarge, [failed("the diff is too large")], [], null, project)).toEqual({ sizes: null });
+    expect(overCap(tooLarge, [], [], null, project)).toEqual({ sizes: null });
   });
 });
 
 describe("overCapApproval", () => {
-  const over = overCap({ project: "o/r", stage: "READY", blocked_reason: "spec_pending" }, [], { estimated_lines: 2000, estimated_files: 12 }, project)!;
+  const over = overCap({ stage: "READY", blocked_reason: "spec_pending" }, [], [], { estimated_lines: 2000, estimated_files: 12 }, project)!;
   const actor = { kind: "user" as const, id: "local:me" as never };
   const approved = { patch: { stage: "RUNNING" as const }, detail: { note: "why" } };
 
@@ -124,9 +173,9 @@ describe("overCapApproval", () => {
     expect(overCapApproval({ sizes: null }, actor, "why", approved)).toEqual({ refuse: OVER_CAP_NO_SIZE });
   });
 
-  it("with a note: the approval's own transition gets the one-time cap and the size_cap_approved record", () => {
+  it("with a note: the approval's own transition gets the size_cap_approved record, which holds the one-time cap, and no patch field", () => {
     const d = overCapApproval(over, actor, " why ", approved);
-    expect(d).toMatchObject({ patch: { stage: "RUNNING", size_cap: { max_diff_lines: 2000, max_diff_files: 40 } }, detail: { note: "why" } });
+    expect(d).toEqual({ patch: { stage: "RUNNING" }, detail: { note: "why", [SIZE_CAP_APPROVED]: expect.any(String) } });
     const detail = (d as { detail: Record<string, unknown> }).detail;
     expect(typeof detail[SIZE_CAP_APPROVED]).toBe("string");
     expect(JSON.parse(detail[SIZE_CAP_APPROVED] as string)).toEqual({

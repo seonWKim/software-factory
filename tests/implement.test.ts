@@ -1,21 +1,23 @@
 import { describe, expect, it } from "vitest";
+import { SIZE_CAP_APPROVED } from "../src/core/size-cap.js";
 import type { SplitLimits } from "../src/core/split.js";
-import type { WorkItem } from "../src/core/types.js";
+import type { StateChange } from "../src/core/types.js";
 import { PROJECT, config } from "./helpers/fakes/config.js";
 import { pipeline } from "./helpers/harness.js";
 
 // The implement run's size readers (src/core/size-cap.ts): the prompt's diff budget, the gate hooks' limits and the
-// pre-push size gate read the item's one-time cap when it has one, else the project settings.
+// pre-push size gate read the one-time cap of the item's latest size_cap_approved record when it has one, else the project settings.
 
 const projectCaps = { settings: { ...config.settings, projects: { [PROJECT.key]: { max_diff_lines: 321, max_diff_files: 7 } } } };
 
-/** A pipeline whose store returns every item with `cap` as its one-time cap (nothing writes one yet). */
+/** A pipeline whose store ends every item's state changes with a size_cap_approved record holding `cap`, as an over-cap approval writes it. */
 async function withCap(cap: SplitLimits | null) {
   const f = await pipeline({ config: projectCaps });
-  const get = f.store.getWorkItem.bind(f.store);
-  f.store.getWorkItem = async (id) => {
-    const it = await get(id);
-    return it && cap ? ({ ...it, size_cap: cap } as WorkItem) : it;
+  const list = f.store.listStateChanges.bind(f.store);
+  f.store.listStateChanges = async (id) => {
+    const changes = await list(id);
+    const record = { actor: "local:me", sizes: { lines: 1, files: 1 }, project_cap: { max_diff_lines: 321, max_diff_files: 7 }, one_time_cap: cap, note: "why" };
+    return cap ? [...changes, { ...changes.at(-1)!, reason: "spec_approved", detail: { [SIZE_CAP_APPROVED]: JSON.stringify(record) } } as StateChange] : changes;
   };
   return f;
 }

@@ -8,7 +8,7 @@ import type { Decision, Run, Tier, WorkItem } from "../support.js";
 import {
   type FailureClass, type StateChangeDetail, SYSTEM, footerAfter, fenced, CHECKS_ENV, CHECKS_ENV_LIMIT, PROVIDER_SETUP, RECURRING_FAILURE,
   REPEATED_FAILURE, SESSION_RELEASED, STALL_STREAK_HOLD, doneChecksDetail, failingTests, failureClass, failureLine, firstErrorLine,
-  repeatsFastInfraFailure, repeatsLastFailure, retryDelayMs, retryKey, retryNotBefore, runKindLabel, sameStep, sizeCaps, stallStreak, stripAnsi,
+  repeatsFastInfraFailure, repeatsLastFailure, retryDelayMs, retryKey, retryNotBefore, runKindLabel, sameStep, itemSizeCaps, stallStreak, stripAnsi,
   suggestedSplit, takenOver,
 } from "./run-results.unit.js";
 
@@ -260,9 +260,10 @@ async function repeatedInfraFailure(c: Ctx, it: WorkItem, run: Run, code: string
 export async function noAutoRetry(c: Ctx, it: WorkItem, run: Run, code: string): Promise<Decision> {
   const detail = run.outcome?.status === "failed" ? run.outcome.detail.trim() : "";
   const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:implement:${code}` };
+  const caps = code === DIFF_TOO_LARGE ? await itemSizeCaps(c.k.reader, it.id, c.k.settings(it.project)) : null; // the item's (src/core/size-cap.ts)
   const body = (withDetail: boolean) => {
-    if (code === DIFF_TOO_LARGE) {
-      const { max_diff_lines, max_diff_files } = sizeCaps(it, c.k.settings(it.project));
+    if (caps) {
+      const { max_diff_lines, max_diff_files } = caps;
       return [
         "## Factory size check: push blocked",
         "",

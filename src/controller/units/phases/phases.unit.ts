@@ -4,7 +4,7 @@
 import { type TriageOutput, type TriagePhase, parseJudge, parseTriage } from "../../../core/outputs.js";
 import { failureClass, runKey, sameStep, takenOver } from "../../../core/policy.js";
 import { specDecisionDetail } from "../../../core/standing.js";
-import { PHASE_HOLD, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, atSizeCheckpoint, goalLinesText, sizeCaps, parseSubIssues, phaseIssueBody, phaseLinkDetail, phaseMarker, phaseTitle } from "../../../core/split.js";
+import { PHASE_HOLD, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, atSizeCheckpoint, goalLinesText, itemSizeCaps, parseSubIssues, phaseIssueBody, phaseLinkDetail, phaseMarker, phaseTitle } from "../../../core/split.js";
 import { type Actor, type Run, type SourceRef, type StateChange, type StateChangeDetail, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
 import type { ActionRow } from "../../../outbound/index.js";
 import { type Decision, DELIVERY_FAILED, type Refusal, SYSTEM, completed, splitFiling, splitOpen, footerAfter } from "../support.js";
@@ -66,7 +66,7 @@ export class PhasesUnit {
    */
   async approvedByParent(it: WorkItem, spec: TriageOutput): Promise<boolean> {
     if (this.c.k.cfg.phases_auto_approve !== true || it.parent_id === null) return false;
-    if (spec.phases || atSizeCheckpoint(spec, sizeCaps(it, this.c.k.settings(it.project)))) return false;
+    if (spec.phases || atSizeCheckpoint(spec, await itemSizeCaps(this.c.k.reader, it.id, this.c.k.settings(it.project)))) return false;
     const parent = await this.c.k.d.store.getWorkItem(it.parent_id);
     return parent !== null && splitOpen(parent);
   }

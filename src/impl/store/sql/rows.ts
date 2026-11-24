@@ -35,7 +35,7 @@ import type { NewWorkItem } from "../../../interfaces/factory-store.js";
 import type { ChangeFields } from "./change-fields.js";
 import type { Row, SqlValue } from "../../../state/index.js";
 
-const JSON_COLUMNS = new Set(["resources", "done_criteria", "allowed_paths", "files_to_change", "pr_files", "done_checks", "size_cap"]);
+const JSON_COLUMNS = new Set(["resources", "done_criteria", "allowed_paths", "files_to_change", "pr_files", "done_checks"]);
 const PATCHABLE: readonly (keyof WorkItemPatch)[] = [
   "project",
   "problem",
@@ -63,7 +63,6 @@ const PATCHABLE: readonly (keyof WorkItemPatch)[] = [
   "files_to_change",
   "pr_files",
   "done_checks",
-  "size_cap",
 ];
 
 export function newId(prefix: string): string {
@@ -113,7 +112,6 @@ export function newWorkItem(input: NewWorkItem, change: ChangeFields, now: Times
     // An adopted PR's file list is its allowed_paths: the files it changes (design 2026-11-03).
     pr_files: a ? a.allowed_paths : null,
     done_checks: null,
-    size_cap: null, // only an over-cap `/approve` sets it (design 04-split-specs)
     created_at: now,
     updated_at: now,
   };
@@ -216,7 +214,6 @@ export function rowToWorkItem(r: Row): WorkItem {
     files_to_change: parseJson(r.files_to_change),
     pr_files: parseJson(r.pr_files),
     done_checks: parseJson(r.done_checks ?? null), // null on a row from before the column (migration 20261121T1000)
-    size_cap: parseJson(r.size_cap ?? null), // null on a row from before the column (migration 20261124T1100)
     created_at: r.created_at as Timestamp,
     updated_at: r.updated_at as Timestamp,
   };

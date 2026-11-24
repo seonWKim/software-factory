@@ -274,7 +274,7 @@ async function orRefused(fail: (line: string) => CliResult, run: () => Promise<C
 export interface LocalCliDeps {
   store: Pick<
     FactoryStore,
-    "createWorkItem" | "getWorkItem" | "findWorkItemIds" | "listWorkItems" | "listPhases" | "listRuns" | "listItemMessages" | "appendCliCommand"
+    "createWorkItem" | "getWorkItem" | "findWorkItemIds" | "listWorkItems" | "listPhases" | "listRuns" | "listStateChanges" | "listItemMessages" | "appendCliCommand"
     | "claimOwner" | "addTask" | "listTasks" | "completeTask" | "reopenTask" | "listCommandProposals"
     | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
     | "createProject" | "listProjects" | "renameProject" | "archiveProject" | "restoreProject" | "deleteProject" | "getProjectBySlug"
@@ -439,7 +439,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       if ("lines" in item) return item;
       const name = a.command === MERGE_COMMAND ? `${cli} merge` : `/${a.command}`;
       // The controller's phase check, before any write: the same refusal it would post (issues #528, #523).
-      const runs = a.command === "approve" ? await d.store.listRuns(item.id) : [], capped = a.command === "approve" && d.caps ? overCapApproval(overCap(item, runs, latestSpec(runs), await d.caps(item.project)), { kind: "user", id: user }, a.text, null) : null; // over the caps: the controller's own refusal (design 04-split-specs)
+      const runs = a.command === "approve" ? await d.store.listRuns(item.id) : [], capped = a.command === "approve" && d.caps ? overCapApproval(overCap(item, runs, await d.store.listStateChanges(item.id), latestSpec(runs), await d.caps(item.project)), { kind: "user", id: user }, a.text, null) : null; // over the caps: the controller's own refusal (design 04-split-specs)
       const refused = a.command === "approve" ? approveRefusal(item) ?? capped?.refuse ?? null : a.command === "verdict" ? verdictRefusal(item) : a.command === "note" && item.stage === "CLOSED" ? CLOSED_REFUSAL : null;
       if (refused !== null) return fail(refusalText(name, refused));
       // `approve`'s `N: <answer>` lines, read as the controller will (issue #526): a bad line stores nothing; each decision is printed.

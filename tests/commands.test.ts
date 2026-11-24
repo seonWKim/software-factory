@@ -15,7 +15,7 @@ import { githubCommand } from "../src/core/command-inbox.js";
 import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { answersDetail, splitAnswers, storedAnswers } from "../src/shared/command-notes.js";
-import { overCapNoteRequired } from "../src/core/size-cap.js";
+import { overCapNoteRequired, sizeCaps } from "../src/core/size-cap.js";
 import { sizeDetail } from "../src/core/diff-gate.js";
 import { runKey } from "../src/core/policy.js";
 import { retry } from "../src/controller/units/support.js";
@@ -1073,7 +1073,8 @@ describe("/approve over the cap at too_large", () => {
     expect((await h.store.listCliCommandsAfter(0, 100)).length).toBe(before);
     expect(await h.approve("")).toBe(typed.lines[0]);
     const after = (await h.store.getWorkItem(h.item.id))!;
-    expect(after).toMatchObject({ version: h.item.version, blocked_reason: "run_failed:implement:diff_too_large", size_cap: null });
+    expect(after).toMatchObject({ version: h.item.version, blocked_reason: "run_failed:implement:diff_too_large" });
+    expect((await h.store.listStateChanges(h.item.id)).some((c) => c.detail?.size_cap_approved !== undefined)).toBe(false);
     expect((await h.store.listRuns(h.item.id)).length).toBe(runs);
   });
 
@@ -1084,11 +1085,13 @@ describe("/approve over the cap at too_large", () => {
     expect(typed.code).toBe(0);
     await h.controller.tickCommands();
     const it = (await h.store.getWorkItem(h.item.id))!;
-    expect(it).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null, size_cap: { max_diff_lines: 5883, max_diff_files: 71 } });
+    expect(it).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
+    expect(it).not.toHaveProperty("size_cap");
     const queued = (await h.store.listRuns(it.id)).filter((r) => r.kind === "implement" && r.status === "queued");
     expect(queued.map((r) => r.idempotency_key)).toEqual([key]);
     const change = (await h.store.listStateChanges(it.id)).find((c) => typeof c.detail?.size_cap_approved === "string")!;
-    expect(change.changes.size_cap).toEqual({ from: null, to: { max_diff_lines: 5883, max_diff_files: 71 } });
+    expect(change.changes).not.toHaveProperty("size_cap");
+    expect(sizeCaps(await h.store.listStateChanges(it.id), CAPS)).toEqual({ max_diff_lines: 5883, max_diff_files: 71 }); // its one-time cap, read from the record
     expect(JSON.parse(String(change.detail!.size_cap_approved))).toEqual({
       actor: `local:${ME}`, sizes: { lines: 5000, files: 60 }, project_cap: CAPS, one_time_cap: { max_diff_lines: 5883, max_diff_files: 71 }, note: "the generated table is one file",
     });

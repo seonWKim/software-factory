@@ -13,7 +13,7 @@ import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
 import { autoApprovedFooter, droppedAnswers, droppedValues, heldNote, renderSpec } from "../../../core/spec-comment.js";
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
 import { applyCompanions } from "../../../core/companions.js";
-import { atSizeCheckpoint, sizeCaps, sizeCheckpointNote, suggestedSplit } from "../../../core/split.js";
+import { atSizeCheckpoint, itemSizeCaps, sizeCheckpointNote, suggestedSplit } from "../../../core/split.js";
 import { type Actor, RECURRING_FAILURE, type Run, type RunKind, type StateChangeDetail, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js"; import { doneChecksDetail } from "../../../core/checks.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
@@ -35,7 +35,7 @@ export {
   PROVIDER_SETUP, RECURRING_FAILURE, REPEATED_FAILURE, SESSION_RELEASED, STALL_STREAK_HOLD, SYSTEM, autoResolveAttempts, autoResolveKey,
   commandFooter, commandState, conflictCounts, conflictCountsLine, doneChecksDetail, failingTests, failureClass, failureLine, fenced, firstErrorLine,
   footerAfter, isCovered, iso, nextAutoResolveAttempt, parseAutoResolveKey, prNumber, preflightCheck, quote, repeatsFastInfraFailure,
-  repeatsLastFailure, retryDelayMs, retryKey, retryNotBefore, retryPathsReply, runKey, runKindLabel, sameStep, sizeCaps, stallStreak, stripAnsi, suggestedSplit,
+  repeatsLastFailure, retryDelayMs, retryKey, retryNotBefore, retryPathsReply, runKey, runKindLabel, sameStep, itemSizeCaps, stallStreak, stripAnsi, suggestedSplit,
   takenOver, withholdReplyLines,
 };
 
@@ -125,7 +125,7 @@ export class RunResultsUnit {
           throw new Error(`${run.kind} run ${run.id} reached the run outcome path`);
         case "triage": { const context = await this.c.unit("commands").applyQueued(it, { patch: { token_cost: tokens }, actor: SYSTEM, reason: "triaged", ack_run: run.id }); if (context.enqueue) return context; // added context: one more triage (design 02-attachments)
           // The item's size caps (src/core/size-cap.ts) decide whether the estimate needs phases (src/core/split.ts).
-          const settings = this.c.k.settings(it.project), { floors } = settings, caps = sizeCaps(it, settings);
+          const settings = this.c.k.settings(it.project), { floors } = settings, caps = await itemSizeCaps(this.c.k.reader, it.id, settings);
           // Migration timestamps, then path companions (design 04-triage.md): a new migration on a base branch's timestamp moves to the next free minute; companions on that answer, so one named only in
           // files_to_change is covered, and before the floor, which raises the tier or refuses a built-in rule's path.
           const { answer, added } = applyCompanions(freeMigrationStamps(data.spec, takenStamps((await this.c.k.reader.baseFiles("src/")) ?? [])).answer, this.c.k.cfg.path_companions ?? [], floors);
