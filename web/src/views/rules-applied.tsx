@@ -63,7 +63,7 @@ function seenLabel(incidents: string[] | null): ReactNode {
       ? t(count === 1 ? "rules.seenOne" : "rules.seen", { count })
       : t(count === 1 ? "rules.seenOneOn" : "rules.seenOn", { count, date: localShortDate(last) });
   return (
-    <span data-seen className="[&_button]:min-h-0 [&_button]:text-xs">
+    <span data-seen className="[&_button]:text-xs">
       <IdDetails label={label} id={ids.join(", ")} what="incident IDs" />
     </span>
   );
@@ -122,7 +122,8 @@ function AppliedClass({ rule, id, token, round, applied }: { rule: AppliedRule; 
       data-applied={id}
       className={ROW_PAD}
       title={
-        <p className={`${ROW_TITLE} font-medium`} title={name}>
+        // The name is the rules file's text as written, so it may quote a snake_case name (`data-raw`).
+        <p data-raw className={`${ROW_TITLE} font-medium`} title={name}>
           <IdDetails label={name} id={id} what="rule ID" />
         </p>
       }
