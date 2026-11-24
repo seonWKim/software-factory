@@ -5,6 +5,7 @@
 import type { FactoryConfig } from "./config.js";
 import type { TickLease } from "./lease.js";
 import { type Logger, errorText } from "./log.js";
+import { type CheckPageStore, runDueCheckPages } from "./routines.js";
 import { type CheckpointStore, type Schedule, type ScheduleRun, checkpointAnswer, runDueSchedules } from "./schedule.js";
 import type { LearnedSettingsSource, LiveSettings } from "./settings.js";
 import type { Timestamp } from "./types.js";
@@ -170,13 +171,14 @@ export interface ScheduledAction {
 
 /**
  * Binds `action` to `store`'s claims (design 08-schedules): each pass claims the schedules due at the time it is
- * given (runDueSchedules, no clock read), runs the action once per fired occurrence in claim order, then ends the
+ * given (runDueSchedules, no clock read), then the Check a page rows due then, planned by the routine planner
+ * (runDueCheckPages), runs the action once per fired occurrence in claim order, then ends the
  * run, whether the action returned or threw (a throw is logged), so a failed action never leaves the schedule
  * refusing its next occurrences. Then each occurrence held at a checkpoint gets its answer from its item in
  * `project` (filed on the first pass that sees it): approved, the cap is raised and it runs as above; rejected, its
  * row ends `rejected`. Safe on several replicas and safe to run twice: a lost or repeated claim fires nothing.
  */
-export function scheduledAction(store: CheckpointStore, action: ScheduleAction, log: Logger, project: string): ScheduledAction {
+export function scheduledAction(store: CheckpointStore & CheckPageStore, action: ScheduleAction, log: Logger, project: string): ScheduledAction {
   const runOnce = async (schedule: Schedule, run: ScheduleRun, running_since: Timestamp | null) => {
     try {
       await action.run(schedule, run.occurrence_at);
@@ -188,11 +190,12 @@ export function scheduledAction(store: CheckpointStore, action: ScheduleAction, 
   };
   return {
     async fireDue(now) {
-      const { fired } = await runDueSchedules(store, now);
+      const fired = [...(await runDueSchedules(store, now)).fired, ...(await runDueCheckPages(store, now, project)).filter((r) => r.outcome === "fired")];
       const held = await store.listHeldScheduleRuns();
       if (fired.length === 0 && held.length === 0) return fired;
-      // The claim set `running_since`; the stored row carries it, and endScheduleRun clears it only while it still holds.
-      const byId = new Map((await store.listSchedules()).map((s) => [s.id, s]));
+      // The claim set `running_since` (a Check a page claim never does); the stored row carries it, and endScheduleRun
+      // clears it only while it still holds.
+      const byId = new Map([...(await store.listSchedules()), ...(await store.listCheckPages())].map((s) => [s.id, s]));
       for (const run of fired) {
         const schedule = byId.get(run.schedule_id);
         if (schedule) await runOnce(schedule, run, schedule.running_since);

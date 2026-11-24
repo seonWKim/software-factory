@@ -1,47 +1,28 @@
-// Routines (src/core/routines.ts, phase 2 of 3). A pure step on each controller tick: `load` reads the plan of each
-// routine due at the tick's time (the kernel's routinePlans, by the injected Clock), `decide` turns each plan into
-// writes the kernel commits: fire (its run on the routine's carrier item, keyed on the slot), skip (an owner's
-// `/reject` of a held run), or hold (a local item that waits for `/approve` or `/reject`, the daily cap). The
-// operations: a finished routine run's findings, egress-scanned (G5), become pending suggestions (run-results calls
-// it); `/approve` and `/reject` on a hold item (commands calls it); and the owner's answer to a suggestion, where an
-// accept files it as an item (`fileIssue`). Every read goes through the kernel's reader, every write through a commit.
+// Routines (src/core/routines.ts). A routine is a Check a page schedule row: the schedule unit's claim pass runs it
+// (runDueCheckPages, planned by planRoutine: fire, skip after a `/reject`, or a hold on a local item that waits for
+// `/approve` or `/reject` at the daily cap), so this unit has no step. Its operations: a finished routine run's
+// findings, egress-scanned (G5), become pending suggestions and its model calls go on its slot's schedule run row
+// (run-results calls it); `/approve` and `/reject` on a hold item (commands calls it); and the owner's answer to a
+// suggestion, where an accept files it as an item (`fileIssue`). Every read goes through the kernel's reader, every
+// write through a commit.
 
-import type { Tick } from "../../../shared/ticks/tick-generator.js";
-import type { ControllerReader, ControllerWrite, RoutinePlan, RoutineSuggestion } from "../kernel.js";
+import type { ControllerWrite, RoutineSuggestion } from "../kernel.js";
 import { ROUTINE_CAP, ROUTINE_CAP_APPROVED, ROUTINE_CAP_REJECTED, SNOOZE_MS } from "../kernel.js";
-import type { ControllerDecision, Ctx } from "../context.js";
+import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 import type { Actor, Decision, Refusal, Run, WorkItem } from "../support.js";
 
 /** Why a command other than `/approve` or `/reject` does nothing on a hold item. */
 const HOLD_COMMANDS = "a routine's held run takes `/approve` (raise today's cap by the last run's cost and run it) or `/reject <reason>` (skip it)";
 
-/** One plan's writes: a fire, a skip or a hold, logged; a wait writes nothing. */
-function planWrites(p: RoutinePlan): ControllerWrite[] {
-  const fields = { routine_id: p.routine.id, slot: p.slot };
-  switch (p.kind) {
-    case "fire": return [{ kind: "routine_fire", plan: p }, { kind: "log", level: "info", msg: "routine run queued", fields }];
-    case "skip": return [{ kind: "routine_update", id: p.routine.id, read: p.read, patch: p.marks }, { kind: "log", level: "info", msg: "routine run skipped: its hold was rejected", fields }];
-    case "hold": return [{ kind: "routine_hold", item: p.item }, { kind: "log", level: "warn", msg: "routine run held at its daily cap", fields }];
-    case "wait": return [];
-  }
-}
-
 export class RoutinesUnit {
   constructor(private readonly c: Ctx) {}
-
-  load(r: ControllerReader, tick: Tick): Promise<RoutinePlan[]> {
-    return r.routinePlans(new Date(tick.now));
-  }
-
-  decide(plans: readonly RoutinePlan[]): ControllerDecision {
-    return { writes: plans.flatMap(planWrites) };
-  }
 
   /**
    * A finished routine run's findings as pending suggestions (duplicates skipped and counted by the store). Each
    * finding passes the egress scan (G5) first: a flagged one is withheld, never stored. A run over its routine's
-   * per-run cap pauses the routine. Safe to run twice: the store records a run's findings once.
+   * per-run cap pauses the routine. Its model calls go on its slot's schedule run row, for the token cap. Safe to run
+   * twice: the store records a run's findings once, and a row that holds a run's model calls takes no more.
    */
   async recordFindings(run: Run): Promise<void> {
     const r = this.c.k.reader, found = await r.routineRun(run);
@@ -50,6 +31,7 @@ export class RoutinesUnit {
     for (const text of found.findings) if ((await r.scan("comment", text)).clean) clean.push(text);
     const fields = { routine_id: found.routine.id, run_id: run.id };
     const writes: ControllerWrite[] = clean.length > 0 ? [{ kind: "routine_findings", routine_id: found.routine.id, run_id: run.id, texts: clean }] : [];
+    if (found.used) writes.push({ kind: "schedule_result", schedule_id: found.routine.id, occurrence_at: found.used.slot, result: { output: `routine run ${run.id}: ${found.findings.length} findings`, tokens: found.used.tokens, cost_usd: found.used.cost_usd } });
     if (clean.length < found.findings.length) writes.push({ kind: "log", level: "warn", msg: "routine findings withheld by the egress scan", fields: { ...fields, withheld: found.findings.length - clean.length } });
     if (found.over_run_cap && !found.routine.paused) {
       const read = { next_due_at: found.routine.next_due_at, last_run_at: found.routine.last_run_at };
@@ -113,11 +95,5 @@ declare module "../../router/unit.js" {
 export default controllerUnit({
   name: "routines",
   create: (c: Ctx) => new RoutinesUnit(c),
-  steps: [
-    {
-      name: "routines", every: "tick", order: 88,
-      load: (u, r, tick) => u.load(r, tick),
-      decide: (u, plans: RoutinePlan[]) => u.decide(plans),
-    },
-  ],
+  steps: [],
 });

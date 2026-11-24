@@ -4,10 +4,10 @@ import { LiveSettings, type ProjectSettings, modeOf, settingValues } from "../..
 import { LOCAL_SOURCE, threadDelivery } from "../../core/local-merge.js";
 import { errorText } from "../../core/log.js";
 import { askDetail } from "../../core/owner-asks.js";
-import { type Run, type SourceRef, type SourceType, type WorkItem, outcomeCost } from "../../core/types.js";
+import { type Run, type SourceRef, type SourceType, type Timestamp, type WorkItem, outcomeCost, runTokenCount } from "../../core/types.js";
 import type { Forge } from "../../interfaces/forge.js";
 import { type ControllerDeps, rateLimitWait } from "../../core/controller-deps.js";
-import { ROUTINE_CAP, ROUTINES, type Routine, type RoutinePlan, type SuggestionDecision, carrierSource, dueSlot, fingerprint, holdSource, lastCost, overRunCap, planRoutine, routineFindings, routineOfCarrier, routineOfHold } from "../../core/routines.js";
+import { type Routine, type SuggestionDecision, carrierSource, fingerprint, lastCost, overRunCap, routineFindings, routineOfCarrier, routineOfHold, slotOfRun } from "../../core/routines.js";
 import type { ActionRow, NewAction } from "../../outbound/index.js";
 import type { Draft } from "../../shared/envelope.js";
 import { CODE_ROOT, type SqlDriver, forgetOnFailure } from "../../state/index.js";
@@ -18,7 +18,7 @@ import { type SignalDescriptor, uniqueSignals } from "../signals/signal.js";
 type SourceAdapter = NonNullable<ControllerDeps["source"]>;
 /** The routines unit's constants and types (src/core/routines.ts), through the kernel, which reads and writes for it. */
 export { ROUTINE_CAP, ROUTINE_CAP_APPROVED, ROUTINE_CAP_REJECTED, SNOOZE_MS } from "../../core/routines.js";
-export type { RoutinePlan, RoutineSuggestion } from "../../core/routines.js";
+export type { RoutineSuggestion } from "../../core/routines.js";
 /** The core types the improve unit uses, through the kernel, so the unit adds no legacy import. */
 export type { FiledPattern, Run, SourceRef, Timestamp, WorkItem } from "../../core/types.js";
 
@@ -49,7 +49,7 @@ const READS = [
   "listDeliveries", "listRuns", "listUnacknowledgedRuns", "listStateChanges", "listBudgetCheckpoints", "listClaimDecisions", "getTierHistory",
   "getMergeCheck", "getAppCommandRequest", "listItemMessages", "listSettingChanges", "getWorkItemByMergeSha",
   "listVerdicts", "listStandingRules", "latestSignalTimes", "listSignalRefs", "listStateChangesSince", "listVerdictsSince", "listRunsFinishedSince",
-  "listNoticesFor", "listHeldNotices", "listDueReminders", "listMergeEvaluations", "getRoutine", "getRoutineSuggestion", "listRoutineSuggestions",
+  "listNoticesFor", "listHeldNotices", "listDueReminders", "listMergeEvaluations", "getRoutine", "getRoutineSuggestion", "listRoutineSuggestions", "listScheduleRuns",
 ] as const;
 
 /**
@@ -78,10 +78,12 @@ export type ControllerReader = Pick<Store, (typeof READS)[number]> & Pick<Contro
    * sandbox (no checkout, no fetch); null when the sandbox cannot list, the branch is missing or the read fails (logged).
    */
   baseFiles(path: string): Promise<readonly string[] | null>;
-  /** What each unpaused routine due at `now` does (planRoutine, src/core/routines.ts), from its carrier's runs and its slot's hold item. */
-  routinePlans(now: Date): Promise<RoutinePlan[]>;
-  /** A finished routine run's routine, its finding texts, and whether it cost more than the per-run cap; null for a run no routine carries. */
-  routineRun(run: Run): Promise<{ routine: Routine; findings: string[]; over_run_cap: boolean } | null>;
+  /**
+   * A finished routine run's routine, its finding texts, whether it cost more than the per-run cap, and its model
+   * calls with the slot whose schedule run row they go on (null when that row is gone or holds them already); null
+   * for a run no routine carries.
+   */
+  routineRun(run: Run): Promise<{ routine: Routine; findings: string[]; over_run_cap: boolean; used: { slot: Timestamp; tokens: number; cost_usd: number | null } | null } | null>;
   /** The routine a hold item holds and the cost of its last run (what `/approve` adds); null for any other item. */
   routineHold(it: WorkItem): Promise<{ routine: Routine; last_cost: number } | null>;
 };
@@ -128,10 +130,8 @@ export type ControllerWrite =
   | { kind: "notice"; notice: Parameters<Store["recordNotice"]>[0] }
   /** A task's reminder: its sent-marker's conditional write and its desktop notice, in one transaction (design 02-tasks). */
   | { kind: "task_reminder"; id: string; at: Parameters<Store["remindTask"]>[1]; notice: Parameters<Store["remindTask"]>[2] }
-  /** A routine's run: its carrier item (made once), the run (keyed on the slot), then its marks, conditional on the ones read. */
-  | { kind: "routine_fire"; plan: Extract<RoutinePlan, { kind: "fire" }> }
-  /** A routine's held run: its hold item (keyed on routine and slot), moved to wait for the owner. */
-  | { kind: "routine_hold"; item: Parameters<Store["createWorkItem"]>[0] }
+  /** What a schedule occurrence's run used, onto its run row (a routine run's model calls, for its token cap). */
+  | { kind: "schedule_result"; schedule_id: string; occurrence_at: Timestamp; result: Parameters<Store["recordScheduleRunResult"]>[2] }
   /** A routine's marks or pause, conditional on the marks read. */
   | { kind: "routine_update"; id: string; read: Parameters<Store["updateRoutine"]>[1]; patch: Parameters<Store["updateRoutine"]>[2] }
   /** What `/approve` adds to a routine's daily cap, once per hold item. */
@@ -255,13 +255,15 @@ export class Kernel {
       llm: d.llm ?? null,
       auth: { owner: d.auth, service: d.service_auth ?? null },
       signals,
-      routinePlans: (now) => this.routinePlans(now),
       routineRun: async (run) => {
         const carrier = await store.getWorkItem(run.work_item_id);
         const id = carrier && routineOfCarrier(carrier), routine = id ? await store.getRoutine(id) : null;
         if (!routine) return null;
         const data = run.outcome?.status === "succeeded" ? run.outcome.data.routine : null;
-        return { routine, findings: routineFindings(data), over_run_cap: overRunCap(routine, outcomeCost(run.outcome)) };
+        const cost = outcomeCost(run.outcome), slot = slotOfRun(routine.id, run.idempotency_key);
+        const row = slot === null ? undefined : (await store.listScheduleRuns(routine.id)).find((r) => r.occurrence_at === slot);
+        const used = slot !== null && row && row.tokens === undefined ? { slot, tokens: runTokenCount(run), cost_usd: cost } : null;
+        return { routine, findings: routineFindings(data), over_run_cap: overRunCap(routine, cost), used };
       },
       routineHold: async (it) => {
         const hold = routineOfHold(it), routine = hold ? await store.getRoutine(hold.routine_id) : null;
@@ -283,24 +285,6 @@ export class Kernel {
     };
   }
 
-  /** The plans of the unpaused routines due at `now`: one read of the latest merge when a routine runs on one, then each due routine's carrier runs and hold item. */
-  private async routinePlans(now: Date): Promise<RoutinePlan[]> {
-    const store = this.d.store;
-    const routines = (await store.listRoutines()).filter((r) => !r.paused);
-    const since = routines.filter((r) => r.trigger !== null).map((r) => r.last_run_at ?? r.created_at).sort()[0];
-    const latest = since === undefined ? null : ((await store.listMergeEvaluations(since)).at(-1)?.merged_at ?? null);
-    const plans: RoutinePlan[] = [];
-    for (const routine of routines) {
-      const slot = dueSlot(routine, now, latest);
-      if (slot === null) continue;
-      const carrier = await store.getWorkItemBySource("local", carrierSource(routine.id).id);
-      const runs = carrier ? await store.listRuns(carrier.id) : [];
-      const hold = await store.getWorkItemBySource("local", holdSource(routine.id, slot).id);
-      plans.push(planRoutine({ routine, slot, now, project: this.project(), runs, hold }));
-    }
-    return plans;
-  }
-
   /** A pure unit's decision, written in order (the router's commit). */
   async commit(decision: { readonly writes: readonly ControllerWrite[] }): Promise<void> {
     const { store, log } = this.d;
@@ -319,7 +303,8 @@ export class Kernel {
       else if (w.kind === "signal") await store.recordSignal(w.signal);
       else if (w.kind === "notice") await store.recordNotice(w.notice);
       else if (w.kind === "task_reminder") await store.remindTask(w.id, w.at, w.notice);
-      else if (w.kind === "routine_fire" || w.kind === "routine_hold" || w.kind === "routine_findings" || w.kind === "suggestion_answer") await this.routineWrite(w);
+      else if (w.kind === "routine_findings" || w.kind === "suggestion_answer") await this.routineWrite(w);
+      else if (w.kind === "schedule_result") await store.recordScheduleRunResult(w.schedule_id, w.occurrence_at, w.result);
       else if (w.kind === "routine_update") await store.updateRoutine(w.id, w.read, w.patch);
       else if (w.kind === "routine_raise") await store.raiseRoutineCap(w.id, w.raise);
       else await this.commit({ writes: w.then(await this.expireLeases(w)) });
@@ -327,16 +312,9 @@ export class Kernel {
   }
 
   /** The routine writes with more than one store call: each call keyed or conditional, so a second commit adds nothing. */
-  private async routineWrite(w: Extract<ControllerWrite, { kind: "routine_fire" | "routine_hold" | "routine_findings" | "suggestion_answer" }>): Promise<void> {
+  private async routineWrite(w: Extract<ControllerWrite, { kind: "routine_findings" | "suggestion_answer" }>): Promise<void> {
     const { store, log } = this.d;
-    if (w.kind === "routine_fire") {
-      const { item } = await store.createWorkItem(w.plan.carrier, ROUTINES);
-      await store.enqueueRun({ work_item_id: item.id, kind: "routine", ...w.plan.run });
-      await store.updateRoutine(w.plan.routine.id, w.plan.read, w.plan.marks);
-    } else if (w.kind === "routine_hold") {
-      const { item } = await store.createWorkItem(w.item, ROUTINES);
-      if (item.blocked_on === "upstream") await store.transition({ id: item.id, expected_version: item.version, patch: { blocked_on: "human" }, actor: ROUTINES, reason: ROUTINE_CAP });
-    } else if (w.kind === "routine_findings") {
+    if (w.kind === "routine_findings") {
       const r = await store.addRoutineSuggestions(w.routine_id, w.run_id, w.texts.map((text) => ({ fingerprint: fingerprint(text), text })));
       log.info("routine findings stored as suggestions", { routine_id: w.routine_id, run_id: w.run_id, ...r });
     } else if (w.decision.to !== "accepted") await store.decideRoutineSuggestion(w.id, w.decision);
