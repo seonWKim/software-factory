@@ -42,7 +42,7 @@ async function sidebarPages() {
 }
 
 // Clicks that show more of a page without writing anything: Data's work_items table, then every <details>.
-// The two "menu-" entries open a ⋯ menu (the top bar's More, the first Routines row's), so overlay-bounds and small-target
+// The two "menu-" entries open a ⋯ menu (the top bar's More, the first Schedules row's), so overlay-bounds and small-target
 // check the open menu at every viewport.
 const PREPARE = {
   data: `[...document.querySelectorAll('nav[aria-label="Tables"] button')].find((b) => b.textContent.startsWith("work_items"))?.click()`,
@@ -73,8 +73,8 @@ async function main() {
     { name: "health-cost", path: "health?tab=cost" },
     { name: "health-review", path: "health?tab=review" },
     { name: "transcript", path: `items/${enc(fixture.pages.item)}/runs/${enc(fixture.pages.run)}` },
-    { name: "menu-top", path: "routines" },
-    { name: "menu-row", path: "routines" },
+    { name: "menu-top", path: "schedules" },
+    { name: "menu-row", path: "schedules" },
   ].filter((p) => only === null || p.name === only);
 
   await rm(SHOTS, { recursive: true, force: true });
