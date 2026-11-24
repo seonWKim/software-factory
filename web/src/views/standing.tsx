@@ -128,7 +128,7 @@ export function StandingRule({ rule, token }: { rule: StandingRuleRow; token: st
             {recent.length > 0 && ": "}
             {shown.map((item, i) => (
               <Fragment key={item.id}>
-                <Link href={itemPath(item.id)} className={LINK_CLASS}>{item.title}</Link>
+                <Link href={itemPath(item.id)} data-raw className={LINK_CLASS}>{item.title}</Link>
                 {i < shown.length - 1 || hidden > 0 ? ", " : ""}
               </Fragment>
             ))}
