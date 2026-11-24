@@ -1,6 +1,8 @@
-// Routines (phase 2 of 3): an owner-set instruction the factory runs on a schedule or on a trigger, as a read-only
-// `routine` run, whose findings come back as suggestions for the owner. Pure, apart from the managing writes (addRoutine,
-// writeRoutine), each one conditional store write: every time comes in as an argument, read from the injected Clock.
+// Routines: an owner-set instruction the factory runs on a schedule or on a trigger, as a read-only `routine` run,
+// whose findings come back as suggestions for the owner. A routine is a Check a page schedule row (action
+// `check_page`, design 08-schedules); the schedule claim pass runs it (runDueCheckPages, planned by planRoutine).
+// Pure, apart from the managing writes (addRoutine, writeRoutine), the claim pass and the run queue, each one keyed
+// or conditional store write: every time comes in as an argument, read from the injected Clock.
 //
 // - Form: a routine has a schedule (a cadence in a zone, src/core/schedule-cadence.ts) or a trigger (`merge`: a change
 //   merged since its last run), never both and never neither.
@@ -10,12 +12,13 @@
 // - Suggestions: one per finding, its text normalized into a fingerprint; a finding whose fingerprint the routine has
 //   already stored is a duplicate: skipped and counted. A snoozed suggestion is pending again after SNOOZE_MS.
 
-import type { NewWorkItem } from "../interfaces/factory-store.js";
+import type { FactoryStore, NewWorkItem } from "../interfaces/factory-store.js";
 import { cyrb53 } from "./hash.js";
 import { SYSTEM_ITEM } from "./improver.js";
+import { type Schedule, type ScheduleRun, type ScheduleStore, overCap } from "./schedule.js";
 import { type Cadence, cadenceProblem, nextDue } from "./schedule-cadence.js";
 import { DAY_MS, spendTotals, utcDay } from "./spend.js";
-import { type Actor, type Run, type RunInput, type SourceRef, type Timestamp, type UserId, type WorkItem, outcomeCost } from "./types.js";
+import { type Actor, type Run, type SourceRef, type Timestamp, type UserId, type WorkItem, outcomeCost } from "./types.js";
 
 /** The triggers a routine may run on: `merge`, a change merged into the base branch since the routine's last run. */
 export const ROUTINE_TRIGGERS = ["merge"] as const;
@@ -158,8 +161,8 @@ export async function addRoutine(store: Pick<RoutineStore, "addRoutine">, input:
 // Managing routines (design 08-routines): the /api/v1/routines writes. Each reads the routine, decides, then writes
 // once, conditional on the marks it read, so a fire or another write since then makes it change nothing. Pause and
 // resume set `paused`; resume also moves a scheduled routine's next slot to the first after now. Run now sets a
-// scheduled routine's `next_due_at` to now, so the kernel's due path (dueSlot, routinePlans) fires it on the next
-// tick and afterSlot moves the slot on: there is no second path. A trigger routine has no next slot to move.
+// scheduled routine's `next_due_at` to now, so the schedule claim pass (dueSlot, runDueCheckPages) fires it on the
+// next tick and afterSlot moves the slot on: there is no second path. A trigger routine has no next slot to move.
 
 /** The store methods managing routines reads and writes through. */
 export type RoutineAdminStore = Pick<RoutineStore, "addRoutine" | "getRoutine" | "updateRoutine" | "editRoutine" | "deleteRoutine">;
@@ -318,13 +321,12 @@ export function holdItem(r: Routine, project: string, slot: string, spent: numbe
 }
 
 /**
- * What a due routine does now. `fire`: queue its run on the carrier and move its marks. `skip`: move its marks
- * only (the owner rejected the held run). `hold`: file the hold item (over the daily cap, not yet asked). `wait`:
- * nothing (a run still going, or the hold item waits for its answer).
+ * What a due routine does now. `fire`: claim its slot (its marks move) and queue its run on the carrier. `skip`: move
+ * its marks only (the owner rejected the held run). `hold`: file the hold item (over the daily cap, not yet asked).
+ * `wait`: nothing (a run still going, or the hold item waits for its answer).
  */
 export type RoutinePlan =
-  | { kind: "fire"; routine: Routine; slot: Timestamp; read: RoutineMarks; marks: RoutineMarks; carrier: NewWorkItem; run: { idempotency_key: string; input: RunInput } }
-  | { kind: "skip"; routine: Routine; slot: Timestamp; read: RoutineMarks; marks: RoutineMarks }
+  | { kind: "fire" | "skip"; routine: Routine; slot: Timestamp; read: RoutineMarks; marks: RoutineMarks }
   | { kind: "hold"; routine: Routine; slot: Timestamp; item: NewWorkItem }
   | { kind: "wait"; routine: Routine; slot: Timestamp };
 
@@ -343,10 +345,73 @@ export function planRoutine(p: PlanInput): RoutinePlan {
   if (p.hold && p.hold.stage !== "CLOSED") return { kind: "wait", routine: r, slot };
   const day = utcDay(now.getTime()), spent = spentOn(p.runs, day), last = lastCost(p.runs), cap = dailyCap(r, day);
   if (!p.hold && overDailyCap(cap, spent, last)) return { kind: "hold", routine: r, slot, item: holdItem(r, p.project, slot, spent, last, cap!) };
+  return { kind: "fire", routine: r, slot, read, marks: afterSlot(r, now) };
+}
+
+/** A Check a page schedule row as the routine it is: its title the name, its action's settings the instruction and page. */
+export function routineOfSchedule(s: Schedule): Routine {
+  const settings = s.action?.settings ?? {};
   return {
-    kind: "fire", routine: r, slot, read, marks: afterSlot(r, now), carrier: carrierItem(r, p.project),
-    run: { idempotency_key: routineRunKey(r.id, slot), input: { routine: { instruction: r.instruction, url: r.url } } },
+    id: s.id, name: s.title, instruction: String(settings.instruction ?? ""), url: typeof settings.url === "string" ? settings.url : null, schedule: s.cadence,
+    zone: s.zone, trigger: s.trigger, run_cap_usd: s.run_cap_usd, daily_cap_usd: s.daily_cap_usd, cap_raise: s.cap_raise, paused: s.paused,
+    created_by: s.created_by, created_at: s.created_at, next_due_at: s.next_due_at, last_run_at: s.last_run_at,
   };
+}
+
+/** The store reads and writes the Check a page pass makes. */
+export type CheckPageStore = Pick<ScheduleStore, "listCheckPages" | "claimCheckPage" | "scheduleTokensUsed"> & Pick<RoutineStore, "updateRoutine"> &
+  Pick<FactoryStore, "listMergeEvaluations" | "getWorkItemBySource" | "listRuns" | "createWorkItem" | "transition">;
+
+/**
+ * One pass over the unpaused Check a page rows at `now` (design 08-schedules): one read of the latest merge when a
+ * row runs on one, then each due row's carrier runs and hold item, planned by planRoutine. A skip moves its marks; a
+ * hold files its item and moves it to wait for the owner; a fire claims the slot (claimCheckPage), `checkpoint`
+ * instead when its runs used the token cap (overCap). Returns each claim made. Safe on several workers and to run
+ * twice: every write is keyed or conditional on the marks read.
+ */
+export async function runDueCheckPages(store: CheckPageStore, now: Date, project: string): Promise<ScheduleRun[]> {
+  const rows = (await store.listCheckPages()).filter((s) => !s.paused);
+  const since = rows.filter((s) => s.trigger !== null).map((s) => s.last_run_at ?? s.created_at).sort()[0];
+  const latest = since === undefined ? null : ((await store.listMergeEvaluations(since)).at(-1)?.merged_at ?? null);
+  const claimed: ScheduleRun[] = [];
+  for (const s of rows) {
+    const routine = routineOfSchedule(s), slot = dueSlot(routine, now, latest);
+    if (slot === null) continue;
+    const carrier = await store.getWorkItemBySource("local", carrierSource(s.id).id);
+    const runs = carrier ? await store.listRuns(carrier.id) : [];
+    const hold = await store.getWorkItemBySource("local", holdSource(s.id, slot).id);
+    const plan = planRoutine({ routine, slot, now, project, runs, hold });
+    if (plan.kind === "skip") await store.updateRoutine(s.id, plan.read, plan.marks);
+    else if (plan.kind === "hold") {
+      const { item } = await store.createWorkItem(plan.item, ROUTINES);
+      if (item.blocked_on === "upstream") await store.transition({ id: item.id, expected_version: item.version, patch: { blocked_on: "human" }, actor: ROUTINES, reason: ROUTINE_CAP });
+    } else if (plan.kind === "fire") {
+      const outcome = (await overCap(store, s)) ? "checkpoint" : "fired";
+      const run = await store.claimCheckPage({ schedule_id: s.id, occurrence_at: slot, read: plan.read, marks: plan.marks, outcome });
+      if (run) claimed.push(run);
+    }
+  }
+  return claimed;
+}
+
+/** The store writes that queue a routine run. */
+export type RoutineRunStore = Pick<RoutineStore, "getRoutine"> & Pick<FactoryStore, "createWorkItem" | "enqueueRun">;
+
+/**
+ * Queues routine `id`'s run for `slot` on its carrier item (made once), keyed on the slot (routineRunKey), so a
+ * second call queues nothing: the Check a page action's run. Throws when the routine is gone.
+ */
+export async function queueRoutineRun(store: RoutineRunStore, project: string, id: string, slot: string): Promise<{ run: Run; created: boolean }> {
+  const r = await store.getRoutine(id);
+  if (r === null) throw new Error(`no routine ${id}`);
+  const { item } = await store.createWorkItem(carrierItem(r, project), ROUTINES);
+  return store.enqueueRun({ work_item_id: item.id, kind: "routine", idempotency_key: routineRunKey(id, slot), input: { routine: { instruction: r.instruction, url: r.url } } });
+}
+
+/** The slot of routine `routine_id`'s run keyed `key` (routineRunKey); null for another key. */
+export function slotOfRun(routine_id: string, key: string): Timestamp | null {
+  const prefix = routineRunKey(routine_id, "");
+  return key.startsWith(prefix) && key.length > prefix.length ? (key.slice(prefix.length) as Timestamp) : null;
 }
 
 /** A finding's fingerprint: its text lowercased, whitespace collapsed and end punctuation dropped, hashed. */

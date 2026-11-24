@@ -64,7 +64,8 @@ const openCalendar = (month, target) => `(async () => {
 // Clicks that show more of a page without writing anything: Data's work_items table, then every <details>.
 // The two "menu-" entries open a ⋯ menu (the top bar's More, the first Schedules row's), so overlay-bounds and small-target
 // check the open menu at every viewport. The "popover-" entries open the Calendar's event popover in Week and Month
-// and a month day's "+N more" list (owner #92: the popover's body drew 24px tall in WebKit).
+// and a month day's "+N more" list (owner #92: the popover's body drew 24px tall in WebKit). "dialog-new-event" opens the
+// Calendar's New event dialog, so its fields are checked at every viewport (1280 and 390 among them).
 const PREPARE = {
   data: `[...document.querySelectorAll('nav[aria-label="Tables"] button')].find((b) => b.textContent.startsWith("work_items"))?.click()`,
   "menu-top": `document.querySelector('header [aria-haspopup="menu"]')?.click()`,
@@ -80,6 +81,12 @@ const PREPARE = {
   await wait(() => document.querySelector("dialog[open]"));
   await new Promise((r) => setTimeout(r, 150));
 })()`,
+  "dialog-new-event": `(async () => {
+    const wait = async (find) => { for (const end = Date.now() + 3000; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) { const el = find(); if (el) return el; } return null; };
+    (await wait(() => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "New event")))?.click();
+    await wait(() => document.querySelector("dialog[open]"));
+    await new Promise((r) => setTimeout(r, 150));
+  })()`,
 };
 const OPEN_DETAILS = `document.querySelectorAll("details").forEach((d) => (d.open = true))`;
 
@@ -113,6 +120,7 @@ async function main() {
     // The Evals page of the fixture skill (two versions, the newer one current) and its open Compare dialog.
     { name: "evals", path: `evals/${enc(fixture.pages.skill)}` },
     { name: "evals-compare", path: `evals/${enc(fixture.pages.skill)}` },
+    { name: "dialog-new-event", path: "calendar" },
   ].filter((p) => only === null || p.name === only);
 
   await rm(SHOTS, { recursive: true, force: true });

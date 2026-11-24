@@ -33,6 +33,8 @@ export interface CalendarEvent extends EventRow {
   ends_at: string;
   /** Null for an event stored before details were kept, or one its calendar said nothing more about. */
   details: EventDetails | null;
+  /** Only on an owner's local event (source `local`): its repeat; a repeating one is read as each occurrence. */
+  repeats?: LocalRepeat;
 }
 
 /** One day of `/api/v1/calendar/events`: its events (all-day first, then timed by time) and whether every source's last sync covered it. */
@@ -46,6 +48,8 @@ export interface CalendarDay {
 export interface CalendarEvents {
   from: string;
   to: string;
+  /** The factory process's time zone (an IANA name): the zone a new local event is entered in by default. */
+  time_zone?: string;
   days: CalendarDay[];
   calendar: CalendarSync[];
   /** A sync request for exactly `from` through `to` waits for the controller. */
@@ -65,6 +69,37 @@ export async function postCalendarSync(token: string, from: string, to: string):
   const r = await postJson<{ error?: string }>(API.calendarSync, token, { from, to });
   return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
+
+/** The source name the read gives the owner's own events: the only ones the page edits or deletes. */
+export const LOCAL_SOURCE = "local";
+export const LOCAL_REPEATS = ["none", "daily", "weekly", "monthly"] as const;
+export type LocalRepeat = (typeof LOCAL_REPEATS)[number];
+
+/** The fields a local event is added with; times are ISO instants. */
+export interface LocalEventInput {
+  title: string;
+  starts_at: string;
+  ends_at: string;
+  all_day: boolean;
+  repeats: LocalRepeat;
+}
+
+const LOCAL_EVENTS = "/api/v1/calendar/local-events";
+type Answer = { ok: true } | { ok: false; error: string };
+
+async function postLocal(path: string, token: string, body: unknown): Promise<Answer> {
+  const r = await postJson<{ error?: string }>(path, token, body);
+  return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/calendar/local-events: adds the event under the caller-made `le_` id, so a retry stores one. */
+export const postLocalEventAdd = (token: string, id: string, fields: LocalEventInput) => postLocal(LOCAL_EVENTS, token, { id, ...fields });
+
+/** POST /api/v1/calendar/local-events/edit: changes the fields named; a repeating event changes as a whole series. */
+export const postLocalEventEdit = (token: string, id: string, fields: Partial<LocalEventInput>) => postLocal(`${LOCAL_EVENTS}/edit`, token, { id, ...fields });
+
+/** POST /api/v1/calendar/local-events/delete: removes the event and all its repeats. */
+export const postLocalEventDelete = (token: string, id: string) => postLocal(`${LOCAL_EVENTS}/delete`, token, { id });
 
 /** One calendar plugin on the Settings page's Calendar section (GET /api/v1/calendar, design 08-settings). */
 export interface CalendarPluginView {

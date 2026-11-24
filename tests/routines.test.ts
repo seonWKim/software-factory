@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SNOOZE_MS, type Routine, type RoutineInput, addRoutine, afterSlot, carrierSource, dailyCap, dueSlot, fingerprint, firstDue, overDailyCap,
-  overRunCap, routineFindings, routineProblem,
+  overRunCap, queueRoutineRun, routineFindings, routineProblem,
 } from "../src/core/routines.js";
 import type { Timestamp, UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -10,12 +10,13 @@ import { LocalSource } from "../src/impl/source/local-source.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { tickAt } from "../src/shared/ticks/tick-generator.js";
+import { scheduledAction } from "../src/core/controller-deps.js";
 import { FakeAuth } from "./helpers/fakes/runner.js";
 import { config, silent } from "./helpers/fakes/config.js";
 import { newStore, w1 } from "./helpers/store.js";
 
-// Routines (src/core/routines.ts, phase 2 of 3). The schedule and trigger math runs on times read from a FakeClock;
-// the routines unit, driven by the controller, fires a due routine's run, stores its findings as pending
+// Routines (src/core/routines.ts). The schedule and trigger math runs on times read from a FakeClock;
+// the schedule unit's pass, driven by the controller, fires a due routine's run; the routines unit stores its findings as pending
 // suggestions (duplicates skipped and counted, flagged ones withheld) and answers a suggestion.
 
 const OWNER = "local:owner" as UserId;
@@ -120,13 +121,12 @@ async function harness(over: Partial<RoutineInput> = {}) {
   const clock = new FakeClock("2026-11-23T08:59:00.000Z");
   const { store } = await newStore(clock);
   const s = store as SqlFactoryStore;
-  const controller = new ControllerRole({ store, sources: [new LocalSource(store)], auth: new FakeAuth(), clock, config, log: silent, scanner });
+  const controller = new ControllerRole({ store, sources: [new LocalSource(store)], auth: new FakeAuth(), clock, config, log: silent, scanner , schedule_action: scheduledAction(store, { run: async (s, at) => void (await queueRoutineRun(store, config.project.key, s.id, at)) }, silent, config.project.key) });
   const added = await addRoutine(store, input(over), clock.now());
   if (!added.ok) throw new Error(added.problem);
-  /** One routines step at the FakeClock's time. */
+  /** One schedule step at the FakeClock's time. */
   const tick = async () => {
-    const u = await controller.unit("routines");
-    await controller.kernel.commit(u.decide(await u.load(controller.kernel.reader, tickAt("tick", 1, clock.now().getTime()))));
+    await (await controller.unit("schedule")).scheduleStep(tickAt("tick", 1, clock.now().getTime()));
   };
   const carrier = async () => (await store.getWorkItemBySource("local", carrierSource("rt_1").id))!;
   const routineRuns = async () => (await store.listRuns((await carrier()).id)).filter((r) => r.kind === "routine");
@@ -142,7 +142,7 @@ async function harness(over: Partial<RoutineInput> = {}) {
   return { clock, store: s, controller, tick, carrier, routineRuns, finish };
 }
 
-describe("the routines step and its suggestions", () => {
+describe("the schedule step on a routine and its suggestions", () => {
   it("fires a due routine once per slot on its carrier, with the instruction and page, and moves its marks", async () => {
     const h = await harness({ url: "https://status.example.com/" });
     await h.tick();

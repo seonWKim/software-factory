@@ -6,14 +6,16 @@
 // resume or run is one UPDATE conditional on the `next_due_at` it read, so it and a claim never both apply. A delete
 // removes the schedule row and ends its held checkpoints as `rejected` in one transaction; its other run rows stay.
 // The schedule list and the due list leave out Check a page rows (action_kind 'check_page', routines copied by the
-// 20261124T1100-controller-routines-into-schedules migration): they have no run behaviour and no page or API view
-// yet, so they never fire and the Schedules page, API and CLI do not show them. Those rows are the routine store's
-// (src/impl/store/sql/routines.ts); a trigger routine's row has a null cadence and its trigger in `trigger_kind`.
+// 20261124T1100-controller-routines-into-schedules migration): the Schedules page, API and CLI do not show them, and
+// the claim pass reads them through `listCheckPages` instead, with the row's `instruction` and `url` as the action's
+// settings, and claims each with `claimCheckPage`, conditional on its marks (a trigger row has no `next_due_at`).
+// The routine store (src/impl/store/sql/routines.ts) writes the same rows; a trigger routine's row has a null
+// cadence and its trigger in `trigger_kind`.
 
 import type { RoutineTrigger } from "../../../core/routines.js";
 import type { Cadence, CadenceKind } from "../../../core/schedule-cadence.js";
 import type {
-  ClaimOutcome, NewSchedule, Schedule, ScheduleActionKind, ScheduleClaim, ScheduleOutcome, SchedulePatch, ScheduleRun, ScheduleRunResult, ScheduleStore,
+  CheckPageClaim, ClaimOutcome, NewSchedule, Schedule, ScheduleActionKind, ScheduleClaim, ScheduleOutcome, SchedulePatch, ScheduleRun, ScheduleRunResult, ScheduleStore,
 } from "../../../core/schedule.js";
 import type { Timestamp, UserId } from "../../../core/types.js";
 import type { Row, SqlDriver, SqlValue } from "../../../state/index.js";
@@ -27,9 +29,12 @@ const CLAIM_STATE: Readonly<Record<ClaimOutcome, string>> = {
   fired: "running_since IS NULL", refused: "running_since IS NOT NULL", skipped: "running_since IS NULL", checkpoint: "running_since IS NULL",
 };
 const HELD = "outcome = 'checkpoint'";
-/** Leaves out Check a page rows, which have no run behaviour and no page or API view yet. */
+/** Leaves out Check a page rows: the routine API shows them, and the claim pass reads them on their own (listCheckPages). */
 const NOT_CHECK_PAGE = "COALESCE(action_kind, '') <> 'check_page'";
+const CHECK_PAGE = "action_kind = 'check_page'";
 
+/** `column = ?` or `column IS NULL`, with its value when it has one. */
+const equals = (column: string, v: string | null): [string, SqlValue[]] => (v === null ? [`${column} IS NULL`, []] : [`${column} = ?`, [v]]);
 const time = (v: unknown) => (v == null ? null : (String(v) as Timestamp));
 const num = (v: unknown) => (v == null ? null : Number(v));
 
@@ -39,12 +44,16 @@ export const rowCadence = (r: Row): Cadence | null => (r.cadence_kind == null ? 
 export const rowCapRaise = (r: Row): Schedule["cap_raise"] =>
   r.cap_hold_key == null ? null : { usd: Number(r.cap_raise_usd ?? 0), day: String(r.cap_raise_day), hold_key: String(r.cap_hold_key) };
 
+/** The action's settings: a Check a page row's `instruction` and `url` columns, else the stored JSON. */
+const rowSettings = (r: Row): Record<string, unknown> =>
+  String(r.action_kind) === "check_page" ? { instruction: String(r.instruction ?? ""), url: r.url == null ? null : String(r.url) } : (JSON.parse(String(r.action_settings ?? "{}")) as Record<string, unknown>);
+
 function rowToSchedule(r: Row): Schedule {
   return {
     id: String(r.id), title: String(r.title), cadence: rowCadence(r), zone: String(r.zone),
     created_by: String(r.created_by) as UserId, created_at: String(r.created_at) as Timestamp, next_due_at: time(r.next_due_at), running_since: time(r.running_since),
     skip_when_busy: Number(r.skip_when_busy ?? 0) === 1,
-    action: r.action_kind == null ? null : { kind: String(r.action_kind) as ScheduleActionKind, settings: JSON.parse(String(r.action_settings ?? "{}")) as Record<string, unknown> },
+    action: r.action_kind == null ? null : { kind: String(r.action_kind) as ScheduleActionKind, settings: rowSettings(r) },
     token_cap: num(r.token_cap),
     trigger: r.trigger_kind == null ? null : (String(r.trigger_kind) as RoutineTrigger), run_cap_usd: num(r.run_cap_usd), daily_cap_usd: num(r.daily_cap_usd),
     cap_raise: rowCapRaise(r), paused: Number(r.paused ?? 0) === 1, last_run_at: time(r.last_run_at),
@@ -87,6 +96,24 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
   async listDueSchedules(due_by: Timestamp): Promise<Schedule[]> {
     const rows = await this.db.all(`SELECT ${COLUMNS} FROM controller_schedules WHERE next_due_at IS NOT NULL AND next_due_at <= ? AND ${NOT_CHECK_PAGE} ORDER BY next_due_at, id`, [due_by]);
     return rows.map(rowToSchedule);
+  }
+
+  async listCheckPages(): Promise<Schedule[]> {
+    return (await this.db.all(`SELECT ${COLUMNS}, instruction, url FROM controller_schedules WHERE ${CHECK_PAGE} ORDER BY created_at, id`)).map(rowToSchedule);
+  }
+
+  claimCheckPage(c: CheckPageClaim): Promise<ScheduleRun | null> {
+    return this.db.transaction(async (tx) => {
+      const now = this.scheduleStamp();
+      const [due, dueArgs] = equals("next_due_at", c.read.next_due_at), [last, lastArgs] = equals("last_run_at", c.read.last_run_at);
+      const moved = await tx.run(`UPDATE controller_schedules SET next_due_at = ?, last_run_at = ? WHERE id = ? AND ${CHECK_PAGE} AND ${due} AND ${last}`, [
+        c.marks.next_due_at, c.marks.last_run_at, c.schedule_id, ...dueArgs, ...lastArgs,
+      ]);
+      if (moved !== 1) return null;
+      const run: ScheduleRun = { schedule_id: c.schedule_id, occurrence_at: c.occurrence_at, outcome: c.outcome, recorded_at: now };
+      await tx.run("INSERT INTO controller_schedule_runs (schedule_id, occurrence_at, outcome, recorded_at) VALUES (?, ?, ?, ?)", [run.schedule_id, run.occurrence_at, run.outcome, now]);
+      return run;
+    });
   }
 
   claimScheduleOccurrence(c: ScheduleClaim): Promise<ScheduleRun | null> {

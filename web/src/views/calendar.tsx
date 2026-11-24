@@ -1,9 +1,9 @@
-import { CalendarDays, ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
-import { useRef, useState } from "react";
-import { API, type CalendarDay, type CalendarEvents, type CalendarSync, type EventRow, type Session, postCalendarSync, useApi, useCalendarEvents } from "../api.js";
+import { ChevronLeft, ChevronRight, Plus, RefreshCw } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { API, type CalendarDay, type CalendarEvent, type CalendarEvents, type CalendarSync, type EventRow, type Session, postCalendarSync, useApi, useCalendarEvents } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
-import { EmptyState, Notice, PageHeader, PageToolbar } from "../components/ui/notice.js";
+import { Notice, PageHeader, PageToolbar } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { CARD_TITLE, Card } from "../components/ui/card.js";
@@ -12,10 +12,12 @@ import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
+import { CalendarActionsContext } from "./calendar-event.js";
+import { EventDialog, type EventDialogTarget } from "./calendar-event-dialog.js";
 import { MonthGrid, WeekDays } from "./calendar-grid.js";
 
 // The Calendar page (design 09-dashboard-tasks-calendar): the stored calendar events of one week or one month,
-// read-only, from GET /api/v1/calendar/events with the first and last day shown. One toolbar row holds the Week / Month
+// from GET /api/v1/calendar/events with the first and last day shown. One toolbar row holds the Week / Month
 // switch, Previous / Today / Next (icon buttons round Today), the period ("Nov 23 – 29, 2026", the page's one h2) and a
 // quiet Sync icon button at the end. The Card holds the week or month grid (calendar-grid.tsx) with no title of its own.
 // Previous and next move by one week or month; Today returns to the period holding today in the browser's time zone.
@@ -23,8 +25,11 @@ import { MonthGrid, WeekDays } from "./calendar-grid.js";
 // connected. A day the last syncs did not cover is shaded, never drawn empty, and one note above the grid names those
 // days; an empty synced day shows no text. A source whose last sync failed is named with its last sync time, and its
 // stored events stay listed. A connected calendar that has not synced yet is named with "Not synced yet". The read
-// lists the calendars the live `calendar` setting connects, as Settings → Integrations does; only with none connected
-// the empty state links to the Integrations tab of Settings.
+// lists the calendars the live `calendar` setting connects, as Settings → Integrations does; with none connected the
+// grid still shows the owner's own events, no day shaded, under an info note that links to the Integrations tab of
+// Settings. New event (the toolbar's last button, primary) and a click on a day's empty area open the shared dialog
+// (calendar-event-dialog.tsx); a local event's details offer Edit and Delete (calendar-event.tsx) through
+// CalendarActionsContext, so no props reach the grids.
 // Sync (shown once a calendar is connected) and the note's "Sync these days" post one request to sync every calendar
 // for the days shown (POST /api/v1/calendar/sync); both show "Syncing…", disabled, until the request is done (the
 // read's `sync_pending`), and a second press sends nothing.
@@ -168,26 +173,31 @@ function SyncIconButton({ s }: { s: SyncDays }) {
 }
 
 function Events({ v, view, label, month, s }: { v: CalendarEvents; view: View; label: string; month: string; s: SyncDays }) {
-  if (v.calendar.length === 0) {
-    return <EmptyState icon={CalendarDays} title={t("calendarPage.emptyNone")} action={<Link href={CONNECT_PATH} className={cn(LINK_CLASS, "text-sm")}>{t("calendarPage.connect")}</Link>} />;
-  }
+  const none = v.calendar.length === 0;
+  // With no calendar connected there is nothing to sync, so no day is unknown: the grid shows the local events.
+  const days = none ? v.days.map((d) => ({ ...d, synced: true })) : v.days;
   const unsynced = v.calendar.filter((c) => c.synced_at === null && !c.failed);
   const today = iso(new Date());
   const showSource = v.calendar.length > 1;
   return (
     <div className="space-y-3">
+      {none && (
+        <Notice tone="info" title={t("calendarPage.emptyNone")}>
+          <Link href={CONNECT_PATH} className={cn(LINK_CLASS, "text-sm")}>{t("calendarPage.connect")}</Link>
+        </Notice>
+      )}
       <StaleCalendars calendar={v.calendar} />
       <UnsyncedCalendars unsynced={unsynced} />
       {s.error !== null && <Notice tone="bad">{s.error}</Notice>}
-      {unsynced.length === 0 && v.days.some((d) => !d.synced) && (
+      {unsynced.length === 0 && days.some((d) => !d.synced) && (
         <Notice tone="info">
           <div data-not-synced-note className="flex flex-wrap items-center justify-between gap-2">
-            <p className="min-w-0 text-pretty">{t("calendarPage.notSyncedDays", { days: unsyncedDays(v.days) })}</p>
+            <p className="min-w-0 text-pretty">{t("calendarPage.notSyncedDays", { days: unsyncedDays(days) })}</p>
             <SyncButton s={s} label={t("calendarPage.syncDays")} />
           </div>
         </Notice>
       )}
-      {view === "week" ? <WeekDays label={label} days={v.days} today={today} showSource={showSource} /> : <MonthGrid key={month} label={label} days={v.days} today={today} showSource={showSource} month={month} />}
+      {view === "week" ? <WeekDays label={label} days={days} today={today} showSource={showSource} /> : <MonthGrid key={month} label={label} days={days} today={today} showSource={showSource} month={month} />}
     </div>
   );
 }
@@ -200,8 +210,11 @@ export function CalendarPage() {
   const q = useCalendarEvents(iso(shown.from), iso(shown.to));
   const v = q.data;
   const s = useSyncDays(iso(shown.from), iso(shown.to), v, q.refetch);
+  const [dialog, setDialog] = useState<EventDialogTarget | null>(null);
+  const refetch = q.refetch;
+  const actions = useMemo(() => ({ newOn: (date: string) => setDialog({ kind: "new", date }), edit: (event: CalendarEvent) => setDialog({ kind: "edit", event }), refetch }), [refetch]);
   return (
-    <>
+    <CalendarActionsContext.Provider value={actions}>
     <PageHeader title={t("page.calendar")} />
     <PageToolbar>
       {/* One row (09-dashboard-tasks-calendar): the view switch, Previous / Today / Next, the period, then a quiet Sync at the end. */}
@@ -218,13 +231,20 @@ export function CalendarPage() {
         </ButtonRow>
         {/* The period ("Nov 23 – 29, 2026"), the page's one h2, announced when it changes. */}
         <h2 aria-live="polite" className={cn(CARD_TITLE, "min-w-0 tabular-nums")}>{label}</h2>
-        {v !== undefined && v.calendar.length > 0 && <span className="ml-auto"><SyncIconButton s={s} /></span>}
+        <span className="ml-auto flex items-center gap-1">
+          {v !== undefined && v.calendar.length > 0 && <SyncIconButton s={s} />}
+          <Button variant="primary" onClick={() => setDialog({ kind: "new", date: iso(new Date()) })}>
+            <Plus aria-hidden className="size-4" />
+            {t("calendarPage.newEvent")}
+          </Button>
+        </span>
       </div>
     </PageToolbar>
     {/* The week or month, named by the period for assistive tech; the toolbar holds its visible title. */}
     <Card label={label}>
       {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} label="loading.calendar" onRetry={() => void q.refetch()} /> : <Events v={v} view={view} label={label} month={iso(focus).slice(0, 7)} s={s} />}
     </Card>
-    </>
+    {dialog !== null && v !== undefined && <EventDialog target={dialog} zone={v.time_zone ?? Intl.DateTimeFormat().resolvedOptions().timeZone} onClose={() => setDialog(null)} onSaved={refetch} />}
+    </CalendarActionsContext.Provider>
   );
 }
