@@ -69,6 +69,10 @@ export const API = {
   scheduleRuns: (id: string) => `/api/v1/schedules/runs?schedule=${encodeURIComponent(id)}`,
   /** One of the Schedules page's writes (owner only). */
   scheduleWrite: (verb: ScheduleVerb) => `/api/v1/schedules/${verb}`,
+  /** The Routines page's read of every routine. */
+  routines: "/api/v1/routines",
+  /** One of the Routines page's writes (owner only). */
+  routineWrite: (verb: RoutineVerb) => `/api/v1/routines/${verb}`,
   taskBuild: "/api/v1/tasks/build",
   taskAction: (action: TaskAction) => `/api/v1/tasks/${action}`,
   dataTables: "/api/v1/data/tables",
@@ -85,3 +89,6 @@ export type TaskAction = "edit" | "done" | "reopen" | "delete" | "sub";
 
 /** A Schedules page write: the path segment of its route. */
 export type ScheduleVerb = "add" | "edit" | "pause" | "resume" | "run";
+
+/** A Routines page write: the path segment of its route. */
+export type RoutineVerb = "add" | "edit" | "pause" | "resume" | "delete";

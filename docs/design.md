@@ -90,6 +90,7 @@ Read this index, then only the topics you touch. Topics: current decision first,
 - [09-dashboard-tasks-quick-add.md](design/09-dashboard-tasks-quick-add.md): Quick add.
 - [09-dashboard-tasks-calendar.md](design/09-dashboard-tasks-calendar.md): Calendar page.
 - [09-dashboard-schedules.md](design/09-dashboard-schedules.md): Schedules page.
+- [09-dashboard-routines.md](design/09-dashboard-routines.md): Routines page.
 - [09-dashboard-tasks-projects.md](design/09-dashboard-tasks-projects.md): Projects.
 - [09-dashboard-rules.md](design/09-dashboard-rules.md): Rules page.
 - [09-dashboard-rules-waiting.md](design/09-dashboard-rules-waiting.md): waiting rows.
