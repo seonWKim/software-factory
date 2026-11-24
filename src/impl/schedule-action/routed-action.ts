@@ -1,5 +1,5 @@
 // The `routed` ScheduleAction (design 08-schedules, docs/plugins/schedule-action.md): hands each fired occurrence
-// to the route of its schedule's action kind (build, agent or feedback; src/controller/units/schedule/plugins/),
+// to the route of its schedule's action kind (build, agent, feedback or improve; src/controller/units/schedule/plugins/),
 // bound to ports over the store, the agent runner and the egress scanner. An agent call gets exactly the read-only
 // tools Read, Glob and Grep, in a fresh detached checkout, with deny_paths and no writable path; every answer is
 // scanned before it is stored or filed (G5). The token cap is the claim pass's (src/core/schedule.ts): an

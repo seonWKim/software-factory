@@ -8,7 +8,7 @@ import type { SkillEvalRun } from "../src/interfaces/skill-eval-store.js";
 
 const run = (id: string, started_at: string, o: Partial<SkillEvalRun> = {}): SkillEvalRun => ({
   id, suite_id: "s1", status: "passed", started_at: started_at as SkillEvalRun["started_at"], finished_at: null, created_by: "local:owner" as UserId,
-  skill_version: "v1", model_class: "standard", judge_model_class: "strong", replays: 4, pass_rate: 0.5, errored: 0, ...o,
+  skill_version: "v1", suite_version: 1, judge_version: "j1", factory_version: "dev", model_class: "standard", judge_model_class: "strong", replays: 4, pass_rate: 0.5, errored: 0, ...o,
 });
 
 describe("skillEvalGrid", () => {
@@ -22,7 +22,7 @@ describe("skillEvalGrid", () => {
     const rows = skillEvalGrid(runs);
     expect(rows.map((r) => r.run_id)).toEqual(["v2-std", "v1-cheap", "new-v1-std"]);
     expect(rows.find((r) => r.run_id === "new-v1-std")).toEqual({
-      skill_version: "v1", model_class: "standard", judge_model_class: "strong", run_id: "new-v1-std", started_at: "2026-11-02T00:00:00Z", status: "passed", replays: 4, pass_rate: 0.75, errored: 0,
+      skill_version: "v1", suite_version: 1, judge_version: "j1", factory_version: "dev", model_class: "standard", judge_model_class: "strong", run_id: "new-v1-std", started_at: "2026-11-02T00:00:00Z", status: "passed", replays: 4, pass_rate: 0.75, errored: 0,
     });
     expect(rows.find((r) => r.run_id === "v1-cheap")).toMatchObject({ pass_rate: null, replays: 0 });
   });
@@ -49,7 +49,7 @@ describe("the noise rule", () => {
     expect(near.within_noise).toBe(true);
     const far = compareSkillEvalRuns(run("a", "x", { pass_rate: 0, replays: 100 }), run("b", "y", { pass_rate: 1, replays: 100 }));
     expect(far).toMatchObject({ gap: 1, noise_band: 0, within_noise: false });
-    expect(far.a).toEqual({ run_id: "a", started_at: "x", status: "passed", skill_version: "v1", model_class: "standard", judge_model_class: "strong", replays: 100, pass_rate: 0, errored: 0 });
+    expect(far.a).toEqual({ run_id: "a", started_at: "x", status: "passed", skill_version: "v1", suite_version: 1, judge_version: "j1", factory_version: "dev", model_class: "standard", judge_model_class: "strong", replays: 100, pass_rate: 0, errored: 0 });
   });
 
   it("a gap exactly on the band is within noise", () => {
@@ -61,5 +61,32 @@ describe("the noise rule", () => {
     expect(none).toMatchObject({ gap: null, noise_band: null, within_noise: null });
     expect(none.a.pass_rate).toBeNull();
     expect(compareSkillEvalRuns(run("a", "x"), run("b", "y", { pass_rate: null, replays: null, model_class: null }))).toMatchObject({ gap: null, noise_band: null, within_noise: null });
+    expect(none).toMatchObject({ comparable: true, reason: null });
+  });
+});
+
+describe("comparable runs (same suite and judge versions)", () => {
+  const notComparable = (reason: string) => ({ comparable: false, reason, gap: null, noise_band: null, within_noise: null });
+  const a = run("a", "x", { pass_rate: 0, replays: 100 });
+
+  it("compares runs on the same suite, suite version and judge version, whatever their skill or factory version", () => {
+    expect(compareSkillEvalRuns(a, run("b", "y", { pass_rate: 1, replays: 100, skill_version: "v2", factory_version: "abc" }))).toMatchObject({ comparable: true, reason: null, gap: 1 });
+  });
+
+  it("refuses runs whose suite versions differ, or that ran on another suite", () => {
+    expect(compareSkillEvalRuns(a, run("b", "y", { suite_version: 2 }))).toMatchObject(notComparable("the suite versions differ"));
+    expect(compareSkillEvalRuns(a, run("b", "y", { suite_id: "s2" }))).toMatchObject(notComparable("the suite versions differ"));
+  });
+
+  it("refuses runs whose judge versions differ", () => {
+    expect(compareSkillEvalRuns(a, run("b", "y", { judge_version: "j2" }))).toMatchObject(notComparable("the judge versions differ"));
+  });
+
+  it("refuses when either run has no version recorded (a run stored before versions)", () => {
+    expect(compareSkillEvalRuns(run("old", "x", { suite_version: null, judge_version: null }), a)).toMatchObject(notComparable("one run has no version recorded"));
+    expect(compareSkillEvalRuns(a, run("b", "y", { judge_version: null }))).toMatchObject(notComparable("one run has no version recorded"));
+    const old = compareSkillEvalRuns(a, run("b", "y", { suite_version: null }));
+    expect(old).toMatchObject(notComparable("one run has no version recorded"));
+    expect(old.a.pass_rate).toBe(0);
   });
 });

@@ -413,14 +413,14 @@ CREATE TABLE controller_skill_eval_cases (
     input       TEXT NOT NULL,
     expected    TEXT NOT NULL,
     created_at  TEXT NOT NULL
-  );
+  , seed TEXT, mcp TEXT);
 
 CREATE TABLE controller_skill_eval_replays (
     run_id       TEXT NOT NULL,
     case_id      TEXT NOT NULL,
     verdict      TEXT NOT NULL,
     detail       TEXT NOT NULL,
-    recorded_at  TEXT NOT NULL,
+    recorded_at  TEXT NOT NULL, transcript TEXT, answer TEXT, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, wall_ms INTEGER,
     PRIMARY KEY (run_id, case_id)
   );
 
@@ -431,7 +431,7 @@ CREATE TABLE controller_skill_eval_runs (
     started_at   TEXT NOT NULL,
     finished_at  TEXT,
     created_by   TEXT NOT NULL
-  , skill_version TEXT, model_class TEXT, judge_model_class TEXT, replays INTEGER, pass_rate REAL, errored INTEGER);
+  , skill_version TEXT, model_class TEXT, judge_model_class TEXT, replays INTEGER, pass_rate REAL, errored INTEGER, suite_version INTEGER, judge_version TEXT, factory_version TEXT);
 
 CREATE TABLE controller_skill_eval_suites (
     id          TEXT PRIMARY KEY,
@@ -439,7 +439,7 @@ CREATE TABLE controller_skill_eval_suites (
     title       TEXT NOT NULL,
     created_by  TEXT NOT NULL,
     created_at  TEXT NOT NULL
-  );
+  , version INTEGER NOT NULL DEFAULT 1);
 
 CREATE TABLE controller_standing_proposals (
     id          TEXT PRIMARY KEY,

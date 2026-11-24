@@ -88,6 +88,37 @@ async function box() {
 const FACTORY_MSG = { seq: 7, at: AT, kind: "spec", author: "factory", role: "factory", channel: "github_issue", anchor: "msg-7", body: "## Spec ready for approval\n\nLonger text of the spec." };
 
 describe("item page: DecisionCard", () => {
+  const pause = (thread?: object[]) => detail({
+    item: item({ stage: "QUEUED", blocked_on: null, blocked_reason: null, why: { code: "paused", reason_code: "paused_model_credential", params: {}, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null } }),
+    commands: ["verdict", "revise", "reject"].map(cmd), spec: null, ...(thread ? { thread } : {}),
+  });
+  const REFUSAL = { ...FACTORY_MSG, seq: 9, kind: "refused", anchor: "msg-9", body: "`/retry` was not applied: there is no failed run to retry." };
+
+  it("during the model credential pause the card offers Add model credential, no Good, Bad or Feedback, and no empty Based on", async () => {
+    body = pause();
+    mount();
+    const decide = await screen.findByRole("region", { name: "What you need to decide" });
+    const add = await within(decide).findByRole("button", { name: "Add model credential" });
+    expect(within(decide).queryByRole("button", { name: "Good" })).toBeNull();
+    expect(within(decide).queryByRole("button", { name: "Bad" })).toBeNull();
+    expect(within(decide).queryByRole("button", { name: "Feedback" })).toBeNull();
+    expect(within(decide).queryByText("Based on")).toBeNull();
+    fireEvent.click(add);
+    expect(await screen.findByRole("dialog", { name: "Add a model credential" })).toBeTruthy();
+  });
+
+  it("during the pause a refusal as the newest factory message is not shown under Based on", async () => {
+    body = pause([REFUSAL]);
+    mount();
+    const decide = await screen.findByRole("region", { name: "What you need to decide" });
+    await within(decide).findByRole("button", { name: "Add model credential" });
+    expect(within(decide).queryByRole("button", { name: "Good" })).toBeNull();
+    expect(within(decide).queryByRole("button", { name: "Bad" })).toBeNull();
+    expect(within(decide).queryByText("Based on")).toBeNull();
+    expect(decide.querySelector("[data-decision-evidence]")).toBeNull();
+    expect(decide.textContent).not.toContain("was not applied");
+  });
+
   it("at merge_pending renders one card whose first button is Merge, then Good/Bad, Feedback and the menu, each action with data-action", async () => {
     body = detail({
       item: item({ stage: "MERGE_PENDING", blocked_reason: null, merge: { enabled: true, reason: null }, why: { code: "merge", reason_code: "person", params: { reason: "Ready to merge" }, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null } }),

@@ -8,8 +8,12 @@ import { API, type ScheduleVerb } from "./routes.js";
 
 export const CADENCE_KINDS = ["interval", "daily", "weekly", "cron"] as const;
 export type CadenceKind = (typeof CADENCE_KINDS)[number];
+/** The kinds the New and Edit form offer: `schedule add` and `edit` write only these (design 08-schedules). */
 export const ACTION_KINDS = ["build", "agent", "feedback"] as const;
-export type ActionKind = (typeof ACTION_KINDS)[number];
+/** Every stored kind: setup adds an `improve` schedule (the daily improve run), which no form can pick. */
+export type ActionKind = (typeof ACTION_KINDS)[number] | "improve";
+/** Whether the form can write a kind; the Edit form shows any other as a disabled choice and never sends it. */
+export const isWritableKind = (k: ActionKind): k is (typeof ACTION_KINDS)[number] => (ACTION_KINDS as readonly string[]).includes(k);
 
 /** One stored schedule. `next_due_at` null: paused. */
 export interface ScheduleRow {
@@ -20,7 +24,7 @@ export interface ScheduleRow {
   next_due_at: string | null;
   running_since: string | null;
   skip_when_busy: boolean;
-  /** What a due occurrence does: `settings.body` for build, `settings.prompt` for agent and feedback. */
+  /** What a due occurrence does: `settings.body` for build, `settings.prompt` for agent and feedback; improve has none. */
   action: { kind: ActionKind; settings: Record<string, unknown> } | null;
   token_cap: number | null;
 }

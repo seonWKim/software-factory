@@ -45,7 +45,9 @@ describe("the schedule_action plugin kind", () => {
 
   it("with plugins.schedule_action unset no action is selected; set, the name is selected", async () => {
     const registry = await loadRegistry([PLUGIN_ROOT, actionDir()]);
-    const raw = { store: { type: "sqlite" }, plugins: REAL.plugins };
+    // The checked-in config selects "routed"; leave the key out to test the unset case.
+    const { schedule_action: _unset, ...unset } = REAL.plugins as Record<string, unknown>;
+    const raw = { store: { type: "sqlite" }, plugins: unset };
     expect(selectPlugins(registry, raw).schedule_action).toBeUndefined();
     expect(selectPlugins(registry, { store: { type: "sqlite" } }).schedule_action).toBeUndefined();
     expect(selectPlugins(registry, { ...raw, plugins: { ...(REAL.plugins as object), schedule_action: "none" } }).schedule_action).toBeUndefined();

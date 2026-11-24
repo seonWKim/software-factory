@@ -22,9 +22,15 @@ export type ScheduleOutcome = ClaimOutcome | "rejected";
 /** Queued implement runs at which a `skip_when_busy` schedule skips its due occurrence (the owner's "under 15"). */
 export const SKIP_WHEN_BUSY_THRESHOLD = 15;
 
-/** What a fired occurrence does: file one work item, run one read-only agent, or file the feedback agent's tasks. */
-export type ScheduleActionKind = "build" | "agent" | "feedback";
-export const SCHEDULE_ACTION_KINDS: readonly ScheduleActionKind[] = ["build", "agent", "feedback"];
+/**
+ * What a fired occurrence does: file one work item, run one read-only agent, file the feedback agent's tasks, or
+ * queue the daily improve run of its slot's UTC day. Stored and routed; `factory schedule add` and `edit` (and the
+ * HTTP routes) write only SCHEDULE_WRITE_KINDS: an `improve` schedule is added by setup.
+ */
+export type ScheduleActionKind = "build" | "agent" | "feedback" | "improve";
+export const SCHEDULE_ACTION_KINDS: readonly ScheduleActionKind[] = ["build", "agent", "feedback", "improve"];
+/** The kinds `schedule add` and `schedule edit` accept (design 08-schedules). */
+export const SCHEDULE_WRITE_KINDS: readonly ScheduleActionKind[] = ["build", "agent", "feedback"];
 /** The kinds that call a model, so the schedule's token cap holds them. */
 const MODEL_KINDS: ReadonlySet<ScheduleActionKind> = new Set(["agent", "feedback"]);
 
@@ -288,7 +294,8 @@ export type ScheduleWrite = "add" | "edit" | "pause" | "resume" | "run" | "delet
 
 /** The action a kind and a body make (the CLI and the HTTP routes): build `body`, agent and feedback `prompt`, which they need. */
 export function scheduleActionOf(kind: string, body: string | undefined): ScheduleActionSpec | { problem: string } {
-  if (!(SCHEDULE_ACTION_KINDS as readonly string[]).includes(kind)) return { problem: `unknown action kind "${kind}": one of ${SCHEDULE_ACTION_KINDS.join(", ")}` };
+  if (kind === "improve") return { problem: `the improve action is added by setup only (improver.daily_trigger off), not by schedule add or edit: one of ${SCHEDULE_WRITE_KINDS.join(", ")}` };
+  if (!(SCHEDULE_WRITE_KINDS as readonly string[]).includes(kind)) return { problem: `unknown action kind "${kind}": one of ${SCHEDULE_WRITE_KINDS.join(", ")}` };
   const text = body?.trim() ?? "";
   if (kind === "build") return { kind, settings: text === "" ? {} : { body: text } };
   if (text === "") return { problem: `a${kind === "agent" ? "n" : ""} ${kind} action needs a body (--body): its prompt` };

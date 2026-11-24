@@ -2,6 +2,7 @@
 // plain completion shared with LlmJudge (judgeCompletion), the all-yes pass rule, and the skill version per run.
 // Every runner, sandbox and LLM provider here is a fake: no test calls a model.
 
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -277,6 +278,17 @@ describe("the eval wiring (runSkillEvalFor)", () => {
     expect(runner.specs[0]).toMatchObject({ system_prompt: "Write the test first.", model_class: "standard", tools: [] });
     expect(llm.requests[0]).toMatchObject({ model_class: "strong", system: JUDGE_PROMPT });
     expect((await store.listSkillEvalRuns("skills/tests-first")).map((x) => x.id)).toEqual(["run1"]);
+  });
+
+  it("stores the suite's version, the judge prompt's SHA-256 and the factory version at the run's start (absent: dev)", async () => {
+    const store = await suiteWith({ c1: { input: "good", expected: ["a"] } });
+    const { d } = await wiring(store, new FakeLLM(() => yesNo("yes")));
+    const [suite] = await store.db.all("SELECT version FROM controller_skill_eval_suites WHERE id = 's1'");
+    const judge_version = createHash("sha256").update(JUDGE_PROMPT).digest("hex");
+    const r = await runSkillEvalFor({ ...d, factory_version: "rev-abc" }, { skill: "skills/tests-first", created_by: OWNER, signal: signal() });
+    expect(r).toEqual({ run: expect.objectContaining({ suite_version: Number(suite!.version), judge_version, factory_version: "rev-abc" }) });
+    const dev = await runSkillEvalFor({ ...d, newId: () => "run2" }, { skill: "skills/tests-first", created_by: OWNER, signal: signal() });
+    expect(dev).toEqual({ run: expect.objectContaining({ id: "run2", judge_version, factory_version: "dev" }) });
   });
 
   it("refuses, naming the skill, when no suite exists for it, and writes no run nor builds a plugin", async () => {
