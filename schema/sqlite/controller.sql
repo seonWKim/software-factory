@@ -365,17 +365,31 @@ CREATE TABLE controller_schedule_suggestions (
     UNIQUE (schedule_id, fingerprint)
   );
 
-CREATE TABLE controller_schedules (
-    id             TEXT PRIMARY KEY,
-    title          TEXT NOT NULL,
-    cadence_kind   TEXT NOT NULL,
-    cadence_spec   TEXT NOT NULL,
-    zone           TEXT NOT NULL,
-    created_by     TEXT NOT NULL,
-    created_at     TEXT NOT NULL,
-    next_due_at    TEXT,
-    running_since  TEXT
-  , skip_when_busy INTEGER, action_kind TEXT, action_settings TEXT, token_cap INTEGER, instruction TEXT, url TEXT, paused INTEGER, run_cap_usd REAL, daily_cap_usd REAL, cap_raise_usd REAL, cap_raise_day TEXT, cap_hold_key TEXT, last_run_at TEXT);
+CREATE TABLE "controller_schedules" (
+    id               TEXT PRIMARY KEY,
+    title            TEXT NOT NULL,
+    cadence_kind     TEXT,
+    cadence_spec     TEXT,
+    zone             TEXT NOT NULL,
+    created_by       TEXT NOT NULL,
+    created_at       TEXT NOT NULL,
+    next_due_at      TEXT,
+    running_since    TEXT,
+    skip_when_busy   INTEGER,
+    action_kind      TEXT,
+    action_settings  TEXT,
+    token_cap        INTEGER,
+    instruction      TEXT,
+    url              TEXT,
+    paused           INTEGER,
+    run_cap_usd      REAL,
+    daily_cap_usd    REAL,
+    cap_raise_usd    REAL,
+    cap_raise_day    TEXT,
+    cap_hold_key     TEXT,
+    last_run_at      TEXT,
+    trigger_kind     TEXT
+  );
 
 CREATE TABLE controller_signals (
     id            TEXT PRIMARY KEY,

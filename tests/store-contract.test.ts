@@ -147,6 +147,18 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       const { store, clock } = await added();
       expect(store.scheduleNow()).toBe(clock.now().toISOString());
     });
+
+    it("a new schedule's trigger, USD caps, cap raise, paused and last run default to none, and the store writes and reads them back", async () => {
+      const { store } = await added();
+      expect(await one(store)).toMatchObject({ trigger: null, run_cap_usd: null, daily_cap_usd: null, cap_raise: null, paused: false, last_run_at: null });
+      const extra = {
+        trigger: "merge" as const, run_cap_usd: 0.5, daily_cap_usd: 2, cap_raise: { usd: 1, day: "2026-11-22", hold_key: "h1" }, paused: true,
+        last_run_at: "2026-11-22T09:00:00.000Z" as Timestamp,
+      };
+      const s = await store.addSchedule({ ...DAILY, id: "sch_2", created_at: "2026-11-22T12:00:01.000Z" as Timestamp, next_due_at: null, ...extra });
+      expect(s).toMatchObject({ id: "sch_2", cadence: { kind: "daily", spec: "09:00" }, ...extra });
+      expect((await store.listSchedules()).find((x) => x.id === "sch_2")).toEqual(s);
+    });
   });
 
   describe("routines: updateRoutine, raiseRoutineCap and suggestions (src/core/routines.ts)", () => {
@@ -2320,6 +2332,8 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       // Rebuilt without pr_number (src/controller/migrations/20261112T1200-controller-change-ref-only); kept until its contract step.
       "legacy_controller_unreviewed_merges",
       "legacy_controller_work_items",
+      // Rebuilt with a nullable cadence and trigger_kind (src/controller/migrations/20261125T1000-controller-schedules-trigger); kept until its contract step.
+      "legacy_controller_schedules",
       // Rebuilt for the plugin import's pointers (src/state/migrations/20261116T1300 and 20261116T1310); kept until the contract step.
       "legacy_ext_packs_entries",
       "legacy_ext_skill_refs",

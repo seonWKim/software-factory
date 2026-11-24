@@ -7,9 +7,11 @@
 // removes the schedule row and ends its held checkpoints as `rejected` in one transaction; its other run rows stay.
 // The schedule list and the due list leave out Check a page rows (action_kind 'check_page', routines copied by the
 // 20261124T1100-controller-routines-into-schedules migration): they have no run behaviour and no page or API view
-// yet, so they never fire and the Schedules page, API and CLI do not show them.
+// yet, so they never fire and the Schedules page, API and CLI do not show them. Those rows are the routine store's
+// (src/impl/store/sql/routines.ts); a trigger routine's row has a null cadence and its trigger in `trigger_kind`.
 
-import type { CadenceKind } from "../../../core/schedule-cadence.js";
+import type { RoutineTrigger } from "../../../core/routines.js";
+import type { Cadence, CadenceKind } from "../../../core/schedule-cadence.js";
 import type {
   ClaimOutcome, NewSchedule, Schedule, ScheduleActionKind, ScheduleClaim, ScheduleOutcome, SchedulePatch, ScheduleRun, ScheduleRunResult, ScheduleStore,
 } from "../../../core/schedule.js";
@@ -17,7 +19,8 @@ import type { Timestamp, UserId } from "../../../core/types.js";
 import type { Row, SqlDriver, SqlValue } from "../../../state/index.js";
 import { SqlRunOutputStore } from "./run-output.js";
 
-const COLUMNS = "id, title, cadence_kind, cadence_spec, zone, created_by, created_at, next_due_at, running_since, skip_when_busy, action_kind, action_settings, token_cap";
+const COLUMNS = "id, title, cadence_kind, cadence_spec, zone, created_by, created_at, next_due_at, running_since, skip_when_busy, action_kind, action_settings, token_cap, " +
+  "trigger_kind, run_cap_usd, daily_cap_usd, cap_raise_usd, cap_raise_day, cap_hold_key, paused, last_run_at";
 const RUN_COLUMNS = "schedule_id, occurrence_at, outcome, recorded_at, queued_implement_runs, output, tokens, cost_usd";
 /** The running state each outcome's claim requires: refused takes a running schedule, every other an idle one. */
 const CLAIM_STATE: Readonly<Record<ClaimOutcome, string>> = {
@@ -28,14 +31,23 @@ const HELD = "outcome = 'checkpoint'";
 const NOT_CHECK_PAGE = "COALESCE(action_kind, '') <> 'check_page'";
 
 const time = (v: unknown) => (v == null ? null : (String(v) as Timestamp));
+const num = (v: unknown) => (v == null ? null : Number(v));
+
+/** A row's cadence, null when it has none (a trigger routine's row). */
+export const rowCadence = (r: Row): Cadence | null => (r.cadence_kind == null ? null : { kind: String(r.cadence_kind) as CadenceKind, spec: String(r.cadence_spec) });
+/** A row's cap raise, null until an `/approve` answered a hold. */
+export const rowCapRaise = (r: Row): Schedule["cap_raise"] =>
+  r.cap_hold_key == null ? null : { usd: Number(r.cap_raise_usd ?? 0), day: String(r.cap_raise_day), hold_key: String(r.cap_hold_key) };
 
 function rowToSchedule(r: Row): Schedule {
   return {
-    id: String(r.id), title: String(r.title), cadence: { kind: String(r.cadence_kind) as CadenceKind, spec: String(r.cadence_spec) }, zone: String(r.zone),
+    id: String(r.id), title: String(r.title), cadence: rowCadence(r), zone: String(r.zone),
     created_by: String(r.created_by) as UserId, created_at: String(r.created_at) as Timestamp, next_due_at: time(r.next_due_at), running_since: time(r.running_since),
     skip_when_busy: Number(r.skip_when_busy ?? 0) === 1,
     action: r.action_kind == null ? null : { kind: String(r.action_kind) as ScheduleActionKind, settings: JSON.parse(String(r.action_settings ?? "{}")) as Record<string, unknown> },
-    token_cap: r.token_cap == null ? null : Number(r.token_cap),
+    token_cap: num(r.token_cap),
+    trigger: r.trigger_kind == null ? null : (String(r.trigger_kind) as RoutineTrigger), run_cap_usd: num(r.run_cap_usd), daily_cap_usd: num(r.daily_cap_usd),
+    cap_raise: rowCapRaise(r), paused: Number(r.paused ?? 0) === 1, last_run_at: time(r.last_run_at),
   };
 }
 
@@ -55,9 +67,11 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
 
   async addSchedule(s: NewSchedule): Promise<Schedule> {
     try {
-      await this.db.run(`INSERT INTO controller_schedules (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`, [
+      await this.db.run(`INSERT INTO controller_schedules (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
         s.id, s.title, s.cadence.kind, s.cadence.spec, s.zone, s.created_by, s.created_at, s.next_due_at, s.skip_when_busy ? 1 : null,
         s.action?.kind ?? null, s.action ? JSON.stringify(s.action.settings) : null, s.token_cap ?? null,
+        s.trigger ?? null, s.run_cap_usd ?? null, s.daily_cap_usd ?? null, s.cap_raise?.usd ?? null, s.cap_raise?.day ?? null, s.cap_raise?.hold_key ?? null,
+        s.paused ? 1 : null, s.last_run_at ?? null,
       ]);
     } catch (err) {
       if (!this.db.isDuplicateKey(err)) throw err;
