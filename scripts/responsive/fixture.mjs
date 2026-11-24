@@ -13,6 +13,7 @@ import { ALERT_DEDUPE_MS } from "../../dist/core/alarms.js";
 import { SkillRefsStore } from "../../dist/import/import-plugins.js";
 import { saveProject } from "../../dist/core/project-labels.js";
 import { writeRoutine } from "../../dist/core/routines.js";
+import { writeSchedule } from "../../dist/core/schedule.js";
 import { SPEC_GATE, STANDING_APPROVED, STANDING_TIER, ruleId, standingActor } from "../../dist/core/standing.js";
 import { SystemClock } from "../../dist/impl/clock/system-clock.js";
 import { PatternEgressScanner } from "../../dist/impl/egress/pattern-egress-scanner.js";
@@ -238,6 +239,7 @@ async function seed(store, storage, dir) {
   await seedStanding(store);
   await seedSkill(store, dir);
   await seedRoutines(store);
+  await seedSchedules(store);
 
   // Overrides: an object-valued model_by and a project-level key, with history.
   await store.setSettingOverride({ key: "model_by", project: "", value: JSON.stringify({ ...MODEL_BY, review: "strong" }), actor: OWNER });
@@ -281,6 +283,24 @@ async function seedRoutines(store) {
   }
   const paused = await writeRoutine(store, "pause", "rtn_responsive_paused", {}, OWNER, now);
   if (!paused.ok) throw new Error(`fixture routine pause failed: ${paused.problem}`);
+}
+
+/**
+ * Two plain schedules, so the Schedules page draws its table, Switches and row menus: a daily build, and a weekly agent
+ * that is paused. Added through the same core write the API runs.
+ */
+async function seedSchedules(store) {
+  const now = new Date();
+  const schedules = [
+    { id: "sch_responsive_docs", title: "Nightly docs check", cadence: "daily", spec: "09:00", zone: "Europe/Paris", action: "build", body: "Check the docs for pages that no longer match the product." },
+    { id: "sch_responsive_review", title: "Weekly review", cadence: "weekly", spec: "mon 09:00", zone: "Europe/Paris", action: "agent", body: "Summarize the week's merged changes." },
+  ];
+  for (const { id, ...fields } of schedules) {
+    const r = await writeSchedule(store, "add", id, fields, OWNER, now);
+    if (!r.ok) throw new Error(`fixture schedule ${id} failed: ${r.problem}`);
+  }
+  const paused = await writeSchedule(store, "pause", "sch_responsive_review", {}, OWNER, now);
+  if (!paused.ok) throw new Error(`fixture schedule pause failed: ${paused.problem}`);
 }
 
 /** How many items the standing approval approved in the last 7 days: more than the two its Rules page row names before "+N more". */

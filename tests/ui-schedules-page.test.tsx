@@ -141,6 +141,17 @@ describe("Schedules page", () => {
     expect(body[1]?.slice(1)).toEqual(["Ran", "$0.0123", "Found two stale pages."]);
   });
 
+  it("the selected schedule's row is marked current, not its title drawn as a pressed pill", async () => {
+    show();
+    await ready();
+    const title = within(await row("Nightly docs check")).getByRole("button", { name: "Show runs of Nightly docs check" });
+    fireEvent.click(title);
+    await waitFor(() => expect((title.closest("tr") as HTMLElement).getAttribute("aria-current")).toBe("true"), SLOW);
+    expect(title.getAttribute("aria-pressed")).toBe("true");
+    expect((await row("Weekly review")).getAttribute("aria-current")).toBeNull();
+    expect(title.className).not.toMatch(/aria-pressed:bg-surface-2/);
+  });
+
   it("New schedule opens a Dialog with the CLI's fields and posts them with a title-made ID that is not shown", async () => {
     // An ID the title would make is taken, so the new one gets a number after it.
     schedules[0] = { ...schedules[0]!, id: "nightly-docs-check" };

@@ -17,8 +17,9 @@ import { ACTION_TEXT, CADENCE_TEXT, OUTCOME_TEXT, STATE_TEXT } from "./schedules
 // The Schedules page (design 09-dashboard-schedules, over 08-schedules): every schedule in a DataTable inside a Card,
 // read through GET /api/v1/schedules. Each row's Switch is on while the schedule has a next run and off while it is
 // paused (pause clears the next run), and posts pause or resume; its "⋯" menu holds Run now (off while paused) and Edit.
-// Pressing a row's title selects it and shows its runs in a second Card (GET /api/v1/schedules/runs). New schedule, the
-// page's one primary action, and Edit open one Dialog (schedules/form.tsx). A refusal shows in a Notice above the table.
+// Pressing a row's title (DataTable's `select`) marks the row as current and shows its runs in a second Card
+// (GET /api/v1/schedules/runs). New schedule, the page's one primary action, and Edit open one Dialog
+// (schedules/form.tsx). A refusal shows in a Notice above the table.
 // The Cards follow the PageHeader as siblings, spaced by the Card's own top margin as on the other pages (no flex gap).
 
 const when = (at: string) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -69,15 +70,7 @@ function RunsTable({ id }: { id: string }) {
 
 function ScheduleRows({ rows, selected, onSelect, onEdit, w }: { rows: readonly ScheduleRow[]; selected: string | null; onSelect: (id: string) => void; onEdit: (s: ScheduleRow, opener: HTMLElement | null) => void; w: Writes }) {
   const columns: Column<ScheduleRow>[] = [
-    {
-      key: "title",
-      header: t("schedules.col.title"),
-      render: (s) => (
-        <Button variant="ghost" size="sm" aria-pressed={s.id === selected} aria-label={t("schedules.select", { title: s.title })} className="-ml-2 max-w-full text-left" onClick={() => onSelect(s.id)}>
-          <span className="truncate">{s.title}</span>
-        </Button>
-      ),
-    },
+    { key: "title", header: t("schedules.col.title") },
     { key: "cadence", header: t("schedules.col.cadence"), render: (s) => t(CADENCE_TEXT[s.cadence.kind], { spec: s.cadence.spec }) },
     { key: "next", header: t("schedules.col.next"), render: (s) => (s.next_due_at === null ? "" : when(s.next_due_at)) },
     { key: "status", header: t("schedules.col.status"), render: (s) => <Badge level={stateOf(s)}>{t(STATE_TEXT[stateOf(s)])}</Badge> },
@@ -103,7 +96,7 @@ function ScheduleRows({ rows, selected, onSelect, onEdit, w }: { rows: readonly 
       ),
     },
   ];
-  return <DataTable columns={columns} rows={rows} rowKey={(s) => s.id} label={t("schedules.listLabel")} empty={t("schedules.empty")} dataKey />;
+  return <DataTable columns={columns} rows={rows} rowKey={(s) => s.id} label={t("schedules.listLabel")} empty={t("schedules.empty")} dataKey select={{ key: selected, onSelect, label: (s) => t("schedules.select", { title: s.title }) }} />;
 }
 
 export function SchedulesPage() {
