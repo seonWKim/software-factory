@@ -9,10 +9,11 @@ import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
 import { type UiRequest, respond } from "../src/ui/server.js";
-import { newCsrfToken } from "../src/ui/settings-api.js";
+import { type UiSettings, newCsrfToken } from "../src/ui/settings-api.js";
 import { POST_ONLY } from "../src/ui/write-routes.js";
 import { silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
@@ -24,7 +25,7 @@ const HOUR = 3_600_000;
 const FIRST = "2026-11-23T00:00:00.000Z";
 const ADD = { id: "sch_fb", title: "Feedback", cadence: "daily", spec: "09:00", zone: "Asia/Seoul", action: "build" };
 
-async function setup(principal: UserId = OWNER) {
+async function setup(principal: UserId = OWNER, llm?: LLMProvider | null) {
   const clock = new FakeClock("2026-11-22T12:00:00.000Z");
   const { store } = await newStore(clock);
   await store.claimOwner(OWNER);
@@ -38,6 +39,13 @@ async function setup(principal: UserId = OWNER) {
   }) as FactoryStore;
   const pauses: UiPauses = { principal: async () => principal, authorize: async () => ({ allow: true }), csrfToken: newCsrfToken(), log: silent };
   const d: PauseDeps = { store: watched, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock), pauses };
+  // The routes' model is the Data page's Ask model (compose.ts buildUiParts fills settings.ask).
+  if (llm !== undefined) {
+    d.settings = {
+      base: { file: {}, layers: { defaults: {}, projects: {} }, max_workers: 8 } as unknown as UiSettings["base"],
+      repo: { owner: "o", name: "r" }, actor: OWNER, resolveProject: async () => null, csrfToken: newCsrfToken(), ask: { llm, log: silent },
+    };
+  }
   const send = async (verb: string, body: unknown, over: Partial<UiRequest> = {}) => {
     const r = await respond(d, {
       method: "POST", url: `/api/v1/schedules/${verb}`, host: HOST, origin: ORIGIN, contentType: "application/json", csrfToken: pauses.csrfToken, body: JSON.stringify(body), ...over,
@@ -150,5 +158,72 @@ describe("POST /api/v1/schedules/…", () => {
     expect((await get("/api/v1/schedules")).value.schedules).toEqual([]);
     expect(await store.listScheduleRuns("sch_fb")).toMatchObject([{ occurrence_at: FIRST, outcome: "fired" }]);
     expect(await send("delete", { id: "sch_fb" })).toEqual({ status: 404, value: { error: "no schedule sch_fb" } });
+  });
+});
+
+// POST /api/v1/schedules/draft and /improve (src/core/schedule-draft.ts): a fake model, never a live one.
+const WORDS = "review the design of software-factory every day at 9am";
+const DRAFTED = { title: "Design review", cadence: "daily", spec: "09:00", zone: "", action: "feedback", text: "Read design-system/ and file a task per gap." };
+
+/** A fake model that answers every call with `answer` and records the calls. */
+function fakeModel(answer: Record<string, unknown>): LLMProvider & { calls: LLMRequest[] } {
+  const calls: LLMRequest[] = [];
+  return {
+    calls,
+    async complete(req): Promise<LLMResponse> {
+      calls.push(req);
+      return { text: JSON.stringify(answer), parsed: answer, stop_reason: "end", usage: { input_tokens: 1, output_tokens: 1, cost_usd: null } };
+    },
+  };
+}
+
+describe("POST /api/v1/schedules/draft and /improve", () => {
+  it("draft answers the proposal with 200 and stores nothing", async () => {
+    const llm = fakeModel(DRAFTED);
+    const { store, send } = await setup(OWNER, llm);
+    const r = await send("draft", { words: WORDS });
+    expect(r.status).toBe(200);
+    expect(r.value.proposal).toMatchObject({ id: expect.stringMatching(/^sch_/), fields: { cadence: "daily", spec: "09:00", action: "feedback", body: DRAFTED.text } });
+    expect(r.value.proposal.fields.body).toContain("design-system/");
+    expect(await store.listSchedules()).toEqual([]);
+  });
+
+  it("improve answers the old and new text with 200 and stores nothing", async () => {
+    const llm = fakeModel({ text: "Read design-system/ closely." });
+    const { store, send } = await setup(OWNER, llm);
+    await send("add", { ...ADD, body: "Look" });
+    const before = await store.listSchedules();
+    expect(await send("improve", { id: "sch_fb" })).toEqual({ status: 200, value: { proposal: { id: "sch_fb", old: "Look", new: "Read design-system/ closely." } } });
+    expect(await store.listSchedules()).toEqual(before);
+  });
+
+  it("anyone but the owner gets a 403 before any model call", async () => {
+    const llm = fakeModel(DRAFTED);
+    const { send } = await setup("local:guest@example.com" as UserId, llm);
+    for (const [verb, body] of [["draft", { words: WORDS }], ["improve", { id: "sch_fb" }]] as const) {
+      expect({ verb, r: await send(verb, body) }).toMatchObject({ r: { status: 403, value: { error: expect.stringContaining("Only the owner manages schedules") } } });
+    }
+    expect(llm.calls).toEqual([]);
+  });
+
+  it("a bad body is a 400 and a wrong CSRF token a 403, before any model call; a GET is not served", async () => {
+    const llm = fakeModel(DRAFTED);
+    const { store, send } = await setup(OWNER, llm);
+    for (const [verb, body] of [["draft", null], ["draft", {}], ["draft", { words: " " }], ["draft", { words: WORDS, id: "x" }], ["improve", { id: 3 }], ["improve", { words: WORDS }]] as [string, unknown][]) {
+      expect({ verb, body, status: (await send(verb, body)).status }).toEqual({ verb, body, status: 400 });
+    }
+    expect((await send("draft", { words: WORDS }, { csrfToken: "wrong" })).status).toBe(403);
+    expect([404, 405]).toContain((await send("draft", { words: WORDS }, { method: "GET" })).status);
+    expect(llm.calls).toEqual([]);
+    expect(await store.listSchedules()).toEqual([]);
+  });
+
+  it("with no model, or a refusal of the core, answers its reason and stores nothing", async () => {
+    const off = await setup(OWNER, null);
+    expect(await off.send("draft", { words: WORDS })).toMatchObject({ status: 503, value: { error: expect.stringContaining("no model is configured") } });
+    const bad = await setup(OWNER, fakeModel({ ...DRAFTED, cadence: "hourly" }));
+    expect(await bad.send("draft", { words: WORDS })).toMatchObject({ status: 409, value: { error: expect.stringContaining('"hourly" is not a cadence') } });
+    expect(await bad.send("improve", { id: "nope" })).toEqual({ status: 409, value: { error: "no schedule nope" } });
+    expect(await bad.store.listSchedules()).toEqual([]);
   });
 });
