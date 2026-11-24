@@ -5,7 +5,7 @@ import { newStore } from "./helpers/store.js";
 
 describe("buildLocalCliDeps", () => {
   it("builds the runLocalCli dependencies with their keys", async () => {
-    const store = await newStore();
+    const { store } = await newStore();
     const loaded = { config: { repo: { owner: "o", name: "n" }, settings: [] }, file: {} } as unknown as Loaded;
     const identity = { user: "local:me", from: "OS user" } as never;
     const d = await buildLocalCliDeps(store, loaded, identity, "factory", { action: "show", id: "wi_x" } as never);
