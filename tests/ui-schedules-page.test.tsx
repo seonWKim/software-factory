@@ -232,6 +232,15 @@ describe("Schedules page", () => {
     expect((await row("Daily design check")).textContent).toContain("Gives feedback as tasks");
   });
 
+  it("a long title is cut to the column's width, whole in its tooltip, so it never widens the table past a tablet's edge", async () => {
+    const long = "Weekly check of the public pricing page for broken links, stale prices and out-of-date plan names";
+    schedules.push(schedule("sch_long", long));
+    show();
+    const title = [...(await row(long)).querySelectorAll<HTMLElement>("td span")].find((el) => el.textContent === long && !el.hasAttribute("data-summary"))!;
+    expect(title.title).toBe(long);
+    expect(title.className.split(/\s+/)).toEqual(expect.arrayContaining(["w-0", "min-w-full", "truncate"]));
+  });
+
   it("selecting a schedule shows what it does above its runs: its whole text behind Show more, the action, repeats, zone, busy rule, token limit, last and next run", async () => {
     schedules[0] = schedule("sch_aaaa1111", "Nightly docs check", { token_cap: 50_000, skip_when_busy: true, action: { kind: "feedback", settings: { prompt: "Once a day, check the docs.\nYou are the docs persona." } } });
     show();

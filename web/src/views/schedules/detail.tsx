@@ -37,14 +37,15 @@ export function summaryOf(s: ScheduleRow): string {
 
 /**
  * The Schedule cell: the title, and under it the summary in one muted line cut with an ellipsis (its full text in the
- * tooltip). The summary takes the column's width (`w-0 min-w-full`) and never widens it, so the row fits a tablet;
- * from lg the cell is at least 12rem wide (18rem from xl), so the line has room.
+ * tooltip). The title and the summary take the column's width (`w-0 min-w-full`) and never widen it, so a long title
+ * cannot push the Switch and "⋯" past a tablet's edge; the cell is at least 8rem wide (12rem from lg, 18rem from xl),
+ * so both lines have room. A cut title shows whole in its tooltip.
  */
 export function TitleCell({ s }: { s: ScheduleRow }) {
   const summary = summaryOf(s);
   return (
-    <span className="flex min-w-0 flex-col lg:min-w-48 xl:min-w-72">
-      <span className="truncate">{s.title}</span>
+    <span className="flex min-w-32 flex-col lg:min-w-48 xl:min-w-72">
+      <span title={s.title} className="w-0 min-w-full truncate">{s.title}</span>
       <span data-summary title={summary} className="w-0 min-w-full truncate text-xs font-normal text-text-2">
         {summary}
       </span>
