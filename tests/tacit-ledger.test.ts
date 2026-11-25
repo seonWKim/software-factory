@@ -1241,7 +1241,7 @@ describe("the skill hand-off (src/core/skill-improve.ts)", () => {
     return { tacit, log, proposals, verdicts, warns };
   }
 
-  /** A store with skills/a's score dropped (0.8 → 0.5 on v:SKILL A); the scratch run scores `scratchRate`. */
+  /** A store with skills/a's score dropped (0.8 → 0.5 on v:SKILL A) on dev case c1, and held-out case h1; each scratch run scores `scratchRate`. */
   async function dropped(scratchRate = 1) {
     const { store, clock } = await newStore();
     clock.set("2026-11-24T10:00:00.000Z");
@@ -1255,6 +1255,9 @@ describe("the skill hand-off (src/core/skill-improve.ts)", () => {
       await store.recordSkillEvalRunFigures(id, { model_class: "standard", judge_model_class: "strong", replays: 1, pass_rate: rate, errored: 0 });
       return (await store.getSkillEvalRun(id))!;
     };
+    await store.createSkillEvalSuite({ id: `suite:${SKILL}`, skill_ref: SKILL, title: SKILL, created_by: OWNER });
+    await store.addSkillEvalCase({ id: "c1", suite_id: `suite:${SKILL}`, input: "in", expected: ["x"] });
+    await store.addSkillEvalCase({ id: "h1", suite_id: `suite:${SKILL}`, input: "held", expected: ["x"], split: "held-out" });
     await measured("r1", "v:SKILL A", 0.8);
     await measured("r2", "v:SKILL A", 0.5, ["cites the source"]);
     const wiring: SkillImproveWiring = {
