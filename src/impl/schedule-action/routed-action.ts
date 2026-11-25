@@ -3,7 +3,9 @@
 // src/controller/units/schedule/plugins/), bound to ports over the store, the agent runner and the egress scanner. An agent call gets exactly the read-only
 // tools Read, Glob and Grep, in a fresh detached checkout, with deny_paths and no writable path, unless the route
 // passes the run its schedule's grants handed out (a feedback schedule's, by ScheduleGrantBroker in
-// src/core/schedule-grants.ts, which compose binds): then that run's tools, repo and writable paths. Every answer is scanned before it is stored or filed (G5). The token cap is the claim pass's (src/core/schedule.ts): an
+// src/core/schedule-grants.ts, which compose binds): then that run's tools, broker tools, repo and writable paths.
+// The checkout is always a read-only path, so a harness that allows writes in its workdir (claude-code) still lets
+// Write and Edit reach only the writable paths. Every answer is scanned before it is stored or filed (G5). The token cap is the claim pass's (src/core/schedule.ts): an
 // occurrence over it never reaches this action.
 
 import { execFile } from "node:child_process";
@@ -12,6 +14,7 @@ import { mkdir } from "node:fs/promises";
 import type { Contexts } from "../../plugin-api.js";
 import type { ActionPorts, AgentAnswer } from "../../controller/units/schedule/plugins/ports.js";
 import type { Schedule } from "../../core/schedule.js";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { GrantBrokerDeps } from "../../core/schedule-grants.js";
 import type { ToolSpec } from "../../core/tools/types.js";
 import { type RunId, type Timestamp, type WorkItemId, usageTokens } from "../../core/types.js";
@@ -25,6 +28,19 @@ export const nodeGrantDeps: GrantBrokerDeps = {
     execFile(file, [...args], { timeout: 30_000, maxBuffer: 1_000_000, ...(signal ? { signal } : {}) }, (err, stdout) => (err ? rej(err) : res(stdout)));
   }),
 };
+
+/**
+ * A schedule run's read-only paths: its checkout, so a harness that allows writes in its workdir (claude-code) lets
+ * Write and Edit reach only the run's writable paths. A checkout that holds or lies in a denied path would lose that
+ * rule in the harness (a read-only path never overlaps one): it throws, before any agent starts. Node's path, not
+ * core's: an adapter imports no core value (tests/architecture/kinds.test.ts).
+ */
+export function readOnlyCheckout(workdir: string, deny_paths: readonly string[]): string[] {
+  const w = resolve(workdir);
+  const inside = (a: string, b: string) => { const r = relative(b, a); return r === "" || (r !== ".." && !r.startsWith(`..${sep}`) && !isAbsolute(r)); };
+  if (deny_paths.some((d) => inside(w, resolve(d)) || inside(resolve(d), w))) throw new Error(`the schedule's checkout ${w} overlaps a denied path`);
+  return [w];
+}
 
 /** The only tools a schedule's agent gets, all of capability `read`. */
 export const SCHEDULE_AGENT_TOOLS: readonly string[] = ["Read", "Glob", "Grep"];
@@ -79,7 +95,7 @@ export class RoutedScheduleAction implements ScheduleAction {
   private async ask(schedule: Schedule, occurrence_at: Timestamp, i: Parameters<ActionPorts["ask"]>[0]): Promise<AgentAnswer> {
     const { sandbox, runner, scanner } = this.c;
     const cfg = this.c.loaded.config;
-    const run = i.run ?? { tools: readOnlyTools(this.c.tools), repo: cfg.repo.path, base_ref: cfg.repo.base_branch, writable_paths: [], granted: [] };
+    const run = i.run ?? { tools: readOnlyTools(this.c.tools), repo: cfg.repo.path, base_ref: cfg.repo.base_branch, writable_paths: [], tool_grants: [], granted: [] };
     const handle = await sandbox.create({ repo: run.repo, branch: null, base_ref: run.base_ref });
     try {
       const result = await runner.run({
@@ -90,11 +106,12 @@ export class RoutedScheduleAction implements ScheduleAction {
         system_prompt: run.granted.length === 0 ? SYSTEM_PROMPT : `${SYSTEM_PROMPT}\n\nThe owner granted this schedule more, and nothing else:\n${run.granted.map((g) => `- ${g}`).join("\n")}`,
         prompt: i.prompt,
         tools: run.tools as ToolSpec[], // ScheduleGrantBroker hands out ToolSpecs; ports.ts names them by shape
-        tool_grants: [],
+        tool_grants: [...run.tool_grants],
         lease_token: 0,
         env_allowlist: {},
         deny_paths: cfg.deny_paths,
         writable_paths: [...run.writable_paths],
+        readable_paths: readOnlyCheckout(handle.workdir, cfg.deny_paths),
         model_class: "standard",
         timeout_ms: cfg.run_timeout_ms,
         ...(i.output_schema ? { output_schema: i.output_schema as Record<string, unknown> } : {}),

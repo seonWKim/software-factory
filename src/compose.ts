@@ -25,7 +25,7 @@ import { ControllerRole } from "./runtime/roles/controller-role.js";
 import { SqlHookAudit, loadHooks } from "./runtime/index.js";
 import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
-import { feedbackGrantHandOut } from "./core/schedule-grants.js";
+import { feedbackGrantHandOut, scheduleGrantTools, storedScheduleGrants } from "./core/schedule-grants.js";
 import { nodeGrantDeps } from "./impl/schedule-action/routed-action.js";
 import { type LearnedSettingsSource, LiveSettings, maxWorkers, workerCount } from "./core/settings.js";
 import { settingsBase } from "./core/settings-base.js";
@@ -239,7 +239,8 @@ export async function build(
   const { guard, passports } = brokerGuard(loaded, { store, secrets, identity: identity.passports, tool_grants });
   const local = { ...unguardedLocal, broker: guard(unguardedLocal.broker) };
   const guarded = guard(broker);
-  const runner = await p.runner(sandbox, secrets, { broker: guarded, scanner });
+  // A feedback schedule's shell grant: its broker tool reaches the run through the runner's tool bridge (design 08-schedules).
+  const runner = await p.runner(sandbox, secrets, { broker: scheduleGrantTools(guarded, storedScheduleGrants(store), nodeGrantDeps), scanner });
   const granted = [...new Set(Object.values(tool_grants ?? {}).flat())];
   if (granted.length > 0 && !runner.exposes_tools) {
     throw new Error(`tool_grants grants ${granted.join(", ")}, but the ${selectedRunners(sel).join(", ")} agent runner cannot expose broker tools; remove tool_grants or pick a runner that can`);

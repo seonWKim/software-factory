@@ -47,13 +47,15 @@ export interface AgentTool { readonly name: string; readonly capability: "read" 
 
 /** A schedule's grants as ScheduleGrantBroker handed them out (src/core/schedule-grants.ts): what its agent run gets. */
 export interface GrantedAgentRun {
-  /** The read-only tools, then each granted one (Browse on the sandbox URL, Write and Edit in the notes folder, the read-only sqlite3). */
+  /** The read-only tools, then each granted one (Browse on the sandbox URL, Write and Edit in the notes folder). */
   tools: readonly AgentTool[];
   /** The repo the run checks out, and its base: the factory repo's, or the granted repo's. */
   repo: string;
   base_ref: string;
   /** The notes folder, when granted. */
   writable_paths: readonly string[];
+  /** The broker tools granted (the shell grant's read-only sqlite3), served through the runner's tool bridge. */
+  tool_grants: readonly string[];
   /** Each grant in plain words. */
   granted: readonly string[];
 }

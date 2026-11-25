@@ -3,8 +3,9 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  type GrantBrokerDeps, SCHEDULE_SHELL_COMMAND, SQLITE_TOOL, ScheduleGrantBroker, grantWords, grantsOfWords, notesFolder, storedGrants,
+  type GrantBrokerDeps, SCHEDULE_SHELL_COMMAND, SQLITE_TOOL, ScheduleGrantBroker, grantWords, grantsOfWords, notesFolder, scheduleGrantTools, storedGrants, storedScheduleGrants,
 } from "../src/core/schedule-grants.js";
+import type { ToolBroker } from "../src/interfaces/tool-broker.js";
 import { type ToolContext, guardPolicy } from "../src/core/tools/index.js";
 import { READ_TOOLS } from "../src/worker/index.js";
 
@@ -99,17 +100,57 @@ describe("ScheduleGrantBroker.handOut", () => {
     await expect(new ScheduleGrantBroker("s1", [{ kind: "repo", path: "/factory/.factory/x", base_ref: "main" }], deps().d).handOut(base)).rejects.toThrow(/state folder/);
   });
 
-  it("a shell grant runs sqlite3 -readonly through the broker's call, and nothing else", async () => {
+  it("a shell grant hands out the broker tool, which runs sqlite3 -readonly through the broker's call, and nothing else", async () => {
     const { d, ran } = deps();
     const broker = new ScheduleGrantBroker("s1", [{ kind: "shell", command: SCHEDULE_SHELL_COMMAND, db: "/data/app.db" }], d);
     expect(broker.listTools([SQLITE_TOOL]).map((t) => [t.name, t.read_only])).toEqual([[SQLITE_TOOL, true]]);
-    const tool = (await broker.handOut(base)).tools.find((t) => t.name === "SqliteReadonly")!;
-    expect(await tool.run({ sql: "select 1" }, toolCtx())).toEqual({ ok: true, content: "1|ok\n" });
+    const run = await broker.handOut(base);
+    expect(run.tool_grants).toEqual([SQLITE_TOOL]);
+    expect(run.tools.map((t) => t.name)).toEqual(["Read", "Glob", "Grep"]);
+    expect(await broker.call(ctxCall, SQLITE_TOOL, { sql: "select 1" })).toEqual({ ok: true, content: "1|ok\n" });
     expect(ran).toEqual([{ file: "sqlite3", args: ["-readonly", "/data/app.db", "select 1"] }]);
-    for (const sql of [".shell rm -rf /", "select writefile('/x', 'y')", "attach '/other.db' as o", "select load_extension('x')"]) {
+    for (const sql of [".shell rm -rf /", "select writefile('/x', 'y')", "attach '/other.db' as o", "select load_extension('x')", "-version", "  -A x", "-unsafe-testing"]) {
       expect(await broker.call(ctxCall, SQLITE_TOOL, { sql })).toMatchObject({ ok: false, error_code: "refused" });
     }
     expect(await new ScheduleGrantBroker("s1", [], d).call(ctxCall, SQLITE_TOOL, { sql: "select 1" })).toMatchObject({ ok: false, error_code: "not_granted" });
     expect(ran).toHaveLength(1);
+  });
+});
+
+describe("scheduleGrantTools: the runner's broker with the shell grant's tool", () => {
+  const inner: ToolBroker = {
+    listTools: (g) => (g.includes("forge.read") ? [{ name: "forge.read", description: "", input_schema: {}, read_only: true }] : []),
+    allTools: () => [{ name: "forge.read", description: "", input_schema: {}, read_only: true }],
+    call: async (_c, name) => ({ ok: true, content: `inner ${name}` }),
+  };
+  const shell = { kind: "shell", command: SCHEDULE_SHELL_COMMAND, db: "/data/app.db" } as const;
+
+  it("lists the tool only when granted, and serves it from the run's schedule's stored grants", async () => {
+    const { d, ran } = deps();
+    const asked: string[] = [];
+    const broker = scheduleGrantTools(inner, async (id) => (asked.push(id), id === "s1" ? [shell] : []), d);
+    expect(broker.listTools(["forge.read"]).map((t) => t.name)).toEqual(["forge.read"]);
+    expect(broker.listTools(["forge.read", SQLITE_TOOL]).map((t) => t.name)).toEqual(["forge.read", SQLITE_TOOL]);
+    expect(await broker.call({ ...ctxCall, work_item_id: "schedule:s1" as never }, SQLITE_TOOL, { sql: "select 1" })).toEqual({ ok: true, content: "1|ok\n" });
+    expect(ran).toEqual([{ file: "sqlite3", args: ["-readonly", "/data/app.db", "select 1"] }]);
+    expect(await broker.call({ ...ctxCall, work_item_id: "schedule:s2" as never }, SQLITE_TOOL, { sql: "select 1" })).toMatchObject({ ok: false, error_code: "not_granted" });
+    expect(await broker.call({ ...ctxCall, work_item_id: "wi_1" as never }, SQLITE_TOOL, { sql: "select 1" })).toMatchObject({ ok: false, error_code: "not_granted" });
+    expect(asked).toEqual(["s1", "s2"]);
+    expect(await broker.call(ctxCall, "forge.read", {})).toEqual({ ok: true, content: "inner forge.read" });
+  });
+
+  it("reads the grants of the feedback schedule with the ID from the store, none for another kind", async () => {
+    const store = { listSchedules: async () => [
+      { id: "s1", action: { kind: "feedback", settings: { prompt: "p", grants: [shell] } } },
+      { id: "s2", action: { kind: "agent", settings: { prompt: "p", grants: [shell] } } },
+    ] as never };
+    expect(await storedScheduleGrants(store)("s1")).toEqual([shell]);
+    expect(await storedScheduleGrants(store)("s2")).toEqual([]);
+    expect(await storedScheduleGrants(store)("s3")).toEqual([]);
+  });
+
+  it("refuses the call when the schedule's stored grants are refused", async () => {
+    const broker = scheduleGrantTools(inner, async () => { throw new Error("the schedule's grant is refused: unknown grant"); }, deps().d);
+    expect(await broker.call({ ...ctxCall, work_item_id: "schedule:s1" as never }, SQLITE_TOOL, { sql: "select 1" })).toMatchObject({ ok: false, error_code: "not_granted" });
   });
 });

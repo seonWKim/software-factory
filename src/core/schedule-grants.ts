@@ -5,14 +5,14 @@
 //   repo     the agent runs in a fresh checkout of the git repo the owner names, outside the factory's state folder, and no other
 //   shell    one command: `sqlite3 -readonly` on the database file the owner names
 // Every grant is checked and handed out by ScheduleGrantBroker, a ToolBroker: a grant it refuses fails the run
-// before any agent starts, and the shell grant's only tool runs through its `call`.
+// before any agent starts, and the shell grant's only tool is a broker tool (`tool_grants`), served through the
+// runner's tool bridge by scheduleGrantTools, which calls the run's schedule's broker.
 
 import type { ToolCallContext, ToolDescriptor, ToolBroker, ToolResult as BrokerResult } from "../interfaces/tool-broker.js";
 import { Browse, Edit, Write } from "./tools/index.js";
 import { isAbsolute, isUnder, normalize, resolvePath } from "./tools/paths.js";
-import type { ScheduleActionSpec } from "./schedule.js";
+import type { ScheduleActionSpec, ScheduleStore } from "./schedule.js";
 import type { ToolSpec } from "./tools/types.js";
-import type { RunId, WorkItemId } from "./types.js";
 
 /** The factory's state folder, relative to the factory repo. */
 export const STATE_DIR = ".factory";
@@ -138,6 +138,8 @@ export interface GrantedRun {
   base_ref: string;
   /** The notes folder (absolute), when granted: the only place its Write and Edit reach. */
   writable_paths: string[];
+  /** The broker tools granted: SQLITE_TOOL for a shell grant. */
+  tool_grants: string[];
 }
 
 /** What the broker reads and runs (node's in src/impl/schedule-action/routed-action.ts); tests fake each. */
@@ -186,7 +188,8 @@ export class ScheduleGrantBroker implements ToolBroker {
     if (name !== SQLITE_TOOL || !shell) return { ok: false, error_code: "not_granted", message: `${name} is not granted to schedule ${this.schedule_id}` };
     const sql = (args as { sql?: unknown } | null)?.sql;
     if (typeof sql !== "string" || sql.trim() === "") return { ok: false, error_code: "bad_args", message: "sql must be a query" };
-    if (UNSAFE_SQL.test(sql)) return { ok: false, error_code: "refused", message: `${SCHEDULE_SHELL_COMMAND} runs plain SQL only: no dot commands, ATTACH or file functions` };
+    // sqlite3 reads any argument that starts with `-` as an option, even after the database: refused, not run.
+    if (UNSAFE_SQL.test(sql) || sql.trim().startsWith("-")) return { ok: false, error_code: "refused", message: `${SCHEDULE_SHELL_COMMAND} runs plain SQL only: no dot commands, options, ATTACH or file functions` };
     try {
       return { ok: true, content: await this.deps.exec("sqlite3", ["-readonly", shell.db, sql]) };
     } catch (e) {
@@ -200,7 +203,7 @@ export class ScheduleGrantBroker implements ToolBroker {
    * Creates the notes folder when granted.
    */
   async handOut(base: { tools: readonly ToolSpec[]; repo: string; base_ref: string }): Promise<GrantedRun> {
-    const run: GrantedRun = { tools: [...base.tools], repo: base.repo, base_ref: base.base_ref, writable_paths: [] };
+    const run: GrantedRun = { tools: [...base.tools], repo: base.repo, base_ref: base.base_ref, writable_paths: [], tool_grants: [] };
     for (const g of this.grants) {
       const problem = grantProblem(g);
       if (problem) throw new Error(`schedule ${this.schedule_id}: ${problem}`);
@@ -217,25 +220,38 @@ export class ScheduleGrantBroker implements ToolBroker {
         Object.assign(run, { repo: path, base_ref: g.base_ref });
       } else {
         if (!this.deps.exists(g.db)) throw new Error(`schedule ${this.schedule_id}: the granted database ${g.db} does not exist`);
-        run.tools.push(this.sqliteTool());
+        run.tool_grants.push(SQLITE_TOOL);
       }
     }
     return run;
   }
+}
 
-  /** The shell grant's tool, every call through `call`. */
-  private sqliteTool(): ToolSpec {
-    return {
-      name: "SqliteReadonly",
-      description: SQLITE_DESCRIPTOR.description,
-      input_schema: SQLITE_DESCRIPTOR.input_schema,
-      capability: "read",
-      run: async (input) => {
-        const r = await this.call({ run_id: `schedule_${this.schedule_id}` as RunId, work_item_id: `schedule:${this.schedule_id}` as WorkItemId, lease_token: 0 }, SQLITE_TOOL, input);
-        return r.ok ? { ok: true, content: String(r.content) } : { ok: false, error: r.message };
-      },
-    };
-  }
+/** scheduleGrantTools' `grantsOf` over the store: the stored grants of the feedback schedule with the ID, else none. */
+export const storedScheduleGrants = (store: Pick<ScheduleStore, "listSchedules">) => async (schedule_id: string): Promise<ScheduleGrant[]> => {
+  const action = (await store.listSchedules()).find((s) => s.id === schedule_id)?.action;
+  return action?.kind === "feedback" ? storedGrants(action.settings) : [];
+};
+
+/** The work item ID of a schedule's agent runs (routed-action.ts): `schedule:<id>`. */
+const SCHEDULE_ITEM = "schedule:";
+
+/**
+ * The runner's broker `inner` with the shell grant's tool: listed when a run is granted it, and each call served by
+ * the ScheduleGrantBroker of the run's schedule (work item `schedule:<id>`) over its stored grants, read per call by
+ * `grantsOf`. Any other run, or a schedule with no shell grant, gets not_granted. Every other tool goes to `inner`.
+ */
+export function scheduleGrantTools(inner: ToolBroker, grantsOf: (schedule_id: string) => Promise<readonly ScheduleGrant[]>, deps: GrantBrokerDeps): ToolBroker {
+  return {
+    listTools: (grants) => [...inner.listTools(grants), ...(grants.includes(SQLITE_TOOL) ? [SQLITE_DESCRIPTOR] : [])],
+    allTools: () => [...inner.allTools(), SQLITE_DESCRIPTOR],
+    call: async (ctx, name, args) => {
+      if (name !== SQLITE_TOOL) return inner.call(ctx, name, args);
+      const id = ctx.work_item_id.startsWith(SCHEDULE_ITEM) ? ctx.work_item_id.slice(SCHEDULE_ITEM.length) : null;
+      const grants = id === null ? [] : await grantsOf(id).catch(() => []);
+      return new ScheduleGrantBroker(id ?? ctx.work_item_id, grants, deps).call(ctx, name, args);
+    },
+  };
 }
 
 /**

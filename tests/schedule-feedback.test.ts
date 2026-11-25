@@ -7,12 +7,13 @@ import { agentAction } from "../src/controller/units/schedule/plugins/agent/agen
 import { buildAction } from "../src/controller/units/schedule/plugins/build/build-action.js";
 import { FEEDBACK_MAX_TASKS, feedbackActionWith } from "../src/controller/units/schedule/plugins/feedback/feedback-action.js";
 import { scheduledAction } from "../src/core/controller-deps.js";
-import { type GrantBrokerDeps, SCHEDULE_SHELL_COMMAND, feedbackGrantHandOut } from "../src/core/schedule-grants.js";
+import { type GrantBrokerDeps, SCHEDULE_SHELL_COMMAND, SQLITE_TOOL, feedbackGrantHandOut } from "../src/core/schedule-grants.js";
 import { type AddScheduleInput, type ScheduleActionSpec, addSchedule } from "../src/core/schedule.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { RoutedScheduleAction } from "../src/impl/schedule-action/routed-action.js";
+import { buildHarnessSettings } from "../src/impl/runner/claude-code-runner.js";
+import { RoutedScheduleAction, readOnlyCheckout } from "../src/impl/schedule-action/routed-action.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
@@ -98,6 +99,14 @@ describe("the feedback action", () => {
   });
 });
 
+describe("readOnlyCheckout", () => {
+  it("makes the checkout read only, and refuses one that overlaps a denied path", () => {
+    expect(readOnlyCheckout("/sbx/run1/", ["/home/me/.ssh", "/sbx/run10"])).toEqual(["/sbx/run1"]);
+    expect(() => readOnlyCheckout("/sbx/run1", ["/sbx/run1/.env"])).toThrow(/denied path/);
+    expect(() => readOnlyCheckout("/sbx/run1", ["/sbx"])).toThrow(/denied path/);
+  });
+});
+
 describe("feedback grants", () => {
   const feedback = (grants: unknown[]): ScheduleActionSpec => ({ kind: "feedback", settings: { prompt: "Review", grants } });
 
@@ -124,6 +133,11 @@ describe("feedback grants", () => {
     expect(spec.writable_paths).toEqual(["/repo/.factory/notes/sch_a"]);
     expect(spec.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["Write", "Edit"]));
     expect(spec.tools.map((t) => t.name)).not.toContain("Bash");
+    // The checkout is read only, so the claude-code harness lets Write and Edit reach the notes folder alone.
+    expect(spec.readable_paths).toEqual([spec.sandbox.workdir]);
+    const perms = (buildHarnessSettings(spec, spec.sandbox.workdir) as { permissions: { allow: string[]; deny: string[] } }).permissions;
+    expect(perms.deny).toContain(`Edit(/${spec.sandbox.workdir}/**)`);
+    expect(perms.allow).toContain("Edit(//repo/.factory/notes/sch_a/**)");
     await store.close();
   });
 
@@ -141,7 +155,8 @@ describe("feedback grants", () => {
     await shell.store.close();
     const ok = await setup(feedback([{ kind: "shell", command: SCHEDULE_SHELL_COMMAND, db: "/d.db" }]), () => ({ output: { tasks: [] } }));
     await ok.fire();
-    expect(ok.runner.specs[0]!.tools.map((t) => t.name)).toContain("SqliteReadonly");
+    // The shell grant's tool is a broker tool, reached through the runner's tool bridge (scheduleGrantTools).
+    expect(ok.runner.specs[0]!.tool_grants).toEqual([SQLITE_TOOL]);
     await ok.store.close();
   });
 });
