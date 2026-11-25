@@ -175,7 +175,7 @@ export type StateChangeDetail = Record<string, string | number | boolean | null>
 export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve" | "merge-check" | "restart" | "screenshot" | "judge" | "routine";
 
 /**
- * What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, or the newest note a `rereview` runs for, untrusted. `wip`: the failed implement run's commits on the forge; the retry pushes them with no agent run (design §5 Restarts).
+ * What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, or the newest note a `rereview` runs for, untrusted. `wip`: where the last implement run kept its commits (keptWip); the retry pushes them with no agent run, or runs the agent on them when marked `continue` (design §5 Restarts).
  */
 export interface RunInput {
   notes?: string;
@@ -568,7 +568,7 @@ export type RunOutcome =
       reset_at?: Timestamp | null;
       /** The last part of the run's output, for the last-attempt comment. Egress-scanned with the outcome. */
       output_tail?: string;
-      /** A failed push or PR after the agent step: where its commits were kept; the retry resumes from it. */
+      /** Where the run's commits were kept (a failed push or PR, a stop mid-work, any failure after commits); the retry resumes from it. */
       wip?: WipRef;
       /** For `forge_auth` and `preflight_access`: this run's failure started its claim pause (one owner comment per pause). */
       pause_started?: boolean;

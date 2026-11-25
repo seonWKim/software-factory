@@ -3,14 +3,14 @@
 import { commandFooter, commandState } from "../../core/commands.js";
 import { AUTO_ACTOR, isCovered, runKey } from "../../core/policy.js";
 import { MERGE_CONFLICT_PENDING } from "../../core/resolve.js";
-import { type Actor, RECURRING_FAILURE, type RunKind, type SourceRef, type SourceType, type StateChangeDetail, type Timestamp, type WorkItem, type WorkItemId, type WorkItemPatch } from "../../core/types.js";
+import { type Actor, RECURRING_FAILURE, type Run, type RunKind, type SourceRef, type SourceType, type StateChangeDetail, type Timestamp, type WipRef, type WorkItem, type WorkItemId, type WorkItemPatch } from "../../core/types.js";
 import type { TransitionInput } from "../../interfaces/factory-store.js";
 import type { SourceEvent } from "../../interfaces/source-adapter.js";
 
 // The split, delivery and gate states the approve gate checks live in core, shared with the dashboard's request path.
 export { DELIVERY_FAILED, FLOOR_TIER, RULE_OF_TWO, awaitingMerge, commandPhase, phaseLabel, splitFiling, splitOpen } from "../../core/commands.js";
 // Types the controller files outside units/ take from here (the golden gate), so they import no legacy module themselves.
-export type { Actor, Run, RunId, RunInput, Tier, WorkItem, WorkItemId } from "../../core/types.js";
+export type { Actor, Run, RunId, RunInput, Tier, WipRef, WorkItem, WorkItemId } from "../../core/types.js";
 export { branchFor, runKey } from "../../core/policy.js";
 export type { FactoryStore, GoldenFingerprint } from "../../interfaces/factory-store.js";
 
@@ -60,13 +60,30 @@ export const QUOTABLE_COMMAND = /^[a-z][a-z0-9_-]{0,31}$/;
 /** The forge's source type: its source and forge do not poll while the `github_rate_limit` pause holds. */
 export const GITHUB_SOURCE_TYPE: SourceType = "github_issue";
 /**
+ * Where an ended implement run kept its commits (design 05-restarts): the wip ref its outcome names (a failure's `wip`,
+ * or a needs_human or floor_block answer's `data.wip`), else the one it was handed and did not replace (a run that failed
+ * before it kept anything of its own). A run that pushed its branch keeps none.
+ */
+export function keptWip(run: Pick<Run, "kind" | "outcome" | "input">): WipRef | undefined {
+  const o = run.outcome;
+  if (run.kind !== "implement" || !o) return undefined;
+  if (o.status === "failed") return o.wip ?? run.input?.wip;
+  return o.data.needs_human != null || o.data.floor_block === true ? ((o.data.wip as WipRef | undefined) ?? run.input?.wip) : undefined;
+}
+/** The wip ref a `/retry` or `/approve` of an implement step hands its run (design 05-restarts): where the newest finished implement run kept its commits. */
+export function retryWip(runs: readonly Pick<Run, "kind" | "outcome" | "input">[]): WipRef | undefined {
+  const last = runs.filter((r) => r.kind === "implement" && r.outcome).at(-1);
+  return last ? keptWip(last) : undefined;
+}
+/**
  * `/retry [notes]`: the failed step again under a new key. `widen` (a `+paths`, issue #280) applies only to a
  * failed implement or resolve run; on any other kind it is refused and nothing changes. The note, without its
  * `+paths` line, goes on the state change (and is a resolve run's notes). At the review loop limit it is an implement run with loop_count back at 0 and
  * the item RUNNING (a human chose to try again). On a `recurring_failure` hold it only lifts the hold. `label` names a
- * run kind in the refusal: the run-results unit's `kindLabel`, which this shared file takes as an argument.
+ * run kind in the refusal: the run-results unit's `kindLabel`, which this shared file takes as an argument. `wip`: where
+ * the last implement run kept its commits (keptWip, design §5 Restarts); an implement retry starts from it.
  */
-export function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, note: string | null, widen: Widening | null, label: (kind: RunKind) => string): Decision | Refusal {
+export function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, note: string | null, widen: Widening | null, label: (kind: RunKind) => string, wip?: WipRef): Decision | Refusal {
   // A recurring failure's hold (design 05-alarms) has its runs queued already: lifted, they are claimed.
   if (it.blocked_on === "human" && it.blocked_reason === RECURRING_FAILURE) {
     if (widen) return { refuse: "`+paths` does not apply to an item held for a recurring failure, which has no failed run to widen; reply `/retry` without `+paths`" };
@@ -91,7 +108,7 @@ export function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, not
     reason: "retry_requested",
     ...(Object.keys(detail).length > 0 ? { detail } : {}),
     // A resolve run reads its notes from its input: the /retry note, or none.
-    enqueue: { kind, idempotency_key: runKey(next, kind), ...(kind === "resolve" ? { input: { notes: note ?? "" } } : {}) },
+    enqueue: { kind, idempotency_key: runKey(next, kind), ...(kind === "resolve" ? { input: { notes: note ?? "" } } : kind === "implement" && wip ? { input: { wip } } : {}) },
   };
 }
 /**

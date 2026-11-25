@@ -1,4 +1,4 @@
-import { withoutUiCheck, type ModelClass, requiredTier, CHECKS_FAILED_RUN, type CheckResult, type DoneCheckResult, TOOLCHAIN_MISSING, PrePushSelection, checkedLines, manualLines, IMPLEMENT_SCHEMA, type NeedsHuman, SPEC_CONFLICT, findingLine, parseImplement, parseReview, CHECKS_ENV, branchFor, wipBranchFor, type Run, type WorkItem, type SandboxHandle, type ToolCallContext } from "./legacy-imports.js";
+import { withoutUiCheck, type ModelClass, requiredTier, CHECKS_FAILED_RUN, type CheckResult, type DoneCheckResult, TOOLCHAIN_MISSING, PrePushSelection, checkedLines, manualLines, IMPLEMENT_SCHEMA, type NeedsHuman, SPEC_CONFLICT, findingLine, parseImplement, parseReview, CHECKS_ENV, branchFor, wipBranchFor, type FloorHit, type Run, type WipRef, type WorkItem, type SandboxHandle, type ToolCallContext } from "./legacy-imports.js";
 import { type ContinueWip, type FixContext, LOOP_STARTS, MAX_PR_FILES, NO_COMMITS_DETAIL, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, WIP_TEXT_CHARS, continues, fenced, gitIdentity, prTitle, renderBudget, renderContextContinue, renderContinueNewSession, renderMergeCheckFailure, renderNewSessionResume, renderRequest, renderSessionResume, renderWorkItem, runCommits, specQuery, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import type { AgentRunResult } from "../../../interfaces/agent-runner.js";
@@ -8,26 +8,32 @@ import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js
 import { repairedAnswer, type KeepWork } from "./implement-repair.js";
 import { syncBase } from "./implement-sync.js";
 import { RATCHET_LISTS, checksBeforePush, fixStep, gateHooks, itemCaps, prePushGates } from "./implement-checks.js";
-import { CONTEXT_CEILING_TOKENS, type DiffBudget, commitWorktree, contextCeiling, endSession, keepStopped, keepWip, overBudget, pauseImplement, preflight, restoreWip, resumeWip, saveRunBundle, watchDiff } from "./implement-wip.js";
+import { ASKED_NEXT_STEPS, CONTEXT_CEILING_TOKENS, type DiffBudget, commitWorktree, contextCeiling, endSession, keepContinue, keepFailed, keepStopped, keepWip, overBudget, pauseImplement, preflight, restoreWip, resumeWip, saveRunBundle, storeWip, watchDiff } from "./implement-wip.js";
 
 /**
  * The implement run. Before any agent: the preflight (push access, PR API, base fetch). A retry whose input
  * carries a wip ref (design §5 Restarts) checks that branch out: a push retry runs no agent; a run stopped
  * mid-work (`continue`) runs the agent on it, in its kept folder and session (`kept`, same host) or in a new
  * session. Then sync, the pre-push gates, handoffs for commits not yet recorded, push and PR. A push or PR
- * failure, an unresolved base merge conflict or a stop mid-work keeps the commits on a wip branch before the run fails.
+ * failure, an unresolved base merge conflict or a stop mid-work keeps the commits on a wip branch before the run fails;
+ * so do a needs_human answer and a floor block, and any other failure keeps them for an agent retry (keepFailed).
  */
 async function implement(
-  w: Worker,
-  run: Run,
-  item: WorkItem,
-  handle: SandboxHandle,
-  ctx: ToolCallContext,
-  signal: AbortSignal,
-  model: ModelClass,
-  plan: ResumePlan | null,
-  kept: string | null,
-  step: RunCall["step"],
+  w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass,
+  plan: ResumePlan | null, kept: string | null, step: RunCall["step"],
+) {
+  // Where the run's own commits start, once its folder is set up: what keepFailed keeps.
+  const at: { point: (() => { start: string; dirs: string }) | null } = { point: null };
+  try {
+    return await implementSteps(w, run, item, handle, ctx, signal, model, plan, kept, step, at);
+  } catch (err) {
+    throw await keepFailed(w, run, item, handle, ctx, at.point?.() ?? null, err);
+  }
+}
+
+async function implementSteps(
+  w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass,
+  plan: ResumePlan | null, kept: string | null, step: RunCall["step"], at: { point: (() => { start: string; dirs: string }) | null },
 ) {
   const base = w.cfg.repo.base_branch;
   const branch = branchFor(item, w.cfg.branch_prefix);
@@ -37,6 +43,7 @@ async function implement(
   const dirs = await w.gitDirs(handle);
   // The run's own git folder, inside its workdir: the merge step below may write only there.
   const gitDir = (await w.git(handle, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
+  at.point = () => ({ start, dirs });
 
   // A paused run (design §5 Pause): its own commits start where the first claim's did, once its WIP is here
   // (the reattached folder, or the bundle restored into a new one).
@@ -127,10 +134,14 @@ async function implement(
       const keep: KeepWork = (f, next) => keepStopped(w, run, item, handle, ctx, start, dirs, f, next);
       const out = await repairedAnswer(w, run, item, handle, signal, await turn(), parseImplement, result, keep);
       await w.distrustAgentGit(handle, dirs);
-      // The agent asked for a human (data, not a failure): no sync, no gates, no push, no PR. Its commits go with the run folder; none is kept on a wip branch.
-      if (out.value.needs_human) return { needs_human: out.value.needs_human };
+      // The agent asked for a human (data, not a failure): no sync, no gates, no push, no PR. Its commits are kept on
+      // the wip branch, marked `continue`, so the run after the answer starts from them (design §5 Restarts).
+      if (out.value.needs_human) {
+        const wip = await keepContinue(w, run, item, handle, ctx, start, dirs, `wip: run ${run.id} asked for a human`, ASKED_NEXT_STEPS, false);
+        return { needs_human: out.value.needs_human, ...(wip ? { wip } : {}) };
+      }
       // A criterion the spec does not let it meet (issue #222): the run fails with the reason before any commit
-      // count, sync or push, and the controller starts a spec revision. Its commits go with the run folder.
+      // count, sync or push, and the controller starts a spec revision. Its commits are kept as for any failure (keepFailed).
       if (out.value.spec_conflict) throw new RunFailure(SPEC_CONFLICT, out.value.spec_conflict);
 
       const commits = await runCommits((args) => w.git(handle, args), start, baseSha);
@@ -144,7 +155,7 @@ async function implement(
       const head = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
       return { work: done, start, head, bundle: await saveRunBundle(w, run, item, handle, dirs, start) };
     });
-    if ("needs_human" in agentStep) return { needs_human: agentStep.needs_human };
+    if ("needs_human" in agentStep) return { needs_human: agentStep.needs_human, ...(agentStep.wip ? { wip: agentStep.wip } : {}) };
     if (!ran) {
       // Taken over after the agent step finished: its commits come back from the bundle; no agent runs.
       const resume = { host: w.host, folder: handle.id, base_sha: handle.base_sha ?? null, start_sha: agentStep.start, head: agentStep.head, bundle: agentStep.bundle };
@@ -158,10 +169,11 @@ async function implement(
   }
   // The commits kept on the forge when the run fails from here on (design §5 Restarts). A resumed run that
   // added no commit names its wip branch again; one whose fix step committed keeps the new head on its own.
-  const keepAt = (err: unknown, head: string, conflicts: string[]) => keepWip(w, run, item, ctx, handle, err, resumed && head === resumed.head ? resumed : {
+  const wipAt = (head: string, conflicts: string[]): WipRef => resumed && head === resumed.head ? resumed : {
     branch: wipBranchFor(item, w.cfg.branch_prefix, run.id), head, commits: work.commits, conflicts, missing: work.missing,
     deviations: work.deviations, summary: work.summary.slice(0, WIP_TEXT_CHARS), next_steps: work.next_steps.slice(0, WIP_TEXT_CHARS),
-  }, resumed !== null && head === resumed.head);
+  };
+  const keepAt = (err: unknown, head: string, conflicts: string[]) => keepWip(w, run, item, ctx, handle, err, wipAt(head, conflicts), resumed !== null && head === resumed.head);
   // Sync before push (design §4): every pre-push check sees the branch with the fetched base merged in. An unresolved
   // conflict keeps the implementer's commits on the wip branch; a resumed run gets one resolve step and no other;
   // a resolution failing only on test files it may not edit asks for them.
@@ -170,6 +182,12 @@ async function implement(
   if ("needs_human" in sync) return sync;
   // The files an earlier sync of these commits conflicted in still pass the scope gate.
   const conflicts = [...new Set([...work.conflicts, ...sync.conflicts])];
+  // A floor block (data, not a failure) keeps the commits on the wip branch too: `/approve` runs the push again on them, with no agent.
+  const floorBlock = async (floor: FloorHit[]) => {
+    const head = (await w.git(handle, ["rev-parse", "HEAD"])).trim(), wip = wipAt(head, conflicts);
+    const stored = (resumed !== null && head === resumed.head) || (await storeWip(w, run, item, ctx, handle, wip));
+    return { floor_block: true, required_tier: requiredTier(floor), floor_paths: floor, ...(stored ? { wip } : {}) };
+  };
   const fix: FixContext = { gitDir, dirs, model, start, baseSha: sync.baseSha };
   const sel = await PrePushSelection.open(w.d.store, w.cfg.repo, item.project, (line) => w.d.log.info(line, { run_id: run.id }));
   let beforeFix: string | null = null; // HEAD before the first before_finish fix step, so its commits are counted
@@ -182,10 +200,8 @@ async function implement(
   const prePush = await prePushGates(w, run, item, handle, sync.baseSha, conflicts);
   let floor = prePush.floor;
   const paths = prePush.paths;
-  if (floor) {
-    // Data, not a failure: the controller blocks the item on a human for the higher tier (design §4).
-    return { floor_block: true, required_tier: requiredTier(floor), floor_paths: floor };
-  }
+  // Data, not a failure: the controller blocks the item on a human for the higher tier (design §4).
+  if (floor) return floorBlock(floor);
   // The pre-push checks (design §4, decided 2026-11-03): after sync and the gates, before any handoff row or push.
   let checked: { results: CheckResult[]; fixed: boolean; done: DoneCheckResult[] | undefined };
   const beforeChecks = beforeFix ?? (await w.git(handle, ["rev-parse", "HEAD"])).trim();
@@ -209,7 +225,7 @@ async function implement(
     // The fix commit goes through every gate again, on the final diff.
     const postFixPrePush = await prePushGates(w, run, item, handle, sync.baseSha, conflicts);
     floor = postFixPrePush.floor;
-    if (floor) return { floor_block: true, required_tier: requiredTier(floor), floor_paths: floor };
+    if (floor) return floorBlock(floor);
   }
   // First parent only: the agent's commits plus our merge commits, not the base commits they brought in.
   const pushedCommits = (await w.git(handle, ["rev-list", "--reverse", ...(sync.merged || resumed ? ["--first-parent"] : []), `${start}..HEAD`])).split("\n").filter(Boolean);
@@ -363,7 +379,7 @@ export default defineRunKind({
 
 /** The journaled result of the implement agent step: a human was asked for, or the work and its commits' bundle. */
 type AgentStep =
-  | { readonly needs_human: NeedsHuman }
+  | { readonly needs_human: NeedsHuman; readonly wip?: WipRef }
   | {
     readonly work: { commits: number; summary: string; next_steps: string; conflicts: string[]; missing: string[]; deviations: string[] };
     readonly start: string;
