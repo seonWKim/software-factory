@@ -124,8 +124,11 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(await store.updateSchedule("sch_1", null, { title: "Lost" })).toBe(false);
       expect(await store.updateSchedule("nope", DUE, { title: "Lost" })).toBe(false);
       expect(await one(store)).toEqual(before);
-      expect(await store.updateSchedule("sch_1", DUE, { title: "Nightly", skip_when_busy: true, token_cap: 50, action: { kind: "agent", settings: { prompt: "p" } } })).toBe(true);
-      expect(await one(store)).toEqual({ ...before, title: "Nightly", skip_when_busy: true, token_cap: 50, action: { kind: "agent", settings: { prompt: "p" } } });
+      // missed_rule is written only while next_due_at still holds the value read.
+      expect(await store.updateSchedule("sch_1", "2026-11-24T09:00:00.000Z" as Timestamp, { missed_rule: "skip" })).toBe(false);
+      expect(await one(store)).toEqual(before);
+      expect(await store.updateSchedule("sch_1", DUE, { title: "Nightly", missed_rule: "skip", token_cap: 50, action: { kind: "agent", settings: { prompt: "p" } } })).toBe(true);
+      expect(await one(store)).toEqual({ ...before, title: "Nightly", missed_rule: "skip", token_cap: 50, action: { kind: "agent", settings: { prompt: "p" } } });
       expect(await store.updateSchedule("sch_1", DUE, { next_due_at: null })).toBe(true);
       expect(await store.updateSchedule("sch_1", DUE, { next_due_at: null })).toBe(false);
       expect(await store.updateSchedule("sch_1", null, { cadence: { kind: "interval", spec: "60" }, zone: "Asia/Seoul", action: null })).toBe(true);

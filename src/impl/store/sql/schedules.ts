@@ -3,7 +3,8 @@
 // sql-factory-store.ts's budget. The claim is one UPDATE conditional on the `next_due_at` the worker read and on
 // the schedule's running state; zero rows changed means another worker claimed it first, and nothing is recorded.
 // A held checkpoint is resumed or rejected by UPDATEs conditional on its run row still being held. An edit, pause,
-// resume or run is one UPDATE conditional on the `next_due_at` it read, so it and a claim never both apply. A delete
+// resume or run is one UPDATE conditional on the `next_due_at` it read, so it and a claim never both apply. The
+// missed-time rule is `missed_rule`; `skip_when_busy`, the column it replaced, is no longer read or written. A delete
 // removes the schedule row and ends its held checkpoints as `rejected` in one transaction; its other run rows stay.
 // The schedule list and the due list leave out Check a page rows (action_kind 'check_page', routines copied by the
 // 20261124T1100-controller-routines-into-schedules migration): the Schedules page, API and CLI do not show them, and
@@ -21,7 +22,7 @@ import type { Timestamp, UserId } from "../../../core/types.js";
 import type { Row, SqlDriver, SqlValue } from "../../../state/index.js";
 import { SqlRunOutputStore } from "./run-output.js";
 
-const COLUMNS = "id, title, cadence_kind, cadence_spec, zone, created_by, created_at, next_due_at, running_since, skip_when_busy, action_kind, action_settings, token_cap, " +
+const COLUMNS = "id, title, cadence_kind, cadence_spec, zone, created_by, created_at, next_due_at, running_since, missed_rule, action_kind, action_settings, token_cap, " +
   "trigger_kind, run_cap_usd, daily_cap_usd, cap_raise_usd, cap_raise_day, cap_hold_key, paused, last_run_at";
 const RUN_COLUMNS = "schedule_id, occurrence_at, outcome, recorded_at, queued_implement_runs, output, tokens, cost_usd";
 /** The running state each outcome's claim requires: refused takes a running schedule, every other an idle one. */
@@ -52,7 +53,7 @@ function rowToSchedule(r: Row): Schedule {
   return {
     id: String(r.id), title: String(r.title), cadence: rowCadence(r), zone: String(r.zone),
     created_by: String(r.created_by) as UserId, created_at: String(r.created_at) as Timestamp, next_due_at: time(r.next_due_at), running_since: time(r.running_since),
-    skip_when_busy: Number(r.skip_when_busy ?? 0) === 1,
+    missed_rule: r.missed_rule === "skip" ? "skip" : "catch_up",
     action: r.action_kind == null ? null : { kind: String(r.action_kind) as ScheduleActionKind, settings: rowSettings(r) },
     token_cap: num(r.token_cap),
     trigger: r.trigger_kind == null ? null : (String(r.trigger_kind) as RoutineTrigger), run_cap_usd: num(r.run_cap_usd), daily_cap_usd: num(r.daily_cap_usd),
@@ -77,7 +78,7 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
   async addSchedule(s: NewSchedule): Promise<Schedule> {
     try {
       await this.db.run(`INSERT INTO controller_schedules (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
-        s.id, s.title, s.cadence.kind, s.cadence.spec, s.zone, s.created_by, s.created_at, s.next_due_at, s.skip_when_busy ? 1 : null,
+        s.id, s.title, s.cadence.kind, s.cadence.spec, s.zone, s.created_by, s.created_at, s.next_due_at, s.missed_rule ?? "catch_up",
         s.action?.kind ?? null, s.action ? JSON.stringify(s.action.settings) : null, s.token_cap ?? null,
         s.trigger ?? null, s.run_cap_usd ?? null, s.daily_cap_usd ?? null, s.cap_raise?.usd ?? null, s.cap_raise?.day ?? null, s.cap_raise?.hold_key ?? null,
         s.paused ? 1 : null, s.last_run_at ?? null,
@@ -183,7 +184,7 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
     if (patch.cadence !== undefined) cols.push(["cadence_kind", patch.cadence.kind], ["cadence_spec", patch.cadence.spec]);
     if (patch.zone !== undefined) cols.push(["zone", patch.zone]);
     if (patch.next_due_at !== undefined) cols.push(["next_due_at", patch.next_due_at]);
-    if (patch.skip_when_busy !== undefined) cols.push(["skip_when_busy", patch.skip_when_busy ? 1 : null]);
+    if (patch.missed_rule !== undefined) cols.push(["missed_rule", patch.missed_rule]);
     if (patch.action !== undefined) cols.push(["action_kind", patch.action?.kind ?? null], ["action_settings", patch.action ? JSON.stringify(patch.action.settings) : null]);
     if (patch.token_cap !== undefined) cols.push(["token_cap", patch.token_cap]);
     if (cols.length === 0) return false;

@@ -2,7 +2,7 @@
 // (src/core/schedule.ts). GET /api/v1/schedules lists them; GET /api/v1/schedules/runs?schedule=<id> lists one's runs
 // (400 without the parameter, 404 for an unknown ID). POST /api/v1/schedules/add, /edit, /pause, /resume, /run and /delete
 // take a JSON body with `id` and, for add and edit, the CLI's fields (`title`, `cadence`, `spec`, `zone`, `action`,
-// `body`, `skip_when_busy`, `token_cap`). After the request guards (write-routes.ts, the pauses CSRF token) a body that
+// `body`, `skip_when_busy`, `token_cap`; `skip_when_busy` true stores `missed_rule` skip, false catch_up). After the request guards (write-routes.ts, the pauses CSRF token) a body that
 // is not an object or has an unknown, missing or wrongly typed field is a 400 before any store call; then the owner
 // check (rules-api.ts ownerOf, passed in, 403); a delete of an unknown ID is a 404; any other refusal of the core is a
 // 409 with its reason; else 200 with the schedule (a delete's as it was before it went). POST /api/v1/schedules/draft
@@ -10,7 +10,7 @@
 // model call; the model is the Data page's Ask model (settings.ask.llm, compose.ts buildUiParts), and none is a 503, a refusal of the core (src/core/schedule-draft.ts) a 409 with its reason; else 200 with
 // the proposal (a draft's ID and add fields, or improve's old and new text). Neither stores anything.
 
-import type { ScheduleFields, ScheduleWrite, writeSchedule } from "../core/schedule.js";
+import type { Schedule, ScheduleFields, ScheduleWrite, writeSchedule } from "../core/schedule.js";
 import type { draftSchedule, improveSchedule } from "../core/schedule-draft.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { UserId } from "../core/types.js";
@@ -21,9 +21,12 @@ import type { UiDeps } from "./deps.js";
 export const SCHEDULES_PATH = "/api/v1/schedules";
 export const SCHEDULE_RUNS_PATH = "/api/v1/schedules/runs";
 
-/** GET /api/v1/schedules: every schedule, as stored. */
+/** A schedule as the routes return it: as stored, with `skip_when_busy` (true when `missed_rule` is skip), which the Schedules page reads. */
+const withSkip = (s: Schedule) => ({ ...s, skip_when_busy: s.missed_rule === "skip" });
+
+/** GET /api/v1/schedules: every schedule, as stored, with `skip_when_busy`. */
 export async function readSchedules(d: Pick<UiDeps, "store">): Promise<ApiResult> {
-  return { status: 200, value: { schedules: await d.store.listSchedules() } };
+  return { status: 200, value: { schedules: (await d.store.listSchedules()).map(withSkip) } };
 }
 
 /** GET /api/v1/schedules/runs?schedule=<id>: its run rows, oldest first. */
@@ -52,7 +55,7 @@ function bodyOf(w: ScheduleWrite, body: unknown): { id: string; fields: Schedule
   }
   if (b.skip_when_busy !== undefined) {
     if (typeof b.skip_when_busy !== "boolean") return "skip_when_busy must be true or false.";
-    fields.skip_when_busy = b.skip_when_busy;
+    fields.missed = b.skip_when_busy ? "skip" : "catch_up";
   }
   if (b.token_cap !== undefined) {
     if (typeof b.token_cap !== "number") return "token_cap must be a number.";
@@ -84,7 +87,7 @@ export async function postSchedule(d: Pick<UiDeps, "store" | "clock">, w: Schedu
   const r = await c.write(d.store, w, b.id, b.fields, own.user, d.clock.now());
   if (!r.ok) return apiError(409, r.problem);
   c.log.info(`schedule ${w}`, { id: b.id, actor: own.user });
-  return { status: 200, value: { schedule: r.schedule } };
+  return { status: 200, value: { schedule: withSkip(r.schedule) } };
 }
 
 /** What a draft or improve runs, passed in by the route table: the core functions, the owner check, the model, a new ID and the log. */
