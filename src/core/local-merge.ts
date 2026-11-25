@@ -132,6 +132,28 @@ export function canSyncBase(sandbox: Sandbox | undefined): sandbox is BaseSyncSa
 }
 
 /**
+ * `pulled`: the local base was an ancestor of the remote one and now is the remote base (`from` its old commit).
+ * `current`: the local base already contains the remote one; nothing moved. `diverged`: the local base has commits
+ * the remote has not (a local merge whose push is pending) and the remote moved too; nothing moved, and that
+ * merge's base push merges the two.
+ */
+export type BasePullResult =
+  | { pulled: true; from: string; to: string; not_updated: string[] }
+  | { pulled: false; local: string; remote: string; diverged: boolean };
+
+/**
+ * A sandbox that can bring the local base up to the remote one after a merge made on the forge (the base
+ * pull decision): fetches only the remote base branch and fast-forwards the local base to it with one conditional ref
+ * update, only when the local base is its ancestor. Never merges, never pushes. Throws on a failed fetch or a base
+ * that moved under it: the caller retries.
+ */
+export type BasePullSandbox = Sandbox & { pullBase(spec: { repo: string; base_ref: string }): Promise<BasePullResult> };
+
+export function canPullBase(sandbox: Sandbox | undefined): sandbox is BasePullSandbox {
+  return !!sandbox && typeof (sandbox as Partial<BasePullSandbox>).pullBase === "function";
+}
+
+/**
  * A sandbox that reads the factory repo's local branches whatever it fetches (design §5 Merge conflict): with a
  * forge selected, the controller's base read is the remote's, so a local item's merge check and its automatic
  * resolve key read the local base and branch here. No fetch, no network call.

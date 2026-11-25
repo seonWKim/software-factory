@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, cp, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { BaseSyncResult, BaseSyncSpec, LocalMergeResult, LocalMergeSpec, LocalRevertResult, LocalRevertSpec } from "../../core/local-merge.js";
+import type { BasePullResult, BaseSyncResult, BaseSyncSpec, LocalMergeResult, LocalMergeSpec, LocalRevertResult, LocalRevertSpec } from "../../core/local-merge.js";
 import type {
   ChangedFile, ChangesRead, ChangesSpec, ExecOptions, ExecResult, NewBranchCommit, NewBranchResult, ReconcileSpec, ReconcileStart, Sandbox, SandboxHandle, SandboxSpec,
 } from "../../interfaces/sandbox.js";
@@ -349,6 +349,24 @@ export class NoOpSandbox implements Sandbox {
     const moved = await this.moveBase(spec.repo, spec.base_ref, local, sha, spec.message);
     if (!moved) throw new Error(`\`${spec.base_ref}\` moved while the remote base was merged into it`);
     return { synced: true, local: sha, remote, contains: false, not_updated: moved.not_updated };
+  }
+
+  /**
+   * After a merge made on the forge (design 05-github-sync, base pull): fetches only origin's base and fast-forwards the
+   * local base to it (`moveBase`, conditionally on the local base read) when the local base is its ancestor. A local
+   * base that contains origin's, or has its own commits besides (a local merge whose push is pending), moves nothing.
+   * Throws on a failed fetch or a base that moved under it.
+   */
+  async pullBase(spec: { repo: string; base_ref: string }): Promise<BasePullResult> {
+    safeRef(spec.base_ref);
+    const remote = await this.fetchRemoteBase(spec.repo, spec.base_ref);
+    const local = await this.localCommit(spec.repo, spec.base_ref);
+    if (local === null) throw new Error(`the factory repo has no local branch \`${spec.base_ref}\``);
+    if (await this.isAncestor(spec.repo, remote, local)) return { pulled: false, local, remote, diverged: false };
+    if (!(await this.isAncestor(spec.repo, local, remote))) return { pulled: false, local, remote, diverged: true };
+    const moved = await this.moveBase(spec.repo, spec.base_ref, local, remote, `Fast-forward ${spec.base_ref} to origin/${spec.base_ref}`);
+    if (!moved) throw new Error(`\`${spec.base_ref}\` moved while it was fast-forwarded to origin`);
+    return { pulled: true, from: local, to: remote, not_updated: moved.not_updated };
   }
 
   /**

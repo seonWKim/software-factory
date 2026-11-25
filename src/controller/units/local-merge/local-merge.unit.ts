@@ -7,7 +7,7 @@ import { ALERT_DEDUPE_MS } from "../../../core/alarms.js";
 import { modeOf } from "../../../core/settings.js";
 import { AUTO_ACTOR, autoMergeRefusal, branchFor } from "../../../core/policy.js";
 import {
-  LOCAL_SOURCE, MERGE_COMMAND, RESTART_DONE, RESTART_REQUESTED, RUN_HINT_ENTRIES, canAppendLocal, canMergeLocal, canReadLocal, canSyncBase, droppedBack, reconcileOf,
+  LOCAL_SOURCE, MERGE_COMMAND, RESTART_DONE, RESTART_REQUESTED, RUN_HINT_ENTRIES, canAppendLocal, canMergeLocal, canPullBase, canReadLocal, canSyncBase, droppedBack, reconcileOf,
   reconcileSourceId, restartRefusal, restartReply, restartRunKey, runHint, tierRule,
 } from "../../../core/local-merge.js";
 import { gatePathTouched } from "../../../core/improver.js";
@@ -397,6 +397,21 @@ export class LocalMergeUnit {
   /** Whether a merge's base is pushed to a remote: a forge that pushes a base and a sandbox that syncs it first. */
   pushesBase(): boolean {
     return this.c.k.forge?.pushBase !== undefined && canSyncBase(this.c.k.d.sandbox);
+  }
+
+  /**
+   * A merge made on the forge (a PR merged by `merge_pr` or on GitHub) moved the remote base (design 05-github-sync,
+   * base pull): one `pull_base` action, keyed on the merge, to the base push's destination, so outbound fast-forwards the
+   * local base to origin's. Without it the local base stays behind until a later local merge's push merges the two,
+   * and a local merge checked meanwhile lands on the stale base and conflicts at its push. Only when this controller
+   * pushes the base (a remote to read) and its sandbox can pull it; safe to call twice: the key.
+   */
+  async pullBase(merge_sha: string, work_item_id: WorkItemId | null): Promise<void> {
+    if (!this.pushesBase() || !canPullBase(this.c.k.d.sandbox)) return;
+    const base = this.c.k.cfg.repo.base_branch;
+    await this.c.k.commit({ writes: [{ kind: "intent", action: {
+      action: "pull_base", target: basePushTarget(this.gitHost(), base), work_item_id, key: `pull_base:${base}:${merge_sha}`, args: { base_ref: base, merge_sha },
+    } }] });
   }
 
   /**

@@ -45,6 +45,7 @@ export class PrEventsUnit {
    */
   async prFinished(e: PrFinishedEvent): Promise<void> {
     const item = await this.itemOfFinishedPr(e);
+    if (e.kind === "change_merged") await this.c.unit("local-merge").pullBase(e.merge_sha, item?.id ?? null);
     if (!item) {
       if (e.kind === "change_merged") await this.recordUnreviewedMerge(e);
       return;
@@ -146,6 +147,7 @@ export class PrEventsUnit {
       return;
     }
     const change_ref = String(a.change_ref);
+    await this.c.unit("local-merge").pullBase(r.sha, item.id);
     const actor: Actor = { kind: "user", id: String(a.by) as UserId };
     await this.mergeVerdict(item, { change_ref, merge_sha: r.sha }, actor);
     await this.c.unit("transitions").decide(item.id, (it) => (it.stage === "CLOSED" || it.change_ref !== change_ref

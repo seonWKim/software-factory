@@ -14,7 +14,8 @@ import { DELIVERY_REQUESTED } from "./topics/deliveries-requests.topic.js";
  * A write that is no thread entry. `status`, `seen` are best effort; `close`, `post`, `close_pr` (a PR closed with
  * a comment, through the forge), `merge_pr` (a PR merged at its reviewed head, through the forge), `push` (a run's commit from the factory repo to its forge branch) and `pr` (the
  * branch's PR opened or updated), `merge` (a merge queue landing in the factory repo, M8), `push_base` (the local
- * base pushed to its remote after a merge) and `file_sub_issue` (one phase of a split filed under its parent, whose
+ * base pushed to its remote after a merge), `pull_base` (the local base fast-forwarded to its remote after a merge made on
+ * the forge, design 05-github-sync, base pull) and `file_sub_issue` (one phase of a split filed under its parent, whose
  * delivered ref names the filed item), `file_fix_item` (one item filed to fix a red base, keyed on its sha, through the
  * source's `fileIssue`), `tacit_capture` (a pushback captured in the owner's ledger, issue #570),
  * `notify` (an owner notice for a `notify_channels` adapter, design 12-notification-channels) and `append_lines` (lines
@@ -22,11 +23,11 @@ import { DELIVERY_REQUESTED } from "./topics/deliveries-requests.topic.js";
  */
 export type ActionKind =
   | "status" | "seen" | "close" | "post" | "close_pr" | "merge_pr" | "push" | "pr" | "merge" | "push_base" | "file_sub_issue" | "file_fix_item" | "tacit_capture" | "notify"
-  | "append_lines";
+  | "append_lines" | "pull_base";
 
 /** The actions whose failure retries their batch with backoff; the rest are best effort. */
 export const RETRIED_ACTIONS: readonly ActionKind[] = [
-  "close", "post", "close_pr", "merge_pr", "push", "pr", "merge", "push_base", "file_sub_issue", "file_fix_item", "tacit_capture", "notify", "append_lines",
+  "close", "post", "close_pr", "merge_pr", "push", "pr", "merge", "push_base", "file_sub_issue", "file_fix_item", "tacit_capture", "notify", "append_lines", "pull_base",
 ];
 
 
