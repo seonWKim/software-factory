@@ -9,21 +9,20 @@
 //   `ext_packs_entries` pointer row (source, file, key and the SHA-256 of its allow-listed descriptor) through
 //   PackEntriesStore.storePointer. A changed entry is pending again. No command, args, env or URL is stored.
 // Nothing here starts, approves or grants an MCP server, and nothing writes to a scanned file. After the items are
-// stored, `factory plugins import` runs one new-version gate pass (skillVersionGatePass, src/skill-evals.ts): each
+// stored, `factory plugins import` runs one new-version gate pass (gatedImport, src/skill-evals.ts): each
 // pending gate, and each running one whose lease ended, has its skill's suite run on its version.
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { insertOrSkip } from "../bus/index.js";
 import type { Loaded } from "../load-config.js";
-import { Plugins } from "../plugin-set.js";
 import { cliUserConfig } from "../core/config.js";
 import { type CliEnvironment, cliIdentity } from "../core/local-cli.js";
 import { SqlSkillEvalStore } from "../impl/store/sql/skill-evals.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { skillVersion } from "../runtime/capabilities/capabilities.js";
-import { skillVersionGatePass } from "../skill-evals.js";
+import { gatedImport } from "../skill-evals.js";
 import type { Timestamp } from "../core/types.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import { PackEntriesStore, canonicalJson, descriptionHash } from "../packs/pack-entries.store.js";
@@ -140,24 +139,14 @@ export async function importItem(d: ImportDeps, item: Found, shared: ReadonlySet
  */
 export async function storeFound(loaded: Loaded, env: CliEnvironment, found: readonly Found[]): Promise<ImportOutcome[]> {
   const added_by = cliIdentity(cliUserConfig(loaded.file), env).user;
-  const p = new Plugins(loaded);
-  const clock = await p.clock();
-  const secrets = await p.secrets();
-  const scanner = await p.scanner(secrets);
-  await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
-  const store = await p.store(secrets, clock);
-  try {
-    await store.migrate();
+  return gatedImport(loaded, async ({ store, clock, scanner }) => {
     const d: ImportDeps = { db: storeSql(store), now: () => clock.now().toISOString(), scanner, added_by };
     const shared = sharedKeys(found);
-    const out: ImportOutcome[] = [];
-    for (const item of found) out.push(await importItem(d, item, shared));
+    const result: ImportOutcome[] = [];
+    for (const item of found) result.push(await importItem(d, item, shared));
     const refs = new SkillRefsStore(d.db, d.now);
-    await skillVersionGatePass(store, loaded, { clock, scanner, refPath: (id) => refs.pathOf(id), signal: new AbortController().signal });
-    return out;
-  } finally {
-    await store.close();
-  }
+    return { result, refPath: (id) => refs.pathOf(id) };
+  });
 }
 
 const what = (i: Found): string => `${i.kind} ${i.name} from ${i.source}`;

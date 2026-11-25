@@ -18,16 +18,16 @@
 // main.ts passes skillEvalRun to every command through the command call (CommandCall.runSkillEval), so the CLI
 // handler imports no root or legacy module. The composition root builds the improve run's skill improvement wiring
 // here (skillImproveWiring, design 07-self-improvement): the scratch run, the re-run after a promote, and SKILL.md I/O.
-// The new-version gate pass (skillVersionGatePass, design 07-self-improvement) runs a new version's suite through
+// The new-version gate pass (gatedImport, design 07-self-improvement) runs a new version's suite through
 // runSkillEvalFor on that stored version, after a plugin import records one.
 
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { codeVersion } from "./config-values.js";
 import { type ToolGrants, capabilitiesConfig, skillImproveConfig, toolGrantsConfig } from "./core/config.js";
 import { type SkillImproveWiring, baselineVersion } from "./core/skill-improve.js";
-import { type SkillGateResult, type SkillGateWiring, runSkillVersionGates } from "./core/skill-eval-gate.js";
+import { type SkillGateWiring, runSkillVersionGates } from "./core/skill-eval-gate.js";
 import type { UserId } from "./core/types.js";
 import { type Loaded, localProject } from "./load-config.js";
 import { Plugins } from "./plugin-set.js";
@@ -377,11 +377,37 @@ export function gateWiring(d: SkillEvalWiring, refPath: (ref_id: string) => Prom
   };
 }
 
-/** One gate pass over the configured plugins and `store`, with the import's Clock and scanner (src/import/import-plugins.ts). */
-export function skillVersionGatePass(
-  store: FactoryStore, loaded: Loaded, d: { clock: { now(): Date }; scanner: EgressScanner; refPath: (ref_id: string) => Promise<string | null>; signal: AbortSignal },
-): Promise<SkillGateResult[]> {
-  return runSkillVersionGates({ store, scanner: d.scanner, clock: d.clock, config: skillImproveConfig(loaded.file), wiring: gateWiring(wiringOf(store, loaded), d.refPath), signal: d.signal });
+/** What `gatedImport` hands the import's store step: the configured store (migrated), its Clock and egress scanner. */
+export interface GatedImportPlugins {
+  store: FactoryStore;
+  clock: { now(): Date };
+  scanner: EgressScanner;
+}
+
+/**
+ * `factory plugins import`'s storage over the configured plugins (src/import/import-plugins.ts): opens the store
+ * (migrated) with the configured clock and scanner, runs `step`, then one new-version gate pass over the store's due
+ * gates (`refPath`: the SKILL.md path of a ref, from step's result), and closes the store. Kept in the composition
+ * root so the import engine imports no plugin set.
+ */
+export async function gatedImport<T>(
+  loaded: Loaded, step: (p: GatedImportPlugins) => Promise<{ result: T; refPath: (ref_id: string) => Promise<string | null> }>,
+): Promise<T> {
+  const p = new Plugins(loaded);
+  const clock = await p.clock();
+  const secrets = await p.secrets();
+  const scanner = await p.scanner(secrets);
+  await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
+  const store = await p.store(secrets, clock);
+  try {
+    await store.migrate();
+    const { result, refPath } = await step({ store, clock, scanner });
+    const signal = new AbortController().signal;
+    await runSkillVersionGates({ store, scanner, clock, config: skillImproveConfig(loaded.file), wiring: gateWiring(wiringOf(store, loaded), refPath), signal });
+    return result;
+  } finally {
+    await store.close();
+  }
 }
 
 /** One `eval case try <case>`: the case id, the class the replay runs on, and the stop signal. */
