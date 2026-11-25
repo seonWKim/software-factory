@@ -10,7 +10,6 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { parseArgs as parseFlags } from "node:util";
 import { type CommandContext, type FactoryStore, type SkillEvalReads, type SkillEvalRunOptions, type SkillEvalRunRow, type SkillEvalRunStats, type SkillEvalRunSummary, defineCommand } from "../../command.js";
-import { SKILL_EVAL_SPLITS, type SkillEvalSplit } from "../../../interfaces/skill-eval-store.js";
 import { stopOnSignals } from "../../support.js";
 
 const USAGE = `  eval run <skill> [--model <class>] [--judge-model <class>] [--replays <n>] [--baseline]
@@ -124,7 +123,9 @@ async function suiteCommand(argv: readonly string[], ctx: CommandContext, author
   });
 }
 
-const isSplit = (v: string | undefined): v is SkillEvalSplit => (SKILL_EVAL_SPLITS as readonly (string | undefined)[]).includes(v);
+// The store's split values (`SKILL_EVAL_SPLITS`), kept here so the cli component imports no legacy interface.
+type SkillEvalSplit = "dev" | "held-out";
+const isSplit = (v: string | undefined): v is SkillEvalSplit => v === "dev" || v === "held-out";
 
 /** `case split <case-id> dev|held-out`: sets one case's split, bumping no suite version; an unknown case is refused. */
 async function setSplit(store: FactoryStore, case_id: string, split: SkillEvalSplit): Promise<number> {
