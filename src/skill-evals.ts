@@ -2,8 +2,8 @@
 // suite, builds the engine's parts from the configured plugins (the replay over the sandbox and runner plugins, the
 // judges over the llm plugin with prompts/skill-judge.md and prompts/skill-judge-pairwise.md, the previous version's
 // answers a pairwise check compares against, the G5 egress scan, the skill folder's version), runs one
-// run through runSkillEval, then records the run's figures through the store. The engine is unchanged. The run's
-// options (--model, --judge-model, --replays) are checked here before anything is read or written. A run replays the
+// run through runSkillEval (each case --replays times), then records the run's figures through the store. The run's
+// options (--model, --judge-model, --replays 1 to 10) are checked here before anything is read or written. A run replays the
 // skill's current version (its folder as it is now) by default; `version` names a stored version of the imported skill
 // by its folder hash (design 06-measurement), and the run replays that version's text and stores its hash.
 //
@@ -49,6 +49,8 @@ import { storeSql, storeSqlOrNull } from "./impl/store/sql/store-sql.js";
 import { checkPackGrants } from "./packs/pack-grants.js";
 import { type Authored, type CaseVerdict, type SkillEvalAuthoring, type SkillEvalEngineDeps, type TriedCase, addSkillEvalCase, addSkillEvalSuite, deleteSkillEvalSuite, editSkillEvalCase, renameSkillEvalSuite, runSkillEval, skillEvalReplay, tryCase } from "./runtime/index.js";
 
+/** The most replays per case one run makes (`eval run --replays N`, design 06-measurement, repeats). */
+export const MAX_REPLAYS = 10;
 /** The class a skill-eval replay runs on when no --model is given; its judge runs on judgeClass of it. */
 export const SKILL_EVAL_CLASS: ModelClass = "standard";
 /** The role a replay runs as: no file or shell tools, no session, no writable path (skillEvalReplay). */
@@ -66,7 +68,7 @@ export interface SkillEvalRequest {
   model_class?: string | undefined;
   /** --judge-model: must be judgeClass of the model class (absent: that class). */
   judge_model_class?: string | undefined;
-  /** --replays: replays per case; only 1, since a run records one verdict per case (absent: 1). */
+  /** --replays: replays per case, a whole number from 1 to MAX_REPLAYS (absent: 1). */
   replays?: number | undefined;
   /** A previous version's folder hash (an `ext_skill_versions` row of the skill) to re-run (absent: the current version). */
   version?: string | undefined;
@@ -137,7 +139,8 @@ export function judgeVersion(judge: string, pairwise: string): string {
 
 /**
  * The previous answer of a case for a run on `skill_version`: the stored answer for that case from the newest run of
- * `skill` on another (known) skill version that holds one. Reads the runs once and each run's replays at most once.
+ * `skill` on another (known) skill version that holds one, its replay numbered 1 when it has one (else its replay
+ * stored with no number). Reads the runs once and each run's replays at most once.
  */
 export function previousAnswers(store: Pick<SkillEvalStore, "listSkillEvalRuns" | "listSkillEvalReplays">, skill: string, skill_version: string): (case_id: string) => Promise<string | null> {
   let runs: Promise<SkillEvalRun[]> | null = null;
@@ -146,7 +149,8 @@ export function previousAnswers(store: Pick<SkillEvalStore, "listSkillEvalRuns" 
     runs ??= store.listSkillEvalRuns(skill).then((rs) => rs.filter((r) => r.skill_version !== null && r.skill_version !== skill_version));
     for (const run of await runs) {
       if (!replays.has(run.id)) replays.set(run.id, store.listSkillEvalReplays(run.id));
-      const answer = (await replays.get(run.id)!).find((x) => x.case_id === case_id)?.answer;
+      const ofCase = (await replays.get(run.id)!).filter((x) => x.case_id === case_id);
+      const answer = (ofCase.find((x) => x.replay === 1) ?? ofCase.find((x) => x.replay == null))?.answer;
       if (typeof answer === "string") return answer;
     }
     return null;
@@ -165,7 +169,7 @@ function versionedStore(store: SkillEvalWiring["store"], v: { judge_version: str
   };
 }
 
-/** A run's figures from its verdicts: one replay per case, pass verdicts ÷ replays (null with none), errored cases. */
+/** A run's figures from its verdicts: replays (cases × N), pass verdicts ÷ replays (null with none), errored replays. */
 export function runFigures(model_class: ModelClass, verdicts: readonly { verdict: CaseVerdict }[]): SkillEvalRunFigures {
   const replays = verdicts.length;
   const passed = verdicts.filter((v) => v.verdict === "pass").length;
@@ -185,8 +189,8 @@ export function runClass(r: Pick<SkillEvalRequest, "model_class" | "judge_model_
   if (r.judge_model_class !== undefined && r.judge_model_class !== judge) {
     return { refused: `--judge-model ${r.judge_model_class}: the judge runs on ${judge}, the judge class of ${model_class}: nothing run` };
   }
-  if (r.replays !== undefined && r.replays !== 1) {
-    return { refused: `--replays ${r.replays}: a run stores one verdict per case, so it replays each case once: nothing run` };
+  if (r.replays !== undefined && !(Number.isInteger(r.replays) && r.replays >= 1 && r.replays <= MAX_REPLAYS)) {
+    return { refused: `--replays ${r.replays}: a whole number from 1 to ${MAX_REPLAYS}: nothing run` };
   }
   return { model_class };
 }
@@ -271,11 +275,12 @@ async function versionParts(d: SkillEvalWiring, skill: string, hash: string, mod
 
 /** Runs the suite through the engine as run `id`, records its figures and returns the stored run. */
 async function runAndRecord(
-  d: SkillEvalWiring, engine: Engine, r: { id: string; suite_id: string; created_by: string; skill_version: string; model_class: ModelClass }, signal: AbortSignal,
+  d: SkillEvalWiring, engine: Engine, r: { id: string; suite_id: string; created_by: string; skill_version: string; model_class: ModelClass; replays?: number }, signal: AbortSignal,
 ): Promise<SkillEvalRun> {
   const { judge_version, close, ...parts } = engine;
   const store = versionedStore(d.store, { judge_version, factory_version: d.factory_version ?? "dev" });
-  const outcome = await runSkillEval({ store, ...parts }, { id: r.id, suite_id: r.suite_id, created_by: r.created_by, skill_version: r.skill_version }, signal).finally(close);
+  const input = { id: r.id, suite_id: r.suite_id, created_by: r.created_by, skill_version: r.skill_version, ...(r.replays !== undefined ? { replays: r.replays } : {}) };
+  const outcome = await runSkillEval({ store, ...parts }, input, signal).finally(close);
   if (outcome.status !== null) await d.store.recordSkillEvalRunFigures(r.id, runFigures(r.model_class, outcome.verdicts));
   const run = await d.store.getSkillEvalRun(r.id);
   if (!run) throw new Error(`skill eval run ${r.id} was not stored`);
@@ -295,7 +300,9 @@ export async function runSkillEvalFor(d: SkillEvalWiring, r: SkillEvalRequest): 
   if (!suite) return { refused: `no skill eval suite for ${r.skill}: nothing run` };
   const parts = r.version === undefined ? await engineParts(d, r.skill, model_class) : await versionParts(d, r.skill, r.version, model_class);
   if ("refused" in parts) return parts;
-  const run = await runAndRecord(d, parts.engine, { id: d.newId(), suite_id: suite.id, created_by: r.created_by, skill_version: parts.skill_version, model_class }, r.signal);
+  const run = await runAndRecord(d, parts.engine, {
+    id: d.newId(), suite_id: suite.id, created_by: r.created_by, skill_version: parts.skill_version, model_class, ...(r.replays !== undefined ? { replays: r.replays } : {}),
+  }, r.signal);
   return { run };
 }
 

@@ -2347,6 +2347,8 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "legacy_controller_work_items",
       // Rebuilt with a nullable cadence and trigger_kind (src/controller/migrations/20261125T1000-controller-schedules-trigger); kept until its contract step.
       "legacy_controller_schedules",
+      // Rebuilt with a replay number per replay (src/controller/migrations/20261124T1300-controller-skill-eval-replay-index); kept until its contract step.
+      "legacy_controller_skill_eval_replays",
       // Rebuilt for the plugin import's pointers (src/state/migrations/20261116T1300 and 20261116T1310); kept until the contract step.
       "legacy_ext_packs_entries",
       "legacy_ext_skill_refs",

@@ -108,7 +108,7 @@ describe("POST /api/v1/evals/<skill>/runs", () => {
   it.each([
     ["a model ID, not a stored class", { model_class: "claude-sonnet-5-5" }, /no such model class/],
     ["a judge class that is not the model's", { model_class: "standard", judge_model_class: "cheap" }, /judge runs on strong/],
-    ["replays other than 1", { replays: 3 }, /one verdict per case/],
+    ["replays outside 1 to 10", { replays: 11 }, /a whole number from 1 to 10/],
   ])("refuses %s with 409 and its reason, storing no run", async (_name, body, reason) => {
     const s = await setup();
     const r = await s.post(body);

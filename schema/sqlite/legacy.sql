@@ -118,6 +118,15 @@ CREATE TABLE "legacy_controller_schedules" (
     running_since  TEXT
   , skip_when_busy INTEGER, action_kind TEXT, action_settings TEXT, token_cap INTEGER, instruction TEXT, url TEXT, paused INTEGER, run_cap_usd REAL, daily_cap_usd REAL, cap_raise_usd REAL, cap_raise_day TEXT, cap_hold_key TEXT, last_run_at TEXT);
 
+CREATE TABLE "legacy_controller_skill_eval_replays" (
+    run_id       TEXT NOT NULL,
+    case_id      TEXT NOT NULL,
+    verdict      TEXT NOT NULL,
+    detail       TEXT NOT NULL,
+    recorded_at  TEXT NOT NULL, transcript TEXT, answer TEXT, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, wall_ms INTEGER,
+    PRIMARY KEY (run_id, case_id)
+  );
+
 CREATE TABLE "legacy_controller_unreviewed_merges" (
     id          TEXT PRIMARY KEY,
     project     TEXT NOT NULL,

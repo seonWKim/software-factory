@@ -12,7 +12,7 @@ const CASE_COLUMNS = "id, suite_id, input, expected, created_at, seed, mcp";
 const RUN_COLUMNS = "id, suite_id, status, started_at, finished_at, created_by, skill_version, suite_version, judge_version, factory_version";
 /** A run as read back: its columns and its figures (null until recorded). */
 const RUN_READ = `${RUN_COLUMNS}, model_class, judge_model_class, replays, pass_rate, errored`;
-const REPLAY_COLUMNS = "run_id, case_id, verdict, detail, recorded_at, transcript, answer, input_tokens, output_tokens, cost_usd, wall_ms";
+const REPLAY_COLUMNS = "run_id, case_id, verdict, detail, recorded_at, transcript, answer, input_tokens, output_tokens, cost_usd, wall_ms, replay";
 const VERSION_COLUMNS = "ref_id, version, folder_hash, text, source, created_at";
 
 const ts = (v: unknown) => String(v) as Timestamp;
@@ -41,7 +41,7 @@ const bumpSuiteVersion = (tx: SqlExecutor, suite_id: string) => tx.run("UPDATE c
 const rowToReplay = (r: Row): SkillEvalReplay => ({
   run_id: String(r.run_id), case_id: String(r.case_id), verdict: String(r.verdict), detail: JSON.parse(String(r.detail)), recorded_at: ts(r.recorded_at),
   transcript: textOrNull(r.transcript), answer: textOrNull(r.answer), input_tokens: numberOrNull(r.input_tokens), output_tokens: numberOrNull(r.output_tokens),
-  cost_usd: numberOrNull(r.cost_usd), wall_ms: numberOrNull(r.wall_ms),
+  cost_usd: numberOrNull(r.cost_usd), wall_ms: numberOrNull(r.wall_ms), replay: numberOrNull(r.replay),
 });
 
 /** SkillEvalStore over a SqlDriver; `evalStamp` is the store's injected Clock's time. */
@@ -140,17 +140,20 @@ export class SqlSkillEvalStore extends SqlScheduleStore implements SkillEvalStor
 
   recordSkillEvalReplay(r: Omit<SkillEvalReplay, "recorded_at">): Promise<SkillEvalReplay> {
     return this.db.transaction(async (tx) => {
-      await tx.run(`INSERT OR IGNORE INTO controller_skill_eval_replays (${REPLAY_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+      await tx.run(`INSERT OR IGNORE INTO controller_skill_eval_replays (${REPLAY_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
         r.run_id, r.case_id, r.verdict, JSON.stringify(r.detail), this.evalStamp(),
-        r.transcript ?? null, r.answer ?? null, r.input_tokens ?? null, r.output_tokens ?? null, r.cost_usd ?? null, r.wall_ms ?? null,
+        r.transcript ?? null, r.answer ?? null, r.input_tokens ?? null, r.output_tokens ?? null, r.cost_usd ?? null, r.wall_ms ?? null, r.replay ?? null,
       ]);
-      const [row] = await tx.all(`SELECT ${REPLAY_COLUMNS} FROM controller_skill_eval_replays WHERE run_id = ? AND case_id = ?`, [r.run_id, r.case_id]);
+      // The unique key is run, case and COALESCE(replay, 0): a clash keeps the stored row, read back here.
+      const [row] = await tx.all(
+        `SELECT ${REPLAY_COLUMNS} FROM controller_skill_eval_replays WHERE run_id = ? AND case_id = ? AND COALESCE(replay, 0) = ?`, [r.run_id, r.case_id, r.replay ?? 0],
+      );
       return rowToReplay(row!);
     });
   }
 
   async listSkillEvalReplays(run_id: string): Promise<SkillEvalReplay[]> {
-    return (await this.db.all(`SELECT ${REPLAY_COLUMNS} FROM controller_skill_eval_replays WHERE run_id = ? ORDER BY recorded_at, case_id`, [run_id])).map(rowToReplay);
+    return (await this.db.all(`SELECT ${REPLAY_COLUMNS} FROM controller_skill_eval_replays WHERE run_id = ? ORDER BY recorded_at, case_id, replay`, [run_id])).map(rowToReplay);
   }
 
   async listSkillEvalRuns(skill_ref: string): Promise<SkillEvalRun[]> {
