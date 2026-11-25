@@ -42,8 +42,11 @@ import { AddContextActions } from "./item-attachments.js";
 
 /** Every command that opens a dialog from a button: reject and revise (their forms), and verdict (its Accept, Changes or Reject choice). */
 export const DIALOGS = ["reject", "revise", "verdict"];
-/** A Needs-you Approve over the item's size caps (its `over_cap`) opens OverCapApproveDialog: the controller refuses it without a note. */
-const opensDialog = (c: ItemCommand): boolean => DIALOGS.includes(c.name) || (c.name === "approve" && c.over_cap !== undefined);
+/**
+ * A Needs-you Approve over the item's size caps (its `over_cap`) opens OverCapApproveDialog: the controller refuses it
+ * without a note. Allow and resolve (allowsResolve) opens AllowResolveDialog, which lists the files first.
+ */
+const opensDialog = (c: ItemCommand): boolean => DIALOGS.includes(c.name) || (c.name === "approve" && c.over_cap !== undefined) || allowsResolve(c);
 /** The commands the item's "…" menu holds (on the DecisionCard too): they are rare, so they are no buttons in its row. */
 export const MENU = ["reject", "verdict"];
 export type FormName = "reject" | "revise" | "verdict";
@@ -170,10 +173,15 @@ export function copyCliEntry(action: string, id: string): MenuItem {
   };
 }
 
-/** A command row with a permission ask's paths (the item API's `paths`, src/ui/commands.ts ItemCommandRow). */
-type AcceptedCommand = ItemCommand & { paths?: readonly string[] };
+/**
+ * A command row with a permission ask's paths (the item API's `paths`, src/ui/commands.ts ItemCommandRow), and
+ * `out_of_scope` when they are an out_of_scope resolve failure's `/resolve +paths` reply files.
+ */
+type AcceptedCommand = ItemCommand & { paths?: readonly string[]; out_of_scope?: boolean };
 /** The paths a permission ask names on `c`, which its button sends as `+paths`; none for any other command. */
 export const pathsOf = (c: ItemCommand): readonly string[] => (c as AcceptedCommand).paths ?? [];
+/** A resolve row with an out_of_scope failure's reply files: its Allow and resolve opens AllowResolveDialog first (2026-11-26). */
+export const allowsResolve = (c: ItemCommand): boolean => c.name === "resolve" && (c as AcceptedCommand).out_of_scope === true && pathsOf(c).length > 0;
 
 /** The note `c` sends: its permission ask's `+paths <path>...` line first (design §4, issue #280), then `note`. */
 export function withPaths(c: ItemCommand, note: string): string {
@@ -362,13 +370,45 @@ function OverCapApproveDialog({ title, over, busy, error, returnFocusTo, onSend,
   );
 }
 
+/**
+ * The Allow and resolve dialog (design 09-dashboard-item-commands, 2026-11-26), laid out as OverCapApproveDialog: the
+ * files an out_of_scope resolve failure's reply names, and optional notes for the run. Confirm sends `note` trimmed
+ * (the caller puts the `+paths` line first, withPaths); Cancel sends nothing.
+ */
+export function AllowResolveDialog({ title, paths, note: initial = "", busy, error, returnFocusTo, onSend, onClose }: CommandDialogProps & { paths: readonly string[]; note?: string }) {
+  const [note, setNote] = useState(initial);
+  const uid = useId();
+  return (
+    <Dialog
+      title={title}
+      consequence={t("needs.allowResolveConsequence")}
+      confirmLabel={t("needs.actAllowResolve")}
+      confirmDisabled={busy}
+      error={error}
+      returnFocusTo={returnFocusTo}
+      onConfirm={() => onSend(note.trim())}
+      onClose={onClose}
+    >
+      <div data-allow-resolve className="text-sm text-text-1">
+        <p>{t("needs.allowResolveFiles")}</p>
+        <ul className="mt-1 flex flex-col gap-1">
+          {paths.map((p) => <li key={p}><code className="font-mono text-xs break-all">{p}</code></li>)}
+        </ul>
+      </div>
+      <Field label={t("needs.allowResolveNotes")} htmlFor={`${uid}-note`}>
+        <Textarea id={`${uid}-note`} rows={3} value={note} onChange={(e) => setNote(e.target.value)} className="w-full" />
+      </Field>
+    </Dialog>
+  );
+}
+
 /** A Needs-you row's primary button label, in sentence case; `resolve` answers what the item asked. */
 const PRIMARY_LABEL: Record<string, MessageKey> = { approve: "needs.actApprove", retry: "needs.actRetry", resolve: "needs.actAnswer" };
 /** The label of a primary that allows a permission ask's paths (it sends them as `+paths`). */
 const ALLOW_LABEL: Record<string, MessageKey> = { approve: "needs.actAllowApprove", retry: "needs.actAllowRetry", resolve: "needs.actAllowAnswer" };
 /** The primary button's label for `c`: what it does, naming the permission it gives when it carries paths. */
 export const primaryLabel = (c: ItemCommand): string => {
-  const key = (pathsOf(c).length > 0 ? ALLOW_LABEL : PRIMARY_LABEL)[c.name];
+  const key = allowsResolve(c) ? "needs.actAllowResolve" : (pathsOf(c).length > 0 ? ALLOW_LABEL : PRIMARY_LABEL)[c.name];
   // Revise or Reject after a repeated stop (primaryOf): the command's own name.
   return key ? t(key) : commandLabel(c.name);
 };
@@ -444,14 +484,14 @@ export function useMergeReply(id: string, group: NeedActionsProps["group"], merg
  * A Needs-you row's actions (design §9, issues #453, #513): always one primary button, then the "⋯" menu last. The
  * primary is Merge on a merge row, else the command the state asks for (Approve, Retry or Answer, the first the
  * viewer may send), else "Open" to the item page. The menu holds every other command and the Why text's allow
- * entries; one the viewer may not send stays, disabled, with its reason. Reject, revise, verdict and an over-cap
- * Approve (OverCapApproveDialog) open a dialog (outside the row, so the row never grows); the others send at once. A send re-reads the list, so the row moves on;
+ * entries; one the viewer may not send stays, disabled, with its reason. Reject, revise, verdict, an over-cap
+ * Approve (OverCapApproveDialog) and Allow and resolve (AllowResolveDialog) open a dialog (outside the row, so the row never grows); the others send at once. A send re-reads the list, so the row moves on;
  * a failed send shows its error in the cell (or, with `inlineErrors` false, where the row puts SendErrors), a sent
  * one in a short status message that outlives the row.
  */
 export function NeedActions({ id, title, commands, pr, group, merge, checking, cmd, allow, inlineErrors = true, extra = [], label }: NeedActionsProps) {
   const { on, busy, local, send: post } = cmd;
-  const [open, setOpen] = useState<FormName | "approve" | null>(null);
+  const [open, setOpen] = useState<FormName | "approve" | "resolve" | null>(null);
   const wrap = useRef<HTMLSpanElement>(null);
   // The OverflowMenu owns its button, so the dialogs hand focus back to it by looking it up when they close.
   const moreButton = { get current() { return wrap.current?.querySelector<HTMLElement>("[aria-haspopup=menu]") ?? null; } } as RefObject<HTMLElement | null>;
@@ -466,7 +506,7 @@ export function NeedActions({ id, title, commands, pr, group, merge, checking, c
   };
   const canRetry = commands.some((c) => c.name === "retry" && c.allowed);
   const rest = [
-    ...others.map((c) => menuEntry(id, c, off, () => (opensDialog(c) ? setOpen(c.name as FormName | "approve") : void send(c.name, withPaths(c, ""))))),
+    ...others.map((c) => menuEntry(id, c, off, () => (opensDialog(c) ? setOpen(c.name as FormName | "approve" | "resolve") : void send(c.name, withPaths(c, ""))))),
     ...allow.map((a) => ({ label: a.label, action: "retry", item: id, disabled: off || !canRetry, onSelect: () => void send("retry", a.note) })),
   ];
   // Applied at once (Approve): the row's label, e.g. "Approved", until the list's next read moves the row on.
@@ -478,10 +518,11 @@ export function NeedActions({ id, title, commands, pr, group, merge, checking, c
   // Revise or Reject as the main action (a repeated stop, primaryOf), or an over-cap Approve, opens its dialog, as its menu entry does.
   const sendPrimary = () => {
     if (!primary) return;
-    if (opensDialog(primary)) setOpen(primary.name as FormName | "approve");
+    if (opensDialog(primary)) setOpen(primary.name as FormName | "approve" | "resolve");
     else void send(primary.name, withPaths(primary, ""));
   };
   const approve = commands.find((c) => c.name === "approve");
+  const resolve = commands.find(allowsResolve);
   // A disabled Merge says why in its label ("Merge: 1 conflicting file"), as a disabled command's menu entry does.
   const mergeLabel = checking ? t("needs.checking") : queued ? (merge?.reason ?? t("commands.merging")) : merging ? t("commands.merging")
     : merge && !merge.enabled && merge.reason ? `${t("commands.merge")}: ${merge.reason}` : t("commands.merge");
@@ -520,7 +561,18 @@ export function NeedActions({ id, title, commands, pr, group, merge, checking, c
           onClose={() => setOpen(null)}
         />
       )}
-      {open !== null && open !== "approve" && (
+      {open === "resolve" && resolve && (
+        <AllowResolveDialog
+          title={`${t("needs.actAllowResolve")} ${title}`}
+          paths={pathsOf(resolve)}
+          busy={off}
+          error={local.resolve && "error" in local.resolve ? local.resolve.error : null}
+          returnFocusTo={moreButton}
+          onSend={(note) => void send("resolve", withPaths(resolve, note))}
+          onClose={() => setOpen(null)}
+        />
+      )}
+      {open !== null && open !== "approve" && open !== "resolve" && (
         <CommandDialog
           command={open}
           title={title}

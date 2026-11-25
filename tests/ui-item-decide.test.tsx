@@ -251,6 +251,34 @@ describe("item page: DecisionCard", () => {
     await vi.waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_9f3c2a/commands", body: { command: "retry", note: "+paths web/src/x.tsx docs/y.md" } }]));
   });
 
+  it("an out_of_scope resolve failure shows Allow and resolve, whose dialog lists the files; Cancel sends nothing, Confirm sends /resolve +paths with its notes", async () => {
+    const reply = { ...FACTORY_MSG, kind: "run_failed", body: "Reply `/resolve +paths a/b.ts` to allow them and resolve again. Changed files outside the conflicts and allowed_paths: a/b.ts" };
+    body = detail({
+      item: item({ stage: "RUNNING", blocked_reason: "merge_conflict", why: { code: "human", reason_code: "merge_conflict", params: {}, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null } }),
+      commands: [{ ...cmd("resolve"), paths: ["a/b.ts"], out_of_scope: true }, cmd("revise"), cmd("reject")], spec: null, thread: [reply],
+    });
+    mount();
+    const decide = await screen.findByRole("region", { name: "What you need to decide" });
+    const evidence = decide.querySelector<HTMLElement>("[data-decision-evidence]")!;
+    expect(evidence.textContent).toContain("/resolve +paths a/b.ts");
+    expect([...evidence.querySelectorAll("[data-asked-paths] code")].map((c) => c.textContent)).toContain("a/b.ts");
+    const allow = within(decide).getByRole("button", { name: "Allow and resolve" }) as HTMLButtonElement;
+    expect(allow.dataset.action).toBe("resolve");
+    expect(allow.getAttribute("aria-haspopup")).toBe("dialog");
+    await vi.waitFor(() => expect(allow.disabled).toBe(false));
+    fireEvent.click(allow);
+    const cancel = await screen.findByRole("dialog", { name: "Allow and resolve Check the scope in CI" });
+    expect([...cancel.querySelectorAll("[data-allow-resolve] code")].map((c) => c.textContent)).toContain("a/b.ts");
+    fireEvent.click(within(cancel).getByRole("button", { name: "Cancel" }));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(posts).toEqual([]);
+    fireEvent.click(allow);
+    const dialog = await screen.findByRole("dialog", { name: "Allow and resolve Check the scope in CI" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Notes for the resolve run (optional)" }), { target: { value: "Keep the moved file." } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Allow and resolve" }));
+    await vi.waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_9f3c2a/commands", body: { command: "resolve", note: "+paths a/b.ts\nKeep the moved file." } }]));
+  });
+
   it("orders the page: the card, the current run, the thread (collapsed after its first message), the runs, the timeline", async () => {
     const older = { ...FACTORY_MSG, seq: 3, anchor: "msg-3", at: "2026-11-11T00:00:00.000Z", body: "An older message." };
     body = detail({

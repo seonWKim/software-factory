@@ -27,7 +27,7 @@ import { randomUUID } from "node:crypto";
 import { COMMAND_TABLE } from "../core/command-table.js";
 import {
   COMMANDS, type CommandName, ROW_LABELS, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec, mergeQueued, mergeQueuedLabel, mergeRoute, noFilesRefusal,
-  phaseLabel, refusalText, requestTransition,
+  parseCommandPaths, phaseLabel, refusalText, requestTransition,
 } from "../core/commands.js";
 import { refusalReply } from "../core/authorize.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, isProposalId, parseProposalMarker, typed } from "../core/interpret.js";
@@ -313,9 +313,12 @@ export interface ItemCommandRow {
   reason: string | null;
   /**
    * A permission ask's paths (approve, retry or resolve only): the paths the run's needs_human names outside the
-   * allowed paths, which the decision's button sends as `+paths`. Absent when the item holds no such ask.
+   * allowed paths, which the decision's button sends as `+paths`; or, on resolve only, the files of an out_of_scope
+   * resolve failure's `/resolve +paths` reply (`out_of_scope` true). Absent when the item holds no such ask.
    */
   paths?: string[];
+  /** The paths are an out_of_scope resolve failure's (scopePaths): the page's button is Allow and resolve, behind a confirm dialog. Absent otherwise. */
+  out_of_scope?: true;
   /** The item stopped the same way REPEATED_STOP times or more (stopCount): the page's main action is Revise or Reject, not Retry. Absent otherwise. */
   repeated_stop?: true;
   /**
@@ -339,22 +342,43 @@ const RESTART_DESCRIPTION = "Run repo.restart_command in the repo's base checkou
 /** The commands that take `+paths` (design §4, issue #280). */
 const PATHS_COMMANDS: readonly string[] = ["approve", "retry", "resolve"];
 
+/** The reply an out_of_scope resolve failure's detail starts with (resolveScopeDetail, src/worker/support.ts); its group is the `+paths` line. */
+const RESOLVE_REPLY = /^Reply `\/resolve (\+paths [^`]+)` to allow them/;
+
 /**
- * The paths a permission ask names (design 09-dashboard-item-commands): at agent_needs_human, the latest ask's
- * (needs_human of the newest succeeded run that has one, as src/ui/need.ts reads it) `paths` that no allowed path
- * covers yet, each once (through `text`, the Withholder: a path the scan changes is left out); none for any other item.
+ * The paths of the `/resolve +paths` reply an out_of_scope resolve failure's `detail` names, read with the CLI's parser
+ * (parseCommandPaths), so a path the CLI would refuse names none; none when the detail names no such reply.
  */
-async function askedPaths(it: WorkItem, runs: readonly Run[], text: (v: string) => Promise<string | null>): Promise<string[]> {
-  if (phaseOf(it) !== "agent_needs_human") return [];
-  const asks = [...runs].reverse().flatMap((r) => {
+export function resolveScopePaths(detail: string): string[] {
+  const reply = RESOLVE_REPLY.exec(detail)?.[1];
+  const parsed = reply ? parseCommandPaths(reply, "/resolve") : null;
+  return parsed && "paths" in parsed ? parsed.paths : [];
+}
+
+/** At merge_conflict, the files of the newest resolve run's out_of_scope reply (resolveScopePaths); none for any other item. */
+function scopePaths(it: WorkItem, runs: readonly Run[]): string[] {
+  if (phaseOf(it) !== "merge_conflict") return [];
+  const o = [...runs].reverse().find((r) => r.kind === "resolve")?.outcome;
+  return o?.status === "failed" && o.error_code === "out_of_scope" ? resolveScopePaths(o.detail) : [];
+}
+
+/**
+ * The paths an item asks to allow (design 09-dashboard-item-commands) and the commands that send them: at
+ * agent_needs_human, the latest ask's (needs_human of the newest succeeded run that has one, as src/ui/need.ts reads
+ * it) `paths`, on PATHS_COMMANDS; at merge_conflict, an out_of_scope resolve failure's reply (scopePaths), on resolve
+ * only. Each path no allowed path covers yet, once (through `text`, the Withholder: a path the scan changes is left out).
+ */
+async function askedPaths(it: WorkItem, runs: readonly Run[], text: (v: string) => Promise<string | null>): Promise<{ paths: string[]; on: readonly string[]; scope: boolean }> {
+  const scope = scopePaths(it, runs);
+  const asks = phaseOf(it) !== "agent_needs_human" ? [] : [...runs].reverse().flatMap((r) => {
     if (r.outcome?.status !== "succeeded") return [];
     const ask = parseNeedsHuman(r.outcome.data.needs_human);
     return ask.ok && ask.value ? [ask.value] : [];
   });
-  const named = [...new Set(asks[0]?.paths ?? [])].filter((p) => !isCovered(p, it.allowed_paths));
+  const named = [...new Set(scope.length > 0 ? scope : (asks[0]?.paths ?? []))].filter((p) => !isCovered(p, it.allowed_paths));
   const shown: string[] = [];
   for (const p of named) if ((await text(p)) === p) shown.push(p);
-  return shown;
+  return { paths: shown, on: scope.length > 0 ? ["resolve"] : PATHS_COMMANDS, scope: scope.length > 0 };
 }
 
 /**
@@ -363,7 +387,7 @@ async function askedPaths(it: WorkItem, runs: readonly Run[], text: (v: string) 
  * the Withholder: it names a user ID). Every command but `merge` (its own button) needs approve_spec, as the
  * controller checks it; `/verdict`'s record_verdict comes with the same role. Not `/help`: it answers a comment and the
  * page cannot send it (APP_COMMANDS), so a button for it could only be refused. A permission ask's paths go on the
- * commands that take `+paths` (askedPaths). A merged item gets `restart` (the Restart app button) when the server
+ * commands that take `+paths`, an out_of_scope resolve failure's on resolve (askedPaths). A merged item gets `restart` (the Restart app button) when the server
  * offers it (`grant.restart`), with the same grant as the item commands. With the project's `caps` (projectCaps), an
  * Approve over the item's caps carries `over_cap` (overCapRow); without them, or not over, the row is as it was.
  */
@@ -371,14 +395,14 @@ export async function itemCommands(
   it: WorkItem, runs: readonly Run[], grant: ActorGrant, text: (v: string) => Promise<string | null>, caps: SplitLimits | null = null,
 ): Promise<ItemCommandRow[]> {
   const reason = grant.allow ? null : await text(grant.reason);
-  const paths = await askedPaths(it, runs, text);
+  const asked = await askedPaths(it, runs, text);
   const cmds = commandsFor(itemCommandState(it, runs)).filter((c) => APP_COMMANDS.includes(c.name));
   // Its state changes say how often the item stopped with its current blocked_reason, and hold its one-time cap (none read when neither is asked).
   const changes = (it.blocked_reason !== null || caps) && grant.changes ? await grant.changes(it.id) : [];
   const stops = it.blocked_reason !== null ? stopCount(it, changes) : 0;
   const rows: ItemCommandRow[] = cmds.map((c) => ({
     name: c.name, usage: c.usage, description: c.description, allowed: grant.allow, reason,
-    ...(paths.length > 0 && PATHS_COMMANDS.includes(c.name) ? { paths } : {}),
+    ...(asked.paths.length > 0 && asked.on.includes(c.name) ? { paths: asked.paths, ...(asked.scope ? { out_of_scope: true as const } : {}) } : {}),
     ...(stops >= REPEATED_STOP ? { repeated_stop: true as const } : {}),
   }));
   const over = caps && rows.some((r) => r.name === "approve") ? overCapRow(it, runs, changes, caps) : null;
@@ -393,8 +417,8 @@ function overCapRow(it: WorkItem, runs: readonly Run[], changes: readonly StateC
   return over && "at" in over ? { sizes: over.sizes, caps: over.caps, one_time_cap: over.one_time_cap } : null;
 }
 
-/** The phases whose Needs-you commands read the item's runs: the run that asked decides the commands, or the size an Approve is over its caps by. */
-const RUNS_READ: readonly string[] = ["agent_needs_human", "too_large", "spec_pending", "max_revisions"];
+/** The phases whose Needs-you commands read the item's runs: the run that asked decides the commands, a failed resolve run's reply the paths, or the size an Approve is over its caps by. */
+const RUNS_READ: readonly string[] = ["agent_needs_human", "too_large", "spec_pending", "max_revisions", "merge_conflict"];
 
 /**
  * A Needs-you row's `commands` (design §9): the item API's entries for the commands that change the item's state, from
