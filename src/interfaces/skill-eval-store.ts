@@ -29,8 +29,16 @@ export interface SkillEvalCase {
    */
   seed?: string | null;
   mcp?: readonly string[] | null;
+  /**
+   * `dev` (a draft is tuned and measured on it) or `held-out` (only the promotion check replays it), design
+   * 07-self-improvement; a case added with none is `dev`. `eval run` replays every case whatever its split.
+   */
+  split: SkillEvalSplit;
   created_at: Timestamp;
 }
+
+export const SKILL_EVAL_SPLITS = ["dev", "held-out"] as const;
+export type SkillEvalSplit = (typeof SKILL_EVAL_SPLITS)[number];
 
 export type SkillEvalRunStatus = "running" | "passed" | "failed" | "errored";
 
@@ -155,8 +163,11 @@ export interface SkillEvalStore {
   /** Idempotent on the id: a second call returns the stored suite. */
   createSkillEvalSuite(s: Omit<SkillEvalSuite, "created_at">): Promise<SkillEvalSuite>;
   listSkillEvalSuites(): Promise<SkillEvalSuite[]>;
-  /** Idempotent on the id, with its seed and MCP servers when given. A new case gives its suite the next version, in the same transaction. */
-  addSkillEvalCase(c: Omit<SkillEvalCase, "created_at">): Promise<SkillEvalCase>;
+  /**
+   * Idempotent on the id, with its seed, MCP servers and split when given (no split: `dev`). A new case gives its suite
+   * the next version, in the same transaction.
+   */
+  addSkillEvalCase(c: Omit<SkillEvalCase, "created_at" | "split"> & { split?: SkillEvalSplit }): Promise<SkillEvalCase>;
   listSkillEvalCases(suite_id: string): Promise<SkillEvalCase[]>;
   /** Sets a suite's title; null when the suite is unknown. */
   updateSkillEvalSuiteTitle(id: string, title: string): Promise<SkillEvalSuite | null>;
@@ -168,6 +179,8 @@ export interface SkillEvalStore {
   getSkillEvalCase(id: string): Promise<SkillEvalCase | null>;
   /** Sets a case's input and expected, and gives its suite the next version; null when the case is unknown. */
   updateSkillEvalCase(id: string, c: Pick<SkillEvalCase, "input" | "expected">): Promise<SkillEvalCase | null>;
+  /** Sets a case's split, bumping no suite version; null when the case is unknown. */
+  setSkillEvalCaseSplit(id: string, split: SkillEvalSplit): Promise<SkillEvalCase | null>;
   /** Deletes the case and gives its suite the next version; false when the case is unknown. */
   deleteSkillEvalCase(id: string): Promise<boolean>;
   /**

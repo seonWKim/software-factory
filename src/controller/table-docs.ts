@@ -64,6 +64,7 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   controller_skill_eval_cases: "Cases of a skill eval suite: the input to replay and the output expected.",
   "controller_skill_eval_cases.seed": "The seed folder the case's replay starts from; empty means none.",
   "controller_skill_eval_cases.mcp": "The MCP servers the case's replay may use; empty means none.",
+  "controller_skill_eval_cases.split": "dev (a skill draft is tuned and measured on the case) or held-out (only the check before a draft is promoted replays it); dev by default.",
   controller_skill_eval_replays: "One verdict per replay of a case in an eval run, with its detail; one row per run, case and replay number.",
   "controller_skill_eval_replays.replay": "The replay's number in its run, 1 to N; empty on older replays.",
   "controller_skill_eval_replays.transcript": "The replay's transcript; empty on older replays.",
