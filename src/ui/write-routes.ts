@@ -147,10 +147,14 @@ async function writePost(d: ServerDeps, req: UiRequest, route: WriteRoute): Prom
   return route.run(d, pathOf(req.url), body);
 }
 
+/** The retired routine routes (design 08-schedules): a POST under this prefix is a 404, as their reads are, not the 405. */
+const RETIRED_ROUTINES = "/api/v1/routines/";
+
 /** Any POST: the write route's or the item commands' answer, or null when no route takes it (the caller's 405). */
 export async function post(d: ServerDeps, req: UiRequest): Promise<ApiResult | null> {
   const route = writeRoute(d, req);
   if (route !== null) return writePost(d, req, route);
   const commandsId = commandsWrite(req);
-  return commandsId !== null ? commandsPost(d, commandsId, req) : null;
+  if (commandsId !== null) return commandsPost(d, commandsId, req);
+  return pathOf(req.url).startsWith(RETIRED_ROUTINES) ? apiError(404, "The routine routes are retired: use /api/v1/schedules.") : null;
 }

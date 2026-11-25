@@ -1,4 +1,4 @@
-// The routine HTTP API is retired (design 08-schedules): the two /api/v1/routines reads answer 404 and every write is a POST no route takes (the shell's JSON 405, POST_ONLY), through respond(),
+// The routine HTTP API is retired (design 08-schedules): the two /api/v1/routines reads answer 404 and so does every POST under /api/v1/routines/, through respond(),
 // and the removed module and its test are gone. Routines are Check a page schedules, read at /api/v1/schedules.
 
 import { existsSync, readFileSync } from "node:fs";
@@ -10,7 +10,6 @@ import { HealthMonitor } from "../src/ui/health.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
 import { respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { POST_ONLY } from "../src/ui/write-routes.js";
 import { silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
@@ -29,7 +28,7 @@ async function deps() {
 }
 
 describe("the retired routine routes", () => {
-  it("answer 404 to the two reads and 405 (no route takes the POST) to every write", async () => {
+  it("answer 404 to the two reads and to every write", async () => {
     const { d, pauses } = await deps();
     for (const url of ["/api/v1/routines", "/api/v1/routines/suggestions", "/api/v1/routines/suggestions?routine=cp_1"]) {
       expect((await respond(d, { method: "GET", url, host: HOST })).status, url).toBe(404);
@@ -38,8 +37,7 @@ describe("the retired routine routes", () => {
       const r = await respond(d, {
         method: "POST", url: `/api/v1/routines/${verb}`, host: HOST, origin: ORIGIN, contentType: "application/json", csrfToken: pauses.csrfToken, body: JSON.stringify({ id: "cp_1" }),
       });
-      expect(r.status, verb).toBe(405);
-      expect(JSON.parse(r.body).error).toBe(POST_ONLY);
+      expect(r.status, verb).toBe(404);
     }
   });
 
