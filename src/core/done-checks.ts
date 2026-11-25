@@ -48,12 +48,33 @@ const isTestFile = (p: string): boolean => {
 const FORMS = "must be {line, command}, {line, test_file}, {line, test_file, new: true} or {line, manual: true, reason}";
 const filled = (v: unknown): v is string => typeof v === "string" && v.trim() !== "";
 
+/** A line's words, lower case: what is left after quotes, backticks, punctuation and spacing. */
+const words = (s: string): Set<string> => new Set(s.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+/** How alike two lines' words are, 0 to 1 (Dice: twice the shared words over both counts). */
+const alike = (a: Set<string>, b: Set<string>): number => (a.size + b.size === 0 ? 1 : (2 * [...a].filter((w) => b.has(w)).length) / (a.size + b.size));
+/** How alike a rewording must be to still name its line. */
+const SAME_LINE = 0.75;
+
+/**
+ * Whether `text` names `lines[i]`: the line as written, or a rewording (a dropped word, other quotes, a re-ordered
+ * clause) that is at least SAME_LINE alike to it and more alike to it than to any other line. Triage reworded a line it
+ * had just written 3 times in 3 days (wi_c253e32d, wi_6e819703, wi_bb80a6ff); the check keeps the canonical line.
+ */
+function namesLine(text: unknown, lines: readonly string[], i: number): boolean {
+  if (text === lines[i]) return true;
+  if (typeof text !== "string") return false;
+  const w = words(text);
+  const own = alike(w, words(lines[i]!));
+  return own >= SAME_LINE && lines.every((l, j) => j === i || alike(w, words(l)) < own);
+}
+
 /** One entry, or the error naming it (`done_checks[i]`). */
-function parseEntry(e: unknown, line: string | undefined, at: string, commands: readonly string[] | undefined): DoneCheck | string {
+function parseEntry(e: unknown, lines: readonly string[], i: number, at: string, commands: readonly string[] | undefined): DoneCheck | string {
+  const line = lines[i];
   if (line === undefined) return `${at}: no done-when line has this place; give one entry per done_criteria line`;
   if (typeof e !== "object" || e === null || Array.isArray(e)) return `${at}: ${FORMS}`;
   const o = e as Record<string, unknown>;
-  if (o.line !== line) return `${at}.line: must be done-when line ${JSON.stringify(line)} as written, in the same order`;
+  if (!namesLine(o.line, lines, i)) return `${at}.line: must be done-when line ${JSON.stringify(line)} as written, in the same order`;
   const keys = Object.keys(o).filter((k) => k !== "line").sort().join(",");
   if (keys === "" || (o.manual === true && !filled(o.reason))) return `${at}: the done-when line has neither a check nor a manual reason`;
   if (keys === "command" && filled(o.command)) {
@@ -82,7 +103,7 @@ export function parseDoneChecks(v: unknown, lines: readonly string[], commands?:
   const out: DoneCheck[] = [];
   for (let i = 0; i < Math.max(v.length, lines.length); i++) {
     const at = `done_checks[${i}]`;
-    const entry = i < v.length ? parseEntry(v[i], lines[i], at, commands) : `${at}: the done-when line has neither a check nor a manual reason`;
+    const entry = i < v.length ? parseEntry(v[i], lines, i, at, commands) : `${at}: the done-when line has neither a check nor a manual reason`;
     if (typeof entry === "string") return { ok: false, error: entry };
     out.push(entry);
   }
