@@ -75,6 +75,9 @@ export function retryWip(runs: readonly Pick<Run, "kind" | "outcome" | "input">[
   const last = runs.filter((r) => r.kind === "implement" && r.outcome).at(-1);
   return last ? keptWip(last) : undefined;
 }
+/** The `/retry` refusal on an item waiting on its merge conflict (2026-11-26): the `/resolve` replies that apply there. */
+const RESOLVE_NOT_RETRY = "the item is waiting on its merge conflict, so there is no failed run to retry; reply `/resolve [notes]` to resolve it again, " +
+  "or `/resolve +paths <path>...` with the notes on the lines below to also allow files outside the conflicts and allowed paths";
 /**
  * `/retry [notes]`: the failed step again under a new key. `widen` (a `+paths`, issue #280) applies only to a
  * failed implement or resolve run; on any other kind it is refused and nothing changes. The note, without its
@@ -102,6 +105,8 @@ export function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, not
       enqueue: { kind, idempotency_key: runKey(next, kind), ...(wip ? { input: { wip } } : {}) },
     };
   }
+  // A failed resolve run leaves the item on its merge conflict, not on a failed run: `/resolve` (with `+paths`) answers it.
+  if (it.blocked_on === "human" && it.blocked_reason === CONFLICT_PENDING) return { refuse: RESOLVE_NOT_RETRY };
   if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };
   if (widen && kind !== "implement" && kind !== "resolve") {
     return { refuse: `\`+paths\` applies only to a failed implement or resolve run, and this item's failed run is a ${label(kind)} run; reply \`/retry\` without \`+paths\`` };
