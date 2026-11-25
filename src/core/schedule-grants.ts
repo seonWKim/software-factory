@@ -102,7 +102,7 @@ export function storedGrants(settings: Readonly<Record<string, unknown>>): Sched
   });
 }
 
-/** One grant in plain words, as `schedule list` and the schedules API show it. */
+/** One grant in plain words, as `schedule list` shows it. */
 export function grantWords(g: ScheduleGrant, schedule_id: string): string {
   if (g.kind === "browser") return `browser: Browse may read only ${g.url}`;
   if (g.kind === "notes") return `notes: may write only in ${notesFolder(schedule_id)}`;
