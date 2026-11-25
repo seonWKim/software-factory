@@ -220,14 +220,14 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
 
 /** `factory schedule …` (design 08-schedules): list, add, edit, pause, resume, run, runs, delete, draft and improve, in that order; the writes are the owner's only. */
 function scheduleCommands(): TableCommand[] {
-  const optional = "[--body <text>] [--skip-when-busy on|off] [--token-cap <n>]";
+  const optional = "[--body <text>] [--token-cap <n>] [--missed catch-up|skip]";
   const one = (name: string, args: string, chat: string, chat_args: ChatArgs, does: string, prints: string): TableCommand => ({
     name: `schedule ${name}`, args, who: "owner", group: "schedule", does, prints, chat: `schedule ${chat}`, chat_args, item: false, edge: false,
   });
   return [
-    one("list", "", "list", "none", "List the schedules", "one line per schedule: ID, title, next due time or `paused`, running or idle, action kind, skip when busy, token cap"),
+    one("list", "", "list", "none", "List the schedules", "one line per schedule: ID, title, next due time or `paused`, running or idle, action kind, missed rule, token cap"),
     one(
-      "add", `--id <id> --title <t> --cadence <interval|daily|weekly|cron> --spec <spec> --zone <IANA> --action <build|agent|feedback> ${optional}`, "add <flags>", "any",
+      "add", `--id <id> --title <t> --cadence <interval|daily|weekly|cron> --spec <spec> --zone <IANA> --action <build|agent|feedback> ${optional} [--run-now on|off]`, "add <flags>", "any",
       "Store a new schedule, first due at its cadence's next slot after now; refused for an ID already stored, a bad cadence, zone or action, " +
         "and an agent or feedback action without `--body` (its prompt; a build's item body)",
       "the stored schedule's line",
