@@ -42,6 +42,8 @@ export interface SkillEvalRunOptions {
   model_class?: string;
   judge_model_class?: string;
   replays?: number;
+  /** --baseline: the suite with no skill text and no skill folder, stored as `baseline:<folder hash>`; absent unless set. */
+  baseline?: boolean;
 }
 
 /** One `eval run <skill>`: the stored run, or why nothing was run (no run written). */

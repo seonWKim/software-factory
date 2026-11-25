@@ -412,6 +412,14 @@ describe("the eval wiring (runSkillEvalFor)", () => {
     expect(await previousAnswers(store, "skills/tests-first", "v1")("c1")).toBe("unnumbered");
   });
 
+  it("previousAnswers skips baseline: runs, so a pairwise check never compares against a no-skill answer", async () => {
+    const store = await suiteWith({ c1: { input: "x", expected: ["a"] } });
+    for (const [id, v] of [["old", "v0"], ["base", "baseline:v1"]] as const) await store.startSkillEvalRun({ id, suite_id: "s1", created_by: OWNER, skill_version: v });
+    await store.recordSkillEvalReplay({ run_id: "old", case_id: "c1", replay: 1, verdict: "pass", detail: {}, answer: "skill answer" });
+    await store.recordSkillEvalReplay({ run_id: "base", case_id: "c1", replay: 1, verdict: "pass", detail: {}, answer: "no-skill answer" });
+    expect(await previousAnswers(store, "skills/tests-first", "v1")("c1")).toBe("skill answer");
+  });
+
   it("figures: one replay per case, a null pass rate with no replays, the judge on judgeClass of the replay's class", () => {
     expect(runFigures("standard", [])).toEqual({ model_class: "standard", judge_model_class: "strong", replays: 0, pass_rate: null, errored: 0 });
     expect(runFigures("strong", [{ verdict: "pass" }, { verdict: "errored" }])).toEqual({ model_class: "strong", judge_model_class: "standard", replays: 2, pass_rate: 0.5, errored: 1 });

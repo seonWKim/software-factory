@@ -2,7 +2,8 @@
 // for a skill below skill_improve_target whose score dropped or stalled, drafts one new SKILL.md with one plain model
 // call that sees only the failed check names. The draft is measured in scratch (the skill's suite replayed with the
 // draft as the skill's system prompt, the run stored) and stored `proposed` when it beats the current version's latest
-// run by more than skill_improve_noise, else `tried` with its reason. No skill file changes before a verdict: promote,
+// run by more than skill_improve_noise and carries an owner label (ownerLabelled), else `tried` with its reason. Scratch
+// (`draft:`) and baseline (`baseline:`) runs are never read as measured. No skill file changes before a verdict: promote,
 // reject and hold are the functions below, each a conditional change of the draft row. A seeded skill is a suite whose
 // skill_ref is inside capabilities.skill_folders; with none configured the composition root passes no wiring and the
 // feature is off. File reads and writes, the replay and the judge come through SkillImproveWiring (src/skill-evals.ts).
@@ -25,6 +26,10 @@ import type { TacitChangeProposal, TacitHandOff, TacitLedger, TacitVerdictRecord
 export const SKILL_IMPROVER = "system:skill-improve" as UserId;
 /** The skill_version of a scratch run: never a folder's version, so no trigger or baseline reads it as the skill's. */
 export const scratchVersion = (draft_id: string) => `draft:${draft_id}`;
+/** The skill_version of a baseline run (`eval run --baseline`): the suite with no skill, beside the folder's version it was run at. */
+export const baselineVersion = (folder_hash: string) => `baseline:${folder_hash}`;
+/** Whether `skill_version` names a run that replays no folder version as the skill's: a scratch run or a baseline run. */
+export const unmeasuredVersion = (skill_version: string | null) => skill_version !== null && (skill_version.startsWith("draft:") || skill_version.startsWith("baseline:"));
 const DAY_MS = 86_400_000;
 const DRAFT_TIMEOUT_MS = 120_000;
 const DRAFT_MAX_TOKENS = 16_000;
@@ -113,7 +118,7 @@ const skillTarget = (skill_ref: string) => `${skill_ref}/SKILL.md`;
 /** Why a skill fell below its target: its newest measured run dropped, or its last runs gained nothing. */
 export type SkillTrigger = "drop" | "stall";
 /** Why a draft is `tried` (or `held`, for token_budget). */
-export type DraftReason = "failed_call" | "withheld" | "failed_replay" | "no_baseline" | "no_gain" | "token_budget";
+export type DraftReason = "failed_call" | "withheld" | "failed_replay" | "no_baseline" | "no_gain" | "token_budget" | "untrusted";
 
 /** What one improve run did per seeded skill below its target. */
 export interface SkillImproveResult {
@@ -123,8 +128,8 @@ export interface SkillImproveResult {
   draft: { id: string; state: SkillDraftState; reason?: DraftReason } | { skipped: "drafted" | "day_cap" | "off" | "unreadable" };
 }
 
-/** A run with figures, not a scratch run. */
-const measured = (runs: readonly SkillEvalRun[]) => runs.filter((r) => r.pass_rate !== null && r.finished_at !== null && !r.skill_version?.startsWith("draft:"));
+/** A run with figures, not a scratch run and not a baseline run. */
+const measured = (runs: readonly SkillEvalRun[]) => runs.filter((r) => r.pass_rate !== null && r.finished_at !== null && !unmeasuredVersion(r.skill_version));
 
 /**
  * The trigger (newest first): none when there is no measured run or the newest is at or above skill_improve_target.
@@ -203,6 +208,7 @@ async function draftSkill(d: SkillImproveDeps, project: string, skill_ref: strin
   const gain = scratch.pass_rate - baseline.pass_rate!;
   const scores = { ...drafted, baseline_run: { id: baseline.id, pass_rate: baseline.pass_rate }, gain };
   if (!past(gain, c.skill_improve_noise)) return store("tried", call.tokens, { ...scores, reason: "no_gain" });
+  if (!ownerLabelled(id)) return store("tried", call.tokens, { ...scores, reason: "untrusted" });
   const stored = await store("proposed", call.tokens, scores);
   const checks = failed_checks.length > 0 ? failed_checks.join("; ") : "none recorded";
   await handOff(d.ledger, { proposal: {
@@ -211,6 +217,15 @@ async function draftSkill(d: SkillImproveDeps, project: string, skill_ref: strin
     change: call.text,
   } });
   return stored;
+}
+
+/**
+ * Whether draft `id` carries an owner label, the owner's mark that its skill may be proposed (design
+ * 07-self-improvement). No label source exists yet, so none does: every draft that would be proposed is stored `tried`
+ * with reason `untrusted`, and nothing is handed to the ledger.
+ */
+export function ownerLabelled(_id: string): boolean {
+  return false;
 }
 
 /** The model class of the newest measured run (the scratch run and its baseline use it); `standard` when it names none. */
