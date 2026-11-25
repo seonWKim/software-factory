@@ -73,14 +73,6 @@ const PREPARE = {
   "popover-week": openCalendar(false, '[data-capture-open="calendar-event"]'),
   "popover-month": openCalendar(true, '[data-capture-open="calendar-event"]'),
   "popover-more": openCalendar(true, "[data-more]"),
-  // The Evals page's Compare ModalPanel (its DiffView and case table), opened through the Compare Button's attribute.
-  // The Button is disabled until the versions load, so it is pressed once it is enabled.
-  "evals-compare": `(async () => {
-  const wait = async (find) => { for (const end = Date.now() + 3000; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) { const el = find(); if (el) return el; } return null; };
-  (await wait(() => document.querySelector('[data-capture-open="evals-compare"]:not(:disabled)')))?.click();
-  await wait(() => document.querySelector("dialog[open]"));
-  await new Promise((r) => setTimeout(r, 150));
-})()`,
   "dialog-new-event": `(async () => {
     const wait = async (find) => { for (const end = Date.now() + 3000; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) { const el = find(); if (el) return el; } return null; };
     (await wait(() => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "New event")))?.click();
@@ -88,7 +80,27 @@ const PREPARE = {
     await new Promise((r) => setTimeout(r, 150));
   })()`,
 };
-const OPEN_DETAILS = `document.querySelectorAll("details").forEach((d) => (d.open = true))`;
+
+/**
+ * Opens the Evals page of `skill` in place, as the dashboard's own links do: the server answers 404 to a full load of
+ * /app/evals/<skill>, since a skill ref is a folder path and an /app path segment may not decode to hold "/". So the
+ * entry loads `data` (the page the sidebar marks for an evals page) and moves to evals/<skill> with pushState and a
+ * popstate. It waits for the Compare Button to be enabled (the versions loaded); with `compare` it presses it, waits for
+ * dialog[open], then for the dialog's case table (the diff loaded).
+ */
+const openEvals = (skill, compare) => `(async () => {
+  const wait = async (find) => { for (const end = Date.now() + 3000; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) { const el = find(); if (el) return el; } return null; };
+  history.pushState(null, "", ${JSON.stringify(`/app/evals/${encodeURIComponent(skill)}`)});
+  dispatchEvent(new PopStateEvent("popstate"));
+  const button = await wait(() => document.querySelector('[data-capture-open="evals-compare"]:not(:disabled)'));
+  if (${compare}) {
+    button?.click();
+    await wait(() => document.querySelector("dialog[open]"));
+    await wait(() => document.querySelector("dialog[open] table"));
+  }
+  await new Promise((r) => setTimeout(r, 150));
+})()`;
+const OPEN_DETAILS =`document.querySelectorAll("details").forEach((d) => (d.open = true))`;
 
 async function main() {
   const only = process.argv.includes("--page") ? process.argv[process.argv.indexOf("--page") + 1] : null;
@@ -117,11 +129,13 @@ async function main() {
     { name: "popover-week", path: "calendar" },
     { name: "popover-month", path: "calendar" },
     { name: "popover-more", path: "calendar" },
-    // The Evals page of the fixture skill (two versions, the newer one current) and its open Compare dialog.
-    { name: "evals", path: `evals/${enc(fixture.pages.skill)}` },
-    { name: "evals-compare", path: `evals/${enc(fixture.pages.skill)}` },
+    // The Evals page of the fixture skill (two versions, the newer one current) and its open Compare dialog, reached
+    // from Data in place (openEvals: a full load of evals/<skill> is a 404).
+    { name: "evals", path: "data" },
+    { name: "evals-compare", path: "data" },
     { name: "dialog-new-event", path: "calendar" },
   ].filter((p) => only === null || p.name === only);
+  const prepare = { ...PREPARE, evals: openEvals(fixture.pages.skill, false), "evals-compare": openEvals(fixture.pages.skill, true) };
 
   await rm(SHOTS, { recursive: true, force: true });
   await mkdir(SHOTS, { recursive: true });
@@ -138,8 +152,8 @@ async function main() {
         await page.send("Emulation.setDeviceMetricsOverride", { ...VIEWPORTS[0], deviceScaleFactor: 1, mobile: false });
         await page.goto(`${fixture.url}/app/${p.path}`);
         // The app keeps a chosen theme in localStorage (sf-theme); the profile is fresh, so it follows the media.
-        if (PREPARE[p.name]) {
-          await page.eval(PREPARE[p.name]);
+        if (prepare[p.name]) {
+          await page.eval(prepare[p.name]);
           await page.idle();
         }
         await page.eval(OPEN_DETAILS);
@@ -151,7 +165,7 @@ async function main() {
           // An open menu or popover measures its side when it opens: close and open it again at this size.
           if (p.name.startsWith("menu-") || p.name.startsWith("popover-")) {
             await page.eval(`document.querySelector('[aria-haspopup="menu"][aria-expanded="true"], [aria-haspopup="dialog"][aria-expanded="true"]')?.click()`);
-            await page.eval(PREPARE[p.name]);
+            await page.eval(prepare[p.name]);
             await page.eval(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))`);
           }
           await page.eval(`document.querySelectorAll("[data-responsive-fail]").forEach((e) => e.removeAttribute("data-responsive-fail"))`);
@@ -189,9 +203,9 @@ async function main() {
   let system;
   let webkitSecs;
   try {
-    webkit = await webkitPass({ url: fixture.url, pages, prepare: (name) => PREPARE[name], openDetails: OPEN_DETAILS, shots: SHOTS });
+    webkit = await webkitPass({ url: fixture.url, pages, prepare: (name) => prepare[name], openDetails: OPEN_DETAILS, shots: SHOTS });
     webkitSecs = ((Date.now() - webkitStarted) / 1000).toFixed(1);
-    system = await systemWebkitPass({ url: fixture.url, pages: pages.filter((p) => p.name.startsWith("popover-")), prepare: (name) => PREPARE[name] });
+    system = await systemWebkitPass({ url: fixture.url, pages: pages.filter((p) => p.name.startsWith("popover-")), prepare: (name) => prepare[name] });
   } finally {
     await fixture.close();
   }
