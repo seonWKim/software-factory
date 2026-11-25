@@ -1,15 +1,14 @@
 // The `routed` ScheduleAction (design 08-schedules, docs/plugins/schedule-action.md): hands each fired occurrence
 // to the route of its schedule's action kind (build, agent, feedback, improve or check_page;
 // src/controller/units/schedule/plugins/), bound to ports over the store, the agent runner and the egress scanner. An agent call gets exactly the read-only
-// tools Read, Glob and Grep, in a fresh detached checkout, with deny_paths and no writable path; a feedback schedule's
-// grants (browser, notes, repo, shell; src/core/schedule-grants.ts) add to that only what ScheduleGrantBroker checks
-// and hands out. Every answer is scanned before it is stored or filed (G5). The token cap is the claim pass's (src/core/schedule.ts): an
+// tools Read, Glob and Grep, in a fresh detached checkout, with deny_paths and no writable path, unless the route
+// passes the run its schedule's grants handed out (a feedback schedule's, by ScheduleGrantBroker in
+// src/core/schedule-grants.ts, which compose binds): then that run's tools, repo and writable paths. Every answer is scanned before it is stored or filed (G5). The token cap is the claim pass's (src/core/schedule.ts): an
 // occurrence over it never reaches this action.
 
 import type { Contexts } from "../../plugin-api.js";
 import type { ActionPorts, AgentAnswer } from "../../controller/units/schedule/plugins/ports.js";
 import type { Schedule } from "../../core/schedule.js";
-import { type GrantBrokerDeps, ScheduleGrantBroker, grantWords, nodeGrantDeps, storedGrants } from "../../core/schedule-grants.js";
 import type { ToolSpec } from "../../core/tools/types.js";
 import { type RunId, type Timestamp, type WorkItemId, usageTokens } from "../../core/types.js";
 import type { ScheduleAction } from "../../interfaces/schedule-action.js";
@@ -35,11 +34,8 @@ export function readOnlyTools(tools: readonly ToolSpec[]): ToolSpec[] {
   });
 }
 
-/** A feedback schedule's stored grants (none for any other kind); a bad stored grant throws, so the run fails before any agent starts. */
-const grantsOf = (s: Schedule) => (s.action?.kind === "feedback" ? storedGrants(s.action.settings) : []);
-
 export class RoutedScheduleAction implements ScheduleAction {
-  constructor(private readonly c: Ctx, private readonly grantDeps: GrantBrokerDeps = nodeGrantDeps) {}
+  constructor(private readonly c: Ctx) {}
 
   async run(schedule: Schedule, occurrence_at: Timestamp): Promise<void> {
     if (schedule.action === null) throw new Error(`schedule ${schedule.id} has no action`);
@@ -52,7 +48,6 @@ export class RoutedScheduleAction implements ScheduleAction {
     const { store, scanner, project } = this.c;
     return {
       occurrence_id: occurrenceSourceId(schedule.id, occurrence_at),
-      granted: grantsOf(schedule).map((g) => grantWords(g, schedule.id)),
       fileItem: async ({ source_id, title, body }) => {
         if (!(await scanner.scan("comment", `${title}\n\n${body}`)).clean) return null;
         const source = { type: "local", id: source_id, link: `local:${source_id}` };
@@ -70,8 +65,8 @@ export class RoutedScheduleAction implements ScheduleAction {
 
   private async ask(schedule: Schedule, occurrence_at: Timestamp, i: Parameters<ActionPorts["ask"]>[0]): Promise<AgentAnswer> {
     const { sandbox, runner, scanner } = this.c;
-    const cfg = this.c.loaded.config, grants = grantsOf(schedule);
-    const run = await new ScheduleGrantBroker(schedule.id, grants, this.grantDeps).handOut({ tools: readOnlyTools(this.c.tools), repo: cfg.repo.path, base_ref: cfg.repo.base_branch });
+    const cfg = this.c.loaded.config;
+    const run = i.run ?? { tools: readOnlyTools(this.c.tools), repo: cfg.repo.path, base_ref: cfg.repo.base_branch, writable_paths: [], granted: [] };
     const handle = await sandbox.create({ repo: run.repo, branch: null, base_ref: run.base_ref });
     try {
       const result = await runner.run({
@@ -79,14 +74,14 @@ export class RoutedScheduleAction implements ScheduleAction {
         work_item_id: `schedule:${schedule.id}` as WorkItemId,
         role: "triage", // a read-only role that keeps no session
         sandbox: handle,
-        system_prompt: grants.length === 0 ? SYSTEM_PROMPT : `${SYSTEM_PROMPT}\n\nThe owner granted this schedule more, and nothing else:\n${grants.map((g) => `- ${grantWords(g, schedule.id)}`).join("\n")}`,
+        system_prompt: run.granted.length === 0 ? SYSTEM_PROMPT : `${SYSTEM_PROMPT}\n\nThe owner granted this schedule more, and nothing else:\n${run.granted.map((g) => `- ${g}`).join("\n")}`,
         prompt: i.prompt,
-        tools: run.tools,
+        tools: run.tools as ToolSpec[], // ScheduleGrantBroker hands out ToolSpecs; ports.ts names them by shape
         tool_grants: [],
         lease_token: 0,
         env_allowlist: {},
         deny_paths: cfg.deny_paths,
-        writable_paths: run.writable_paths,
+        writable_paths: [...run.writable_paths],
         model_class: "standard",
         timeout_ms: cfg.run_timeout_ms,
         ...(i.output_schema ? { output_schema: i.output_schema as Record<string, unknown> } : {}),

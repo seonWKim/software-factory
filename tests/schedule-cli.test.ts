@@ -628,7 +628,7 @@ describe("feedback schedule grants", () => {
     expect((await cli(["edit", "sch_fb", "--grant", "browser=http://127.0.0.1:8080/"])).code).toBe(0);
     expect((await stored(store))!.action!.settings).toEqual({ prompt: "Review the pages", grants: [{ kind: "browser", url: "http://127.0.0.1:8080/" }] });
     expect((await cli(["edit", "sch_fb", "--grant", "none"])).code).toBe(0);
-    expect((await stored(store))!.action!.settings).toEqual({ prompt: "Review the pages" });
+    expect((await stored(store))!.action!.settings).toEqual({ prompt: "Review the pages", grants: [] });
     expect((await cli(["list"])).lines.find((l) => l.startsWith("sch_fb\t"))).not.toContain("grants:");
   });
 

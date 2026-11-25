@@ -5,9 +5,9 @@
 import { describe, expect, it } from "vitest";
 import { agentAction } from "../src/controller/units/schedule/plugins/agent/agent-action.js";
 import { buildAction } from "../src/controller/units/schedule/plugins/build/build-action.js";
-import { FEEDBACK_MAX_TASKS, feedbackAction } from "../src/controller/units/schedule/plugins/feedback/feedback-action.js";
+import { FEEDBACK_MAX_TASKS, feedbackActionWith } from "../src/controller/units/schedule/plugins/feedback/feedback-action.js";
 import { scheduledAction } from "../src/core/controller-deps.js";
-import { type GrantBrokerDeps, SCHEDULE_SHELL_COMMAND } from "../src/core/schedule-grants.js";
+import { type GrantBrokerDeps, SCHEDULE_SHELL_COMMAND, feedbackGrantHandOut } from "../src/core/schedule-grants.js";
 import { type AddScheduleInput, type ScheduleActionSpec, addSchedule } from "../src/core/schedule.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -37,9 +37,9 @@ async function setup(action: ScheduleActionSpec, answer: (spec: AgentRunSpec) =>
   const loaded = { config: { repo: { path: "/repo", base_branch: "main" }, deny_paths: [], run_timeout_ms: 60_000 } };
   const ctx = {
     loaded, repo: { owner: "o", name: "r" }, extraScanValues: [], store, runner, sandbox, tools,
-    scanner: new PatternEgressScanner(async () => [LEAK]), project: PROJECT, routes: { build: buildAction, agent: agentAction, feedback: feedbackAction },
+    scanner: new PatternEgressScanner(async () => [LEAK]), project: PROJECT, routes: { build: buildAction, agent: agentAction, feedback: feedbackActionWith(feedbackGrantHandOut({ tools, repo: "/repo", base_ref: "main" }, grantDeps)) },
   };
-  const routed = new RoutedScheduleAction(ctx as never, grantDeps);
+  const routed = new RoutedScheduleAction(ctx as never);
   const pass = scheduledAction(store, routed, silent, PROJECT);
   return { store, runner, sandbox, routed, fire: () => pass.fireDue(new Date(SLOT)) };
 }

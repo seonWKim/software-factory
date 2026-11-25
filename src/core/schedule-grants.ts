@@ -13,6 +13,7 @@ import { mkdir } from "node:fs/promises";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import type { ToolCallContext, ToolDescriptor, ToolBroker, ToolResult as BrokerResult } from "../interfaces/tool-broker.js";
 import { Browse, Edit, Write } from "./tools/index.js";
+import type { ScheduleActionSpec } from "./schedule.js";
 import type { ToolSpec } from "./tools/types.js";
 import type { RunId, WorkItemId } from "./types.js";
 
@@ -109,15 +110,26 @@ export function grantWords(g: ScheduleGrant, schedule_id: string): string {
   return `shell: only ${g.command} ${g.db}`;
 }
 
-/** A schedule's grants in plain words for `schedule list` (`grants: …; …`), or null when it has none. */
-export function grantsLine(settings: Readonly<Record<string, unknown>> | undefined, schedule_id: string): string | null {
-  if (settings?.grants === undefined) return null;
+/** A feedback schedule's grants in plain words for `schedule list` (`grants: …; …`): none for no grants or another kind. */
+export function grantsLine(action: ScheduleActionSpec | null, schedule_id: string): string[] {
+  if (action?.kind !== "feedback" || action.settings.grants === undefined) return [];
   try {
-    const grants = storedGrants(settings);
-    return grants.length === 0 ? null : `grants: ${grants.map((g) => grantWords(g, schedule_id)).join("; ")}`;
+    const grants = storedGrants(action.settings);
+    return grants.length === 0 ? [] : [`grants: ${grants.map((g) => grantWords(g, schedule_id)).join("; ")}`];
   } catch (e) {
-    return `grants: refused (${e instanceof Error ? e.message : String(e)})`;
+    return [`grants: refused (${e instanceof Error ? e.message : String(e)})`];
   }
+}
+
+/**
+ * `action` with the `--grant` words as its grants (`none`: an empty list, which an edit stores over the old), or why
+ * they cannot be: only a feedback schedule takes grants. No words: `action` as it is.
+ */
+export function withGrantWords(action: ScheduleActionSpec, words: readonly string[] | undefined): ScheduleActionSpec | { problem: string } {
+  if (words === undefined) return action;
+  if (action.kind !== "feedback") return { problem: "only a feedback schedule takes --grant" };
+  const grants = grantsOfWords(words);
+  return "problem" in grants ? grants : { kind: action.kind, settings: { ...action.settings, grants } };
 }
 
 /** What a feedback run gets once its grants are handed out. */
@@ -236,6 +248,17 @@ export class ScheduleGrantBroker implements ToolBroker {
     };
   }
 }
+
+/**
+ * The feedback route's hand-out (ports.ts GrantHandOut), bound by compose over `base`: null for a schedule with no
+ * grants, else ScheduleGrantBroker's hand-out with each grant in plain words. A refused grant throws.
+ */
+export const feedbackGrantHandOut = (base: { tools: readonly ToolSpec[]; repo: string; base_ref: string }, deps: GrantBrokerDeps = nodeGrantDeps) =>
+  async (s: { id: string; settings: Readonly<Record<string, unknown>> }): Promise<(GrantedRun & { granted: string[] }) | null> => {
+    const grants = storedGrants(s.settings);
+    if (grants.length === 0) return null;
+    return { ...(await new ScheduleGrantBroker(s.id, grants, deps).handOut(base)), granted: grants.map((g) => grantWords(g, s.id)) };
+  };
 
 const isInside = (path: string, folder: string): boolean => path === folder || path.startsWith(folder + sep);
 

@@ -218,9 +218,11 @@ const isDraftCommand = (c: ScheduleWords): c is DraftCommand => c.verb === "draf
 
 /** Runs any `factory schedule …` command as `user`: draft and improve here, the others through schedule.ts. */
 export function runScheduleWords(d: DraftCliDeps, c: ScheduleWords, user: UserId, isOwner: () => Promise<boolean>): Promise<{ code: number; lines: string[] }> {
-  const repo = d.repo_path;
-  const makeNotes = repo === undefined ? undefined : (id: string) => nodeGrantDeps.mkdir(resolve(repo, notesFolder(id)));
-  return isDraftCommand(c) ? runDraftCommand(d, c, user, isOwner) : runScheduleCommand(d.store, c, user, isOwner, makeNotes);
+  return isDraftCommand(c) ? runDraftCommand(d, c, user, isOwner) : runScheduleCommand(d.store, c, user, isOwner).then(async (r) => {
+    // A stored notes grant's folder is made when the grant is added: `.factory/notes/<id>/` in the factory repo.
+    if (r.code === 0 && "fields" in c && c.fields.grants?.includes("notes") && d.repo_path !== undefined) await nodeGrantDeps.mkdir(resolve(d.repo_path, notesFolder(c.id)));
+    return r;
+  });
 }
 
 /** Runs draft or improve as `user`: the owner check first, then the model, then the ask, then the one write. */

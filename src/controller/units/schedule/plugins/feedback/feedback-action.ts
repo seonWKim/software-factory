@@ -6,7 +6,7 @@
 // The items' source IDs come from the schedule, the slot and the task's place, so a second run files none twice
 // and never more than the cap for one occurrence. Without a browser grant there is no Browse tool.
 
-import type { ScheduleActionRoute } from "../ports.js";
+import type { GrantHandOut, ScheduleActionRoute } from "../ports.js";
 
 export const FEEDBACK_MAX_TASKS = 3;
 
@@ -68,11 +68,13 @@ function prompt(ask: string, cap: number, granted: readonly string[]): string {
 
 const evidenceLines = (t: Task) => t.evidence.map((e) => `- \`${e.path}${e.line === undefined ? "" : `:${e.line}`}\`: ${e.quote}`);
 
-export const feedbackAction: ScheduleActionRoute = async (schedule, occurrence_at, ports) => {
+/** The feedback route, its schedule's grants handed out by `handOut` (compose binds ScheduleGrantBroker) before the agent runs. */
+export const feedbackActionWith = (handOut: GrantHandOut): ScheduleActionRoute => async (schedule, occurrence_at, ports) => {
   const ask = str(schedule.settings.prompt);
   if (ask === "") throw new Error(`schedule ${schedule.id} has no prompt`);
   const cap = feedbackCap(schedule.settings);
-  const answer = await ports.ask({ prompt: prompt(ask, cap, ports.granted), output_schema: FEEDBACK_SCHEMA });
+  const run = await handOut(schedule);
+  const answer = await ports.ask({ prompt: prompt(ask, cap, run?.granted ?? []), output_schema: FEEDBACK_SCHEMA, ...(run ? { run } : {}) });
   if (answer.status !== "completed") {
     await ports.record({ output: `feedback run ${answer.status}${answer.error ? `: ${answer.error}` : ""}`, tokens: answer.tokens, cost_usd: answer.cost_usd });
     throw new Error(`feedback run ${answer.status}`);
@@ -92,3 +94,6 @@ export const feedbackAction: ScheduleActionRoute = async (schedule, occurrence_a
   }
   await ports.record({ output: JSON.stringify({ filed, unfiled }), tokens: answer.tokens, cost_usd: answer.cost_usd });
 };
+
+/** The feedback route with no grants: the read-only tools only. */
+export const feedbackAction: ScheduleActionRoute = feedbackActionWith(async () => null);

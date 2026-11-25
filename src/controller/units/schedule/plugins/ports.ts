@@ -28,18 +28,38 @@ export interface AgentAnswer {
 export interface ActionPorts {
   /** The occurrence as a source ID, `schedule-<schedule id>-<slot>`: an action files its items under it, so a retry files none twice. */
   readonly occurrence_id: string;
-  /** The schedule's grants in plain words (a feedback schedule's browser, notes, repo or shell); empty: read-only tools only. */
-  readonly granted: readonly string[];
   /**
    * Files one local work item with its triage run queued, idempotent on `source_id`: a second call returns the same
    * item with `created` false. Null when the egress scan flagged its title or body, and nothing was filed.
    */
   fileItem(i: { source_id: string; title: string; body: string }): Promise<{ id: string; created: boolean } | null>;
-  /** Runs one agent call on `prompt` in a fresh read-only checkout (the granted repo's, if any), with the granted tools and the output schema if given. */
-  ask(i: { prompt: string; output_schema?: Readonly<Record<string, unknown>> }): Promise<AgentAnswer>;
+  /**
+   * Runs one agent call on `prompt` in a fresh read-only checkout, with the output schema if given. With `run` (a
+   * schedule's grants as handed out): in its repo, with its tools and writable paths, its grants told to the agent.
+   */
+  ask(i: { prompt: string; output_schema?: Readonly<Record<string, unknown>>; run?: GrantedAgentRun }): Promise<AgentAnswer>;
   /** Stores the occurrence's output and adds its tokens and cost to its run row. */
   record(r: { output: string; tokens: number; cost_usd: number | null }): Promise<void>;
 }
+
+/** One agent tool: a ToolSpec of src/core/tools, named by shape so this file imports nothing outside the controller. */
+export interface AgentTool { readonly name: string; readonly capability: "read" | "write" | "exec" }
+
+/** A schedule's grants as ScheduleGrantBroker handed them out (src/core/schedule-grants.ts): what its agent run gets. */
+export interface GrantedAgentRun {
+  /** The read-only tools, then each granted one (Browse on the sandbox URL, Write and Edit in the notes folder, the read-only sqlite3). */
+  tools: readonly AgentTool[];
+  /** The repo the run checks out, and its base: the factory repo's, or the granted repo's. */
+  repo: string;
+  base_ref: string;
+  /** The notes folder, when granted. */
+  writable_paths: readonly string[];
+  /** Each grant in plain words. */
+  granted: readonly string[];
+}
+
+/** Checks and hands out a schedule's grants, or null when it has none; throws on a refused grant. Compose binds it to ScheduleGrantBroker. */
+export type GrantHandOut = (schedule: ActionSchedule) => Promise<GrantedAgentRun | null>;
 
 /**
  * Queues the daily improve run of the UTC day of the slot `occurrence_at`, keyed `improve:<project>:daily:<day>` as
