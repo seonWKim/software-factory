@@ -222,7 +222,7 @@ function CompareVersions({ skill, versions }: { skill: string; versions: readonl
   return (
     <>
       <ButtonRow>
-        <Button ref={button} disabled={!enough} title={enough ? undefined : t("evals.compareNeeds")} onClick={() => setOpen(true)}>{t("evals.compare")}</Button>
+        <Button ref={button} data-capture-open="evals-compare" disabled={!enough} title={enough ? undefined : t("evals.compareNeeds")} onClick={() => setOpen(true)}>{t("evals.compare")}</Button>
       </ButtonRow>
       {open && (
         <ModalPanel title={t("evals.compare")} onClose={() => setOpen(false)} returnFocusTo={button}>
