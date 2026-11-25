@@ -14,7 +14,7 @@ import { Select } from "../../components/ui/select.js";
 import { Switch } from "../../components/ui/switch.js";
 import { Textarea } from "../../components/ui/textarea.js";
 import { t } from "../../i18n/index.js";
-import { ACTION_TEXT, CADENCE_CHOICE, SPEC_HELP } from "./labels.js";
+import { ACTION_TEXT, CADENCE_CHOICE, MISSED_RULES, MISSED_TEXT, type MissedRule, SPEC_HELP, missedOf } from "./labels.js";
 
 // The form New schedule and Edit share (design 09-dashboard-schedules): the CLI's fields in one Dialog, so a row's
 // input never changes the row's height. Edit sends only the fields the owner changed, as `schedule edit` takes flags.
@@ -26,7 +26,7 @@ interface Values {
   zone: string;
   action: ActionKind;
   body: string;
-  skip: boolean;
+  missed: MissedRule;
   cap: string;
 }
 
@@ -34,8 +34,8 @@ const zoneName = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 const valuesOf = (s: ScheduleRow | null): Values =>
   s === null
-    ? { title: "", cadence: "daily", spec: "09:00", zone: zoneName(), action: "build", body: "", skip: false, cap: "" }
-    : { title: s.title, cadence: s.cadence.kind, spec: s.cadence.spec, zone: s.zone, action: s.action?.kind ?? "build", body: actionText(s), skip: s.skip_when_busy, cap: s.token_cap === null ? "" : String(s.token_cap) };
+    ? { title: "", cadence: "daily", spec: "09:00", zone: zoneName(), action: "build", body: "", missed: "catch_up", cap: "" }
+    : { title: s.title, cadence: s.cadence.kind, spec: s.cadence.spec, zone: s.zone, action: s.action?.kind ?? "build", body: actionText(s), missed: missedOf(s.skip_when_busy), cap: s.token_cap === null ? "" : String(s.token_cap) };
 
 /** The fields to send: every one for a new schedule, only the changed ones for an edit (a blank token limit is left out). */
 function fieldsOf(v: Values, was: ScheduleRow | null): ScheduleFields {
@@ -54,9 +54,22 @@ function fieldsOf(v: Values, was: ScheduleRow | null): ScheduleFields {
     f.action = v.action;
     f.body = v.body;
   }
-  if (changed("skip")) f.skip_when_busy = v.skip;
+  if (changed("missed")) f.skip_when_busy = v.missed === "skip";
   if (v.cap.trim() !== "" && changed("cap")) f.token_cap = Number(v.cap);
   return f;
+}
+
+const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+/**
+ * Whether a daily or weekly cadence's time today has already passed on the browser's clock (for weekly, today is one
+ * of its days): then its first run is tomorrow or later, so New schedule offers Run now too.
+ */
+function passedToday(cadence: CadenceKind, spec: string, now: Date): boolean {
+  const m = cadence === "daily" ? /^()(\d{2}):(\d{2})$/.exec(spec.trim()) : cadence === "weekly" ? /^([a-z,]+)\s+(\d{2}):(\d{2})$/i.exec(spec.trim()) : null;
+  if (m === null) return false;
+  if (cadence === "weekly" && !m[1]!.toLowerCase().split(",").includes(WEEKDAYS[now.getDay()]!)) return false;
+  return now.getHours() * 60 + now.getMinutes() > Number(m[2]) * 60 + Number(m[3]);
 }
 
 /** The accent ring and `data-changed` on a control Draft or Use this just filled, until the owner edits it. */
@@ -91,6 +104,9 @@ export function ScheduleDialog({ schedule, busy, error, returnFocusTo, onSave, o
   const [pending, setPending] = useState<"draft" | "improve" | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [improvement, setImprovement] = useState<ScheduleImprovement | null>(null);
+  const [runNow, setRunNow] = useState(false);
+  // Run now too: New schedule only, while today's time has passed; a hidden switch sends nothing.
+  const offerRunNow = schedule === null && passedToday(v.cadence, v.spec, new Date());
   const set = <K extends keyof Values>(k: K, x: Values[K]) => {
     setV((old) => ({ ...old, [k]: x }));
     setMarked((m) => (m.has(k) ? new Set([...m].filter((j) => j !== k)) : m));
@@ -126,6 +142,7 @@ export function ScheduleDialog({ schedule, busy, error, returnFocusTo, onSave, o
   const id = (name: string) => `${base}-${name}`;
   const save = async () => {
     const fields = fieldsOf(v, schedule);
+    if (offerRunNow && runNow) fields.run_now = true;
     if (schedule !== null && Object.keys(fields).length === 0) return onClose();
     if (await onSave(fields)) {
       announceStatus(t("schedules.saved"));
@@ -197,9 +214,16 @@ export function ScheduleDialog({ schedule, busy, error, returnFocusTo, onSave, o
       <Field label={t("schedules.form.body")} htmlFor={id("body")} help={t(!isWritableKind(v.action) ? "schedules.form.bodyNone" : v.action === "build" ? "schedules.form.bodyBuild" : "schedules.form.bodyPrompt")}>
         <Textarea id={id("body")} {...changedProps(marked, "body")} rows={5} value={v.body} disabled={!isWritableKind(v.action)} onChange={(e) => set("body", e.target.value)} />
       </Field>
-      <Field label={t("schedules.form.skipWhenBusy")} htmlFor={id("skip")} help={t("schedules.form.skipHelp")}>
-        <Switch id={id("skip")} checked={v.skip} onCheckedChange={(on) => set("skip", on)} />
+      <Field label={t("schedules.missed")} htmlFor={id("missed")}>
+        <Select id={id("missed")} value={v.missed} onChange={(e) => set("missed", e.target.value as MissedRule)}>
+          {MISSED_RULES.map((r) => <option key={r} value={r}>{t(MISSED_TEXT[r])}</option>)}
+        </Select>
       </Field>
+      {offerRunNow && (
+        <Field label={t("schedules.form.runNow")} htmlFor={id("runNow")}>
+          <Switch id={id("runNow")} checked={runNow} onCheckedChange={setRunNow} />
+        </Field>
+      )}
       <Field label={t("schedules.form.tokenCap")} htmlFor={id("cap")} help={t("schedules.form.tokenCapHelp")}>
         <Input id={id("cap")} type="number" min={1} step={1} value={v.cap} onChange={(e) => set("cap", e.target.value)} />
       </Field>

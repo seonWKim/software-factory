@@ -32,6 +32,15 @@ export const ACTION_ABOUT: Record<ActionKind, MessageKey> = {
   improve: "schedules.actionAbout.improve",
 };
 
+/** The missed-time rule in the owner's words, by the rule it stores (`skip_when_busy` true is skip). */
+export const MISSED_RULES = ["catch_up", "skip"] as const;
+export type MissedRule = (typeof MISSED_RULES)[number];
+export const MISSED_TEXT: Record<MissedRule, MessageKey> = {
+  catch_up: "schedules.missed.catchUp",
+  skip: "schedules.missed.skip",
+};
+export const missedOf = (skipWhenBusy: boolean): MissedRule => (skipWhenBusy ? "skip" : "catch_up");
+
 export const OUTCOME_TEXT: Record<ScheduleRunRow["outcome"], MessageKey> = {
   fired: "schedules.outcome.fired",
   refused: "schedules.outcome.refused",

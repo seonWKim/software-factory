@@ -3,7 +3,7 @@ import { Clamp } from "../../components/ui/clamp.js";
 import { t } from "../../i18n/index.js";
 import { groupedInteger } from "../../lib/format.js";
 import { repeatsText } from "../../lib/repeats.js";
-import { ACTION_ABOUT, ACTION_TEXT } from "./labels.js";
+import { ACTION_ABOUT, ACTION_TEXT, MISSED_TEXT, missedOf } from "./labels.js";
 
 // What a schedule does, in plain words (design 09-dashboard-schedules, owner #84 "there's no explanation for each of
 // the schedules"): the one line under each title in the table, and the selected schedule's detail Card above its runs,
@@ -50,7 +50,7 @@ export function ScheduleDetail({ s }: { s: ScheduleRow }) {
     [t("schedules.detail.action"), s.action === null ? t("schedules.actionNone") : `${t(ACTION_TEXT[s.action.kind])}. ${t(ACTION_ABOUT[s.action.kind])}`],
     [t("schedules.detail.repeats"), repeatsText(s.cadence)],
     [t("schedules.detail.zone"), s.zone],
-    [t("schedules.detail.skip"), t(s.skip_when_busy ? "schedules.detail.skipOn" : "schedules.detail.skipOff")],
+    [t("schedules.missed"), t(MISSED_TEXT[missedOf(s.skip_when_busy)])],
     [t("schedules.detail.tokenCap"), s.token_cap === null ? t("schedules.detail.tokenCapDefault", { n: groupedInteger(DEFAULT_TOKEN_CAP) }) : groupedInteger(s.token_cap)],
     [t("schedules.detail.last"), runs === undefined ? "" : last === undefined ? t("schedules.detail.never") : when(last)],
     [t("schedules.detail.next"), s.next_due_at === null ? t("schedules.nextPaused") : when(s.next_due_at)],
