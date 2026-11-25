@@ -7,12 +7,9 @@
 // Every grant is checked and handed out by ScheduleGrantBroker, a ToolBroker: a grant it refuses fails the run
 // before any agent starts, and the shell grant's only tool runs through its `call`.
 
-import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
-import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import type { ToolCallContext, ToolDescriptor, ToolBroker, ToolResult as BrokerResult } from "../interfaces/tool-broker.js";
 import { Browse, Edit, Write } from "./tools/index.js";
+import { isAbsolute, isUnder, normalize, resolvePath } from "./tools/paths.js";
 import type { ScheduleActionSpec } from "./schedule.js";
 import type { ToolSpec } from "./tools/types.js";
 import type { RunId, WorkItemId } from "./types.js";
@@ -51,7 +48,7 @@ export function grantProblem(g: ScheduleGrant): string | null {
   }
   if (g.kind === "repo") {
     if (!isAbsolute(g.path)) return "a repo grant names an absolute path";
-    if (normalize(g.path).split(sep).includes(STATE_DIR)) return `a repo grant's repo is outside the factory's state folder (${STATE_DIR})`;
+    if (normalize(g.path).split("/").includes(STATE_DIR)) return `a repo grant's repo is outside the factory's state folder (${STATE_DIR})`;
     if (!/^[\w./-]+$/.test(g.base_ref) || g.base_ref.startsWith("-")) return "a repo grant's branch is a plain branch name";
     return null;
   }
@@ -143,21 +140,13 @@ export interface GrantedRun {
   writable_paths: string[];
 }
 
-/** What the broker reads and runs; tests fake each. */
+/** What the broker reads and runs (node's in src/impl/schedule-action/routed-action.ts); tests fake each. */
 export interface GrantBrokerDeps {
   exists(path: string): boolean;
   mkdir(path: string): Promise<void>;
   /** Runs `file` with `args`, no shell, and returns its stdout or throws. */
   exec(file: string, args: readonly string[], signal?: AbortSignal): Promise<string>;
 }
-
-export const nodeGrantDeps: GrantBrokerDeps = {
-  exists: existsSync,
-  mkdir: async (p) => void (await mkdir(p, { recursive: true })),
-  exec: (file, args, signal) => new Promise((res, rej) => {
-    execFile(file, [...args], { timeout: 30_000, maxBuffer: 1_000_000, ...(signal ? { signal } : {}) }, (err, stdout) => (err ? rej(err) : res(stdout)));
-  }),
-};
 
 /** SQL the read-only shell refuses: CLI dot commands, and the CLI's functions that read or write files or load code. */
 const UNSAFE_SQL = /(^|\n)\s*\.|\b(load_extension|writefile|readfile|edit|fts3_tokenizer)\s*\(|\battach\b/i;
@@ -177,7 +166,7 @@ export class ScheduleGrantBroker implements ToolBroker {
   constructor(
     private readonly schedule_id: string,
     private readonly grants: readonly ScheduleGrant[],
-    private readonly deps: GrantBrokerDeps = nodeGrantDeps,
+    private readonly deps: GrantBrokerDeps,
   ) {}
 
   private shell() {
@@ -217,14 +206,14 @@ export class ScheduleGrantBroker implements ToolBroker {
       if (problem) throw new Error(`schedule ${this.schedule_id}: ${problem}`);
       if (g.kind === "browser") run.tools.push(browseOnly(g.url));
       else if (g.kind === "notes") {
-        const folder = resolve(base.repo, notesFolder(this.schedule_id));
+        const folder = resolvePath(base.repo, notesFolder(this.schedule_id));
         await this.deps.mkdir(folder);
         run.writable_paths.push(folder);
         run.tools.push(insideOnly(Write, folder), insideOnly(Edit, folder));
       } else if (g.kind === "repo") {
-        const path = resolve(g.path);
-        if (isInside(path, resolve(base.repo, STATE_DIR))) throw new Error(`schedule ${this.schedule_id}: a repo grant's repo is outside the factory's state folder`);
-        if (!this.deps.exists(join(path, ".git"))) throw new Error(`schedule ${this.schedule_id}: the granted repo ${path} is no git repo`);
+        const path = normalize(g.path);
+        if (isUnder(path, resolvePath(base.repo, STATE_DIR))) throw new Error(`schedule ${this.schedule_id}: a repo grant's repo is outside the factory's state folder`);
+        if (!this.deps.exists(`${path}/.git`)) throw new Error(`schedule ${this.schedule_id}: the granted repo ${path} is no git repo`);
         Object.assign(run, { repo: path, base_ref: g.base_ref });
       } else {
         if (!this.deps.exists(g.db)) throw new Error(`schedule ${this.schedule_id}: the granted database ${g.db} does not exist`);
@@ -253,14 +242,12 @@ export class ScheduleGrantBroker implements ToolBroker {
  * The feedback route's hand-out (ports.ts GrantHandOut), bound by compose over `base`: null for a schedule with no
  * grants, else ScheduleGrantBroker's hand-out with each grant in plain words. A refused grant throws.
  */
-export const feedbackGrantHandOut = (base: { tools: readonly ToolSpec[]; repo: string; base_ref: string }, deps: GrantBrokerDeps = nodeGrantDeps) =>
+export const feedbackGrantHandOut = (base: { tools: readonly ToolSpec[]; repo: string; base_ref: string }, deps: GrantBrokerDeps) =>
   async (s: { id: string; settings: Readonly<Record<string, unknown>> }): Promise<(GrantedRun & { granted: string[] }) | null> => {
     const grants = storedGrants(s.settings);
     if (grants.length === 0) return null;
     return { ...(await new ScheduleGrantBroker(s.id, grants, deps).handOut(base)), granted: grants.map((g) => grantWords(g, s.id)) };
   };
-
-const isInside = (path: string, folder: string): boolean => path === folder || path.startsWith(folder + sep);
 
 /** Browse, fetching `url` only, whatever the run's policy holds. */
 function browseOnly(url: string): ToolSpec {
@@ -274,7 +261,7 @@ function insideOnly(tool: ToolSpec, folder: string): ToolSpec {
     description: `${tool.description} Only inside ${folder}.`,
     run: async (input, ctx) => {
       const file = (input as { file_path?: unknown } | null)?.file_path;
-      if (typeof file !== "string" || !isInside(resolve(ctx.policy.workdir, file), folder)) return { ok: false, error: `${tool.name} writes only inside the notes folder ${folder}` };
+      if (typeof file !== "string" || !isUnder(resolvePath(ctx.policy.workdir, file), folder)) return { ok: false, error: `${tool.name} writes only inside the notes folder ${folder}` };
       return tool.run(input, ctx);
     },
   };

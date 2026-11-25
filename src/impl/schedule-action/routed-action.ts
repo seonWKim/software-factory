@@ -6,12 +6,25 @@
 // src/core/schedule-grants.ts, which compose binds): then that run's tools, repo and writable paths. Every answer is scanned before it is stored or filed (G5). The token cap is the claim pass's (src/core/schedule.ts): an
 // occurrence over it never reaches this action.
 
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import type { Contexts } from "../../plugin-api.js";
 import type { ActionPorts, AgentAnswer } from "../../controller/units/schedule/plugins/ports.js";
 import type { Schedule } from "../../core/schedule.js";
+import type { GrantBrokerDeps } from "../../core/schedule-grants.js";
 import type { ToolSpec } from "../../core/tools/types.js";
 import { type RunId, type Timestamp, type WorkItemId, usageTokens } from "../../core/types.js";
 import type { ScheduleAction } from "../../interfaces/schedule-action.js";
+
+/** What ScheduleGrantBroker reads and runs on this machine: core may not import node's I/O (tests/boundaries.test.ts). */
+export const nodeGrantDeps: GrantBrokerDeps = {
+  exists: existsSync,
+  mkdir: async (p) => void (await mkdir(p, { recursive: true })),
+  exec: (file, args, signal) => new Promise((res, rej) => {
+    execFile(file, [...args], { timeout: 30_000, maxBuffer: 1_000_000, ...(signal ? { signal } : {}) }, (err, stdout) => (err ? rej(err) : res(stdout)));
+  }),
+};
 
 /** The only tools a schedule's agent gets, all of capability `read`. */
 export const SCHEDULE_AGENT_TOOLS: readonly string[] = ["Read", "Glob", "Grep"];

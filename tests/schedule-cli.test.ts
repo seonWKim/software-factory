@@ -2,7 +2,7 @@
 // change or refusing it with the reason and storing nothing. Pause clears the next due time, so no slot fires; resume
 // sets the first slot after now; run sets now, so the next tick fires once. Writes are the owner's only.
 
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -606,7 +606,7 @@ describe("feedback schedule grants", () => {
 
   it("add stores each --grant, makes the notes folder, and list shows each grant in plain words", async () => {
     const repo = await mkdtemp(join(tmpdir(), "grants-"));
-    const { store, cli } = await setup({ repo_path: repo });
+    const { store, cli } = await setup({ makeNotesFolder: async (folder) => void (await mkdir(join(repo, folder), { recursive: true })) });
     const add = await cli([...FEEDBACK, "--grant", "browser=http://localhost:5173/", "--grant", "notes", "--grant", "repo=/src/other#dev", "--grant", "shell=/data/app.db"]);
     expect(add.code).toBe(0);
     expect((await stat(join(repo, ".factory", "notes", "sch_fb"))).isDirectory()).toBe(true);
