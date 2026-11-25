@@ -49,7 +49,7 @@ export const workDecisions = {
   "decisions.sectionDoneWhen": "Done when",
   "decisions.sectionScope": "Scope",
   "decisions.sectionAllowedPaths": "Allowed paths",
-  "decisions.reviseConsequence": "Triage writes a new spec from your comments. A section left empty is not sent.",
+  "decisions.reviseConsequence": "The factory writes a new plan from your comments. A section left empty is not sent.",
   "decisions.sendRevise": "Send revise",
   "decisions.commentOn": "Comment on {section}",
   "decisions.optionalComment": "Optional comment",

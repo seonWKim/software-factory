@@ -107,6 +107,40 @@ describe("item page: DecisionCard", () => {
     expect(await screen.findByRole("dialog", { name: "Add a model credential" })).toBeTruthy();
   });
 
+  it("on a New item during the pause the card shows Add context and Attach, and no revise form opens", async () => {
+    const p = pause();
+    p.item = { ...p.item, stage: "NEW" };
+    body = p;
+    mount();
+    const decide = await screen.findByRole("region", { name: "What you need to decide" });
+    const ctx = await within(decide).findByRole("button", { name: "Add context" });
+    await vi.waitFor(() => expect((ctx as HTMLButtonElement).disabled).toBe(false));
+    expect(within(decide).getByRole("button", { name: "Attach" })).toBeTruthy();
+    expect(within(decide).queryByRole("button", { name: "Revise" })).toBeNull();
+    fireEvent.click(ctx);
+    const dialog = await screen.findByRole("dialog");
+    for (const f of ["In short", "Scope", "Allowed paths"]) expect(within(dialog).queryByText(f)).toBeNull();
+    expect(within(dialog).getAllByRole("textbox")).toHaveLength(1);
+  });
+
+  it("with a spec Revise opens the five-section form; without one (not New) it opens one Add context textarea", async () => {
+    mount();
+    const decide = await box();
+    fireEvent.click(within(decide).getByRole("button", { name: "Revise" }));
+    const form = await screen.findByRole("dialog", { name: "Revise Check the scope in CI" });
+    expect([...form.querySelectorAll("[data-revise-section]")].map((x) => x.getAttribute("data-revise-section"))).toEqual(["In short", "Problem", "Done when", "Scope", "Allowed paths"]);
+    expect(form.textContent).toContain("The factory writes a new plan from your comments.");
+    cleanup();
+    body = detail({ spec: null });
+    mount();
+    const again = await box();
+    expect(within(again).queryByRole("button", { name: "Attach" })).toBeNull();
+    fireEvent.click(within(again).getByRole("button", { name: "Revise" }));
+    const modal = await screen.findByRole("dialog", { name: "Add context Check the scope in CI" });
+    expect(within(modal).getAllByRole("textbox")).toHaveLength(1);
+    expect(modal.querySelector("[data-revise-section]")).toBeNull();
+  });
+
   it("during the pause a refusal as the newest factory message is not shown under Based on", async () => {
     body = pause([REFUSAL]);
     mount();

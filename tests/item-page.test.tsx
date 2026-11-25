@@ -404,7 +404,7 @@ describe("item page: the Reject and Revise dialogs (issue #527)", () => {
   /** Serves wi_r at the spec gate with approve, revise and reject; `extra` sets the item's fields (a PR). */
   function serve(extra: object = {}) {
     const detail = {
-      as_of: AT, item: base("wi_r", 40, "Forms", extra), timeline: [], runs: [], commands: ["approve", "revise", "reject"].map(cmd), replies: [], spec: null,
+      as_of: AT, item: base("wi_r", 40, "Forms", extra), timeline: [], runs: [], commands: ["approve", "revise", "reject"].map(cmd), replies: [], spec: { in_short: "AS-IS: a.\nTO-BE: b.", decisions: [] },
     };
     posts = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
