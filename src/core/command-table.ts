@@ -220,31 +220,33 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
 
 /** `factory schedule …` (design 08-schedules): list, add, edit, pause, resume, run, runs, delete, draft and improve, in that order; the writes are the owner's only. */
 function scheduleCommands(): TableCommand[] {
-  const optional = "[--body <text>] [--skip-when-busy on|off] [--token-cap <n>]";
+  const optional = "[--body <text>] [--missed catch-up|skip] [--token-cap <n>] [--url <url>] [--instruction <text>] [--run-cap <usd|none>] [--daily-cap <usd|none>]";
   const one = (name: string, args: string, chat: string, chat_args: ChatArgs, does: string, prints: string): TableCommand => ({
     name: `schedule ${name}`, args, who: "owner", group: "schedule", does, prints, chat: `schedule ${chat}`, chat_args, item: false, edge: false,
   });
   return [
-    one("list", "", "list", "none", "List the schedules", "one line per schedule: ID, title, next due time or `paused`, running or idle, action kind, skip when busy, token cap"),
+    one("list", "", "list", "none", "List the schedules", "one line per schedule, Check a page ones too: ID, title, next due time, `paused` or `on each merge`, running or idle, action kind, missed rule, token cap"),
     one(
-      "add", `--id <id> --title <t> --cadence <interval|daily|weekly|cron> --spec <spec> --zone <IANA> --action <build|agent|feedback> ${optional}`, "add <flags>", "any",
+      "add", `--id <id> --title <t> --cadence <interval|daily|weekly|cron|on-merge> [--spec <spec>] [--zone <IANA>] --action <build|agent|feedback|check-page> ${optional}`, "add <flags>", "any",
       "Store a new schedule, first due at its cadence's next slot after now; refused for an ID already stored, a bad cadence, zone or action, " +
-        "and an agent or feedback action without `--body` (its prompt; a build's item body); a daily schedule's token cap counts the runs of each UTC day, any other's all its runs",
+        "and an agent or feedback action without `--body` (its prompt; a build's item body); a daily schedule's token cap counts the runs of each UTC day, any other's all its runs. " +
+        "A check-page action needs an http(s) `--url` and `--instruction` (or `--body`), and takes USD caps; only it takes `--cadence on-merge`, with no `--spec` (zone UTC)",
       "the stored schedule's line",
     ),
     one(
       "edit", `<id> [--title <t>] [--cadence <interval|daily|weekly|cron>] [--spec <spec>] [--zone <IANA>] [--action <build|agent|feedback>] ${optional}`, "edit <id> <flags>", "any",
       "Change only the flags given; a new cadence or zone sets an unpaused schedule's next due time to its first slot after now, " +
-        "and a paused one stays paused; refused with no flag, or a bad cadence, zone, action or token cap",
+        "and a paused one stays paused; refused with no flag, or a bad cadence, zone, action, token cap or USD cap; a check-page schedule's cadence, zone or trigger does not change, " +
+        "and no action changes to or from check-page",
       "the edited schedule's line",
     ),
-    one("pause", "<id>", "pause <id>", "id", "Clear the schedule's next due time, so none of its slots fire; refused when already paused", "the paused schedule's line"),
+    one("pause", "<id>", "pause <id>", "id", "Clear the schedule's next due time, so none of its slots fire (a check-page one is marked paused); refused when already paused", "the paused schedule's line"),
     one("resume", "<id>", "resume <id>", "id", "Set a paused schedule's next due time to its first slot after now; refused when not paused", "the resumed schedule's line"),
-    one("run", "<id>", "run <id>", "id", "Set the schedule's next due time to now, so the next tick fires it once; refused when paused, writing nothing", "the schedule's line"),
+    one("run", "<id>", "run <id>", "id", "Set the schedule's next due time to now, so the next tick fires it once; refused when paused or on-merge, writing nothing", "the schedule's line"),
     one("runs", "<id>", "runs <id>", "id", "List the schedule's runs, oldest first", "one line per run: occurrence, outcome, recorded time, tokens, cost"),
     one(
       "delete", "<id>", "delete <id>", "id",
-      "Remove the schedule, so none of its slots fire again; a run in flight finishes, its past runs and their items stay; refused for an unknown ID",
+      "Remove the schedule and its suggestions in one transaction, so none of its slots fire again; a run in flight finishes, its past runs and their items stay; refused for an unknown ID",
       "the deleted schedule's line",
     ),
     // Draft and improve ask y/N on the terminal before they write (src/core/schedule-draft.ts), so they have no chat form.
