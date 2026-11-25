@@ -73,7 +73,7 @@ export function AddContextActions({ id, title, token, off, error, send, children
   );
 }
 
-function ContextDialog({ title, busy, error, returnFocusTo, onSend, onClose }: {
+export function ContextDialog({ title, busy, error, returnFocusTo, onSend, onClose }: {
   title: string; busy: boolean; error: string | null; returnFocusTo: RefObject<HTMLElement | null>; onSend: (text: string) => void; onClose: () => void;
 }) {
   const [text, setText] = useState("");
