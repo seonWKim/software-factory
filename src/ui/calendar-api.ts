@@ -24,8 +24,13 @@
 // URL to open, the sign-in goes on in the background on the hook's own 127.0.0.1 listener, and the page polls GET for
 // its result. A sign-in's state is held in this process only, because its listener lives here; a restart drops it and
 // the owner connects again. No secret value is returned, logged or stored: errors name steps, never values.
+//
+// With `write: true` the connect asks for write access (design 02-tasks-calendar, copy to a connected calendar): the
+// hook's write question is answered yes, so a plugin that can copy the owner's local events asks for that scope.
+// `ports` hands the local-event routes each listed calendar's sync port (src/calendar/calendar-write.ts), built once
+// per process from the plugin and dropped on each connect or disconnect, so a reconnect's new grant is read afresh.
 
-import { type SyncOutcome, rangeError, readSyncStates, requestCalendarSync } from "../calendar/index.js";
+import { type LocalEvents, type SyncOutcome, rangeError, readSyncStates, requestCalendarSync } from "../calendar/index.js";
 import type { Loaded } from "../load-config.js";
 import type { connectCalendar } from "../setup.js";
 import { errorText } from "../core/log.js";
@@ -55,6 +60,8 @@ export interface CalendarIo {
   beforeWrite(): void;
   /** The "use my own client" option: the hook asks for its client instead of using a default one. */
   ownClient: boolean;
+  /** The "with write access" option: the hook's write question is answered yes. */
+  write: boolean;
 }
 
 /** The connect flow as the UI composition gives it (compose.ts buildUiParts over src/setup.ts connectCalendar). */
@@ -68,7 +75,13 @@ export interface CalendarFlow {
   listed(): Promise<readonly string[]>;
   /** One connect or disconnect; a refusal throws before any write. */
   run(name: string, disconnect: boolean, io: CalendarIo): Promise<{ sync: SyncOutcome | null }>;
+  /** The sync port of calendar plugin `name`, freshly built; null when it has none. A throw: it cannot be built. Absent: none has one. */
+  port?(name: string): Promise<SyncPort | null>;
 }
+
+/** The local-event write's sync ports (src/calendar/calendar-write.ts), as the calendar component's index offers them. */
+type SyncPorts = Parameters<LocalEvents["copy"]>[1]["ports"];
+type SyncPort = NonNullable<Awaited<ReturnType<SyncPorts>>>["port"];
 
 /** A sign-in this process started, and how it ended. */
 interface Attempt {
@@ -82,14 +95,35 @@ interface Attempt {
 /** The section's routes over one flow, with the sign-ins this process started. */
 export class UiCalendar {
   private readonly attempts = new Map<string, Attempt>();
+  /** Each plugin's built sync port, so its access token is reused; dropped on a connect or disconnect. */
+  private readonly built = new Map<string, Promise<SyncPort | null>>();
   constructor(readonly flow: CalendarFlow) {}
+
+  /** The listed calendar named `name` (null: the first listed that has one) with its sync port, or null. */
+  readonly ports: SyncPorts = async (name) => {
+    for (const n of await this.flow.listed()) {
+      if (name !== null && n !== name) continue;
+      if (!this.built.has(n)) this.built.set(n, (this.flow.port?.(n) ?? Promise.resolve(null)).catch((err: unknown) => (this.built.delete(n), Promise.reject(err))));
+      const port = await this.built.get(n)!;
+      if (port !== null) return { name: n, port };
+    }
+    return null;
+  };
+
+  /** The calendar a new local event is copied to, and whether it takes writes; null when none can. A failure reads as read-only. */
+  async copyTarget(): Promise<{ label: string; writable: boolean } | null> {
+    const target = await this.ports(null).catch(() => null);
+    if (target === null) return null;
+    return { label: target.port.label, writable: await target.port.writable().catch(() => false) };
+  }
 
   attempt(name: string): Attempt | null {
     return this.attempts.get(name) ?? null;
   }
 
   /** Starts a connect; resolves once the consent URL is known, the run stopped for input, or it ended. */
-  async connect(name: string, values: ReadonlyMap<string, string>, secrets: readonly string[], ownClient: boolean) {
+  async connect(name: string, values: ReadonlyMap<string, string>, secrets: readonly string[], ownClient: boolean, write = false) {
+    this.built.delete(name);
     const missing: string[] = [];
     let opened!: (url: string) => void;
     let consenting = false;
@@ -112,6 +146,7 @@ export class UiCalendar {
         if (missing.length > 0) throw new NeedsInput(missing);
       },
       ownClient,
+      write,
     });
     const attempt: Attempt = { state: "signing_in", events: null, error: null };
     this.attempts.set(name, attempt);
@@ -124,7 +159,8 @@ export class UiCalendar {
     const refuse = async () => {
       throw new Error("a disconnect asks nothing");
     };
-    await this.flow.run(name, true, { hidden: refuse, openBrowser: refuse, beforeWrite: () => undefined, ownClient: false });
+    this.built.delete(name);
+    await this.flow.run(name, true, { hidden: refuse, openBrowser: refuse, beforeWrite: () => undefined, ownClient: false, write: false });
     this.attempts.delete(name);
   }
 
@@ -162,8 +198,14 @@ export function uiCalendar(
     run: async (name, disconnect, io) =>
       o.connect({
         loaded, store: o.store, actor: o.actor, clock: o.clock, name, disconnect, beforeWrite: io.beforeWrite, ownClient: io.ownClient,
-        io: { ask: { hidden: io.hidden, yesNo: async (_q, dflt) => dflt }, print: () => undefined, openBrowser: io.openBrowser },
+        io: { ask: { hidden: io.hidden, yesNo: async (q, dflt) => (WRITE_QUESTION.test(q) ? io.write : dflt) }, print: () => undefined, openBrowser: io.openBrowser },
       }),
+    port: async (name) => {
+      const [{ createPlugin }, { Plugins }] = await Promise.all([import("../plugins.js"), import("../plugin-set.js")]); // loaded when asked: the registry loads every plugin
+      const selected = new Plugins({ ...loaded, plugins: { ...loaded.plugins, calendars: [name] } });
+      const source = await createPlugin(loaded.registry, "calendar", name, { ...selected.base, secrets: await selected.secrets(), clock: o.clock });
+      return source.sync ?? null;
+    },
   });
 }
 
@@ -173,6 +215,9 @@ declare module "./settings-api.js" {
     calendar?: UiCalendar;
   }
 }
+
+/** How a connect hook's write question starts: the dashboard answers it from the request's `write`. */
+const WRITE_QUESTION = /^\s*Allow writes\b/;
 
 /** The hook asked for a value the request did not carry: nothing was written, the page asks for `names`. */
 class NeedsInput extends Error {
@@ -238,7 +283,7 @@ export async function writeCalendar(d: PauseDeps, path: string, body: unknown): 
     }
     return { status: 200, value: { plugin: plugin.name, connected: false } };
   }
-  const first = await c.connect(plugin.name, b.values, plugin.secrets, b.ownClient);
+  const first = await c.connect(plugin.name, b.values, plugin.secrets, b.ownClient, b.write);
   if ("url" in first) return { status: 202, value: { plugin: plugin.name, state: "signing_in", consent_url: first.url } };
   if ("err" in first) {
     if (first.err instanceof NeedsInput) return { status: 200, value: { plugin: plugin.name, state: "needs_input", needs: first.err.names } };
@@ -248,15 +293,17 @@ export async function writeCalendar(d: PauseDeps, path: string, body: unknown): 
   return { status: 200, value: { plugin: plugin.name, state: a?.state ?? "connected", events: a?.events ?? null } };
 }
 
-/** `{ plugin, own_client?, values? }` (connect; values only with own_client) or `{ plugin }` (disconnect), or why not. */
-function parseBody(body: unknown, disconnect: boolean): { plugin: string; ownClient: boolean; values: ReadonlyMap<string, string> } | { error: string } {
+/** `{ plugin, own_client?, values?, write? }` (connect; values only with own_client) or `{ plugin }` (disconnect), or why not. */
+function parseBody(body: unknown, disconnect: boolean): { plugin: string; ownClient: boolean; write: boolean; values: ReadonlyMap<string, string> } | { error: string } {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return { error: "the body must be a JSON object" };
   const b = body as Record<string, unknown>;
-  const extra = Object.keys(b).find((k) => k !== "plugin" && (disconnect || (k !== "values" && k !== "own_client")));
+  const extra = Object.keys(b).find((k) => k !== "plugin" && (disconnect || !["values", "own_client", "write"].includes(k)));
   if (extra !== undefined) return { error: `unknown field "${extra}"` };
   if (typeof b.plugin !== "string" || b.plugin === "") return { error: "plugin must be a non-empty string" };
   const ownClient = b.own_client ?? false;
   if (typeof ownClient !== "boolean") return { error: "own_client must be true or false" };
+  const write = b.write ?? false;
+  if (typeof write !== "boolean") return { error: "write must be true or false" };
   if (!ownClient && b.values !== undefined) return { error: "values are sent only with own_client: true" };
   const raw = b.values ?? {};
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { error: "values must be an object from secret name to value" };
@@ -265,7 +312,7 @@ function parseBody(body: unknown, disconnect: boolean): { plugin: string; ownCli
     if (typeof v !== "string" || v.trim() === "" || v.length > MAX_VALUE) return { error: `values.${k} must be a non-empty string of at most ${MAX_VALUE} characters` };
     values.set(k, v.trim());
   }
-  return { plugin: b.plugin, ownClient, values };
+  return { plugin: b.plugin, ownClient, write, values };
 }
 
 /** POST /api/v1/calendar/sync, after server.ts's guards: 403 for a non-owner, 400 for a bad body or range, else 202 with the request. */

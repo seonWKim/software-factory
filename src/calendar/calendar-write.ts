@@ -25,6 +25,8 @@ export interface CopyFields {
 
 /** CalendarSyncPort (src/interfaces/calendar-source.ts), restated as CopyFields is. */
 export interface SyncPort {
+  /** The calendar's name as the owner knows it, for the event dialog's switch and note. */
+  readonly label: string;
   writable(): Promise<boolean>;
   add(copy: CopyFields): Promise<string>;
   edit(id: string, copy: CopyFields): Promise<void>;

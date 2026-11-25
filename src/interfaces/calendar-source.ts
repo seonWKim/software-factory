@@ -67,6 +67,8 @@ export interface CalendarCopy {
  * throw is that write's error, kept on the local event; nothing retries it. Never asked while `writable` answers false.
  */
 export interface CalendarSyncPort {
+  /** The calendar's name as the owner knows it (the dashboard's switch and note name it). */
+  readonly label: string;
   /** Whether the connection grants writes; false for a read-only one. */
   writable(): Promise<boolean>;
   /** Adds the copy; answers the ID the source's own read reports for it, so the read can leave that copy out. */

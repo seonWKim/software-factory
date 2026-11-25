@@ -135,7 +135,7 @@ describe("repeats in the calendar read", () => {
   it("an occurrence keeps the first's length, overnight ones too, and the expansion is pure over the rows and the range", () => {
     const e: LocalEvent = {
       id: "le_overnight", title: "Night shift", starts_at: at(2026, 11, 1, 22), ends_at: at(2026, 11, 2, 2), all_day: false, repeats: "weekly",
-      created_by: OWNER, created_at: NOW.toISOString(), updated_at: NOW.toISOString(),
+      created_by: OWNER, created_at: NOW.toISOString(), updated_at: NOW.toISOString(), provider: null, provider_event_id: null, sync_error: null,
     };
     const out = expandLocalEvents([e], "2026-11-09", "2026-11-09");
     expect(out.map((o) => [o.starts_at, o.ends_at])).toEqual([[at(2026, 11, 8, 22), at(2026, 11, 9, 2)]]);

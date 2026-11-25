@@ -9,7 +9,8 @@
 // is refused. Its access token, sync tokens, ETags and last events are in-process caches: losing them costs one full
 // read. Every HTTP call goes through the injected client, so no test calls Google.
 
-import type { CalendarFeed, CopyFields, EventDetails, EventPerson, FeedEvent, SyncPort } from "../../index.js";
+import type { CopyFields, SyncPort } from "../../calendar-write.js";
+import type { CalendarFeed, EventDetails, EventPerson, FeedEvent } from "../../index.js";
 
 /** The read scope of a read-only connection. */
 export const CALENDAR_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
@@ -123,6 +124,7 @@ export class GoogleCalendarSource<N extends string> implements CalendarFeed {
   private readonly caches = new Map<string, CalendarCache>();
   /** The sync port: copies of the owner's local events in the first calendar read. */
   readonly sync: SyncPort = {
+    label: "Google Calendar",
     writable: async () => (await this.grant()).write,
     add: async (copy) => this.addCopy(copy),
     edit: async (id, copy) => void (await this.write("PUT", "event edit", id, copy)),
