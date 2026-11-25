@@ -429,6 +429,17 @@ CREATE TABLE controller_skill_eval_cases (
     created_at  TEXT NOT NULL
   , seed TEXT, mcp TEXT, split TEXT NOT NULL DEFAULT 'dev' CHECK (split IN ('dev', 'held-out')));
 
+CREATE TABLE controller_skill_eval_labels (
+    run_id      TEXT NOT NULL,
+    case_id     TEXT NOT NULL,
+    replay      INTEGER NOT NULL,
+    check_text  TEXT NOT NULL,
+    verdict     TEXT NOT NULL CHECK (verdict IN ('right', 'wrong')),
+    owner_id    TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (run_id, case_id, replay, check_text)
+  );
+
 CREATE TABLE "controller_skill_eval_replays" (
     run_id        TEXT NOT NULL,
     case_id       TEXT NOT NULL,

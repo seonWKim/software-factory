@@ -40,3 +40,13 @@ describe("controller table docs: skill eval version columns", () => {
     for (const c of COLUMNS) expect(TABLE_DOCS[c], c).toMatch(/^\S[^\n]*\.$/);
   });
 });
+
+describe("controller table docs: judge labels", () => {
+  const COLUMNS = ["run_id", "case_id", "replay", "check_text", "verdict", "owner_id", "created_at"];
+
+  it("describes controller_skill_eval_labels and each of its columns, one sentence each", () => {
+    expect(TABLE_DOCS.controller_skill_eval_labels).toMatch(/^\S[^\n]*\.$/);
+    for (const c of COLUMNS) expect(TABLE_DOCS[`controller_skill_eval_labels.${c}`], c).toMatch(/^\S[^\n]*\.$/);
+    expect(tableDoc("controller_skill_eval_labels")).toMatchObject({ owner: "controller" });
+  });
+});

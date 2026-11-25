@@ -106,6 +106,26 @@ export interface SkillEvalReplay {
   recorded_at: Timestamp;
 }
 
+/** The owner's verdict on the judge's answer to one check: `right` (the owner agrees) or `wrong`. */
+export type SkillEvalLabelVerdict = "right" | "wrong";
+
+/**
+ * The owner's label on one judged check (design 06-measurement, judge labels): a row of `controller_skill_eval_labels`,
+ * one per run, case, replay number and check.
+ */
+export interface SkillEvalLabel {
+  run_id: string;
+  case_id: string;
+  /** The replay's number in its run; 0 for a replay stored with none. */
+  replay: number;
+  /** The check's text, as the judge's answer names it (`detail.answers[].check`). */
+  check: string;
+  verdict: SkillEvalLabelVerdict;
+  /** The owner's user ID, never a display name. */
+  owner_id: UserId;
+  created_at: Timestamp;
+}
+
 /** One version of an imported skill (an `ext_skill_refs` row of kind `skill`), as an import saw it. */
 export interface SkillVersion {
   /** The `ext_skill_refs` id. */
@@ -196,6 +216,10 @@ export interface SkillEvalStore {
    */
   recordSkillEvalReplay(r: Omit<SkillEvalReplay, "recorded_at">): Promise<SkillEvalReplay>;
   listSkillEvalReplays(run_id: string): Promise<SkillEvalReplay[]>;
+  /** The owner's label on one judged check; a second label on the same run, case, replay and check keeps the first, which is returned. */
+  recordSkillEvalLabel(l: Omit<SkillEvalLabel, "created_at">): Promise<SkillEvalLabel>;
+  /** The labels on the runs of every suite of `skill_ref`, oldest first. */
+  listSkillEvalLabels(skill_ref: string): Promise<SkillEvalLabel[]>;
   /** The runs of every suite of `skill_ref`, newest first (start time, then id). */
   listSkillEvalRuns(skill_ref: string): Promise<SkillEvalRun[]>;
   /** One run by id with its figures (as listSkillEvalRuns reads it), whatever its skill; null for an unknown id. */

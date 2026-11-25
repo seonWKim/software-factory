@@ -1,6 +1,7 @@
 // Skill improvement (design 07-self-improvement): the improve run reads each seeded skill's measured eval runs and,
 // for a skill below skill_improve_target whose score dropped or stalled, drafts one new SKILL.md with one plain model
-// call that sees only the failed check names of `dev` cases. The draft is measured in scratch (the suite's dev cases
+// call that sees only the failed check names of `dev` cases, only when the owner's labels calibrate the skill's judge
+// (judgeCalibrated: labels, and agreement at 80% or more; else skipped `uncalibrated`, before a day slot is taken). The draft is measured in scratch (the suite's dev cases
 // replayed with the draft as the skill's system prompt, the run stored) and stored `proposed` when it beats the current
 // version's latest run on its dev cases by more than skill_improve_noise and carries an owner label (ownerLabelled),
 // else `tried` with its reason. Scratch (`draft:`) and baseline (`baseline:`) runs are never read as measured. No skill
@@ -12,6 +13,7 @@
 // the ledger, after the store holds them; a ledger failure is logged and changes nothing here (`handOff`).
 
 import { cyrb53 } from "./hash.js";
+import { judgeCalibrated } from "./skill-eval-calibration.js";
 import { errorText, type Logger } from "./log.js";
 import { MODEL_CLASSES, type ModelClass } from "./model-choice.js";
 import type { SkillImproveConfig } from "./skill-improve-config.js";
@@ -61,7 +63,7 @@ export interface SkillImproveWiring {
 }
 
 type Store = Pick<FactoryStore,
-  "listSkillEvalSuites" | "listSkillEvalCases" | "listSkillEvalRuns" | "listSkillEvalReplays" | "getSkillDraft" | "addSkillDraft" | "setSkillDraftState" | "takeSkillDraftSlot" | "recordAlert">;
+  "listSkillEvalSuites" | "listSkillEvalCases" | "listSkillEvalRuns" | "listSkillEvalReplays" | "listSkillEvalLabels" | "getSkillDraft" | "addSkillDraft" | "setSkillDraftState" | "takeSkillDraftSlot" | "recordAlert">;
 
 export interface SkillImproveDeps {
   store: Store;
@@ -128,7 +130,7 @@ export interface SkillImproveResult {
   skill_ref: string;
   trigger: SkillTrigger;
   /** The draft stored, or why none was taken. */
-  draft: { id: string; state: SkillDraftState; reason?: DraftReason } | { skipped: "drafted" | "day_cap" | "off" | "unreadable" };
+  draft: { id: string; state: SkillDraftState; reason?: DraftReason } | { skipped: "drafted" | "uncalibrated" | "day_cap" | "off" | "unreadable" };
 }
 
 /** A run with figures, not a scratch run and not a baseline run. */
@@ -178,6 +180,8 @@ async function draftSkill(d: SkillImproveDeps, project: string, skill_ref: strin
   if (version === null || text === null || prompt === null) return { skipped: "unreadable" };
   const id = skillDraftId(project, skill_ref, version);
   if (await d.store.getSkillDraft(id)) return { skipped: "drafted" };
+  // The judge's answers are trusted only with the owner's labels at CALIBRATION_THRESHOLD or above, checked before a slot is taken.
+  if (!judgeCalibrated(await d.store.listSkillEvalLabels(skill_ref))) return { skipped: "uncalibrated" };
   if (!(await d.store.takeSkillDraftSlot(project, c.skill_drafts_per_day))) {
     const cap = c.skill_drafts_per_day;
     await limitQuestion(d, project, "skill_drafts_per_day", cap, `skill_drafts_per_day is ${cap}: today's skill drafts are taken, so ${skill_ref} was not drafted. Proposed change: skill_drafts_per_day ${cap} → ${cap + 1}.`);

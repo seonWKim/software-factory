@@ -4,7 +4,7 @@
 // there": the stored row is returned.
 
 import type {
-  SkillEvalCase, SkillEvalSplit, SkillEvalReplay, SkillEvalRun, SkillEvalRunFigures, SkillEvalRunStart, SkillEvalRunStatus, SkillEvalStore, SkillEvalSuite, SkillVersion,
+  SkillEvalCase, SkillEvalLabel, SkillEvalLabelVerdict, SkillEvalSplit, SkillEvalReplay, SkillEvalRun, SkillEvalRunFigures, SkillEvalRunStart, SkillEvalRunStatus, SkillEvalStore, SkillEvalSuite, SkillVersion,
   SkillVersionGate, SkillVersionGateFinish, SkillVersionGateState, SkillVersionGateTake,
 } from "../../../interfaces/skill-eval-store.js";
 import type { Timestamp, UserId } from "../../../core/types.js";
@@ -17,6 +17,7 @@ const RUN_COLUMNS = "id, suite_id, status, started_at, finished_at, created_by, 
 /** A run as read back: its columns and its figures (null until recorded). */
 const RUN_READ = `${RUN_COLUMNS}, model_class, judge_model_class, replays, pass_rate, errored`;
 const REPLAY_COLUMNS = "run_id, case_id, verdict, detail, recorded_at, transcript, answer, input_tokens, output_tokens, cost_usd, wall_ms, replay";
+const LABEL_COLUMNS = "run_id, case_id, replay, check_text, verdict, owner_id, created_at";
 const VERSION_COLUMNS = "ref_id, version, folder_hash, text, source, created_at";
 const GATE_COLUMNS = "ref_id, version, state, lease_token, lease_until, run_id, detail, created_at, updated_at";
 
@@ -52,6 +53,11 @@ const rowToReplay = (r: Row): SkillEvalReplay => ({
   run_id: String(r.run_id), case_id: String(r.case_id), verdict: String(r.verdict), detail: JSON.parse(String(r.detail)), recorded_at: ts(r.recorded_at),
   transcript: textOrNull(r.transcript), answer: textOrNull(r.answer), input_tokens: numberOrNull(r.input_tokens), output_tokens: numberOrNull(r.output_tokens),
   cost_usd: numberOrNull(r.cost_usd), wall_ms: numberOrNull(r.wall_ms), replay: numberOrNull(r.replay),
+});
+
+const rowToLabel = (r: Row): SkillEvalLabel => ({
+  run_id: String(r.run_id), case_id: String(r.case_id), replay: Number(r.replay), check: String(r.check_text),
+  verdict: String(r.verdict) as SkillEvalLabelVerdict, owner_id: String(r.owner_id) as UserId, created_at: ts(r.created_at),
 });
 
 /** SkillEvalStore over a SqlDriver; `evalStamp` is the store's injected Clock's time. */
@@ -172,6 +178,26 @@ export class SqlSkillEvalStore extends SqlScheduleStore implements SkillEvalStor
 
   async listSkillEvalReplays(run_id: string): Promise<SkillEvalReplay[]> {
     return (await this.db.all(`SELECT ${REPLAY_COLUMNS} FROM controller_skill_eval_replays WHERE run_id = ? ORDER BY recorded_at, case_id, replay`, [run_id])).map(rowToReplay);
+  }
+
+  recordSkillEvalLabel(l: Omit<SkillEvalLabel, "created_at">): Promise<SkillEvalLabel> {
+    return this.db.transaction(async (tx) => {
+      const key = [l.run_id, l.case_id, l.replay, l.check];
+      // The key is run, case, replay and check: a clash keeps the first label, read back here.
+      await tx.run(`INSERT OR IGNORE INTO controller_skill_eval_labels (${LABEL_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)`, [...key, l.verdict, l.owner_id, this.evalStamp()]);
+      const [row] = await tx.all(`SELECT ${LABEL_COLUMNS} FROM controller_skill_eval_labels WHERE run_id = ? AND case_id = ? AND replay = ? AND check_text = ?`, key);
+      return rowToLabel(row!);
+    });
+  }
+
+  async listSkillEvalLabels(skill_ref: string): Promise<SkillEvalLabel[]> {
+    const cols = LABEL_COLUMNS.split(", ").map((c) => `l.${c}`).join(", ");
+    const rows = await this.db.all(
+      `SELECT ${cols} FROM controller_skill_eval_labels l JOIN controller_skill_eval_runs r ON r.id = l.run_id JOIN controller_skill_eval_suites s ON s.id = r.suite_id
+       WHERE s.skill_ref = ? ORDER BY l.created_at, l.run_id, l.case_id, l.replay, l.check_text`,
+      [skill_ref],
+    );
+    return rows.map(rowToLabel);
   }
 
   async listSkillEvalRuns(skill_ref: string): Promise<SkillEvalRun[]> {

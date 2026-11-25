@@ -2407,6 +2407,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_skill_eval_cases",
       "controller_skill_eval_runs",
       "controller_skill_eval_replays",
+      "controller_skill_eval_labels", // the owner's labels on the judge (design 06-measurement): the *-controller-skill-eval-labels migration
       "controller_skill_drafts", // skill improvement: the *-controller-skill-improve migration
       "controller_skill_draft_days",
       "controller_skill_version_gates", // new skill versions' gates (design 07-self-improvement): the *-controller-skill-eval-gate migration
