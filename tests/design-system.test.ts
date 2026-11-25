@@ -105,7 +105,7 @@ describe("design tokens", () => {
     const card = readFileSync(join(WEB_SRC, "components", "ui", "card.tsx"), "utf8");
     expect(card).toMatch(/SUB_TITLE = "text-xs font-medium text-text-2"/);
     expect(card).toMatch(/<Heading[^>]*className=\{Heading === "h2" \? CARD_TITLE : SUB_TITLE\}/);
-    const bad = files(join(WEB_SRC, "views"))
+    const bad = [...files(join(WEB_SRC, "views")), ...files(join(WEB_SRC, "components", "ui"))]
       .filter((f) => f.endsWith(".tsx"))
       .flatMap((f) => [...readFileSync(f, "utf8").matchAll(/<(h2|h3)\b[^>]*>/g)].filter((m) => !m[0].includes(m[1] === "h2" ? "CARD_TITLE" : "SUB_TITLE")).map((m) => `${f}: ${m[0]}`));
     expect(bad).toEqual([]);
