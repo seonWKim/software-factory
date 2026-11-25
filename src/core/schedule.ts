@@ -6,7 +6,7 @@
 // a due occurrence claimed more than one tick after its slot (a `skipped` run row with no count), or while the store
 // holds the threshold or more queued implement runs (a `skipped` run row with the count); either way `next_due_at`
 // moves on and the slot never runs later. A `catch_up` schedule fires its due occurrence once, however late or busy. A schedule whose action calls a model and whose runs used its
-// token cap holds a due occurrence at a `checkpoint`: no model is called, the schedule stays idle, and a local item
+// token cap (a `day` cap: the runs of the slot's UTC date; `lifetime`: all of them) holds a due occurrence at a `checkpoint`: no model is called, the schedule stays idle, and a local item
 // asks the owner, whose common `/approve` raises the cap and runs it and whose `/reject` ends it as `rejected`. Pure
 // decisions over a ScheduleStore; the caller's tick supplies the time, and `fired` says which occurrences are to run.
 
@@ -46,8 +46,11 @@ export interface ScheduleActionSpec {
   settings: Readonly<Record<string, unknown>>;
 }
 
-/** Tokens a schedule's runs may use in total before a due occurrence is held (owner value), and what an `/approve` adds. */
+/** Tokens a schedule's runs may use in its cap period before a due occurrence is held (owner value), and what an `/approve` adds. */
 export const SCHEDULE_TOKEN_CAP = 200_000;
+
+/** The runs a token cap counts: `day`, those whose occurrence falls on the UTC date of the slot claimed; `lifetime`, all. */
+export type TokenPeriod = "day" | "lifetime";
 
 export interface Schedule {
   id: string;
@@ -67,8 +70,10 @@ export interface Schedule {
   missed_rule: MissedRule;
   /** What a fired occurrence does; null: none, and the selected ScheduleAction refuses it. */
   action: ScheduleActionSpec | null;
-  /** Tokens its runs may use in total; null: SCHEDULE_TOKEN_CAP. */
+  /** Tokens its runs may use in its `token_period`; null: SCHEDULE_TOKEN_CAP. */
   token_cap: number | null;
+  /** The runs its token cap counts; null (stored before the period existed) counts as `lifetime`. */
+  token_period: TokenPeriod | null;
   /** A Check a page row's trigger form (a routine's); null with a cadence. */
   trigger: RoutineTrigger | null;
   /** The most one run may cost in USD; null for no cap. */
@@ -84,7 +89,7 @@ export interface Schedule {
 }
 
 /** The fields a new row may leave out: each defaults to off, none or null. */
-type Defaulted = "running_since" | "missed_rule" | "action" | "token_cap" | "trigger" | "run_cap_usd" | "daily_cap_usd" | "cap_raise" | "paused" | "last_run_at";
+type Defaulted = "running_since" | "missed_rule" | "action" | "token_cap" | "token_period" | "trigger" | "run_cap_usd" | "daily_cap_usd" | "cap_raise" | "paused" | "last_run_at";
 export type NewSchedule = Omit<Schedule, Defaulted | "cadence"> & { cadence: Cadence } & Partial<Pick<Schedule, Exclude<Defaulted, "running_since">>>;
 
 /** One row per claimed occurrence, unique per (schedule_id, occurrence_at). */
@@ -162,8 +167,8 @@ export interface ScheduleStore {
   countQueuedImplementRuns(): Promise<number>;
   /** Sets the run's output and adds its tokens and cost to what the row holds (a rerun's model calls count too). */
   recordScheduleRunResult(schedule_id: string, occurrence_at: Timestamp, r: ScheduleRunResult): Promise<void>;
-  /** The tokens the schedule's runs used, summed. Read-only. */
-  scheduleTokensUsed(schedule_id: string): Promise<number>;
+  /** The tokens the schedule's runs used, summed; with `day` (a UTC date, `2026-11-25`), only the runs whose occurrence falls on it. Read-only. */
+  scheduleTokensUsed(schedule_id: string, day?: string): Promise<number>;
   /** Every run row held at a checkpoint, oldest first. Read-only. */
   listHeldScheduleRuns(): Promise<ScheduleRun[]>;
   /**
@@ -192,7 +197,7 @@ export interface ScheduleStore {
 export type SchedulePatch = Partial<Pick<NewSchedule, "title" | "cadence" | "zone" | "next_due_at" | "missed_rule" | "action" | "token_cap">>;
 
 export type AddScheduleInput = Pick<NewSchedule, "id" | "title" | "cadence" | "zone" | "created_by"> &
-  { missed_rule?: MissedRule; action?: ScheduleActionSpec | null; token_cap?: number | null; run_now?: boolean };
+  { missed_rule?: MissedRule; action?: ScheduleActionSpec | null; token_cap?: number | null; token_period?: TokenPeriod; run_now?: boolean };
 
 /** A write's result: the schedule as stored, or why nothing was stored. */
 export type ScheduleResult = { ok: true; schedule: Schedule } | { ok: false; problem: string };
@@ -207,23 +212,29 @@ function actionProblem(action: ScheduleActionSpec | null | undefined, cap: numbe
 
 /**
  * Stores a new schedule, first due at `now` with `run_now`, else at its cadence's next slot after `now` (after a
- * run-now occurrence, the claim sets the slot after it); refused with the cadence's or the action's problem.
+ * run-now occurrence, the claim sets the slot after it); refused with the cadence's or the action's problem. With no
+ * `token_period`, a daily cadence's cap is per `day` and any other's `lifetime`.
  */
 export async function addSchedule(store: Pick<ScheduleStore, "addSchedule">, { run_now, ...input }: AddScheduleInput, now: Date): Promise<ScheduleResult> {
   const problem = cadenceProblem(input.cadence, input.zone) ?? actionProblem(input.action, input.token_cap);
   if (problem) return { ok: false, problem };
   const first = nextDue(input.cadence, input.zone, now, now);
   if (!first) return { ok: false, problem: "the cadence never falls due" };
-  const schedule = await store.addSchedule({ ...input, created_at: now.toISOString() as Timestamp, next_due_at: (run_now ? now : first).toISOString() as Timestamp });
+  const token_period = input.token_period ?? (input.cadence.kind === "daily" ? "day" : "lifetime");
+  const schedule = await store.addSchedule({ ...input, token_period, created_at: now.toISOString() as Timestamp, next_due_at: (run_now ? now : first).toISOString() as Timestamp });
   return { ok: true, schedule };
 }
 
 /** The schedule's token cap: its own, else SCHEDULE_TOKEN_CAP. */
 export const tokenCap = (s: Pick<Schedule, "token_cap">): number => s.token_cap ?? SCHEDULE_TOKEN_CAP;
 
-/** Whether a due occurrence of `s` is held: its action calls a model and its runs used its cap (budget's overBudget). */
-export async function overCap(store: Pick<ScheduleStore, "scheduleTokensUsed">, s: Schedule): Promise<boolean> {
-  return s.action !== null && MODEL_KINDS.has(s.action.kind) && overBudget(await store.scheduleTokensUsed(s.id), tokenCap(s));
+/** The tokens `s`'s cap counts for its occurrence at `slot`: a `day` cap's, that slot's UTC date's runs; else all its runs. */
+const tokensUsed = (store: Pick<ScheduleStore, "scheduleTokensUsed">, s: Schedule, slot: string | null): Promise<number> =>
+  s.token_period === "day" && slot !== null ? store.scheduleTokensUsed(s.id, new Date(slot).toISOString().slice(0, 10)) : store.scheduleTokensUsed(s.id);
+
+/** Whether `s`'s occurrence at `slot` (its due one by default) is held: its action calls a model and its runs used its cap (budget's overBudget). */
+export async function overCap(store: Pick<ScheduleStore, "scheduleTokensUsed">, s: Schedule, slot: string | null = s.next_due_at): Promise<boolean> {
+  return s.action !== null && MODEL_KINDS.has(s.action.kind) && overBudget(await tokensUsed(store, s, slot), tokenCap(s));
 }
 
 /**
@@ -272,7 +283,7 @@ const SCHEDULER: Actor = { kind: "system", id: "system:schedule" };
 /** The source ID of the item that holds `schedule_id`'s occurrence at `occurrence_at` (slot `2026-11-23T00:00:00.000Z` → `20261123T000000Z`). */
 export const checkpointSourceId = (schedule_id: string, occurrence_at: string): string => `schedule-checkpoint-${schedule_id}-${occurrence_at.replace(/[-:]|\.\d+/g, "")}`;
 
-/** The cap an `/approve` sets: SCHEDULE_TOKEN_CAP more than the cap, or than what was used when that is more. */
+/** The cap an `/approve` sets: SCHEDULE_TOKEN_CAP more than the cap, or than what its period used when that is more. */
 export const raisedCap = (cap: number, used: number): number => Math.max(cap, used) + SCHEDULE_TOKEN_CAP;
 
 /** The store reads and writes of the checkpoint item. */
@@ -286,7 +297,7 @@ export type CheckpointAnswer = { answer: "waiting" } | { answer: "approved"; tok
  * on its source ID) and moves it to wait for a person. Safe to run twice.
  */
 export async function checkpointAnswer(store: CheckpointStore, project: string, s: Schedule, run: Pick<ScheduleRun, "occurrence_at">): Promise<CheckpointAnswer> {
-  const used = await store.scheduleTokensUsed(s.id);
+  const used = await tokensUsed(store, s, run.occurrence_at);
   const source_id = checkpointSourceId(s.id, run.occurrence_at);
   let item = await store.getWorkItemBySource("local", source_id);
   if (item?.stage === "CLOSED") return item.close_reason === "completed" ? { answer: "approved", token_cap: raisedCap(tokenCap(s), used) } : { answer: "rejected" };

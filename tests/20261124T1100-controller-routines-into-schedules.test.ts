@@ -57,7 +57,7 @@ describe("20261124T1100-controller-routines-into-schedules on an existing SQLite
       action_kind: "check_page", action_settings: null, token_cap: null,
       instruction: "Look for broken links", url: "https://example.test/docs", paused: 1, run_cap_usd: 0.5, daily_cap_usd: 2,
       cap_raise_usd: 1, cap_raise_day: "2026-11-24", cap_hold_key: "hold_1", last_run_at: "2026-11-24T00:00:00.000Z", trigger_kind: null,
-      missed_rule: "catch_up",
+      missed_rule: "catch_up", token_period: null,
     }]);
     const suggestions = await db.all("SELECT * FROM controller_schedule_suggestions ORDER BY id");
     expect(suggestions).toEqual([{
