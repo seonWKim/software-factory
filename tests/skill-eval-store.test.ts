@@ -64,3 +64,20 @@ describe("recordSkillEvalRunFigures", () => {
     expect((await store.listSkillEvalRuns("skills/a"))[0]).toMatchObject({ replays: 0, pass_rate: null, errored: 0 });
   });
 });
+
+describe("recordSkillEvalReplay: replay numbers", () => {
+  it("stores one verdict per run, case and replay number, keeps the first of each, and reads the number back", async () => {
+    const { store } = await twoSkills();
+    await store.startSkillEvalRun({ id: "r1", suite_id: "s1", created_by: OWNER });
+    const put = (replay: number | undefined, verdict: string) => store.recordSkillEvalReplay({ run_id: "r1", case_id: "c1", verdict, detail: {}, ...(replay !== undefined ? { replay } : {}) });
+    expect(await put(1, "pass")).toMatchObject({ replay: 1, verdict: "pass" });
+    expect(await put(2, "fail")).toMatchObject({ replay: 2, verdict: "fail" });
+    expect(await put(1, "fail")).toMatchObject({ replay: 1, verdict: "pass" });
+    // None counts as 0: its own key, kept first too.
+    expect(await put(undefined, "errored")).toMatchObject({ replay: null, verdict: "errored" });
+    expect(await put(undefined, "pass")).toMatchObject({ replay: null, verdict: "errored" });
+    const stored = await store.listSkillEvalReplays("r1");
+    expect(stored.map((r) => [r.replay, r.verdict])).toEqual(expect.arrayContaining([[1, "pass"], [2, "fail"], [null, "errored"]]));
+    expect(stored).toHaveLength(3);
+  });
+});
