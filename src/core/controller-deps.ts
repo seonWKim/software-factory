@@ -165,8 +165,11 @@ export interface ControllerDeps {
 
 /** A ScheduleAction bound to the store's claim pass: what the schedule unit calls with each tick's time. */
 export interface ScheduledAction {
-  /** Claims the occurrences due at `now` and runs the action once per fired one; returns the fired runs. */
-  fireDue(now: Date): Promise<ScheduleRun[]>;
+  /**
+   * Claims the occurrences due at `now` and runs the action once per fired one; returns the fired runs. `tick_ms`,
+   * the controller's tick period, is how late a `skip` schedule's claim may be before it is skipped.
+   */
+  fireDue(now: Date, tick_ms?: number): Promise<ScheduleRun[]>;
 }
 
 /** The Check a page route's queue (design 08-schedules): queues the routine run of a schedule's slot in `project`. */
@@ -192,8 +195,8 @@ export function scheduledAction(store: CheckpointStore & CheckPageStore, action:
     }
   };
   return {
-    async fireDue(now) {
-      const fired = [...(await runDueSchedules(store, now)).fired, ...(await runDueCheckPages(store, now, project)).filter((r) => r.outcome === "fired")];
+    async fireDue(now, tick_ms) {
+      const fired = [...(await runDueSchedules(store, now, { tick_ms })).fired, ...(await runDueCheckPages(store, now, project)).filter((r) => r.outcome === "fired")];
       const held = await store.listHeldScheduleRuns();
       if (fired.length === 0 && held.length === 0) return fired;
       // The claim set `running_since` (a Check a page claim never does); the stored row carries it, and endScheduleRun

@@ -122,11 +122,15 @@ describe("the command table", () => {
     const pause = parseChatCommand("schedule pause sch_1");
     if (pause?.kind !== "command") throw new Error("schedule pause");
     expect(parseLocalCliArgs(...Object.values(chatCliArgv(pause, null)) as [string, string[]])).toEqual({ action: "schedule", command: { verb: "pause", id: "sch_1", fields: {} } });
-    const edit = parseChatCommand("schedule edit sch_1 --title Nightly --skip-when-busy on");
+    const edit = parseChatCommand("schedule edit sch_1 --title Nightly --missed skip");
     if (edit?.kind !== "command") throw new Error("schedule edit");
     expect(parseLocalCliArgs(...Object.values(chatCliArgv(edit, null)) as [string, string[]])).toEqual({
-      action: "schedule", command: { verb: "edit", id: "sch_1", fields: { title: "Nightly", skip_when_busy: true } },
+      action: "schedule", command: { verb: "edit", id: "sch_1", fields: { title: "Nightly", missed: "skip" } },
     });
+    // The old flag is refused in the chat form too.
+    const old = parseChatCommand("schedule edit sch_1 --skip-when-busy on");
+    if (old?.kind !== "command") throw new Error("schedule edit --skip-when-busy");
+    expect(parseLocalCliArgs(...Object.values(chatCliArgv(old, null)) as [string, string[]])).toMatchObject({ error: expect.stringContaining("unexpected \"--skip-when-busy\"") });
   });
 
   it("schedule draft and improve follow delete, the owner's, with no chat form, and SET_UP.md's CLI list has both", () => {

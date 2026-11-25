@@ -64,7 +64,10 @@ describe("GET /api/v1/schedules and /api/v1/schedules/runs", () => {
     const { clock, store, send, get } = await setup();
     expect(await get("/api/v1/schedules")).toEqual({ status: 200, value: { schedules: [] } });
     await send("add", ADD);
-    expect((await get("/api/v1/schedules")).value.schedules).toMatchObject([{ id: "sch_fb", next_due_at: FIRST, created_by: OWNER }]);
+    expect((await get("/api/v1/schedules")).value.schedules).toMatchObject([{ id: "sch_fb", next_due_at: FIRST, created_by: OWNER, missed_rule: "catch_up", skip_when_busy: false }]);
+    // The Schedules page still reads skip_when_busy: true when missed_rule is skip.
+    await send("edit", { id: "sch_fb", skip_when_busy: true });
+    expect((await get("/api/v1/schedules")).value.schedules).toMatchObject([{ id: "sch_fb", missed_rule: "skip", skip_when_busy: true }]);
     expect(await get("/api/v1/schedules/runs?schedule=sch_fb")).toEqual({ status: 200, value: { runs: [] } });
     clock.advance(12 * HOUR);
     await runDueSchedules(store, clock.now());
@@ -79,6 +82,10 @@ describe("POST /api/v1/schedules/…", () => {
     const { clock, store, send } = await setup();
     const added = await send("add", { ...ADD, body: "Look", skip_when_busy: true, token_cap: 900 });
     expect(added).toMatchObject({ status: 200, value: { schedule: { id: "sch_fb", created_by: OWNER, next_due_at: FIRST, action: { kind: "build", settings: { body: "Look" } }, skip_when_busy: true, token_cap: 900 } } });
+    // skip_when_busy is stored as missed_rule: true is skip, false is catch_up.
+    expect((await store.listSchedules())[0]).toMatchObject({ missed_rule: "skip" });
+    expect(await send("edit", { id: "sch_fb", skip_when_busy: false })).toMatchObject({ status: 200, value: { schedule: { missed_rule: "catch_up", skip_when_busy: false } } });
+    expect((await store.listSchedules())[0]).toMatchObject({ missed_rule: "catch_up" });
     expect(await send("edit", { id: "sch_fb", zone: "UTC" })).toMatchObject({ status: 200, value: { schedule: { zone: "UTC", next_due_at: "2026-11-23T09:00:00.000Z" } } });
     expect(await send("pause", { id: "sch_fb" })).toMatchObject({ status: 200, value: { schedule: { next_due_at: null } } });
     clock.advance(HOUR);
@@ -111,7 +118,7 @@ describe("POST /api/v1/schedules/…", () => {
     const { calls, send } = await setup();
     for (const [verb, body] of [
       ["add", null], ["add", [ADD]], ["add", "sch_fb"], ["add", { ...ADD, id: undefined }], ["add", { ...ADD, id: 7 }], ["add", { ...ADD, title: 3 }],
-      ["add", { ...ADD, skip_when_busy: "on" }], ["add", { ...ADD, token_cap: "100" }], ["add", { ...ADD, owner: OWNER }],
+      ["add", { ...ADD, skip_when_busy: "on" }], ["add", { ...ADD, missed_rule: "skip" }], ["add", { ...ADD, run_now: true }], ["add", { ...ADD, token_cap: "100" }], ["add", { ...ADD, owner: OWNER }],
       ["edit", { id: "sch_fb", cadence: ["daily"] }], ["pause", { id: "sch_fb", title: "x" }], ["run", {}], ["resume", { id: " " }],
     ] as [string, unknown][]) {
       const r = await send(verb, body);
