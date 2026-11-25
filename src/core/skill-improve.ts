@@ -29,7 +29,7 @@ export const scratchVersion = (draft_id: string) => `draft:${draft_id}`;
 /** The skill_version of a baseline run (`eval run --baseline`): the suite with no skill, beside the folder's version it was run at. */
 export const baselineVersion = (folder_hash: string) => `baseline:${folder_hash}`;
 /** Whether `skill_version` names a run that replays no folder version as the skill's: a scratch run or a baseline run. */
-export const unmeasuredVersion = (skill_version: string | null) => skill_version !== null && (skill_version.startsWith("draft:") || skill_version.startsWith("baseline:"));
+const unmeasuredVersion = (skill_version: string | null) => skill_version !== null && (skill_version.startsWith("draft:") || skill_version.startsWith("baseline:"));
 const DAY_MS = 86_400_000;
 const DRAFT_TIMEOUT_MS = 120_000;
 const DRAFT_MAX_TOKENS = 16_000;

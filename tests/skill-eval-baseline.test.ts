@@ -58,6 +58,10 @@ class FolderSandbox {
     this.copies.push({ from: hostPath, to: sandboxPath });
     await cp(hostPath, join(h.workdir, sandboxPath), { recursive: true });
   }
+  async copyOut(): Promise<void> {}
+  async updateBase(): Promise<string> {
+    return "base";
+  }
   async destroy(): Promise<void> {}
 }
 
