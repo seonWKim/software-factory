@@ -21,18 +21,18 @@
 //     { "op": "case.add", "skill", "input", "expected" }  { "op": "case.edit", "case", "input"?, "expected"? }
 //     { "op": "case.delete", "case" }  { "op": "case.try", "case", "model"? }  { "op": "import", "skill" }
 //     { "op": "version.settle", "ref", "version", "decision": "approve" | "reject" }: one held skill version settled by
-//     the store method of a bare `factory approve` / `factory reject` (settleSkillVersion, src/core/skill-eval-gate.ts),
-//     its alarm dismissed; a version that is not held is a 409 in plain words.
+//     the store method of a bare `factory approve` / `factory reject` (settleSkillVersionGate, as settleHeldSkillVersion
+//     in src/core/skill-eval-gate.ts), its alarm dismissed; a version that is not held is a 409 in plain words.
 // - POST /api/v1/evals/<skill>/runs: Run now, one run through UiEvals.run (evals-run-api.ts).
 // Every string in an answer leaves through the Withholder. The grid, compare and eval source functions come from the
-// route tables (read-routes.ts and write-routes.ts, the root), as main.ts passes the CLI its; the one runtime import of
-// core is the gate's settle and alarm key, which the bare CLI approve and reject share.
+// route tables (read-routes.ts and write-routes.ts, the root), as main.ts passes the CLI its, so this feature has no
+// runtime import of core or runtime.
 
 import type { compareSkillEvalRuns, skillEvalGrid } from "../core/skill-eval-compare.js";
-import { heldAlertKey, settleSkillVersion } from "../core/skill-eval-gate.js";
 import type { UserId } from "../core/types.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { SkillVersionGate } from "../interfaces/skill-eval-store.js";
 import type { EvalSourceSwitch, liveEvalSource } from "../runtime/live-eval-source.js";
 import type { Authored, SkillEvalAuthoring, TriedCase } from "../runtime/skill-evals/authoring.js";
 import { type ApiResult, apiError } from "./api.js";
@@ -105,6 +105,29 @@ export async function readEvalSuites(d: EvalsDeps): Promise<ApiResult> {
 const HELD_READ = 50;
 /** Most alerts read to name a held version's open alarm (as the alarms view reads). */
 const ALERTS_READ = 100;
+
+/** A held version's alarm key: the gate's heldAlertKey (src/core/skill-eval-gate.ts), kept here so this feature imports no core. */
+const heldAlertKey = (ref_id: string, version: number): string => `skill_version_gate:${ref_id}:${version}`;
+
+/**
+ * The dashboard's settle of one named held version (op `version.settle`): the store's conditional update the bare
+ * `/approve` and `/reject` use (settleSkillVersionGate), on that ref and version. A version that is not held is refused
+ * in plain words and nothing is written. Once settled, its owner question (the alarm) is dismissed by `by`, so it leaves
+ * Needs you; the gate never asks again about a settled version.
+ */
+async function settleSkillVersion(
+  store: Pick<FactoryStore, "getSkillVersionGate" | "settleSkillVersionGate" | "listAlerts" | "dismissAlert">,
+  s: { ref_id: string; version: number; command: "approve" | "reject"; by: UserId },
+): Promise<{ gate: SkillVersionGate } | { refused: string }> {
+  const notHeld = `Version ${s.version} of this skill is not waiting for a decision, so nothing was changed.`;
+  const gate = await store.getSkillVersionGate(s.ref_id, s.version);
+  if (gate?.state !== "held") return { refused: notHeld };
+  if (!(await store.settleSkillVersionGate(s.ref_id, s.version, s.command === "approve" ? "passed" : "rejected", s.by))) return { refused: notHeld };
+  const key = heldAlertKey(s.ref_id, s.version);
+  const alert = (await store.listAlerts({ limit: ALERTS_READ })).find((a) => a.pattern_key === key);
+  if (alert) await store.dismissAlert(alert.id, s.by);
+  return { gate: (await store.getSkillVersionGate(s.ref_id, s.version)) ?? gate };
+}
 
 /** One case whose pass rate fell in a held version's gate run: its id and its input when that is text (null otherwise). */
 interface FellCase {
