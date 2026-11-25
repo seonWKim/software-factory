@@ -268,7 +268,9 @@ describe("factory schedule delete", () => {
     await runDueSchedules(store, clock.now());
     await store.recordScheduleRunResult("sch_fb", FIRST, { output: "ok", tokens: 50, cost_usd: null });
     await store.endScheduleRun("sch_fb", (await stored(store))!.running_since!);
-    clock.advance(24 * HOUR);
+    // A daily schedule's cap is per UTC day: a second occurrence on FIRST's date is held.
+    clock.advance(HOUR);
+    expect((await cli(["run", "sch_fb"])).code).toBe(0);
     expect((await runDueSchedules(store, clock.now())).checkpoint).toHaveLength(1);
     expect(await store.listHeldScheduleRuns()).toHaveLength(1);
     expect((await cli(["delete", "sch_fb"])).code).toBe(0);

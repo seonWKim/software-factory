@@ -6,6 +6,7 @@
 // resume or run is one UPDATE conditional on the `next_due_at` it read, so it and a claim never both apply. The
 // missed-time rule is `missed_rule`; `skip_when_busy`, the column it replaced, is no longer read or written. A delete
 // removes the schedule row and ends its held checkpoints as `rejected` in one transaction; its other run rows stay.
+// `scheduleTokensUsed` with a UTC date sums only the runs whose occurrence falls on it (a `day` token_period's cap).
 // The schedule list and the due list leave out Check a page rows (action_kind 'check_page', routines copied by the
 // 20261124T1100-controller-routines-into-schedules migration): the Schedules page, API and CLI do not show them, and
 // the claim pass reads them through `listCheckPages` instead, with the row's `instruction` and `url` as the action's
@@ -16,13 +17,13 @@
 import type { RoutineTrigger } from "../../../core/routines.js";
 import type { Cadence, CadenceKind } from "../../../core/schedule-cadence.js";
 import type {
-  CheckPageClaim, ClaimOutcome, NewSchedule, Schedule, ScheduleActionKind, ScheduleClaim, ScheduleOutcome, SchedulePatch, ScheduleRun, ScheduleRunResult, ScheduleStore,
+  CheckPageClaim, ClaimOutcome, NewSchedule, Schedule, ScheduleActionKind, ScheduleClaim, ScheduleOutcome, SchedulePatch, ScheduleRun, ScheduleRunResult, ScheduleStore, TokenPeriod,
 } from "../../../core/schedule.js";
 import type { Timestamp, UserId } from "../../../core/types.js";
 import type { Row, SqlDriver, SqlValue } from "../../../state/index.js";
 import { SqlRunOutputStore } from "./run-output.js";
 
-const COLUMNS = "id, title, cadence_kind, cadence_spec, zone, created_by, created_at, next_due_at, running_since, missed_rule, action_kind, action_settings, token_cap, " +
+const COLUMNS = "id, title, cadence_kind, cadence_spec, zone, created_by, created_at, next_due_at, running_since, missed_rule, action_kind, action_settings, token_cap, token_period, " +
   "trigger_kind, run_cap_usd, daily_cap_usd, cap_raise_usd, cap_raise_day, cap_hold_key, paused, last_run_at";
 const RUN_COLUMNS = "schedule_id, occurrence_at, outcome, recorded_at, queued_implement_runs, output, tokens, cost_usd";
 /** The running state each outcome's claim requires: refused takes a running schedule, every other an idle one. */
@@ -55,7 +56,7 @@ function rowToSchedule(r: Row): Schedule {
     created_by: String(r.created_by) as UserId, created_at: String(r.created_at) as Timestamp, next_due_at: time(r.next_due_at), running_since: time(r.running_since),
     missed_rule: r.missed_rule === "skip" ? "skip" : "catch_up",
     action: r.action_kind == null ? null : { kind: String(r.action_kind) as ScheduleActionKind, settings: rowSettings(r) },
-    token_cap: num(r.token_cap),
+    token_cap: num(r.token_cap), token_period: r.token_period == null ? null : (String(r.token_period) as TokenPeriod),
     trigger: r.trigger_kind == null ? null : (String(r.trigger_kind) as RoutineTrigger), run_cap_usd: num(r.run_cap_usd), daily_cap_usd: num(r.daily_cap_usd),
     cap_raise: rowCapRaise(r), paused: Number(r.paused ?? 0) === 1, last_run_at: time(r.last_run_at),
   };
@@ -77,9 +78,9 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
 
   async addSchedule(s: NewSchedule): Promise<Schedule> {
     try {
-      await this.db.run(`INSERT INTO controller_schedules (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+      await this.db.run(`INSERT INTO controller_schedules (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
         s.id, s.title, s.cadence.kind, s.cadence.spec, s.zone, s.created_by, s.created_at, s.next_due_at, s.missed_rule ?? "catch_up",
-        s.action?.kind ?? null, s.action ? JSON.stringify(s.action.settings) : null, s.token_cap ?? null,
+        s.action?.kind ?? null, s.action ? JSON.stringify(s.action.settings) : null, s.token_cap ?? null, s.token_period ?? null,
         s.trigger ?? null, s.run_cap_usd ?? null, s.daily_cap_usd ?? null, s.cap_raise?.usd ?? null, s.cap_raise?.day ?? null, s.cap_raise?.hold_key ?? null,
         s.paused ? 1 : null, s.last_run_at ?? null,
       ]);
@@ -156,8 +157,10 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
     ]);
   }
 
-  async scheduleTokensUsed(schedule_id: string): Promise<number> {
-    const [row] = await this.db.all("SELECT COALESCE(SUM(tokens), 0) AS n FROM controller_schedule_runs WHERE schedule_id = ?", [schedule_id]);
+  async scheduleTokensUsed(schedule_id: string, day?: string): Promise<number> {
+    // occurrence_at is a UTC ISO time, so its first ten characters are its UTC date.
+    const onDay = day === undefined ? "" : " AND substr(occurrence_at, 1, 10) = ?";
+    const [row] = await this.db.all(`SELECT COALESCE(SUM(tokens), 0) AS n FROM controller_schedule_runs WHERE schedule_id = ?${onDay}`, [schedule_id, ...(day === undefined ? [] : [day])]);
     return Number(row?.n ?? 0);
   }
 
