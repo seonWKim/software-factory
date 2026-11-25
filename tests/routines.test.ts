@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   SNOOZE_MS, type Routine, type RoutineInput, addRoutine, afterSlot, carrierSource, dailyCap, dueSlot, fingerprint, firstDue, overDailyCap,
   overRunCap, queueRoutineRun, routineFindings, routineProblem,
-} from "../src/core/routines.js";
+} from "../src/core/check-page.js";
 import type { Timestamp, UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
@@ -15,7 +15,7 @@ import { FakeAuth } from "./helpers/fakes/runner.js";
 import { config, silent } from "./helpers/fakes/config.js";
 import { newStore, w1 } from "./helpers/store.js";
 
-// Routines (src/core/routines.ts). The schedule and trigger math runs on times read from a FakeClock;
+// Routines (src/core/check-page.ts). The schedule and trigger math runs on times read from a FakeClock;
 // the schedule unit's pass, driven by the controller, fires a due routine's run; the routines unit stores its findings as pending
 // suggestions (duplicates skipped and counted, flagged ones withheld) and answers a suggestion.
 

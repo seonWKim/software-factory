@@ -5,7 +5,7 @@
 import type { FactoryConfig } from "./config.js";
 import type { TickLease } from "./lease.js";
 import { type Logger, errorText } from "./log.js";
-import { type CheckPageStore, type RoutineRunStore, queueRoutineRun, runDueCheckPages } from "./routines.js";
+import { type CheckPageStore, type RoutineRunStore, queueRoutineRun, runDueCheckPages } from "./check-page.js";
 import { type CheckpointStore, type Schedule, type ScheduleRun, checkpointAnswer, runDueSchedules } from "./schedule.js";
 import type { LearnedSettingsSource, LiveSettings } from "./settings.js";
 import type { Timestamp } from "./types.js";

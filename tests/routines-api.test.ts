@@ -5,7 +5,7 @@
 // next_due_at, and the kernel's existing due path fires it on the next tick.
 
 import { describe, expect, it } from "vitest";
-import { NO_NEXT_SLOT, carrierSource, queueRoutineRun } from "../src/core/routines.js";
+import { NO_NEXT_SLOT, carrierSource, queueRoutineRun } from "../src/core/check-page.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";

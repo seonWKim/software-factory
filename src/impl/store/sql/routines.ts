@@ -1,4 +1,4 @@
-// Routines (src/core/routines.ts): the RoutineStore methods over `controller_schedules` and
+// Routines (src/core/check-page.ts): the RoutineStore methods over `controller_schedules` and
 // `controller_schedule_suggestions` (design 08-schedules), as SqlRoutineStore, which SqlFactoryStore extends, so these
 // methods add no line to sql-factory-store.ts's budget. A routine is a schedule row with action_kind 'check_page' (its
 // name the row's title, its trigger `trigger_kind`); every statement here reads or writes only those rows, and the
@@ -8,8 +8,9 @@
 // A snooze that has run out reads as pending, by the store's injected Clock, with no write.
 
 import type {
-  NewRoutine, Routine, RoutineEdit, RoutineMarks, RoutinePatch, RoutineStore, RoutineSuggestion, RoutineTrigger, SuggestionDecision, SuggestionState,
-} from "../../../core/routines.js";
+  NewRoutine, Routine, RoutineEdit, RoutineMarks, RoutinePatch, RoutineStore, RoutineSuggestion, SuggestionDecision, SuggestionState,
+} from "../../../core/check-page.js";
+import type { RoutineTrigger } from "../../../core/schedule.js";
 import type { Timestamp, UserId } from "../../../core/types.js";
 import type { Row, SqlDriver, SqlValue } from "../../../state/index.js";
 import { SqlAttachmentStore } from "./attachments.js";

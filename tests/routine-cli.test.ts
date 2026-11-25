@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ROUTINE_USAGE, type RoutineAction, parseRoutineArgs, routineLine, runRoutineCommand, scheduleEquivalent } from "../src/cli/handlers/routine/routine.js";
 import ROUTINE from "../src/cli/handlers/routine/routine.command.js";
-import { NO_NEXT_SLOT } from "../src/core/routines.js";
+import { NO_NEXT_SLOT } from "../src/core/check-page.js";
 import { parseScheduleArgs, runScheduleCommand } from "../src/core/schedule.js";
 import type { UserId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ROUTINES, SNOOZE_MS, type RoutineInput, addRoutine, carrierItem, fingerprint, routineRunKey } from "../src/core/routines.js";
+import { ROUTINES, SNOOZE_MS, type RoutineInput, addRoutine, carrierItem, fingerprint, routineRunKey } from "../src/core/check-page.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
