@@ -113,7 +113,7 @@ export interface SkillVersion {
   created_at: Timestamp;
 }
 
-/** A new version's gate: pending until a gate pass takes it, running under a lease, then passed or held (rejected: the owner's, later). */
+/** A new version's gate: pending until a gate pass takes it, running under a lease, then passed or held; a held one is passed or rejected by the owner. */
 export type SkillVersionGateState = "pending" | "running" | "passed" | "held" | "rejected";
 
 /** The gate row of one skill version (design 07-self-improvement); a version recorded before the gate has none. */
@@ -212,4 +212,11 @@ export interface SkillEvalStore {
   /** Writes a gate's end only while it is running under `lease_token`; false (nothing written) for a late holder. */
   finishSkillVersionGate(f: SkillVersionGateFinish): Promise<boolean>;
   getSkillVersionGate(ref_id: string, version: number): Promise<SkillVersionGate | null>;
+  /** The held gates of every ref, newest first (created, then version), at most `limit`. */
+  listHeldSkillVersionGates(limit: number): Promise<SkillVersionGate[]>;
+  /**
+   * The owner's settle of a held gate by one conditional update: `passed` (it may become current) or `rejected` (it never
+   * does), with `by` (a user ID) in its detail, only while it is held. False when it is not held (settled already, or never held).
+   */
+  settleSkillVersionGate(ref_id: string, version: number, state: "passed" | "rejected", by: UserId): Promise<boolean>;
 }

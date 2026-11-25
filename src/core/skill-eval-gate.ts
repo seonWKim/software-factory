@@ -15,7 +15,7 @@ import type { SkillImproveConfig } from "./skill-improve-config.js";
 import type { Timestamp, UserId } from "./types.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
-import type { SkillEvalRun, SkillVersionGateFinish } from "../interfaces/skill-eval-store.js";
+import type { SkillEvalRun, SkillEvalStore, SkillVersionGate, SkillVersionGateFinish } from "../interfaces/skill-eval-store.js";
 
 /** Replays per case of a gate run. */
 export const GATE_REPLAYS = 3;
@@ -134,4 +134,21 @@ async function heldQuestion(
   const text = `${q.skill_ref} version ${q.version} is held: its pass rate ${q.pass_rate} on ${q.model_class} fell from ${q.before} (version ${q.current}). Cases that fell: ${cases}.`;
   const detail = (await d.scanner.scan("ui", text)).clean ? text : null;
   await d.store.recordAlert({ pattern: "skill_version_gate", pattern_key: `skill_version_gate:${q.ref_id}:${q.version}`, error_code: "pass_rate_drop", count: q.version, detail }, DAY_MS);
+}
+
+/** What a bare `/approve` or `/reject` (no item) did to the newest held skill version (design 07-self-improvement); a shared command, re-exported by commands.ts. */
+export type SkillVersionSettle = { gate: SkillVersionGate; settled: boolean };
+
+/**
+ * A bare `/approve` or `/reject`, with no work item: the newest held skill version of any skill (created, then
+ * version) is settled by the store's conditional update. `/approve` passes it, so it is current unless a newer version
+ * passed; `/reject` rejects it, so the version current before it stays current. Null when no version is held: the
+ * caller keeps its item-ID refusal. `settled` is false when another process settled it first.
+ */
+export async function settleHeldSkillVersion(
+  store: Pick<SkillEvalStore, "listHeldSkillVersionGates" | "settleSkillVersionGate">, command: "approve" | "reject", by: UserId,
+): Promise<SkillVersionSettle | null> {
+  const [gate] = await store.listHeldSkillVersionGates(1);
+  if (!gate) return null;
+  return { gate, settled: await store.settleSkillVersionGate(gate.ref_id, gate.version, command === "approve" ? "passed" : "rejected", by) };
 }

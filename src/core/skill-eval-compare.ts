@@ -4,7 +4,7 @@
 // and /diff) link runs to skill versions by folder hash here too. Nothing here reads or writes the store. Main.ts passes them to the CLI
 // through the command call (CommandCall.skillEvalReads); the routes import them.
 
-import type { SkillEvalRun } from "../interfaces/skill-eval-store.js";
+import type { SkillEvalRun, SkillVersionGateState } from "../interfaces/skill-eval-store.js";
 import { caseRates, pairedInterval, signTestP, type StatVerdict } from "./skill-eval-stats.js";
 
 /** One run as the grid and compare show it: which run, on what, and its figures (null where none was recorded). */
@@ -125,6 +125,8 @@ export interface VersionOf {
   version: number;
   folder_hash: string;
   created_at: string;
+  /** Its gate's state (design 07-self-improvement); absent or null: recorded before the gate, with no gate row. */
+  gate?: SkillVersionGateState | null;
 }
 
 /** A run as the per-version read links it: by its stored folder hash. */
@@ -132,7 +134,9 @@ type LinkedRun = Pick<SkillEvalRun, "id" | "started_at" | "skill_version" | "pas
 
 /** One version with its latest linked run's pass rate, the change since the previous version and the current mark. */
 export interface SkillVersionRow extends VersionOf {
-  /** The newest version is the current one. */
+  /** Its gate's state; null: no gate row. */
+  gate: SkillVersionGateState | null;
+  /** The gate's current version: the newest whose gate passed or that has no gate (as currentSkillVersion reads it). */
   current: boolean;
   /** The newest run with a pass rate whose skill_version is this version's folder hash; null when none. */
   run_id: string | null;
@@ -152,9 +156,13 @@ export function latestLinkedRun<R extends LinkedRun>(runs: readonly R[], folder_
  */
 export function skillVersionRows(versions: readonly VersionOf[], runs: readonly LinkedRun[]): SkillVersionRow[] {
   const ordered = [...versions].sort((a, b) => a.version - b.version);
-  const rows = ordered.map((v, i): SkillVersionRow => {
+  const current = ordered.findLast((v) => v.gate == null || v.gate === "passed")?.version;
+  const rows = ordered.map((v): SkillVersionRow => {
     const run = latestLinkedRun(runs, v.folder_hash);
-    return { version: v.version, folder_hash: v.folder_hash, created_at: v.created_at, current: i === ordered.length - 1, run_id: run?.id ?? null, pass_rate: run?.pass_rate ?? null, change: null };
+    return {
+      version: v.version, folder_hash: v.folder_hash, created_at: v.created_at, gate: v.gate ?? null, current: v.version === current,
+      run_id: run?.id ?? null, pass_rate: run?.pass_rate ?? null, change: null,
+    };
   });
   rows.forEach((r, i) => {
     const prev = rows[i - 1];

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CREATE_NEXT_STEP, type CliAction, cliCommandListMarkdown, CLI_TOP_WORDS, parseLocalCliArgs, resolveItem, runLocalCli, shortItemId,
 } from "../src/core/local-cli.js";
+import { parseLocalCliArgs as parseArgs } from "../src/core/local-cli-parse.js";
 import type { WorkItemId } from "../src/core/types.js";
 import { COMMAND_TABLE, SENTENCE_FORM, cliUsageOf } from "../src/core/command-table.js";
 import { VERDICT_USAGE } from "../src/core/verdict.js";
@@ -36,7 +37,7 @@ describe("parseLocalCliArgs", () => {
     for (const [w, a] of [
       ["task", []], ["task", ["create", "--title", "T"]], ["task", ["create", "--body-file", "b"]], ["task", ["create", "--title"]],
       ["task", ["create", "--title", "T", "--body-file", "b", "--label", "x"]], ["task", ["show"]], ["task", ["list", "x"]],
-      ["task", ["frob"]], ["approve", []], ["retry", []], ["resolve", []], ["verdict", []], ["users", ["list"]],
+      ["task", ["frob"]], ["revise", []], ["retry", []], ["resolve", []], ["verdict", []], ["users", ["list"]],
     ] as [string, string[]][]) {
       const r = parseLocalCliArgs(w, a);
       expect({ w, a, r }).toMatchObject({ r: { error: expect.stringContaining("usage:") } });
@@ -57,6 +58,55 @@ describe("parseLocalCliArgs", () => {
     expect([...new Set(local.map((c) => c.name.split(" ")[0]))]).toEqual([...CLI_TOP_WORDS]);
     expect(CLI_TOP_WORDS).toContain("confirm");
     expect(CLI_TOP_WORDS).not.toContain(SENTENCE_FORM);
+  });
+});
+
+describe("a bare approve or reject: the newest held skill version (design 07-self-improvement)", () => {
+  const held = async (store: Awaited<ReturnType<typeof setup>>["store"], ref_id: string, hash: string) => {
+    const v = (await store.recordSkillVersion({ ref_id, folder_hash: hash, text: hash, source: "claude" }))!;
+    await store.db.run("UPDATE controller_skill_version_gates SET state = 'held' WHERE ref_id = ? AND version = ?", [ref_id, v.version]);
+    return v.version;
+  };
+
+  it("parses as a settle; with a work item ID it is the item command as before", () => {
+    expect(parseLocalCliArgs("approve", [])).toEqual({ action: "settle", command: "approve" });
+    expect(parseLocalCliArgs("reject", [])).toEqual({ action: "settle", command: "reject" });
+    expect(parseLocalCliArgs("approve", ["wi_1"])).toEqual({ action: "command", command: "approve", id: "wi_1", text: "" });
+  });
+
+  it("with no held version it fails with the parser's refusal and usage, word for word, and writes nothing", async () => {
+    const { store, run } = await setup();
+    const before = await snapshot(store);
+    for (const command of ["approve", "reject"] as const) {
+      const parsed = parseArgs(command, []);
+      expect(await run({ action: "settle", command })).toEqual({ code: 1, lines: ("error" in parsed ? parsed.error : "").split("\n") });
+    }
+    expect(await snapshot(store)).toEqual(before);
+    expect(await store.getOwner()).toBeNull();
+  });
+
+  it("approve passes the newest held version, so it is current; a second bare approve settles the next held one", async () => {
+    const { store, run } = await setup();
+    await held(store, "sr_a", "a1");
+    await held(store, "sr_a", "a2");
+    const r = await run({ action: "settle", command: "approve" });
+    expect(r).toMatchObject({ code: 0, lines: [expect.stringContaining("version 2 of skill sr_a")] });
+    expect(await store.getSkillVersionGate("sr_a", 2)).toMatchObject({ state: "passed", detail: expect.objectContaining({ settled_by: USER }) });
+    expect(await store.getSkillVersionGate("sr_a", 1)).toMatchObject({ state: "held" });
+    expect((await store.currentSkillVersion("sr_a"))?.version).toBe(2);
+    expect(await store.getOwner()).toBe(USER);
+    await run({ action: "settle", command: "approve" });
+    expect(await store.getSkillVersionGate("sr_a", 1)).toMatchObject({ state: "passed" });
+  });
+
+  it("reject rejects the newest held version: the version current before it stays current", async () => {
+    const { store, run } = await setup();
+    await store.recordSkillVersion({ ref_id: "sr_b", folder_hash: "b1", text: "b1", source: "claude" });
+    await store.db.run("UPDATE controller_skill_version_gates SET state = 'passed' WHERE ref_id = 'sr_b' AND version = 1");
+    await held(store, "sr_b", "b2");
+    expect(await run({ action: "settle", command: "reject" })).toMatchObject({ code: 0, lines: [expect.stringContaining("version 2 of skill sr_b")] });
+    expect(await store.getSkillVersionGate("sr_b", 2)).toMatchObject({ state: "rejected" });
+    expect((await store.currentSkillVersion("sr_b"))?.version).toBe(1);
   });
 });
 

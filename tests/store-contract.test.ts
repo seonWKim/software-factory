@@ -107,6 +107,45 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
     });
   });
 
+  describe("skill version gates: the owner's settle of a held version (design 07-self-improvement)", () => {
+    const USER = "local:owner" as UserId;
+    const heldVersion = async (store: Awaited<ReturnType<typeof make>>["store"], ref_id: string, hash: string) => {
+      const v = (await store.recordSkillVersion({ ref_id, folder_hash: hash, text: hash, source: "claude" }))!;
+      await store.db.run("UPDATE controller_skill_version_gates SET state = 'held' WHERE ref_id = ? AND version = ?", [ref_id, v.version]);
+      return v.version;
+    };
+
+    it("lists held gates newest first and no gate in another state", async () => {
+      const { store, clock } = await make();
+      await heldVersion(store, "sr_a", "a1");
+      clock.advance(1000);
+      await store.recordSkillVersion({ ref_id: "sr_a", folder_hash: "a2", text: "a2", source: "claude" });
+      clock.advance(1000);
+      await heldVersion(store, "sr_b", "b1");
+      const held = await store.listHeldSkillVersionGates(10);
+      expect(held.map((g) => [g.ref_id, g.version, g.state])).toEqual([["sr_b", 1, "held"], ["sr_a", 1, "held"]]);
+      expect((await store.listHeldSkillVersionGates(1)).map((g) => g.ref_id)).toEqual(["sr_b"]);
+    });
+
+    it("settles a held gate to passed or rejected by a conditional update: only while it is held, with who settled it", async () => {
+      const { store } = await make();
+      await heldVersion(store, "sr_a", "a1");
+      await heldVersion(store, "sr_a", "a2");
+      expect(await store.settleSkillVersionGate("sr_a", 2, "passed", USER)).toBe(true);
+      expect(await store.getSkillVersionGate("sr_a", 2)).toMatchObject({ state: "passed", detail: expect.objectContaining({ settled_by: USER }) });
+      // A second settle, of either kind, writes nothing: the gate is no longer held.
+      expect(await store.settleSkillVersionGate("sr_a", 2, "rejected", USER)).toBe(false);
+      expect(await store.getSkillVersionGate("sr_a", 2)).toMatchObject({ state: "passed" });
+      expect(await store.settleSkillVersionGate("sr_a", 1, "rejected", USER)).toBe(true);
+      expect(await store.getSkillVersionGate("sr_a", 1)).toMatchObject({ state: "rejected" });
+      // A pending gate, and a version with no gate, are never settled.
+      await store.recordSkillVersion({ ref_id: "sr_a", folder_hash: "a3", text: "a3", source: "claude" });
+      expect(await store.settleSkillVersionGate("sr_a", 3, "passed", USER)).toBe(false);
+      expect(await store.getSkillVersionGate("sr_a", 3)).toMatchObject({ state: "pending" });
+      expect(await store.settleSkillVersionGate("sr_none", 1, "passed", USER)).toBe(false);
+    });
+  });
+
   describe("schedules: updateSchedule (design 08-schedules)", () => {
     const DAILY = { id: "sch_1", title: "Daily", cadence: { kind: "daily" as const, spec: "09:00" }, zone: "UTC", created_by: "local:owner" as UserId };
     const DUE = "2026-11-23T09:00:00.000Z" as Timestamp;

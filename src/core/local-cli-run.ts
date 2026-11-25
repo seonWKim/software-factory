@@ -1,7 +1,7 @@
 import type { WorkItem, WorkItemId } from "./types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { MERGE_COMMAND } from "./local-merge.js";
-import { CLOSED_REFUSAL, approveRefusal, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText } from "./commands.js";
+import { CLOSED_REFUSAL, approveRefusal, settleHeldSkillVersion, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText } from "./commands.js";
 import type { NoteAnswers } from "./request-transition.js";
 import { verdictRefusal } from "./verdict.js";
 import { CONFIRM_COMMAND } from "./interpret.js";
@@ -11,7 +11,9 @@ import { ProjectRefused, projectRefusal, taskLine } from "./tasks.js";
 import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask, localItemOf, withDependsOn } from "./task-build.js";
 import { type DraftTerminal, runScheduleWords } from "./schedule-draft.js";
 import { ANONYMOUS_USER, CLI_KEY_PREFIX, type CliIdentity, DEFAULT_CLI_NAME } from "./local-cli-identity.js";
-import type { CliAction } from "./local-cli-parse.js";
+import { type CliAction as ParsedAction, parseLocalCliArgs } from "./local-cli-parse.js";
+/** Every action runLocalCli runs: the parser's, and a bare `approve` or `reject`, which settles the newest held skill version (parseLocalCliArgs in local-cli.ts). */
+export type CliAction = ParsedAction | { action: "settle"; command: "approve" | "reject" };
 /** `task create`'s last line: what happens to the new item next. */ export const CREATE_NEXT_STEP = "triage queued; you'll be asked to approve the spec";
 const UI_PORT = 4310; // `ui.port` unset: compose.ts DEFAULT_UI_PORT, which core cannot import
 
@@ -36,6 +38,7 @@ export interface LocalCliDeps extends DraftTerminal { // DraftTerminal: `schedul
     | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
     | "createProject" | "listProjects" | "renameProject" | "archiveProject" | "restoreProject" | "deleteProject" | "getProjectBySlug"
     | "addTaskToProject" | "removeTaskFromProject" | "moveTaskToProject" | "listTaskProjectSlugs" | "listSchedules" | "listScheduleRuns" | "addSchedule" | "updateSchedule" | "deleteSchedule" | "scheduleNow"
+    | "listHeldSkillVersionGates" | "settleSkillVersionGate"
   >;
   /** Who every command acts as (`cliIdentity`). */
   identity: CliIdentity;
@@ -224,6 +227,15 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: CONFIRM_COMMAND, args });
       const n = pending.length === 1 ? "its pending command" : `its ${pending.length} pending commands`;
       return { code: 0, lines: [`stored \`${cli} confirm ${a.proposal}\` as ${user} (command ${command.seq}); the controller applies ${n} on its next poll`] };
+    }
+    case "settle": {
+      // No held version: the parser's refusal of a bare item command, word for word, as before (design 07-self-improvement).
+      const r = await settleHeldSkillVersion(d.store, a.command, user);
+      if (r === null) { const p = parseLocalCliArgs(a.command, []); return { code: 1, lines: "error" in p ? p.error.split("\n") : [] }; }
+      const v = `version ${r.gate.version} of skill ${r.gate.ref_id}`;
+      if (!r.settled) return { code: 0, lines: [`${v} was settled already`] };
+      await claim();
+      return { code: 0, lines: [a.command === "approve" ? `approved held ${v}: it is current unless a newer version passed` : `rejected held ${v}: the version current before it stays current`] };
     }
     case "help": {
       if (a.id === null) return { code: 0, lines: helpReply(null).split("\n") };
