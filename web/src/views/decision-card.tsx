@@ -14,8 +14,8 @@ import { PAGE_COMMANDS_PATH } from "../pages.js";
 import { OutcomeText, PendingProposals, SENTENCE } from "./command-box.js";
 import { PersonName } from "./common.js";
 import {
-  CommandDialog, DIALOGS, type FormName, ItemCommands, MENU, menuEntry, type OneTapChoice, QueuedFeedbackList, oneTapNote, pathsOf,
-  pendingFeedback, primaryLabel, primaryOf, withPaths,
+  AllowResolveDialog, CommandDialog, DIALOGS, type FormName, ItemCommands, MENU, allowsResolve, menuEntry, type OneTapChoice, QueuedFeedbackList,
+  oneTapNote, pathsOf, pendingFeedback, primaryLabel, primaryOf, withPaths,
 } from "./item-commands.js";
 import { commandOutcome, notAllowed, useCommandSend } from "./command-send.js";
 import { MergeButton } from "./merge-button.js";
@@ -101,7 +101,7 @@ export interface DecisionCardProps {
 export function DecisionCard({ id, commands, replies, question = null }: DecisionCardProps) {
   const { session, on: enabled, busy, local, send: post } = useCommandSend(id);
   const [note, setNote] = useState("");
-  const [open, setOpen] = useState<FormName | "approve" | null>(null);
+  const [open, setOpen] = useState<FormName | "approve" | "resolve" | null>(null);
   const [credentialOpen, setCredentialOpen] = useState(false);
   const opener = useRef<HTMLElement | null>(null);
   const [picked, setPicked] = useState<DecisionChoice[] | null>(null);
@@ -132,6 +132,7 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
     setPicked(null);
   };
   const verdict = commands.find((c) => c.name === "verdict");
+  const resolve = commands.find(allowsResolve);
   const verdictOff = !enabled || busy || !verdict?.allowed;
   const tap = (choice: OneTapChoice) => {
     const text = oneTapNote(choice, note);
@@ -153,7 +154,8 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
   ].filter((o) => o.outcome !== null);
 
   const button = (c: ItemCommand) => {
-    const opensDialog = DIALOGS.includes(c.name) || (c.name === "approve" && phase !== null);
+    // Allow and resolve (an out_of_scope resolve failure's reply files) lists the files in AllowResolveDialog first.
+    const opensDialog = DIALOGS.includes(c.name) || (c.name === "approve" && phase !== null) || allowsResolve(c);
     // Applied at once (its label shows): not sent again before the item's new state arrives.
     const sent = local[c.name];
     const outcome = c.allowed ? commandOutcome(replies, c.name, sent) : notAllowed(c);
@@ -170,7 +172,7 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
           onClick={(e) => {
             opener.current = e.currentTarget;
             if (!opensDialog) void send(c.name, withPaths(c, note), true);
-            else setOpen(c.name as FormName | "approve");
+            else setOpen(c.name as FormName | "approve" | "resolve");
           }}
         >
           {pathsOf(c).length > 0 ? primaryLabel(c) : commandLabel(c.name)}
@@ -291,7 +293,19 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
             onClose={() => setOpen(null)}
           />
         )}
-        {open !== null && open !== "approve" && !(open === "revise" && !data?.spec) && (
+        {open === "resolve" && resolve && (
+          <AllowResolveDialog
+            title={`${t("needs.actAllowResolve")} ${itemTitle}`}
+            paths={pathsOf(resolve)}
+            note={note}
+            busy={busy || !enabled}
+            error={local.resolve && "error" in local.resolve ? local.resolve.error : null}
+            returnFocusTo={opener}
+            onSend={(text) => void send("resolve", withPaths(resolve, text), false)}
+            onClose={() => setOpen(null)}
+          />
+        )}
+        {open !== null && open !== "approve" && open !== "resolve" && !(open === "revise" && !data?.spec) && (
           <CommandDialog
             command={open}
             title={itemTitle}
