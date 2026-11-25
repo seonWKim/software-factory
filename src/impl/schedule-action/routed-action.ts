@@ -4,7 +4,7 @@
 // tools Read, Glob and Grep, in a fresh detached checkout, with deny_paths and no writable path, unless the route
 // passes the run its schedule's grants handed out (a feedback schedule's, by ScheduleGrantBroker in
 // src/core/schedule-grants.ts, which compose binds): then that run's tools, broker tools, repo and writable paths.
-// The checkout is always a read-only path, so a harness that allows writes in its workdir (claude-code) still lets
+// A run with a writable path gets its checkout as a read-only path, so a harness that allows writes in its workdir (claude-code) still lets
 // Write and Edit reach only the writable paths. Every answer is scanned before it is stored or filed (G5). The token cap is the claim pass's (src/core/schedule.ts): an
 // occurrence over it never reaches this action.
 
@@ -30,7 +30,7 @@ export const nodeGrantDeps: GrantBrokerDeps = {
 };
 
 /**
- * A schedule run's read-only paths: its checkout, so a harness that allows writes in its workdir (claude-code) lets
+ * The read-only paths of a schedule run with a writable path: its checkout, so a harness that allows writes in its workdir (claude-code) lets
  * Write and Edit reach only the run's writable paths. A checkout that holds or lies in a denied path would lose that
  * rule in the harness (a read-only path never overlaps one): it throws, before any agent starts. Node's path, not
  * core's: an adapter imports no core value (tests/architecture/kinds.test.ts).
@@ -111,7 +111,7 @@ export class RoutedScheduleAction implements ScheduleAction {
         env_allowlist: {},
         deny_paths: cfg.deny_paths,
         writable_paths: [...run.writable_paths],
-        readable_paths: readOnlyCheckout(handle.workdir, cfg.deny_paths),
+        ...(run.writable_paths.length > 0 ? { readable_paths: readOnlyCheckout(handle.workdir, cfg.deny_paths) } : {}),
         model_class: "standard",
         timeout_ms: cfg.run_timeout_ms,
         ...(i.output_schema ? { output_schema: i.output_schema as Record<string, unknown> } : {}),
