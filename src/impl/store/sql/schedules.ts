@@ -17,7 +17,7 @@
 // The routine store (src/impl/store/sql/routines.ts) writes the same rows; a trigger routine's row has a null
 // cadence and its trigger in `trigger_kind`.
 
-import type { RoutineTrigger } from "../../../core/routines.js";
+import type { RoutineTrigger } from "../../../core/schedule.js";
 import type { Cadence, CadenceKind } from "../../../core/schedule-cadence.js";
 import type {
   CheckPageClaim, ClaimOutcome, NewSchedule, Schedule, ScheduleActionKind, ScheduleClaim, ScheduleOutcome, SchedulePatch, ScheduleRun, ScheduleRunResult, ScheduleStore, TokenPeriod,

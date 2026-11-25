@@ -24,7 +24,7 @@ import { FakeAuth } from "./helpers/fakes/runner.js";
 import { FakeSlackPollSource, FakeSource } from "./helpers/fakes/source.js";
 import { alice, cleanScanner, config, issueRef, silent, slackRef, triageSpec } from "./helpers/fakes/config.js";
 import { pipeline } from "./helpers/harness.js";
-import { ROUTINE_CAP, addRoutine, carrierSource, holdSource, queueRoutineRun } from "../src/core/routines.js";
+import { ROUTINE_CAP, addRoutine, carrierSource, holdSource, queueRoutineRun } from "../src/core/check-page.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { tickAt } from "../src/shared/ticks/tick-generator.js";

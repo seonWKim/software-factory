@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 import { checkPageAction } from "../src/controller/units/schedule/plugins/check-page/check-page-action.js";
 import { routineQueue, scheduledAction } from "../src/core/controller-deps.js";
-import { ROUTINE_CAP, type RoutineInput, addRoutine, carrierSource, holdSource } from "../src/core/routines.js";
+import { ROUTINE_CAP, type RoutineInput, addRoutine, carrierSource, holdSource } from "../src/core/check-page.js";
 import { SCHEDULE_CHECKPOINT, SCHEDULE_TOKEN_CAP, checkpointSourceId } from "../src/core/schedule.js";
 import type { Timestamp, UserId, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";

@@ -164,7 +164,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
     });
   });
 
-  describe("routines: updateRoutine, raiseRoutineCap and suggestions (src/core/routines.ts)", () => {
+  describe("routines: updateRoutine, raiseRoutineCap and suggestions (src/core/check-page.ts)", () => {
     const MADE = "2026-11-22T12:00:00.000Z" as Timestamp;
     const DUE = "2026-11-23T09:00:00.000Z" as Timestamp;
     const added = async () => {
@@ -2380,7 +2380,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_standing_rule_changes", // one record per standing-rule change (design 05-standing-approvals): 20261122T1300-state-standing-rule-changes
       "controller_green_bases", // the last green base per project (design 03-risk, red-main revert): 20261123T1001-controller-green-base
       "controller_attachments", // images and links on a New item (design 02-attachments): 20261120T1000-controller-attachments
-      "controller_routines", "controller_routine_suggestions", // routines (src/core/routines.ts): 20261120T1001-controller-routines
+      "controller_routines", "controller_routine_suggestions", // routines (src/core/check-page.ts): 20261120T1001-controller-routines
       "controller_schedule_suggestions", // routine suggestions copied to schedules (design 08-schedules): 20261124T1100-controller-routines-into-schedules
       "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries

@@ -22,7 +22,7 @@ import { writeSchedule } from "../core/schedule.js";
 import { draftSchedule, improveSchedule } from "../core/schedule-draft.js";
 import { randomUUID } from "node:crypto";
 import { ROUTINE_WRITE_PATHS, postRoutine } from "./routines-api.js";
-import { writeRoutine } from "../core/routines.js";
+import { writeRoutine } from "../core/check-page.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, PROPOSAL_VERDICT_PATH, improveRunWired, runImproveNow, writeProposalVerdict } from "./improve-api.js";
 import { PLUGINS_IMPORT_PATH, writePluginsImport } from "./plugins-import-api.js";
 import { PROJECT_FILE_ROUTES } from "./project-files.js";
