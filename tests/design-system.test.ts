@@ -368,3 +368,60 @@ describe("the Gongbang mark in the dashboard", () => {
     expect(focus).toContain("focus-visible:outline-focus");
   });
 });
+
+/**
+ * Inner spacing in web/src/views that design-system/patterns.md:15 does not cover: a margin between parts inside one
+ * block (a label and its field, a note under a table), not between the blocks of a page. A line is allowed when it is
+ * in `file` and contains `snippet`; each entry gives its reason.
+ */
+const INNER_SPACING: readonly { file: string; snippet: string; reason: string }[] = [
+  { file: "project-files.tsx", snippet: "font-mono break-all", reason: "folder path above its table, inside a Card" },
+  { file: "settings/advanced.tsx", snippet: 'data-group="developers"', reason: "collapsed table under the keys table, inside a Card" },
+  { file: "settings/advanced.tsx", snippet: "data-project-label", reason: "form above the keys table, inside a Card" },
+  { file: "spend.tsx", snippet: "mb-3 flex flex-wrap", reason: "toolbar row above a table, inside a Card" },
+  { file: "spend.tsx", snippet: "spend.tasksCapped", reason: "note above a table, inside a Card" },
+  { file: "spend.tsx", snippet: "data-spend-notes", reason: "notes under a table, inside a Card" },
+  { file: "rules.tsx", snippet: "mt-3 space-y-6", reason: "the opened Disclosure's body" },
+  { file: "decision-card.tsx", snippet: "mb-3 block w-full", reason: "note field above the buttons, inside the decision card" },
+  { file: "item-about.tsx", snippet: "mt-3", reason: "parts of the spec, inside the About Card" },
+  { file: "plugins.tsx", snippet: '"mb-4"', reason: "Import and Add above the table, inside a Card" },
+  { file: "plugins-evals.tsx", snippet: "mb-4 flex flex-wrap", reason: "suite row above the cases table, inside a Card" },
+  { file: "plugins-evals.tsx", snippet: "evals.cannotWrite", reason: "note under the cases table, inside a Card" },
+  { file: "item-decisions.tsx", snippet: "data-decisions", reason: "list above the buttons, inside a block" },
+  { file: "workers.tsx", snippet: "mt-3", reason: "legend, table and note inside one Card" },
+  { file: "transcript.tsx", snippet: "mt-3", reason: "inside a message and under the list" },
+  { file: "schedules/detail.tsx", snippet: "data-schedule-suggestions", reason: "suggestions under their field" },
+  { file: "item-commands.tsx", snippet: "data-queued-feedback", reason: "feedback under the command row" },
+  { file: "data.tsx", snippet: "data-ask-answer", reason: "answer under the question box, inside a Card" },
+  { file: "task-work.tsx", snippet: "tasks.heldUntil", reason: "note above a table, inside a Card" },
+  { file: "command-box.tsx", snippet: "mt-3", reason: "proposals and buttons under the box's input" },
+];
+
+describe("page blocks are stacked by the page's gap-6 column", () => {
+  const views = join(WEB_SRC, "views");
+  const MARGIN = /(?<![\w-])m[tb]-(?:[3-9]|\d\d)(?![\w-])/;
+  const flagged = (rel: string, text: string) =>
+    text
+      .split("\n")
+      .map((line, i) => ({ line, at: `web/src/views/${rel}:${i + 1}` }))
+      .filter(({ line }) => MARGIN.test(line))
+      .filter(({ line }) => !INNER_SPACING.some((a) => a.file === rel && line.includes(a.snippet)))
+      .map(({ at, line }) => `${at}: ${line.trim()}`);
+
+  it("no page block carries mt-N or mb-N (N >= 3) of its own", () => {
+    const found = files(views)
+      .filter((f) => f.endsWith(".tsx"))
+      .flatMap((f) => flagged(f.slice(views.length + 1), readFileSync(f, "utf8")));
+    expect(
+      found,
+      "design-system/patterns.md:15: blocks of one page are stacked in one flex column with a gap-6, not with mb-* or mt-* on each block. Move these into the page's column, or add inner spacing to INNER_SPACING with its reason.",
+    ).toEqual([]);
+  });
+
+  it("self-check: a block margin is flagged, an allowed inner one and scroll-mt are not", () => {
+    expect(flagged("pages.tsx", '<div className="mt-6">')).toHaveLength(1);
+    expect(flagged("pages.tsx", '<div className="mb-3 flex">')).toHaveLength(1);
+    expect(flagged("pages.tsx", '<div className="mt-1 scroll-mt-4 first:mt-0">')).toEqual([]);
+    expect(flagged("spend.tsx", '<div data-spend-notes className="mt-3">')).toEqual([]);
+  });
+});

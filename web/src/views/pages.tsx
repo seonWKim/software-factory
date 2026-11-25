@@ -178,18 +178,18 @@ export function ActivityPage() {
   const map = useMemo(() => byId(items.data?.items), [items.data]);
   const o = overview.data;
   return (
-    <div className="mt-6">
-      <Card title={t("running.label")} count={o?.running}>
+    <div className="flex flex-col gap-6">
+      <div className="min-w-0"><Card title={t("running.label")} count={o?.running}>
         {runs.isError ? <ErrorNote error={runs.error} /> : !runs.data ? <Loading rows={2} label="loading.running" onRetry={() => void runs.refetch()} /> : <RunningTable runs={runs.data.runs} items={map} now={now} />}
-      </Card>
+      </Card></div>
       {o && (o.unreviewed_merges_7d ?? 0) > 0 && (
-        <p data-testid="unreviewed-merges-line" className="mt-4 text-sm">
+        <p data-testid="unreviewed-merges-line" className="text-sm">
           {t("activity.unreviewed", { count: o.unreviewed_merges_7d ?? 0 })}{" "}
           <Link href={`${BASE}health`} className={LINK_CLASS}>{t("activity.unreviewedLink")}</Link>
         </p>
       )}
       {o && (
-        <Card title={t("activity.last24h")}>
+        <div className="min-w-0"><Card title={t("activity.last24h")}>
           <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
               [t("activity.succeeded"), String(o.last_24h.succeeded)],
@@ -200,7 +200,7 @@ export function ActivityPage() {
               <StatTile key={k} label={k} value={href ? <Link href={href} className={cn("min-w-6", LINK_CLASS)}>{v}</Link> : v} />
             ))}
           </dl>
-        </Card>
+        </Card></div>
       )}
     </div>
   );
@@ -336,13 +336,15 @@ export function ItemsPage() {
           {tree && <Button size="sm" onClick={() => setExpanded([])}>{t("items.collapseAll")}</Button>}
         </ButtonRow>
       </PageToolbar>
+      <div className="flex flex-col gap-6">
       {ids && (
-        <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Notice tone="info">{t("items.idsFilter", { count: ids.size })}</Notice>
           <Button size="sm" onClick={() => setIds(null)}>{t("items.idsClear")}</Button>
         </div>
       )}
-      {rateLimit?.ends_at && <div className="mb-3"><Notice tone="warn">{t("items.rateLimit", { state: t("items.ratePaused", { time: rateLimit.ends_at }) })}</Notice></div>}
+      {rateLimit?.ends_at && <Notice tone="warn">{t("items.rateLimit", { state: t("items.ratePaused", { time: rateLimit.ends_at }) })}</Notice>}
+      <div className="min-w-0">
       {queuedView ? (
         <Card title={t("queue.title")} count={queue.data?.queue.length}>
           {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data || !items.data ? <Loading rows={4} label="loading.queue" onRetry={() => void Promise.all([queue.refetch(), items.refetch()])} /> : <QueueTable queue={queue.data.queue} items={itemsById} now={now} />}
@@ -360,7 +362,9 @@ export function ItemsPage() {
           )}
         </Card>
       )}
+      </div>
       <ActivityPage />
+      </div>
     </>
   );
 }
@@ -411,6 +415,8 @@ export function ItemPage({ id }: { id: string }) {
           {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
         </p>
       )}
+      {/* The page's blocks in one gap-6 column; `*:mt-0` drops each Card's own top margin here, so the gap is not doubled. */}
+      <div className="flex flex-col gap-6 *:mt-0">
       <ItemAbout item={item} />
       <ItemDecision
         id={item.id}
@@ -484,6 +490,7 @@ export function ItemPage({ id }: { id: string }) {
         </Card>
         </>
       )}
+      </div>
     </>
   );
 }
@@ -942,8 +949,8 @@ export function HealthPage() {
       <PageToolbar tabs={<Tabs label={t("health.tabs")} options={options} value={tab} onChange={pick} />}>
         {tab === "runs" && <FailuresWindowSwitch value={failuresWindow} onChange={setFailuresWindow} />}
       </PageToolbar>
-      <CodeRevision factory={overview.data?.factory} />
-      <div className="mt-6 flex flex-col gap-6 first:mt-0">
+      <div className="flex flex-col gap-6">
+        <CodeRevision factory={overview.data?.factory} />
         {HEALTH_TABS[tab].map((s) => {
           const body = draw[s]();
           return body ? <div key={s} id={sectionAnchor(s)} data-health-section={s} className="min-w-0 scroll-mt-4">{body}</div> : null;
