@@ -1,6 +1,8 @@
 // `factory routine` (design 08-routines): add, edit, pause, resume, delete, run (Run now) and list. Each write is
 // the routine API's (src/ui/routines-api.ts): the arguments, then the owner check, then the core's writeRoutine with
 // the same arguments, so the CLI and the API do the same thing. Time is passed in, read from the injected Clock.
+// It is an alias of `factory schedule` (design 08-schedules): a routine is a Check a page schedule row, and each
+// command first prints its `factory schedule` equivalent (scheduleEquivalent).
 
 import { type CliIdentity, type FactoryStore, type Routine, type RoutineFields, type RoutineWrite, writeRoutine } from "../../command.js";
 
@@ -69,6 +71,36 @@ export function parseRoutineArgs(args: readonly string[]): RoutineAction | { err
   if (w !== "add" && w !== "edit") return rest.length === 0 ? { op: w, id: id.trim(), fields: {} } : { error: `factory routine ${w} takes only the routine's ID` };
   const fields = fieldsOf(rest);
   return typeof fields === "string" ? { error: fields } : { op: w, id: id.trim(), fields };
+}
+
+/** The `factory schedule` flag each routine flag is; `--trigger merge` is `--cadence on-merge`. */
+const SCHEDULE_FLAGS: Readonly<Record<string, string>> = {
+  "--name": "--title", "--instruction": "--instruction", "--url": "--url", "--cadence": "--cadence", "--spec": "--spec", "--zone": "--zone", "--run-cap": "--run-cap", "--daily-cap": "--daily-cap",
+};
+
+/** A word as a POSIX shell reads it back: as it is when it is plain, else in single quotes. */
+const shellWord = (w: string): string => (/^[\w@%+=:,./-]+$/.test(w) ? w : `'${w.replace(/'/g, "'\\''")}'`);
+
+/**
+ * The `factory schedule` command that does what `factory routine <args>` (already parsed) does, on the same schedule
+ * row, or why there is none: a page or form a Check a page schedule cannot take (`none`, a trigger other than merge,
+ * a cadence or trigger changed by edit).
+ */
+export function scheduleEquivalent(args: readonly string[]): string {
+  const [op, id = "", ...rest] = args;
+  if (op === "list") return "factory schedule list";
+  if (op !== "add" && op !== "edit") return `factory schedule ${op} ${shellWord(id)}`;
+  const words = op === "add" ? ["add", "--id", id, "--action", "check-page"] : ["edit", id];
+  for (let i = 0; i < rest.length; i += 2) {
+    const flag = rest[i]!, v = rest[i + 1]!;
+    if (op === "edit" && ["--cadence", "--spec", "--zone", "--trigger"].includes(flag)) return "no schedule equivalent: a check-page schedule's cadence or trigger does not change through schedule edit";
+    if (flag === "--trigger") {
+      if (v !== "merge") return `no schedule equivalent: a check-page schedule runs on a cadence or on-merge, not --trigger ${v}`;
+      words.push("--cadence", "on-merge");
+    } else if (v === "none" && (flag === "--url" || flag === "--cadence")) return `no schedule equivalent: a check-page schedule needs its ${flag === "--url" ? "page" : "cadence or on-merge"}`;
+    else words.push(SCHEDULE_FLAGS[flag]!, v);
+  }
+  return `factory schedule ${words.map(shellWord).join(" ")}`;
 }
 
 /** What the command runs with: the store, the CLI identity, its owner check (ownerRefusal, approve_spec) and the Clock's now. */
