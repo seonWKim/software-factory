@@ -1,6 +1,6 @@
 import type { FactoryConfig } from "./config.js";
 import type { Floor } from "./settings.js";
-import { sameSlugMigrationOf } from "./migration-stamps.js";
+import { sameSlugMigrationOf, tableListFollowing } from "./migration-stamps.js";
 export { freeMigrationStamps, takenStamps } from "./migration-stamps.js"; // the triage branch's step, beside the scope rule
 // Type only: a value import of stats.ts would close an import cycle back to this file (phase.ts reads its constants).
 import type { TierRuleResult } from "./stats.js";
@@ -515,12 +515,13 @@ export function isUnder(path: string, a: string): boolean {
 
 /**
  * A path is covered when it equals an allowed path, sits under an allowed path that ends in `/`, is a
- * ratchet list (RATCHET_LIST), or is a migration or migration test with an allowed one's folder, component and
- * slug at any timestamp (sameSlugMigrationOf: the allowed one may write it as `<stamp>`; the implementer takes a free one).
+ * ratchet list (RATCHET_LIST), is a migration or migration test with an allowed one's folder, component and
+ * slug at any timestamp (sameSlugMigrationOf: the allowed one may write it as `<stamp>`; the implementer takes a free one),
+ * or is a table-list file while an allowed path is a migration (tableListFollowing).
  * Shared by triage validation (`files_to_change`), the pre-push scope gate and the edit hook, so all use one rule.
  */
 export function isCovered(path: string, allowed: readonly string[]): boolean {
-  return RATCHET_LIST.test(path) || allowed.some((a) => isUnder(path, a) || sameSlugMigrationOf(path, a));
+  return RATCHET_LIST.test(path) || tableListFollowing(path, allowed) || allowed.some((a) => isUnder(path, a) || sameSlugMigrationOf(path, a));
 }
 
 /**
