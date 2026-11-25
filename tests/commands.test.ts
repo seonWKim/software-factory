@@ -7,7 +7,8 @@ import {
 } from "../src/core/commands.js";
 import { autoApprovedFooter, utcMinute } from "../src/core/spec-comment.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { itemCommands } from "../src/ui/commands.js";
+import { itemCommands, resolveScopePaths } from "../src/ui/commands.js";
+import { resolveScopeDetail } from "../src/worker/support.js";
 import { COMMAND_TABLE, cliHelpLine, cliUsageOf } from "../src/core/command-table.js";
 import type { SourceRef, UserId, WorkItem, WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import { runLocalCli } from "../src/core/local-cli.js";
@@ -87,6 +88,33 @@ describe("+paths (issue #280)", () => {
     expect((await itemCommands(it_, runs, { allow: true }, async (v) => (v === "web/b.tsx" ? "[withheld]" : v))).find((r) => r.name === "retry")?.paths).toBeUndefined();
     const plain = await itemCommands({ ...it_, blocked_reason: "spec_pending", stage: "READY" } as WorkItem, runs, { allow: true }, async (v) => v);
     expect(plain.some((r) => r.paths !== undefined)).toBe(false);
+  });
+
+  it("the `/resolve +paths` reply of an out_of_scope resolve failure reads back the paths, with the CLI's parser (2026-11-26)", () => {
+    expect(resolveScopePaths(resolveScopeDetail(["a/b.ts"]))).toEqual(["a/b.ts"]);
+    expect(resolveScopePaths(resolveScopeDetail(["tests/a.test.ts", "src/x.ts", "src/x.ts"]))).toEqual(["tests/a.test.ts", "src/x.ts"]);
+    // No single reply, no reply at all, a path the CLI refuses, or another command's reply: none.
+    expect(resolveScopePaths(resolveScopeDetail(Array.from({ length: 11 }, (_, i) => `src/f${i}.ts`)))).toEqual([]);
+    expect(resolveScopePaths("the resolve run timed out")).toEqual([]);
+    expect(resolveScopePaths("Reply `/resolve +paths ../x.ts` to allow them and resolve again.")).toEqual([]);
+    expect(resolveScopePaths("Reply `/retry +paths a/b.ts` to allow them and run again.")).toEqual([]);
+  });
+
+  it("the item API puts an out_of_scope resolve failure's reply paths on resolve only, marked out_of_scope (2026-11-26)", async () => {
+    const it_ = {
+      stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", change_ref: "42", allowed_paths: ["src/a.ts"],
+      source: { type: "github_issue", id: "o/r#1", link: "x" },
+    } as unknown as WorkItem;
+    const failed = (error_code: string, outside: string[]) => ({ kind: "resolve", status: "failed", outcome: { status: "failed", error_code, detail: resolveScopeDetail(outside), infra: false } });
+    const rows = await itemCommands(it_, [failed("out_of_scope", ["a/b.ts", "src/a.ts"])] as never[], { allow: true }, async (v) => v);
+    expect(rows.find((r) => r.name === "resolve")).toMatchObject({ paths: ["a/b.ts"], out_of_scope: true });
+    for (const r of rows.filter((r) => r.name !== "resolve")) expect(r.paths, r.name).toBeUndefined();
+    // The newest resolve run decides: one that failed another way, or succeeded, names none.
+    const later = await itemCommands(it_, [failed("out_of_scope", ["a/b.ts"]), failed("tests_failed", ["a/b.ts"])] as never[], { allow: true }, async (v) => v);
+    expect(later.some((r) => r.paths !== undefined || r.out_of_scope !== undefined)).toBe(false);
+    // Not waiting on the merge conflict any more: none.
+    const moved = await itemCommands({ ...it_, blocked_reason: "merge_pending" } as WorkItem, [failed("out_of_scope", ["a/b.ts"])] as never[], { allow: true }, async (v) => v);
+    expect(moved.some((r) => r.paths !== undefined)).toBe(false);
   });
 
   it("splits +paths and its paths off the first line; the lines below are the note", () => {
@@ -813,6 +841,15 @@ describe("answers to the spec's decisions on /approve (issue #526)", () => {
     ]);
   });
 
+  it("a dashboard /approve reads no +paths: the line stays in its note and allowed_paths are as they were (design 09-dashboard-item-commands)", async () => {
+    const h = await harness();
+    const it = await h.triaged(issueRef(95), []);
+    await h.store.recordAppCommandRequest({ key: "k95", actor: ME, command: "approve", args: { work_item_id: it.id, note: "+paths docs/x.md" } });
+    await h.controller.tickCommands();
+    expect(await h.store.getWorkItem(it.id)).toMatchObject({ stage: "RUNNING", allowed_paths: it.allowed_paths });
+    expect((await h.approval(it.id))!.detail?.note).toBe("+paths docs/x.md");
+  });
+
   describe("an option that needs a path outside the allowed paths (design 04-spec-gate-commands, 2026-11-21)", () => {
     const WIDE = [{
       ...DECISIONS[0]!,
@@ -1215,5 +1252,71 @@ describe("/approve and /reject at a routine's daily cap", () => {
     expect(await h.store.getWorkItem(held.id)).toMatchObject({ stage: "NEW", blocked_on: "human", version: held.version });
     expect((await h.store.listItemMessages(held.id)).map((m) => m.body).join("\n")).toContain("a routine's held run takes `/approve`");
     expect((await h.store.getRoutine("rt_1"))!.cap_raise).toBeNull();
+  });
+});
+
+describe("+paths from the dashboard on /retry and /resolve (design 09-dashboard-item-commands, 2026-11-26)", () => {
+  const ME = "local:me" as UserId;
+  const auth: AuthProvider = { resolve: async (i) => ({ user_id: `${i.provider}:${i.subject}` as UserId }), authorize: async () => ({ allow: true }) };
+  const NOTE = "+paths a/b.ts\nkeep both imports";
+
+  async function harness() {
+    const { store, clock } = await newStore();
+    const controller = new ControllerRole({ store, source: new FakeSource(), auth, clock, config, log: silent, scanner: cleanScanner });
+    /** A new item on issue `n`, set to `patch`; with `failed`, after one failed run of that kind. */
+    const itemIn = async (n: number, patch: WorkItemPatch, failed: "implement" | "resolve") => {
+      const { item } = await store.createWorkItem({ source: issueRef(n), requester_id: "github:1" as never, project: PROJECT_KEY, problem: "p", resources: [] }, system);
+      const queued = await store.transition({ id: item.id, expected_version: item.version, patch: {}, actor: system, reason: "setup", enqueue: { kind: failed, idempotency_key: `${failed}:${n}` } });
+      if (!queued.ok) throw new Error("setup failed");
+      const run = (await store.claimRun({ worker_id: w1, kinds: [failed], lease_ms: 60_000 }))!;
+      await store.completeRun(run.id, run.lease!.token, { status: "failed", error_code: "out_of_scope", detail: "x", infra: false });
+      const r = await store.transition({ id: item.id, expected_version: queued.item.version, actor: system, reason: "setup", patch: { ...patch, tier: 2 } });
+      if (!r.ok) throw new Error("setup failed");
+      return r.item;
+    };
+    /** `command` with `note` as the dashboard sends it: one app request row, then a controller tick. */
+    const send = async (it: WorkItem, command: string, note: string, key: string) => {
+      await store.recordAppCommandRequest({ key, actor: ME, command, args: { work_item_id: it.id, note } });
+      await controller.tickCommands();
+      return (await store.listAppCommandRequestsForItem(it.id, 5)).find((r) => r.key === key)!;
+    };
+    const queuedOf = async (id: WorkItemId, kind: string) => (await store.listRuns(id)).filter((r) => r.kind === kind && r.status === "queued");
+    return { store, itemIn, send, queuedOf };
+  }
+  const CONFLICT: WorkItemPatch = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", change_ref: "42" };
+  const FAILED_IMPLEMENT: WorkItemPatch = { stage: "RUNNING", blocked_on: "human", blocked_reason: "max_attempts" };
+
+  it("a /resolve with +paths on its first line widens allowed_paths and queues a resolve run with the notes below", async () => {
+    const h = await harness();
+    const it = await h.itemIn(40_001, CONFLICT, "resolve");
+    const r = await h.send(it, "resolve", NOTE, "kr1");
+    expect(r.refusal).toBeNull();
+    const now = (await h.store.getWorkItem(it.id))!;
+    expect(now.allowed_paths).toEqual([...it.allowed_paths, "a/b.ts"]);
+    expect((await h.queuedOf(it.id, "resolve")).map((x) => x.input)).toEqual([{ notes: "keep both imports" }]);
+    expect((await h.store.listStateChanges(it.id)).find((c) => c.reason === "resolve_requested")?.detail?.added_paths).toBe(JSON.stringify(["a/b.ts"]));
+  });
+
+  it("a /retry with +paths on its first line after a failed implement run widens allowed_paths and queues an implement run with the note below", async () => {
+    const h = await harness();
+    const it = await h.itemIn(40_002, FAILED_IMPLEMENT, "implement");
+    const r = await h.send(it, "retry", NOTE, "kr2");
+    expect(r.refusal).toBeNull();
+    expect((await h.store.getWorkItem(it.id))!.allowed_paths).toEqual([...it.allowed_paths, "a/b.ts"]);
+    expect(await h.queuedOf(it.id, "implement")).toHaveLength(1);
+    expect((await h.store.listStateChanges(it.id)).find((c) => c.reason === "retry_requested")?.detail).toMatchObject({ added_paths: JSON.stringify(["a/b.ts"]), note: "keep both imports" });
+  });
+
+  it("a +paths line the CLI would refuse is refused with the CLI's words, and nothing changes", async () => {
+    const h = await harness();
+    for (const [n, command, kind, patch] of [[40_003, "resolve", "resolve", CONFLICT], [40_004, "retry", "implement", FAILED_IMPLEMENT]] as const) {
+      const it = await h.itemIn(n, patch, kind);
+      const r = await h.send(it, command, "+paths ../x.ts\nkeep both", `kb${n}`);
+      const words = parseCommandPaths("+paths ../x.ts", `/${command}`);
+      if (!("refuse" in words)) throw new Error("the CLI accepts it");
+      expect(r.refusal).toContain(words.refuse);
+      expect(await h.store.getWorkItem(it.id)).toEqual(it);
+      expect(await h.queuedOf(it.id, kind)).toEqual([]);
+    }
   });
 });
