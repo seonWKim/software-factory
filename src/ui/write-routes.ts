@@ -2,7 +2,7 @@
 // guards every one passes after server.ts's Host check, in this order: Origin equal to the Host's own http origin,
 // Content-Type application/json, the per-process CSRF token in x-csrf-token, the body size, then the route. The
 // resume, stop, alarm dismiss, standing, improve, proposal verdict, migrate, supervisor and evals write routes then check the owner
-// (approve_spec), the rules, schedules (draft and improve before any model call), routines, calendar, model credential, Ask and evals run routes the owner (ownerOf), the pack approvals route
+// (approve_spec), the rules, schedules (draft and improve before any model call), calendar, model credential, Ask and evals run routes the owner (ownerOf), the pack approvals route
 // approve_tool, the task, local calendar event (calendar-local-api.ts) and attachments routes the commands actor (the project file routes, project-files.ts PROJECT_FILE_ROUTES, only to
 // set the folder and to save; their reads are POSTs too, so they pass every guard), the plugins import the page's factory user, Re-check (design 09-dashboard-item; changes.ts) the commands token. The item commands
 // route (commands.ts) runs its own guards in the same order. A new write route adds one entry to WRITE_ROUTES (and
@@ -21,8 +21,6 @@ import { SCHEDULE_DRAFT_PATHS, SCHEDULE_WRITE_PATHS, postSchedule, postScheduleD
 import { writeSchedule } from "../core/schedule.js";
 import { draftSchedule, improveSchedule } from "../core/schedule-draft.js";
 import { randomUUID } from "node:crypto";
-import { ROUTINE_WRITE_PATHS, postRoutine } from "./routines-api.js";
-import { writeRoutine } from "../core/check-page.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, PROPOSAL_VERDICT_PATH, improveRunWired, runImproveNow, writeProposalVerdict } from "./improve-api.js";
 import { PLUGINS_IMPORT_PATH, writePluginsImport } from "./plugins-import-api.js";
 import { PROJECT_FILE_ROUTES } from "./project-files.js";
@@ -43,7 +41,7 @@ import type { ServerDeps, UiRequest } from "./server.js";
 
 /** The 405 text for a POST to any path no write route takes. */
 export const POST_ONLY =
-  "Only the settings, item commands, pause resume, alarm dismiss, standing, improve run, pack approvals, plugins import, rule verdict, rule edit, pushback dismiss, schedule (draft and improve too), routine, proposal verdict, task, project file, calendar, local calendar event, model credential, data ask, migrate, supervisor, attachments, evals write, evals run and Re-check routes take a POST.";
+  "Only the settings, item commands, pause resume, alarm dismiss, standing, improve run, pack approvals, plugins import, rule verdict, rule edit, pushback dismiss, schedule (draft and improve too), proposal verdict, task, project file, calendar, local calendar event, model credential, data ask, migrate, supervisor, attachments, evals write, evals run and Re-check routes take a POST.";
 
 /** One POST route: when it is wired for `path`, the CSRF token it checks, and its handler (after the guards). */
 export interface WriteRoute {
@@ -77,11 +75,6 @@ const WRITE_ROUTES: readonly WriteRoute[] = [
     run: (d, p, b) => postScheduleDraft(d, SCHEDULE_DRAFT_PATHS[p]!, b, {
       draft: draftSchedule, improve: improveSchedule, owner: (does) => ownerOf(d, d.pauses!, does), llm: d.settings?.ask?.llm ?? null, newId: randomUUID, log: d.pauses!.log,
     }),
-  },
-  {
-    matches: (d, p) => Object.hasOwn(ROUTINE_WRITE_PATHS, p) && d.pauses !== undefined,
-    token: pausesToken,
-    run: (d, p, b) => postRoutine(d, ROUTINE_WRITE_PATHS[p]!, b, { write: writeRoutine, owner: (does) => ownerOf(d, d.pauses!, does), log: d.pauses!.log }),
   },
   { matches: (d, p) => p === PROPOSAL_VERDICT_PATH && d.pauses !== undefined, token: pausesToken, run: (d, _p, b) => writeProposalVerdict(d, d.pauses!, b) },
   { matches: (d, p) => Object.hasOwn(TASK_WRITES, p) && d.commands !== undefined, token: (d) => d.commands!.token, run: (d, p, b) => TASK_WRITES[p]!(d, b) },
@@ -154,10 +147,14 @@ async function writePost(d: ServerDeps, req: UiRequest, route: WriteRoute): Prom
   return route.run(d, pathOf(req.url), body);
 }
 
+/** The retired routine routes (design 08-schedules): a POST under this prefix is a 404, as their reads are, not the 405. */
+const RETIRED_ROUTINES = "/api/v1/routines/";
+
 /** Any POST: the write route's or the item commands' answer, or null when no route takes it (the caller's 405). */
 export async function post(d: ServerDeps, req: UiRequest): Promise<ApiResult | null> {
   const route = writeRoute(d, req);
   if (route !== null) return writePost(d, req, route);
   const commandsId = commandsWrite(req);
-  return commandsId !== null ? commandsPost(d, commandsId, req) : null;
+  if (commandsId !== null) return commandsPost(d, commandsId, req);
+  return pathOf(req.url).startsWith(RETIRED_ROUTINES) ? apiError(404, "The routine routes are retired: use /api/v1/schedules.") : null;
 }

@@ -8,7 +8,7 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { REVISE_APPLIED, REVISE_QUEUED, REVISE_QUEUED_PATH, pendingRevises } from "../src/controller/units/commands/queued-revise.js";
 import type { Logger } from "../src/core/log.js";
 import { Worker } from "../src/worker/index.js";
-import type { Run, UserId, WorkerId } from "../src/core/types.js";
+import type { Run, UserId, WipRef, WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -1387,9 +1387,9 @@ describe("pre-push diff gates: size limit and floor check", () => {
       f.sandbox.changedFiles = [".github/workflows/scope.yml"];
     }, { workerConfig: raised });
 
-    // Floor block: nothing pushed, item blocked on a human, still RUNNING.
+    // Floor block: no PR branch pushed (only the run's wip branch keeps the commits, design 05-restart-asks), item blocked on a human, still RUNNING.
     expect(f.item).toMatchObject({ stage: "RUNNING", tier: 2, blocked_on: "human", blocked_reason: "floor_tier" });
-    expect(names(f)).not.toContain("forge.push_branch");
+    expect(names(f)).toEqual(["forge.push_branch"]);
     expect(names(f)).not.toContain("forge.open_change");
     expect(await f.store.listHandoffs(f.item.id)).toEqual([]);
     const note = f.source.comments.find((c) => c.marker.startsWith("<!-- factory:floor:"))!;
@@ -1412,11 +1412,15 @@ describe("pre-push diff gates: size limit and floor check", () => {
     expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ blocked_reason: "floor_tier", tier: 2 });
     expect((await f.store.listRuns(f.item.id)).filter((r) => r.kind === "implement")).toHaveLength(1);
 
+    // The blocked run kept its head on its wip branch; /approve's run pushes that head with no agent run.
+    const wip = (firstRun.outcome as unknown as { data: { wip: WipRef } }).data.wip;
+    expect(wip.branch).toBe(`factory/wip/${f.item.id}/${firstRun.id}`);
+    f.sandbox.refs[`origin/${wip.branch}`] = wip.head;
     f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "6403", approver: alice });
     await f.step();
     const item = (await f.store.getWorkItem(f.item.id))!;
     expect(item).toMatchObject({ stage: "REVIEW", tier: 3, restart_count: 1, change_ref: "42" });
-    expect(names(f)).toEqual(["forge.push_branch", "forge.open_change"]);
+    expect(names(f)).toEqual(["forge.push_branch", "forge.push_branch", "forge.open_change"]);
 
     const approval = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "floor_tier_approved")!;
     expect(approval.actor).toEqual({ kind: "user", id: "github:1" });
@@ -1424,7 +1428,8 @@ describe("pre-push diff gates: size limit and floor check", () => {
     const implementRuns = (await f.store.listRuns(item.id)).filter((r) => r.kind === "implement");
     expect(implementRuns).toHaveLength(2);
     expect(implementRuns[1]!.idempotency_key).not.toBe(implementRuns[0]!.idempotency_key);
-    expect(f.runner.specs.filter((s) => s.role === "implement")).toHaveLength(2);
+    expect(implementRuns[1]!.input?.wip).toEqual(wip);
+    expect(f.runner.specs.filter((s) => s.role === "implement")).toHaveLength(1);
     expect(refusals()).toHaveLength(2);
   });
 

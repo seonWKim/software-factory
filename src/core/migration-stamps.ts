@@ -40,6 +40,26 @@ export function sameSlugMigrationOf(path: string, allowed: string): boolean {
   return p !== null && a !== null && p.kind === a.kind && p.folder === a.folder && p.component === a.component && p.slug === a.slug;
 }
 
+/** A migration file, with a timestamp or `<stamp>`, in any component's `migrations/` folder. */
+const MIGRATION_FILE = /^src\/[a-z-]+\/migrations\/[^/]+\.migration\.ts$/;
+
+/**
+ * The files that list every SQLite table by name (design 04-pre-push-gates, decided 2026-11-25): the store
+ * contract's DOMAIN_TABLES and the drop-legacy migration's RETIRED list with its test. A migration that adds or
+ * rebuilds a table breaks them, so they are covered whenever an allowed path is a migration (wi_457bb850,
+ * wi_4a16d8f1, wi_7b97a829 each stopped to ask for them). Path level only: AGENTS.md limits the edit to the lists.
+ */
+const TABLE_LIST_FILES: readonly string[] = [
+  "tests/store-contract.test.ts",
+  "tests/state/contract-migrations.test.ts",
+  "src/state/migrations/20261109T0900-state-drop-legacy-tables.migration.ts",
+];
+
+/** Whether `path` is a table-list file (TABLE_LIST_FILES) and an allowed path is a migration (isCovered). */
+export function tableListFollowing(path: string, allowed: readonly string[]): boolean {
+  return TABLE_LIST_FILES.includes(path) && allowed.some((a) => MIGRATION_FILE.test(a));
+}
+
 /** The minute after `stamp` (yyyymmddThhmm, read as UTC), in the same form. */
 export function nextMinute(stamp: string): string {
   const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})$/.exec(stamp);

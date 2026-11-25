@@ -14,7 +14,6 @@ This file is an index. Each dashboard page keeps its decisions in its own topic 
 - [09-dashboard-tasks-calendar.md](09-dashboard-tasks-calendar.md): the Calendar page.
 - [09-dashboard-schedules.md](09-dashboard-schedules.md): the Schedules page.
 - [09-dashboard-tasks-projects.md](09-dashboard-tasks-projects.md): the Project switcher and projects.
-- [09-dashboard-routines.md](09-dashboard-routines.md): the Routines page, removed (routines become schedules).
 - [09-dashboard-rules.md](09-dashboard-rules.md): the Rules page.
 - [09-dashboard-rules-waiting.md](09-dashboard-rules-waiting.md): the Rules page's waiting rows and verdicts.
 - [09-dashboard-rules-applied.md](09-dashboard-rules-applied.md): the Rules page's applied rules, Suggest, Retire.

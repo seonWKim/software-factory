@@ -263,6 +263,26 @@ describe("isCovered: a same-slug migration at any timestamp", () => {
   });
 });
 
+// Table-list files (design 04-pre-push-gates, 2026-11-25): wi_457bb850, wi_4a16d8f1 and wi_7b97a829 each added a
+// table by migration and stopped to ask for the store contract's DOMAIN_TABLES or the drop-legacy RETIRED list.
+describe("isCovered: the table-list files follow an allowed migration", () => {
+  const lists = ["tests/store-contract.test.ts", "tests/state/contract-migrations.test.ts", "src/state/migrations/20261109T0900-state-drop-legacy-tables.migration.ts"];
+
+  it("covers every table-list file when an allowed path is a migration, stamped or <stamp>, in any component", () => {
+    for (const migration of ["src/controller/migrations/<stamp>-controller-eval-gate.migration.ts", "src/state/migrations/20261125T1200-state-new-table.migration.ts", "src/calendar/migrations/20261125T0900-calendar-local-provider.migration.ts"]) {
+      for (const f of lists) expect(isCovered(f, ["src/core/evals.ts", migration]), `${f} with ${migration}`).toBe(true);
+    }
+  });
+
+  it("does not cover them with no allowed migration, nor for a migration test alone, nor any other file", () => {
+    for (const f of lists) {
+      expect(isCovered(f, ["src/core/evals.ts", "tests/evals.test.ts"])).toBe(false);
+      expect(isCovered(f, ["tests/20261125T1200-controller-eval-gate.test.ts"])).toBe(false);
+    }
+    expect(isCovered("tests/other-contract.test.ts", ["src/controller/migrations/20261125T1200-controller-eval-gate.migration.ts"])).toBe(false);
+  });
+});
+
 // Decided 2026-11-16 (design 04-triage): one rule in isCovered, used by the scope gate and the edit hook, always
 // covers the ratchet lists. Their growth is refused by tests/architecture/, and they stay on the gate list.
 describe("isCovered: the ratchet lists", () => {
