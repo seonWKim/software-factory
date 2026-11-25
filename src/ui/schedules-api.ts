@@ -1,8 +1,11 @@
 // Schedules over HTTP (design 08-schedules): what `factory schedule …` does, through the same core functions
-// (src/core/schedule.ts). GET /api/v1/schedules lists them; GET /api/v1/schedules/runs?schedule=<id> lists one's runs
-// (400 without the parameter, 404 for an unknown ID). POST /api/v1/schedules/add, /edit, /pause, /resume, /run and /delete
-// take a JSON body with `id` and, for add and edit, the CLI's fields (`title`, `cadence`, `spec`, `zone`, `action`,
-// `body`, `skip_when_busy`, `token_cap`; `skip_when_busy` true stores `missed_rule` skip, false catch_up). After the request guards (write-routes.ts, the pauses CSRF token) a body that
+// (src/core/schedule.ts). GET /api/v1/schedules lists them, but no Check a page one (the Schedules page does not show
+// them); GET /api/v1/schedules/runs?schedule=<id> lists one's runs and /api/v1/schedules/suggestions?schedule=<id> its
+// suggestions, a Check a page one's too (400 without the parameter, 404 for an unknown ID). POST /api/v1/schedules/add,
+// /edit, /pause, /resume, /run and /delete take a JSON body with `id` and, for add and edit, the CLI's fields (`title`,
+// `cadence`, `spec`, `zone`, `action`, `body`, `skip_when_busy`, `token_cap`, and a check-page action's `instruction`,
+// `url`, `run_cap_usd` and `daily_cap_usd`, null clearing a cap; `skip_when_busy` true stores `missed_rule` skip, false
+// catch_up). After the request guards (write-routes.ts, the pauses CSRF token) a body that
 // is not an object or has an unknown, missing or wrongly typed field is a 400 before any store call; then the owner
 // check (rules-api.ts ownerOf, passed in, 403); a delete of an unknown ID is a 404; any other refusal of the core is a
 // 409 with its reason; else 200 with the schedule (a delete's as it was before it went). POST /api/v1/schedules/draft
@@ -10,7 +13,7 @@
 // model call; the model is the Data page's Ask model (settings.ask.llm, compose.ts buildUiParts), and none is a 503, a refusal of the core (src/core/schedule-draft.ts) a 409 with its reason; else 200 with
 // the proposal (a draft's ID and add fields, or improve's old and new text). Neither stores anything.
 
-import type { Schedule, ScheduleFields, ScheduleWrite, writeSchedule } from "../core/schedule.js";
+import { type Schedule, type ScheduleFields, type ScheduleWrite, findSchedule, type writeSchedule } from "../core/schedule.js";
 import type { draftSchedule, improveSchedule } from "../core/schedule-draft.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { UserId } from "../core/types.js";
@@ -20,6 +23,7 @@ import type { UiDeps } from "./deps.js";
 
 export const SCHEDULES_PATH = "/api/v1/schedules";
 export const SCHEDULE_RUNS_PATH = "/api/v1/schedules/runs";
+export const SCHEDULE_SUGGESTIONS_PATH = "/api/v1/schedules/suggestions";
 
 /** A schedule as the routes return it: as stored, with `skip_when_busy` (true when `missed_rule` is skip), which the Schedules page reads. */
 const withSkip = (s: Schedule) => ({ ...s, skip_when_busy: s.missed_rule === "skip" });
@@ -29,21 +33,31 @@ export async function readSchedules(d: Pick<UiDeps, "store">): Promise<ApiResult
   return { status: 200, value: { schedules: (await d.store.listSchedules()).map(withSkip) } };
 }
 
-/** GET /api/v1/schedules/runs?schedule=<id>: its run rows, oldest first. */
-export async function readScheduleRuns(d: Pick<UiDeps, "store">, id: string | null): Promise<ApiResult> {
+/** The 400 or 404 of a read of one schedule's rows, or null for a known ID. */
+async function oneSchedule(d: Pick<UiDeps, "store">, id: string | null): Promise<ApiResult | null> {
   if (id === null || id.trim() === "") return apiError(400, "Give the schedule's ID as ?schedule=<id>.");
-  if (!(await d.store.listSchedules()).some((s) => s.id === id)) return apiError(404, `No schedule ${id}.`);
-  return { status: 200, value: { runs: await d.store.listScheduleRuns(id) } };
+  return (await findSchedule(d.store, id)) === null ? apiError(404, `No schedule ${id}.`) : null;
 }
 
-const TEXT_FIELDS = ["title", "cadence", "spec", "zone", "action", "body"] as const;
+/** GET /api/v1/schedules/runs?schedule=<id>: its run rows, oldest first. */
+export async function readScheduleRuns(d: Pick<UiDeps, "store">, id: string | null): Promise<ApiResult> {
+  return (await oneSchedule(d, id)) ?? { status: 200, value: { runs: await d.store.listScheduleRuns(id!) } };
+}
+
+/** GET /api/v1/schedules/suggestions?schedule=<id>: its suggestions, oldest first, each state as of now. */
+export async function readScheduleSuggestions(d: Pick<UiDeps, "store">, id: string | null): Promise<ApiResult> {
+  return (await oneSchedule(d, id)) ?? { status: 200, value: { suggestions: await d.store.listRoutineSuggestions(id!) } };
+}
+
+const TEXT_FIELDS = ["title", "cadence", "spec", "zone", "action", "body", "instruction", "url"] as const;
+const CAP_FIELDS = ["run_cap_usd", "daily_cap_usd"] as const;
 
 /** The write's ID and fields, or why the body is bad (no store call). */
 function bodyOf(w: ScheduleWrite, body: unknown): { id: string; fields: ScheduleFields } | string {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return "The body must be a JSON object.";
   const b = body as Record<string, unknown>;
   const takes = w === "add" || w === "edit";
-  const known: readonly string[] = takes ? ["id", ...TEXT_FIELDS, "skip_when_busy", "token_cap"] : ["id"];
+  const known: readonly string[] = takes ? ["id", ...TEXT_FIELDS, ...CAP_FIELDS, "skip_when_busy", "token_cap"] : ["id"];
   const unknown = Object.keys(b).find((k) => !known.includes(k));
   if (unknown !== undefined) return `Unknown field "${unknown}".`;
   if (typeof b.id !== "string" || b.id.trim() === "") return "id must be the schedule's ID.";
@@ -60,6 +74,11 @@ function bodyOf(w: ScheduleWrite, body: unknown): { id: string; fields: Schedule
   if (b.token_cap !== undefined) {
     if (typeof b.token_cap !== "number") return "token_cap must be a number.";
     fields.token_cap = b.token_cap;
+  }
+  for (const k of CAP_FIELDS) {
+    if (b[k] === undefined) continue;
+    if (b[k] !== null && typeof b[k] !== "number") return `${k} must be a number or null.`;
+    fields[k] = b[k];
   }
   return { id: b.id.trim(), fields };
 }
@@ -83,7 +102,7 @@ export async function postSchedule(d: Pick<UiDeps, "store" | "clock">, w: Schedu
   if (typeof b === "string") return apiError(400, b);
   const own = await c.owner("manages schedules");
   if ("error" in own) return apiError(403, own.error);
-  if (w === "delete" && !(await d.store.listSchedules()).some((s) => s.id === b.id)) return apiError(404, `no schedule ${b.id}`);
+  if (w === "delete" && (await findSchedule(d.store, b.id)) === null) return apiError(404, `no schedule ${b.id}`);
   const r = await c.write(d.store, w, b.id, b.fields, own.user, d.clock.now());
   if (!r.ok) return apiError(409, r.problem);
   c.log.info(`schedule ${w}`, { id: b.id, actor: own.user });
