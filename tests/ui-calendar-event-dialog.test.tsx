@@ -21,13 +21,16 @@ const { Input } = (await import(/* @vite-ignore */ INPUT_MODULE)) as { Input: Fu
 
 const SLOW = { timeout: 5_000 };
 const TOKEN = "tok_dialog";
-interface Stored { id: string; title: string; starts_at: string; ends_at: string; all_day: boolean; repeats: string }
+interface Stored { id: string; title: string; starts_at: string; ends_at: string; all_day: boolean; repeats: string; copied_to?: string | null; sync_error?: string | null }
 let stored: Stored[];
 let posts: { path: string; body: Record<string, unknown>; token: string | null }[];
 let refuse: string | null;
+let copyTarget: CalendarEvents["copy"];
+let syncAnswer: Record<string, unknown> | undefined;
 
 const asEvent = (e: Stored): CalendarEvent => ({
   kind: "event", source: "local", id: e.id, title: e.title, all_day: e.all_day, time: e.all_day ? null : e.starts_at.slice(11, 16), starts_at: e.starts_at, ends_at: e.ends_at, details: null, repeats: e.repeats as "none",
+  ...(e.sync_error === undefined ? {} : { copied_to: e.copied_to ?? null, sync_error: e.sync_error }),
 });
 
 /** Each date from `from` through `to` with the stored events that start on it (no repeat expansion: the tests use one day). */
@@ -40,7 +43,7 @@ function answer(from: string, to: string): CalendarEvents {
     if (date > to) break;
     days.push({ date, synced: true, events: stored.filter((e) => e.starts_at.startsWith(date)).map(asEvent) });
   }
-  return { from, to, time_zone: "UTC", days, calendar: [{ source: "google-calendar", synced_at: "2026-11-12T08:00:00.000Z", failed: false }], sync_pending: false };
+  return { from, to, time_zone: "UTC", days, calendar: [{ source: "google-calendar", synced_at: "2026-11-12T08:00:00.000Z", failed: false }], sync_pending: false, ...(copyTarget === undefined ? {} : { copy: copyTarget }) };
 }
 
 beforeEach(() => {
@@ -48,6 +51,8 @@ beforeEach(() => {
   stored = [];
   posts = [];
   refuse = null;
+  copyTarget = undefined;
+  syncAnswer = undefined;
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     const u = new URL(url, "http://127.0.0.1");
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -60,7 +65,7 @@ beforeEach(() => {
       if (u.pathname.endsWith("/delete")) stored = stored.filter((e) => e.id !== id);
       else if (u.pathname.endsWith("/edit")) stored = stored.map((e) => (e.id === id ? { ...e, ...fields } : e));
       else stored.push({ all_day: false, repeats: "none", ...fields, id } as Stored);
-      return json(200, { event: { id } });
+      return json(200, { event: { id }, ...(syncAnswer === undefined ? {} : { sync: syncAnswer }) });
     }
     if (u.pathname !== "/api/v1/calendar/events") return json(404, { error: "Not found." });
     return json(200, answer(u.searchParams.get("from")!, u.searchParams.get("to")!));
@@ -231,6 +236,88 @@ describe("Edit and Delete", () => {
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete event" }));
     await waitFor(() => expect(posts).toEqual([{ path: "/delete", body: { id: "le_aaaaaaaa" }, token: TOKEN }]), SLOW);
     await waitFor(() => expect(document.querySelector('[data-event="local:le_aaaaaaaa"]')).toBeNull(), SLOW);
+  });
+});
+
+describe("Also add to Google Calendar", () => {
+  const SWITCH = "Also add to Google Calendar";
+  const NOTE = "Reconnect Google Calendar with write access to add events there";
+  const copySwitch = () => within(dialog()).getByRole("switch", { name: SWITCH }) as HTMLButtonElement;
+
+  it("with write access the switch is on by default and the add posts sync: true", async () => {
+    copyTarget = { label: "Google Calendar", writable: true };
+    syncAnswer = { state: "synced", provider: "google-calendar" };
+    show();
+    await openNew();
+    await waitFor(() => expect(copySwitch().getAttribute("aria-checked")).toBe("true"), SLOW);
+    expect(within(dialog()).queryByText(NOTE)).toBeNull();
+    expect(within(dialog()).getByRole("group", { name: SWITCH })).toBeTruthy();
+    type("Title", "Plan");
+    save("Add event");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), SLOW);
+    expect(posts[0]!.body).toMatchObject({ title: "Plan", sync: true });
+  });
+
+  it("the owner can turn the switch off, and the add then posts no sync", async () => {
+    copyTarget = { label: "Google Calendar", writable: true };
+    show();
+    await openNew();
+    await waitFor(() => expect(copySwitch().getAttribute("aria-checked")).toBe("true"), SLOW);
+    fireEvent.click(copySwitch());
+    expect(copySwitch().getAttribute("aria-checked")).toBe("false");
+    type("Title", "Plan");
+    save("Add event");
+    await waitFor(() => expect(posts).toHaveLength(1), SLOW);
+    expect(posts[0]!.body).not.toHaveProperty("sync");
+  });
+
+  it("with a read-only connection the switch is off and read-only, with the note to reconnect", async () => {
+    copyTarget = { label: "Google Calendar", writable: false };
+    show();
+    await openNew();
+    await waitFor(() => expect(copySwitch().getAttribute("aria-checked")).toBe("false"), SLOW);
+    expect(copySwitch().getAttribute("aria-readonly")).toBe("true");
+    expect(within(dialog()).getByText(NOTE)).toBeTruthy();
+    fireEvent.click(copySwitch());
+    expect(copySwitch().getAttribute("aria-checked")).toBe("false");
+    type("Title", "Plan");
+    save("Add event");
+    await waitFor(() => expect(posts).toHaveLength(1), SLOW);
+    expect(posts[0]!.body).not.toHaveProperty("sync");
+  });
+
+  it("with no calendar that takes copies there is no switch for it", async () => {
+    show();
+    await openNew();
+    await screen.findByRole("dialog");
+    expect(within(dialog()).getAllByRole("switch").map((s) => s.getAttribute("aria-label"))).toEqual(["All day"]);
+  });
+
+  it("a failed copy keeps the event saved and shows the error in the dialog; its button then closes it", async () => {
+    copyTarget = { label: "Google Calendar", writable: true };
+    syncAnswer = { state: "failed", error: "quota exceeded" };
+    show();
+    await openNew();
+    await waitFor(() => expect(copySwitch().getAttribute("aria-checked")).toBe("true"), SLOW);
+    type("Title", "Plan");
+    save("Add event");
+    await waitFor(() => expect(within(dialog()).getByRole("alert").textContent).toBe("Saved here, but the copy in Google Calendar failed: quota exceeded"), SLOW);
+    expect(stored.map((e) => e.title)).toEqual(["Plan"]);
+    save("Add event");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), SLOW);
+    expect(posts).toHaveLength(1);
+  });
+});
+
+describe("A copy's error on the event", () => {
+  it("editing an event whose copy failed shows that error, kept on the event", async () => {
+    copyTarget = { label: "Google Calendar", writable: true };
+    stored = [{ id: "le_bbbbbbbb", title: "Kept", starts_at: "2026-11-12T14:30:00.000Z", ends_at: "2026-11-12T15:00:00.000Z", all_day: false, repeats: "none", copied_to: "google-calendar", sync_error: "quota exceeded" }];
+    show();
+    await chip("le_bbbbbbbb");
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await waitFor(() => expect(within(dialog()).getByText(/The copy in Google Calendar failed: quota exceeded\./)).toBeTruthy(), SLOW);
+    expect(within(dialog()).queryByRole("switch", { name: "Also add to Google Calendar" })).toBeNull();
   });
 });
 
