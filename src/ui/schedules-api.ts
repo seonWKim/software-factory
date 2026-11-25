@@ -16,6 +16,7 @@
 
 import type { Schedule, ScheduleFields, ScheduleWrite, writeSchedule } from "../core/schedule.js";
 import type { draftSchedule, improveSchedule } from "../core/schedule-draft.js";
+import { grantList } from "../core/schedule-grants.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { UserId } from "../core/types.js";
 import type { Logger } from "../core/log.js";
@@ -26,15 +27,18 @@ export const SCHEDULES_PATH = "/api/v1/schedules";
 export const SCHEDULE_RUNS_PATH = "/api/v1/schedules/runs";
 export const SCHEDULE_SUGGESTIONS_PATH = "/api/v1/schedules/suggestions";
 
-/** A schedule as the routes return it: as stored, with `skip_when_busy` (true when `missed_rule` is skip), which the Schedules page reads. */
-const withSkip = (s: Schedule) => ({ ...s, skip_when_busy: s.missed_rule === "skip" });
+/**
+ * A schedule as the routes return it: as stored, with `skip_when_busy` (true when `missed_rule` is skip), which the
+ * Schedules page reads, and `grants`: a feedback schedule's grants, each in plain words, as `schedule list` shows them.
+ */
+const withSkip = (s: Schedule) => ({ ...s, skip_when_busy: s.missed_rule === "skip", grants: grantList(s.action, s.id) });
 
-/** GET /api/v1/schedules: every schedule, as stored, with `skip_when_busy`. */
+/** GET /api/v1/schedules: every schedule, as stored, with `skip_when_busy` and `grants`. */
 export async function readSchedules(d: Pick<UiDeps, "store">): Promise<ApiResult> {
   return { status: 200, value: { schedules: (await d.store.listSchedules()).map(withSkip) } };
 }
 
-/** Whether a schedule, a Check a page one too, has the ID (a store read, so this file imports no core code). */
+/** Whether a schedule, a Check a page one too, has the ID (a store read). */
 const isStored = async (d: Pick<UiDeps, "store">, id: string): Promise<boolean> => (await d.store.listSchedules({ check_pages: true })).some((s) => s.id === id);
 
 /** The 400 or 404 of a read of one schedule's rows, or null for a known ID. */
