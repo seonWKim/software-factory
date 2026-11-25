@@ -22,7 +22,7 @@ CREATE TABLE calendar_local_events (
     created_by  TEXT NOT NULL,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
-  );
+  , provider TEXT, provider_event_id TEXT, sync_error TEXT);
 
 CREATE TABLE calendar_sync_requests (
     id            TEXT PRIMARY KEY,
