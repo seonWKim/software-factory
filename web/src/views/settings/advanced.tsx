@@ -290,7 +290,7 @@ function PageCommands() {
   }, []);
   const s = session.data;
   return (
-    <div id="page-commands" ref={ref} className="mt-6 first:mt-0">
+    <div id="page-commands" ref={ref}>
       <Card title={t("settings.commandsTitle")}>
         <p className="text-sm text-pretty text-text-2">
           {s?.actor ? (
@@ -321,9 +321,10 @@ export function AdvancedTab({ view: v, query }: { view: SettingsView; query: str
   // The keys the typed form edits leave the PR-only table; the remaining keys change only by a reviewed PR.
   const editable = editableKeys(v);
   const prOnly = v.pr_only.filter((p) => !editable.has(p.key));
+  // A column of blocks at gap-6; `*:mt-0` drops each Card's own top margin here, so the gap is not doubled.
   return (
-    <>
-      <p className="mb-4 text-sm text-text-2">
+    <div className="flex flex-col gap-6 *:mt-0">
+      <p className="text-sm text-text-2">
         {t("settings.devTools")}{" "}
         <Link href={`${BASE}data`} className={LINK_CLASS}>{t("page.data")}</Link>
       </p>
@@ -390,6 +391,6 @@ export function AdvancedTab({ view: v, query }: { view: SettingsView; query: str
           </ul>
         </Card>
       )}
-    </>
+    </div>
   );
 }

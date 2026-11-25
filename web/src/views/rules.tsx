@@ -280,6 +280,7 @@ export function RulesPage() {
           <AppliedSearch value={query} onChange={setQuery} />
         </PageToolbar>
       )}
+      <div className="flex flex-col gap-6 *:mt-0">
       {v.judge !== null && <Notice tone="warn">{t("rules.readOnly")}{v.judge}</Notice>}
       {v.error !== null && <Notice tone="bad">{v.error}</Notice>}
       <Card title={t("rules.waitingForYou")} count={waitCount}>
@@ -322,7 +323,7 @@ export function RulesPage() {
           <p data-in-effect-empty className={muted}>{t("rules.appliedEmpty")}</p>
         )}
       </Card>
-      <Disclosure data-page-details className="mt-6" summary={t("rules.details")}>
+      <Disclosure data-page-details summary={t("rules.details")}>
         <div className="mt-3 space-y-6">
           {v.improve?.report != null && (
             <p data-improve-link className="text-sm">
@@ -359,6 +360,7 @@ export function RulesPage() {
           </DetailsPart>
         </div>
       </Disclosure>
+      </div>
     </div>
   );
 }

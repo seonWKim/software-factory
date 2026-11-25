@@ -36,11 +36,11 @@ describe("PageToolbar control height", () => {
 });
 
 describe("Card padding and intro", () => {
-  it("pads with CARD_PAD, and the decision card pads and sits like a Card", () => {
+  it("pads with CARD_PAD, and the decision card pads like a Card (the page column spaces it)", () => {
     render(<Card title="Spend">x</Card>);
     expect(screen.getByRole("region", { name: "Spend" }).className).toContain(CARD_PAD);
     const decision = readFileSync("web/src/views/decision-card.tsx", "utf8");
-    expect(decision).toMatch(/"mt-6 [^"]*rounded-card[^"]*", CARD_PAD\)/);
+    expect(decision).toMatch(/"[^"]*rounded-card[^"]*", CARD_PAD\)/);
   });
 
   it("is the one card intro: Settings, Host sleeps and Evals use it", () => {
