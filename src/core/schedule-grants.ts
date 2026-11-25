@@ -110,20 +110,15 @@ export function grantWords(g: ScheduleGrant, schedule_id: string): string {
   return `shell: only ${g.command} ${g.db}`;
 }
 
-/** A feedback schedule's grants, each in plain words (a stored grant that is refused: why); none for another kind. */
-export function grantList(action: ScheduleActionSpec | null, schedule_id: string): string[] {
+/** A feedback schedule's grants in plain words for `schedule list` (`grants: …; …`): none for no grants or another kind. */
+export function grantsLine(action: ScheduleActionSpec | null, schedule_id: string): string[] {
   if (action?.kind !== "feedback" || action.settings.grants === undefined) return [];
   try {
-    return storedGrants(action.settings).map((g) => grantWords(g, schedule_id));
+    const grants = storedGrants(action.settings);
+    return grants.length === 0 ? [] : [`grants: ${grants.map((g) => grantWords(g, schedule_id)).join("; ")}`];
   } catch (e) {
-    return [`refused: ${e instanceof Error ? e.message : String(e)}`];
+    return [`grants: refused (${e instanceof Error ? e.message : String(e)})`];
   }
-}
-
-/** The grants column of `schedule list` (`grants: …; …`), or none when the schedule has no grants. */
-export function grantsLine(action: ScheduleActionSpec | null, schedule_id: string): string[] {
-  const list = grantList(action, schedule_id);
-  return list.length === 0 ? [] : [`grants: ${list.join("; ")}`];
 }
 
 /**
