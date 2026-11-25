@@ -7,17 +7,20 @@
 
 import { readFile } from "node:fs/promises";
 import { parseArgs as parseFlags } from "node:util";
-import { type CommandContext, type SkillEvalReads, type SkillEvalRunOptions, type SkillEvalRunRow, type SkillEvalRunSummary, defineCommand } from "../../command.js";
+import { type CommandContext, type FactoryStore, type SkillEvalReads, type SkillEvalRunOptions, type SkillEvalRunRow, type SkillEvalRunStats, type SkillEvalRunSummary, defineCommand } from "../../command.js";
 import { stopOnSignals } from "../../support.js";
 
-const USAGE = `  eval run <skill> [--model <class>] [--judge-model <class>] [--replays 1]
-               runs the skill's eval suite once (one replay per case, then the judge; model calls) and stores
-               the run with its skill version, model class, judge model class, replays, pass rate and errored
-               count; exit 0 when the run passed. --model: cheap, standard or strong (default standard);
-               --judge-model: only the judge class of --model; --replays: only 1 (one verdict per case).
-               Refuses, running nothing, when no suite exists for <skill> or an option is refused
+const USAGE = `  eval run <skill> [--model <class>] [--judge-model <class>] [--replays <n>]
+               runs the skill's eval suite once (each case replayed n times, each replay judged; model calls)
+               and stores the run with its skill version, model class, judge model class, replays (cases × n),
+               pass rate and errored replays, then prints them with pass@1 (passes over replays), pass^k (share
+               of cases that pass all k = n replays) and the 95% Wilson interval of pass@1; exit 0 when the run
+               passed. --model: cheap, standard or strong (default standard); --judge-model: only the judge
+               class of --model; --replays: a whole number from 1 to 10 (default 1), any other value is a usage
+               error. Refuses, running nothing, when no suite exists for <skill> or an option is refused
   eval results <skill> [--by version,model] [--json]
-               lists the skill's stored runs, newest first (--json: one JSON array, the same fields as
+               lists the skill's stored runs, newest first, each with pass@1, pass^k and the 95% Wilson
+               interval over its replays (--json: one JSON array, the same fields as
                GET /api/v1/evals/<skill>/runs); --by version,model: one row per skill version and model
                class from its newest run, runs with no figures left out (GET /api/v1/evals/<skill>/grid)
   eval compare <run-a> <run-b> [--json]
@@ -51,10 +54,22 @@ const USAGE = `  eval run <skill> [--model <class>] [--judge-model <class>] [--r
 const orDash = (v: string | number | null) => (v === null ? "-" : String(v));
 const rate = (v: number | null) => (v === null ? "-" : v.toFixed(2));
 
-/** One run as one line: when, id, status and figures (a dash for a figure not recorded). */
-function runLine(r: SkillEvalRunRow): string {
+/** pass@1, pass^k and the 95% Wilson interval, a dash for a rate with no replay. */
+function statsText(s: SkillEvalRunStats): string {
+  const interval = s.interval === null ? "-" : `${s.interval.low.toFixed(2)}-${s.interval.high.toFixed(2)}`;
+  return `pass@1 ${rate(s.pass_at_1)}, pass^${s.k} ${rate(s.pass_hat_k)}, 95% interval ${interval}`;
+}
+
+/** One run as one line: when, id, status and figures (a dash for a figure not recorded), then its stats when given. */
+function runLine(r: SkillEvalRunRow, stats?: SkillEvalRunStats): string {
   return `${r.started_at}  ${r.id}  ${r.status}  replays ${orDash(r.replays)}, pass rate ${rate(r.pass_rate)}, errored ${orDash(r.errored)}`
-    + `  (model ${orDash(r.model_class)}, judge ${orDash(r.judge_model_class)}, skill version ${orDash(r.skill_version)})`;
+    + `  (model ${orDash(r.model_class)}, judge ${orDash(r.judge_model_class)}, skill version ${orDash(r.skill_version)})`
+    + (stats ? `  ${statsText(stats)}` : "");
+}
+
+/** Each run's line, with its stats from its stored replays when the call has the stats function. */
+async function runLines(store: FactoryStore, runs: readonly SkillEvalRunRow[], reads: SkillEvalReads | undefined): Promise<string[]> {
+  return Promise.all(runs.map(async (r) => runLine(r, reads ? reads.stats(await store.listSkillEvalReplays(r.id)) : undefined)));
 }
 
 /** One refused change on stderr, or the change's value for `show`; the exit code. */
@@ -174,14 +189,17 @@ function parseArgs(args: readonly string[], valued: readonly string[]): { words:
   return { words, values, json };
 }
 
-/** --model, --judge-model and --replays as the run function takes them; null on a --replays that is no whole number. */
+/** --replays: a whole number from 1 to 10 (MAX_REPLAYS in src/skill-evals.ts, whose run check refuses the same). */
+const REPLAYS = /^(?:[1-9]|10)$/;
+
+/** --model, --judge-model and --replays as the run function takes them; null on a --replays that is not 1 to 10. */
 function runOptions(values: Map<string, string>): SkillEvalRunOptions | null {
   const o: SkillEvalRunOptions = {};
   const model = values.get("--model"), judge = values.get("--judge-model"), replays = values.get("--replays");
   if (model !== undefined) o.model_class = model;
   if (judge !== undefined) o.judge_model_class = judge;
   if (replays !== undefined) {
-    if (!/^[1-9]\d*$/.test(replays)) return null;
+    if (!REPLAYS.test(replays)) return null;
     o.replays = Number(replays);
   }
   return o;
@@ -225,17 +243,21 @@ export default defineCommand({
       if (by !== undefined && by !== "version,model") return usage();
       const grid = by === undefined ? null : reads?.grid;
       if (grid === undefined) return (console.error("eval results --by is not available here: run it as `factory eval results <skill> --by version,model`"), 1);
-      const runs = await ctx.withStore((store) => store.listSkillEvalRuns(skill));
       if (grid) {
+        const runs = await ctx.withStore((store) => store.listSkillEvalRuns(skill));
         const rows = grid(runs);
         if (json) console.log(JSON.stringify(rows, null, 2));
         else if (rows.length === 0) console.log(`no eval runs with figures for ${skill}`);
         else for (const r of rows) console.log(summaryLine(r));
         return 0;
       }
+      const { runs, lines } = await ctx.withStore(async (store) => {
+        const runs = await store.listSkillEvalRuns(skill);
+        return { runs, lines: json ? [] : await runLines(store, runs, reads) };
+      });
       if (json) console.log(JSON.stringify(runs, null, 2));
       else if (runs.length === 0) console.log(`no eval runs for ${skill}`);
-      else for (const r of runs) console.log(runLine(r));
+      else for (const l of lines) console.log(l);
       return 0;
     }
     const options = runOptions(values);
@@ -246,12 +268,15 @@ export default defineCommand({
       return 1;
     }
     const { user } = await ctx.identity();
-    const result = await ctx.withStore((store, loaded) => runSkillEval(store, loaded, { skill, created_by: user, signal: stopOnSignals(), ...options }));
+    const result = await ctx.withStore(async (store, loaded) => {
+      const r = await runSkillEval(store, loaded, { skill, created_by: user, signal: stopOnSignals(), ...options });
+      return "refused" in r ? r : { run: r.run, line: (await runLines(store, [r.run], reads))[0]! };
+    });
     if ("refused" in result) {
       console.error(result.refused);
       return 1;
     }
-    console.log(runLine(result.run));
+    console.log(result.line);
     return result.run.status === "passed" ? 0 : 1;
   },
 });
