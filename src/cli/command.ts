@@ -85,18 +85,27 @@ export interface SkillEvalRunStats {
   interval: { low: number; high: number } | null;
 }
 
+/** One stored replay verdict of a run, as stats and compare take it. */
+export interface SkillEvalVerdictRow {
+  case_id: string;
+  verdict: string;
+}
+
 /** Grid, compare and run stats, the same functions the read routes call. */
 export interface SkillEvalReads {
   /** A run's stats from its stored verdicts (src/core/skill-eval-stats.ts runStats). */
-  stats(verdicts: readonly { case_id: string; verdict: string }[]): SkillEvalRunStats;
+  stats(verdicts: readonly SkillEvalVerdictRow[]): SkillEvalRunStats;
   /** One row per (skill version, model class) from its newest run; runs with no figures left out. */
   grid(runs: readonly SkillEvalRunRow[]): SkillEvalRunSummary[];
   /**
-   * b against a: the gap, the noise band and within_noise; the three null without two pass rates, or when the runs are
-   * not comparable (different suite or judge versions, or one with none recorded: `reason` says which).
+   * b against a, paired case by case from both runs' stored verdicts: wins, losses, ties, the sign-test p, the mean
+   * case difference with its paired 95% interval and the verdict; every figure null when the runs are not comparable
+   * (different suite or judge versions, or one with none recorded: `reason` says which).
    */
-  compare(a: SkillEvalRunRow, b: SkillEvalRunRow): {
-    a: SkillEvalRunSummary; b: SkillEvalRunSummary; comparable: boolean; reason: string | null; gap: number | null; noise_band: number | null; within_noise: boolean | null;
+  compare(a: SkillEvalRunRow, b: SkillEvalRunRow, replays: { a: readonly SkillEvalVerdictRow[]; b: readonly SkillEvalVerdictRow[] }): {
+    a: SkillEvalRunSummary; b: SkillEvalRunSummary; comparable: boolean; reason: string | null;
+    paired: number | null; wins: number | null; losses: number | null; ties: number | null; p_value: number | null;
+    mean_difference: number | null; interval: { low: number; high: number } | null; verdict: "better" | "worse" | "within noise" | null;
   };
 }
 
