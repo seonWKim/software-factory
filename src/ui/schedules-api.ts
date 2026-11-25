@@ -1,6 +1,6 @@
 // Schedules over HTTP (design 08-schedules): what `factory schedule …` does, through the same core functions
-// (src/core/schedule.ts). GET /api/v1/schedules lists them, but no Check a page one (the Schedules page does not show
-// them); GET /api/v1/schedules/runs?schedule=<id> lists one's runs and /api/v1/schedules/suggestions?schedule=<id> its
+// (src/core/schedule.ts). GET /api/v1/schedules lists them, Check a page ones too (with their trigger, paused flag, page
+// URL, instruction and USD caps, as stored); GET /api/v1/schedules/runs?schedule=<id> lists one's runs and /api/v1/schedules/suggestions?schedule=<id> its
 // suggestions, a Check a page one's too (400 without the parameter, 404 for an unknown ID). POST /api/v1/schedules/add,
 // /edit, /pause, /resume, /run and /delete take a JSON body with `id` and, for add and edit, the CLI's fields (`title`,
 // `cadence`, `spec`, `zone`, `action`, `body`, `skip_when_busy`, `token_cap`, and a check-page action's `instruction`,
@@ -29,9 +29,9 @@ export const SCHEDULE_SUGGESTIONS_PATH = "/api/v1/schedules/suggestions";
 /** A schedule as the routes return it: as stored, with `skip_when_busy` (true when `missed_rule` is skip), which the Schedules page reads. */
 const withSkip = (s: Schedule) => ({ ...s, skip_when_busy: s.missed_rule === "skip" });
 
-/** GET /api/v1/schedules: every schedule, as stored, with `skip_when_busy`. */
+/** GET /api/v1/schedules: every schedule, Check a page ones too, as stored, with `skip_when_busy`. */
 export async function readSchedules(d: Pick<UiDeps, "store">): Promise<ApiResult> {
-  return { status: 200, value: { schedules: (await d.store.listSchedules()).map(withSkip) } };
+  return { status: 200, value: { schedules: (await d.store.listSchedules({ check_pages: true })).map(withSkip) } };
 }
 
 /** Whether a schedule, a Check a page one too, has the ID (a store read, so this file imports no core code). */

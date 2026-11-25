@@ -242,11 +242,11 @@ describe("POST /api/v1/schedules/draft and /improve", () => {
 });
 
 // Check a page schedules over HTTP (design 08-schedules): the CLI's fields, the on-merge cadence, the suggestions read
-// and delete removing the suggestions too. GET /api/v1/schedules leaves them out, so the Schedules page is unchanged.
+// and delete removing the suggestions too. GET /api/v1/schedules lists them with the plain ones.
 const PAGE = { id: "cp_1", title: "Docs page", action: "check-page", url: "https://example.com/docs", instruction: "Find broken links" };
 
 describe("POST /api/v1/schedules/add and /edit with a Check a page schedule", () => {
-  it("adds one on a cadence or on each merge, with its page, instruction and USD caps; GET /api/v1/schedules leaves it out", async () => {
+  it("adds one on a cadence or on each merge, with its page, instruction and USD caps; GET /api/v1/schedules lists both", async () => {
     const { store, send, get } = await setup();
     expect(await send("add", { ...PAGE, cadence: "daily", spec: "09:00", zone: "Asia/Seoul", run_cap_usd: 0.5, daily_cap_usd: 2 })).toMatchObject({
       status: 200,
@@ -256,7 +256,12 @@ describe("POST /api/v1/schedules/add and /edit with a Check a page schedule", ()
     expect(await send("add", { ...noInstruction, id: "cp_2", body: instruction, cadence: "on-merge" })).toMatchObject({
       status: 200, value: { schedule: { id: "cp_2", cadence: null, trigger: "merge", zone: "UTC", next_due_at: null, action: { settings: { instruction: "Find broken links" } } } },
     });
-    expect(await get("/api/v1/schedules")).toEqual({ status: 200, value: { schedules: [] } });
+    const listed = (await get("/api/v1/schedules")).value.schedules as { id: string }[];
+    expect(listed.map((s) => s.id)).toEqual(["cp_1", "cp_2"]);
+    expect(listed).toMatchObject([
+      { id: "cp_1", trigger: null, paused: false, run_cap_usd: 0.5, daily_cap_usd: 2, skip_when_busy: false, action: { kind: "check_page", settings: { instruction: "Find broken links", url: "https://example.com/docs" } } },
+      { id: "cp_2", cadence: null, trigger: "merge", paused: false, run_cap_usd: null, daily_cap_usd: null, skip_when_busy: false },
+    ]);
     expect((await store.listCheckPages()).map((s) => s.id)).toEqual(["cp_1", "cp_2"]);
     // The routine routes read the same rows.
     expect((await get("/api/v1/routines")).value.routines).toMatchObject([{ id: "cp_1", name: "Docs page" }, { id: "cp_2", trigger: "merge" }]);

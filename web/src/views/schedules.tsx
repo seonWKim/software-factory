@@ -1,7 +1,7 @@
 import { Pause, Pencil, Play, Trash2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { API, type ScheduleFields, type ScheduleRow, type ScheduleRunRow, type ScheduleVerb, type Session, postSchedule, useApi, useScheduleRuns, useSchedules } from "../api.js";
+import { API, type ScheduleFields, type ScheduleRow, type ScheduleRunRow, type ScheduleVerb, type Session, isPaused, postSchedule, useApi, useScheduleRuns, useSchedules } from "../api.js";
 import { Badge } from "../components/ui/badge.js";
 import { Button } from "../components/ui/button.js";
 import { Card } from "../components/ui/card.js";
@@ -12,14 +12,15 @@ import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
 import { t } from "../i18n/index.js";
 import { DeleteScheduleDialog, ScheduleDialog, newScheduleId } from "./schedules/form.js";
-import { ScheduleDetail, TitleCell, when } from "./schedules/detail.js";
+import { ScheduleDetail, TitleCell, nextText, when } from "./schedules/detail.js";
 import { repeatsText } from "../lib/repeats.js";
 import { ACTION_TEXT, OUTCOME_TEXT, STATE_TEXT } from "./schedules/labels.js";
 
 // The Schedules page (design 09-dashboard-schedules, over 08-schedules): every schedule in a DataTable inside a Card,
-// read through GET /api/v1/schedules. Repeats reads in plain words through the shared formatter (lib/repeats.ts, as on
-// Routines); a paused schedule's Next run says Paused. Each row's Switch is on while the schedule has a next run and off while it is
-// paused (pause clears the next run), and posts pause or resume; its "⋯" menu holds Run now (off while paused), Edit,
+// read through GET /api/v1/schedules, Check a page schedules too. Repeats reads in plain words through the shared formatter
+// (lib/repeats.ts); an On each merge schedule's Repeats and Next run say On each merge, a paused schedule's Next run says
+// Paused. Each row's Switch is on while the schedule is not paused (a Check a page one's `paused` flag; for any other,
+// pause clears the next run), and posts pause or resume; its "⋯" menu holds Run now (off while paused or on each merge), Edit,
 // Pause or Resume, a separator and Delete (danger). Delete, there or in the detail Card's title row,
 // asks in a danger Dialog; once it is gone the list rereads, the detail Card closes and the focus goes to the table.
 // Each title has one muted line under it saying what the schedule does (schedules/detail.tsx). Pressing a row's title
@@ -28,7 +29,7 @@ import { ACTION_TEXT, OUTCOME_TEXT, STATE_TEXT } from "./schedules/labels.js";
 // (schedules/form.tsx). A refusal shows in a Notice above the table.
 // The Cards follow the PageHeader as siblings, spaced by the Card's own top margin as on the other pages (no flex gap).
 
-const stateOf = (s: ScheduleRow) => (s.next_due_at === null ? "paused" : s.running_since !== null ? "running" : "waiting");
+const stateOf = (s: ScheduleRow) => (isPaused(s) ? "paused" : s.running_since !== null ? "running" : "waiting");
 
 /** The writes the page sends, with the one error they share and a reread after each. */
 function useScheduleWrites() {
@@ -80,14 +81,14 @@ function ScheduleRows({ rows, selected, onSelect, onEdit, onDelete, w }: {
   const columns: Column<ScheduleRow>[] = [
     { key: "title", header: t("schedules.col.title"), render: (s) => <TitleCell s={s} /> },
     { key: "cadence", header: t("schedules.col.cadence"), render: (s) => repeatsText(s.cadence), className: "whitespace-nowrap" },
-    { key: "next", header: t("schedules.col.next"), render: (s) => (s.next_due_at === null ? t("schedules.nextPaused") : when(s.next_due_at)) },
+    { key: "next", header: t("schedules.col.next"), render: nextText },
     { key: "status", header: t("schedules.col.status"), render: (s) => <Badge level={stateOf(s)}>{t(STATE_TEXT[stateOf(s)])}</Badge> },
     { key: "action", header: t("schedules.col.action"), render: (s) => (s.action === null ? t("schedules.actionNone") : t(ACTION_TEXT[s.action.kind])) },
     {
       key: "active",
       header: t("schedules.col.active"),
       render: (s) => (
-        <Switch checked={s.next_due_at !== null} disabled={!w.ready || w.busy} aria-label={t("schedules.switch", { title: s.title })} onCheckedChange={(on) => void w.write(on ? "resume" : "pause", s.id)} />
+        <Switch checked={!isPaused(s)} disabled={!w.ready || w.busy} aria-label={t("schedules.switch", { title: s.title })} onCheckedChange={(on) => void w.write(on ? "resume" : "pause", s.id)} />
       ),
     },
     {
@@ -97,9 +98,9 @@ function ScheduleRows({ rows, selected, onSelect, onEdit, onDelete, w }: {
         <OverflowMenu
           label={t("schedules.more", { title: s.title })}
           items={[
-            { label: t("schedules.runNow"), icon: Play, action: "schedule run", disabled: s.next_due_at === null || !w.ready, onSelect: () => void w.write("run", s.id) },
+            { label: t("schedules.runNow"), icon: Play, action: "schedule run", disabled: isPaused(s) || s.trigger === "merge" || !w.ready, onSelect: () => void w.write("run", s.id) },
             { label: t("schedules.edit"), icon: Pencil, action: "schedule edit", disabled: !w.ready, onSelect: () => onEdit(s, document.activeElement as Opener) },
-            s.next_due_at === null
+            isPaused(s)
               ? { label: t("schedules.resume"), icon: Play, action: "schedule resume", disabled: !w.ready, onSelect: () => void w.write("resume", s.id) }
               : { label: t("schedules.pause"), icon: Pause, action: "schedule pause", disabled: !w.ready, onSelect: () => void w.write("pause", s.id) },
             { separator: true },
