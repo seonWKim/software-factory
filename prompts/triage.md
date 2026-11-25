@@ -85,6 +85,10 @@ Produce:
   Tests: existing tests may assert the text or behaviour the change removes or changes. Before answering,
   grep the tests for each string the change removes or changes,
   and list each matching test file in allowed_paths and files_to_change.
+  When the change renames or removes a string, quote its old text in double quotes, exactly as it is today,
+  in the problem, a done criterion or the desired output (for example: rename "Old label" to "New label"):
+  the factory searches the base's tests/ for each quoted string of four or more characters and adds each
+  test file that holds one to allowed_paths and files_to_change.
   Docs: when the repository's docs are an index that links to topic files, read the index first, then open
   only the topic files that apply. The documentation targets are the topic files the change touches,
   not the index: name those in files_to_change and allowed_paths. A new topic file also needs its one line
