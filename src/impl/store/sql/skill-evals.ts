@@ -4,7 +4,7 @@
 // there": the stored row is returned.
 
 import type {
-  SkillEvalCase, SkillEvalReplay, SkillEvalRun, SkillEvalRunFigures, SkillEvalRunStart, SkillEvalRunStatus, SkillEvalStore, SkillEvalSuite, SkillVersion,
+  SkillEvalCase, SkillEvalSplit, SkillEvalReplay, SkillEvalRun, SkillEvalRunFigures, SkillEvalRunStart, SkillEvalRunStatus, SkillEvalStore, SkillEvalSuite, SkillVersion,
   SkillVersionGate, SkillVersionGateFinish, SkillVersionGateState, SkillVersionGateTake,
 } from "../../../interfaces/skill-eval-store.js";
 import type { Timestamp, UserId } from "../../../core/types.js";
@@ -12,7 +12,7 @@ import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
 import { SqlScheduleStore } from "./schedules.js";
 
 const SUITE_COLUMNS = "id, skill_ref, title, created_by, created_at";
-const CASE_COLUMNS = "id, suite_id, input, expected, created_at, seed, mcp";
+const CASE_COLUMNS = "id, suite_id, input, expected, created_at, seed, mcp, split";
 const RUN_COLUMNS = "id, suite_id, status, started_at, finished_at, created_by, skill_version, suite_version, judge_version, factory_version";
 /** A run as read back: its columns and its figures (null until recorded). */
 const RUN_READ = `${RUN_COLUMNS}, model_class, judge_model_class, replays, pass_rate, errored`;
@@ -27,7 +27,7 @@ const numberOrNull = (v: unknown) => (v == null ? null : Number(v));
 const rowToSuite = (r: Row): SkillEvalSuite => ({ id: String(r.id), skill_ref: String(r.skill_ref), title: String(r.title), created_by: String(r.created_by) as UserId, created_at: ts(r.created_at) });
 /** A case as read back; its seed and MCP servers only when set, so a case without them reads as before. */
 const rowToCase = (r: Row): SkillEvalCase => ({
-  id: String(r.id), suite_id: String(r.suite_id), input: JSON.parse(String(r.input)), expected: JSON.parse(String(r.expected)), created_at: ts(r.created_at),
+  id: String(r.id), suite_id: String(r.suite_id), input: JSON.parse(String(r.input)), expected: JSON.parse(String(r.expected)), split: String(r.split) as SkillEvalSplit, created_at: ts(r.created_at),
   ...(r.seed != null ? { seed: String(r.seed) } : {}), ...(r.mcp != null ? { mcp: JSON.parse(String(r.mcp)) as string[] } : {}),
 });
 const rowToRun = (r: Row): SkillEvalRun => ({
@@ -72,11 +72,11 @@ export class SqlSkillEvalStore extends SqlScheduleStore implements SkillEvalStor
     return (await this.db.all(`SELECT ${SUITE_COLUMNS} FROM controller_skill_eval_suites ORDER BY created_at, id`)).map(rowToSuite);
   }
 
-  addSkillEvalCase(c: Omit<SkillEvalCase, "created_at">): Promise<SkillEvalCase> {
+  addSkillEvalCase(c: Omit<SkillEvalCase, "created_at" | "split"> & { split?: SkillEvalSplit }): Promise<SkillEvalCase> {
     return this.db.transaction(async (tx) => {
       const added = await tx.run(
-        `INSERT OR IGNORE INTO controller_skill_eval_cases (${CASE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [c.id, c.suite_id, JSON.stringify(c.input), JSON.stringify(c.expected), this.evalStamp(), c.seed ?? null, c.mcp ? JSON.stringify(c.mcp) : null],
+        `INSERT OR IGNORE INTO controller_skill_eval_cases (${CASE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [c.id, c.suite_id, JSON.stringify(c.input), JSON.stringify(c.expected), this.evalStamp(), c.seed ?? null, c.mcp ? JSON.stringify(c.mcp) : null, c.split ?? "dev"],
       );
       if (added === 1) await bumpSuiteVersion(tx, c.suite_id);
       const [row] = await tx.all(`SELECT ${CASE_COLUMNS} FROM controller_skill_eval_cases WHERE id = ?`, [c.id]);
@@ -120,6 +120,14 @@ export class SqlSkillEvalStore extends SqlScheduleStore implements SkillEvalStor
       if (!row) return null;
       await bumpSuiteVersion(tx, String(row.suite_id));
       return rowToCase(row);
+    });
+  }
+
+  setSkillEvalCaseSplit(id: string, split: SkillEvalSplit): Promise<SkillEvalCase | null> {
+    return this.db.transaction(async (tx) => {
+      await tx.run("UPDATE controller_skill_eval_cases SET split = ? WHERE id = ?", [split, id]);
+      const [row] = await tx.all(`SELECT ${CASE_COLUMNS} FROM controller_skill_eval_cases WHERE id = ?`, [id]);
+      return row ? rowToCase(row) : null;
     });
   }
 
