@@ -51,6 +51,8 @@ describe("the skill hand-off (src/core/skill-improve.ts)", () => {
     await store.addSkillEvalCase({ id: "h1", suite_id: `suite:${SKILL}`, input: "held", expected: ["x"], split: "held-out" });
     await measured("r1", "v:SKILL A", 0.8);
     await measured("r2", "v:SKILL A", 0.5, ["cites the source"]);
+    // The owner agrees with the judge, so the skill is calibrated and self-improve drafts it.
+    await store.recordSkillEvalLabel({ run_id: "r2", case_id: "c1", replay: 0, check: "cites the source", verdict: "right", owner_id: OWNER });
     const wiring: SkillImproveWiring = {
       config: SKILL_IMPROVE_DEFAULTS, skill_folders: ["/repo/skills"], folderOf: (ref) => `/repo/${ref}`, prompt: async () => "PROMPT",
       readSkill: async (f) => files.get(f) ?? null, writeSkill: async (f, t) => void files.set(f, t), version: async (f) => `v:${files.get(f)}`,

@@ -1,6 +1,7 @@
 // Skill improvement (design 07-self-improvement, src/core/skill-improve.ts): the drop and stall trigger, one draft per
 // skill version, the draft prompt's content (dev cases' failed check names only), the dev scratch measurement and its
-// gain over the dev replays of the current version's run, the proposed-or-tried rule (no owner label: tried untrusted),
+// gain over the dev replays of the current version's run, the judge calibration gate (no owner labels or agreement below 80%:
+// skipped uncalibrated, no day slot), the proposed-or-tried rule (no owner label: tried untrusted),
 // the verdicts with the held-out check before a promotion, and the two limits. The store is the real SQLite store; the model, the replay and the skill files are fakes: no test calls a
 // model or a remote service.
 
@@ -34,7 +35,7 @@ const A = "skills/a";
 const B = "skills/b";
 const signal = () => new AbortController().signal;
 
-type Store = FactoryStore & { db: { all(q: string, p?: unknown[]): Promise<Record<string, unknown>[]> } };
+type Store = FactoryStore & { db: { all(q: string, p?: unknown[]): Promise<Record<string, unknown>[]>; run(q: string, p?: unknown[]): Promise<unknown> } };
 
 /** The fake model: answers each call with `answer`, recording the requests. */
 function fakeLlm(answer: (req: LLMRequest) => LLMResponse | Promise<LLMResponse> = () => reply("NEW SKILL TEXT")): LLMProvider & { calls: LLMRequest[] } {
@@ -89,7 +90,7 @@ const DEV_CASES = 10;
 /**
  * A finished, measured run of `ref`'s suite (its stored pass rate `rate`): its dev cases pass at `devRate` (absent:
  * `rate`), a failing one answering no to each `failed` check with a reason, and its held-out case fails on
- * "held-out check".
+ * "held-out check". A measured (not scratch) run gets one `right` owner label.
  */
 async function run(store: Store, clock: FakeClock, r: { id: string; ref: string; version: string; rate: number | null; devRate?: number; model_class?: string; failed?: string[] }): Promise<SkillEvalRun> {
   clock.advance(1000);
@@ -106,11 +107,17 @@ async function run(store: Store, clock: FakeClock, r: { id: string; ref: string;
   }
   await store.recordSkillEvalReplay({ run_id: r.id, case_id: `${r.ref}:h1`, verdict: "fail", detail: { answers: [{ check: "held-out check", answer: "no", reason: "SECRET REASON held" }] } });
   await store.finishSkillEvalRun(r.id, passing < DEV_CASES ? "failed" : "passed");
+  // The owner agrees with the judge on a measured run, so its skill is calibrated (judgeCalibrated) unless a test says otherwise.
+  if (!r.version.startsWith("draft:")) await label(store, r.id, "right");
   if (r.rate !== null) {
     await store.recordSkillEvalRunFigures(r.id, { model_class: (r.model_class ?? "standard") as "standard", judge_model_class: "strong", replays: 1, pass_rate: r.rate, errored: 0 });
   }
   return (await store.getSkillEvalRun(r.id))!;
 }
+
+/** One owner label on the judge's answer to "passing check" of `run_id`'s first dev case, on replay `replay`. */
+const label = (store: Store, run_id: string, verdict: "right" | "wrong", replay = 0) =>
+  store.recordSkillEvalLabel({ run_id, case_id: `${run_id.replace(/-\d+$/, "")}:d0`, replay, check: "passing check", verdict, owner_id: OWNER });
 
 /** Two runs of `ref` on its current version (`v:<text>`): 0.8, then `rate` (a drop past the margin by default). */
 async function dropped(store: Store, clock: FakeClock, ref: string, text: string, rate = 0.5) {
@@ -282,6 +289,39 @@ describe("drafting (improveSkills)", () => {
     await dropped(store, clock, "other/c", "SKILL C");
     expect(await improveSkills(deps, PROJECT)).toEqual([]);
     expect(llm.calls).toEqual([]);
+  });
+});
+
+describe("judge calibration", () => {
+  const unlabel = (store: Store, ref: string) => store.db.run(`DELETE FROM controller_skill_eval_labels WHERE run_id LIKE ?`, [`${ref}-%`]);
+
+  it("a skill with no owner labels is skipped uncalibrated: no draft call, no draft, no day slot, no question", async () => {
+    const { store, clock, deps, llm } = await setup({ config: { skill_drafts_per_day: 1 } });
+    await dropped(store, clock, A, "SKILL A");
+    await dropped(store, clock, B, "SKILL B");
+    await unlabel(store, A);
+
+    const results = await improveSkills(deps, PROJECT);
+    expect(results.map((r) => [r.skill_ref, r.draft])).toEqual([[A, { skipped: "uncalibrated" }], [B, expect.objectContaining({ state: "tried" })]]);
+    expect(llm.calls).toHaveLength(1);
+    expect((await store.listSkillDrafts(PROJECT)).map((d) => d.skill_ref)).toEqual([B]);
+    expect(await store.listAlerts({ limit: 10 })).toEqual([]);
+  });
+
+  it("agreement below 80% is uncalibrated; at 80% the skill is drafted", async () => {
+    const below = await setup();
+    await dropped(below.store, below.clock, A, "SKILL A"); // two right labels
+    for (const replay of [1, 2]) await label(below.store, `${A}-2`, "wrong", replay); // 2 of 4: 50%
+    expect((await improveSkills(below.deps, PROJECT)).map((r) => r.draft)).toEqual([{ skipped: "uncalibrated" }]);
+    expect(below.llm.calls).toEqual([]);
+    expect(await below.store.listSkillDrafts(PROJECT)).toEqual([]);
+
+    const at = await setup();
+    await dropped(at.store, at.clock, A, "SKILL A");
+    for (const replay of [1, 2]) await label(at.store, `${A}-2`, "right", replay);
+    await label(at.store, `${A}-2`, "wrong", 3); // 4 of 5: 80%
+    expect((await improveSkills(at.deps, PROJECT)).map((r) => r.draft)).toEqual([expect.objectContaining({ state: "tried" })]);
+    expect(at.llm.calls).toHaveLength(1);
   });
 });
 
