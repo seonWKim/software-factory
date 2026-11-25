@@ -342,7 +342,7 @@ A feedback schedule's agent gets Read, Glob and Grep in this repo. To give it mo
 - `browser=<url>`: the Browse tool, limited to that sandbox URL (http or https on localhost or a loopback address).
 - `notes`: Write and Edit, only inside `.factory/notes/<schedule id>/`, which `add` or `edit` creates.
 - `repo=<absolute path>[#<branch>]`: the agent runs in a fresh checkout of that repo (branch `main` by default), and no other. Set up the repo first: it must be a git repo (`git -C <path> rev-parse` works) outside the factory's `.factory` folder, with the branch present.
-- `shell=<absolute database path>`: one query tool that runs `sqlite3 -readonly` on that database file, and no other command. `sqlite3` must be on the PATH.
+- `shell=<absolute database path>`: one query tool that runs `sqlite3 -readonly` on that database file, and no other command (no dot commands or options). `sqlite3` must be on the PATH, and the agent runner must expose broker tools (`claude-code` does).
 
 A grant that is refused when the schedule runs (a repo that is gone, a missing database) fails that run before its agent starts; `factory schedule runs <id>` shows why.
 
