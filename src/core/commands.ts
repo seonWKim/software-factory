@@ -3,7 +3,7 @@ import { LOCAL_SOURCE } from "./local-merge.js";
 import { type TriageOutput, parseTriage } from "./outputs.js";
 import { type ItemPhase, isClosedPhase, phaseOf } from "./phase.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, SESSION_RELEASED, blockingRunKind } from "./policy.js";
-import { SCHEDULE_CHECKPOINT } from "./schedule.js"; import type { Run, RunKind, WorkItem } from "./types.js";
+import { SCHEDULE_CHECKPOINT } from "./schedule.js"; import type { Run, RunKind, UserId, WorkItem } from "./types.js"; import type { SkillEvalStore, SkillVersionGate } from "../interfaces/skill-eval-store.js";
 import { MERGE_CHECK_HELP_LINE, awaitingSpec } from "./request-transition.js";
 export * from "./request-transition.js"; export { AT_TRIAGE, type Attachment, addedContext, attachmentLine } from "./attachments.js"; // the gates' shared checks (design 04-gate-commands); added context and attachments, for triage (02-attachments)
 
@@ -596,4 +596,21 @@ export function latestSpec(runs: readonly Run[]): TriageOutput | null {
   if (run?.outcome?.status !== "succeeded") return null;
   const parsed = parseTriage(run.outcome.data.spec);
   return parsed.ok ? parsed.value : null;
+}
+
+/** What a bare `/approve` or `/reject` (no item) did to the newest held skill version (design 07-self-improvement). */
+export type SkillVersionSettle = { gate: SkillVersionGate; settled: boolean };
+
+/**
+ * A bare `/approve` or `/reject`, with no work item: the newest held skill version of any skill (created, then
+ * version) is settled by the store's conditional update. `/approve` passes it, so it is current unless a newer version
+ * passed; `/reject` rejects it, so the version current before it stays current. Null when no version is held: the
+ * caller keeps its item-ID refusal. `settled` is false when another process settled it first.
+ */
+export async function settleHeldSkillVersion(
+  store: Pick<SkillEvalStore, "listHeldSkillVersionGates" | "settleSkillVersionGate">, command: "approve" | "reject", by: UserId,
+): Promise<SkillVersionSettle | null> {
+  const [gate] = await store.listHeldSkillVersionGates(1);
+  if (!gate) return null;
+  return { gate, settled: await store.settleSkillVersionGate(gate.ref_id, gate.version, command === "approve" ? "passed" : "rejected", by) };
 }

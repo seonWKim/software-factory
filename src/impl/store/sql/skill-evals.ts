@@ -242,4 +242,22 @@ export class SqlSkillEvalStore extends SqlScheduleStore implements SkillEvalStor
     const [row] = await this.db.all(`SELECT ${GATE_COLUMNS} FROM controller_skill_version_gates WHERE ref_id = ? AND version = ?`, [ref_id, version]);
     return row ? rowToGate(row) : null;
   }
+
+  async listHeldSkillVersionGates(limit: number): Promise<SkillVersionGate[]> {
+    return (await this.db.all(
+      `SELECT ${GATE_COLUMNS} FROM controller_skill_version_gates WHERE state = 'held' ORDER BY created_at DESC, version DESC, ref_id LIMIT ?`, [limit],
+    )).map(rowToGate);
+  }
+
+  settleSkillVersionGate(ref_id: string, version: number, state: "passed" | "rejected", by: UserId): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx.all(`SELECT detail FROM controller_skill_version_gates WHERE ref_id = ? AND version = ? AND state = 'held'`, [ref_id, version]);
+      if (!row) return false;
+      const detail = { ...(JSON.parse(String(row.detail)) as Record<string, unknown>), settled_by: by };
+      return (await tx.run(
+        `UPDATE controller_skill_version_gates SET state = ?, detail = ?, updated_at = ? WHERE ref_id = ? AND version = ? AND state = 'held'`,
+        [state, JSON.stringify(detail), this.evalStamp(), ref_id, version],
+      )) === 1;
+    });
+  }
 }

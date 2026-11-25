@@ -265,11 +265,11 @@ export async function skillVersionsOf(store: Pick<SkillEvalStore, "listSkillVers
 /** src/core/skill-eval-compare.ts's version reads and evals-api.ts skillOf, passed in by the route table (read-routes.ts). */
 export type SkillVersionReads = Pick<typeof Compare, "skillVersionRows" | "unlinkedRuns" | "latestLinkedRun" | "lineDiff" | "caseResults"> & { skillOf: typeof skillOf };
 
-type VersionsDeps = { store: Pick<FactoryStore, "listSkillEvalRuns" | "listSkillEvalReplays" | "listSkillVersions">; scanner: ApiDeps["scanner"] };
+type VersionsDeps = { store: Pick<FactoryStore, "listSkillEvalRuns" | "listSkillEvalReplays" | "listSkillVersions" | "getSkillVersionGate">; scanner: ApiDeps["scanner"] };
 
 /**
  * GET /api/v1/evals/<skill>/versions: { versions, unlinked }, one row per version of the skill (skillVersionRows:
- * latest pass rate, change since the previous version, current mark), newest first, and the ids of the skill's runs
+ * latest pass rate, change since the previous version, gate state and the gate's current version marked), newest first, and the ids of the skill's runs
  * linked to no version. GET /api/v1/evals/<skill>/diff?a=<hash>&b=<hash>: each version's row, the unified line diff
  * of their SKILL.md texts and the per-case results of each one's latest linked run; 404 when a hash is no version of
  * the skill. Every string leaves through the Withholder; the reads write nothing.
@@ -282,7 +282,8 @@ export async function readSkillVersions(d: VersionsDeps, f: SkillVersionReads, u
   const text = async (v: string) => (await w.plain(v)).text;
   const runs = await d.store.listSkillEvalRuns(skill);
   const versions = await skillVersionsOf(d.store, runs.map((r) => r.skill_version));
-  const rows = await Promise.all(f.skillVersionRows(versions, runs).map(async (r) => ({ ...r, folder_hash: await text(r.folder_hash), run_id: r.run_id === null ? null : await text(r.run_id) })));
+  const gated = await Promise.all(versions.map(async (v) => ({ ...v, gate: (await d.store.getSkillVersionGate(v.ref_id, v.version))?.state ?? null })));
+  const rows = await Promise.all(f.skillVersionRows(gated, runs).map(async (r) => ({ ...r, folder_hash: await text(r.folder_hash), run_id: r.run_id === null ? null : await text(r.run_id) })));
   if (read === "versions") return { status: 200, value: { versions: rows, unlinked: await Promise.all(f.unlinkedRuns(versions, runs).map((r) => text(r.id))) } };
   const a = url.searchParams.get("a"), b = url.searchParams.get("b");
   if (!a || !b) return apiError(400, "Name both versions: ?a=<hash>&b=<hash>.");

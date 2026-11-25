@@ -21,8 +21,20 @@ export {
   ANONYMOUS, CANCEL_APP_COMMAND, CLI_NAME_ENV, CLI_TOP_WORDS, CONFIRM_WORD, DEFAULT_CLI_NAME, HELP_WORD, SENTENCE_APP_COMMAND,
   type CliEnvironment, type CliIdentity, type CliIdentitySource, cliIdentity, cliName, isCliCommandKey, localIdentity,
 } from "./local-cli-identity.js";
-export { type CliAction, type ItemCommand, cliCommandListMarkdown, cliUsage, cliUsageLines, parseLocalCliArgs } from "./local-cli-parse.js";
+export { type ItemCommand, cliCommandListMarkdown, cliUsage, cliUsageLines } from "./local-cli-parse.js";
 export {
-  CREATE_NEXT_STEP, type CliResult, type LocalCliDeps, TASK_LIST_LIMIT, resolveItem, runLocalCli, shortItemId, storedProjectCaps,
+  CREATE_NEXT_STEP, type CliAction, type CliResult, type LocalCliDeps, TASK_LIST_LIMIT, resolveItem, runLocalCli, shortItemId, storedProjectCaps,
 } from "./local-cli-run.js";
 export { type SentenceDeps, parseSentence, runSentence } from "./local-cli-sentence.js";
+
+import { parseLocalCliArgs as parseArgs } from "./local-cli-parse.js";
+import type { CliAction } from "./local-cli-run.js";
+
+/**
+ * The action, or an error line (parseArgs in local-cli-parse.ts). A bare `approve` or `reject`, with no work item ID,
+ * settles the newest held skill version (design 07-self-improvement); with none held it fails as the parser does.
+ */
+export function parseLocalCliArgs(word: string, args: readonly string[]): CliAction | { error: string } {
+  if ((word === "approve" || word === "reject") && args.length === 0) return { action: "settle", command: word };
+  return parseArgs(word, args);
+}
