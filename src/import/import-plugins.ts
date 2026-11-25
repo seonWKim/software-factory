@@ -3,23 +3,26 @@
 // - a skill or command: one `ext_skill_refs` row per (source, path) with its kind, name and SHA-256; a changed file
 //   updates that row (`updated skill <name>`), never adds a second one. A skill's SKILL.md text goes through the egress
 //   scan first (a failure is refused: no ref, no version); then, when its folder hash (capabilities skillVersion) is
-//   not its latest version's, the next `ext_skill_versions` row keeps the text. A command gets no version;
+//   not its latest version's, the next `ext_skill_versions` row keeps the text, with its gate row in pending (design
+//   07-self-improvement). A command gets no version;
 // - an MCP server, after the same three scans `factory pack add` runs (pack-scans.ts): one pending
 //   `ext_packs_entries` pointer row (source, file, key and the SHA-256 of its allow-listed descriptor) through
 //   PackEntriesStore.storePointer. A changed entry is pending again. No command, args, env or URL is stored.
-// Nothing here starts, approves or grants an MCP server, and nothing writes to a scanned file.
+// Nothing here starts, approves or grants an MCP server, and nothing writes to a scanned file. After the items are
+// stored, `factory plugins import` runs one new-version gate pass (gatedImport, src/skill-evals.ts): each
+// pending gate, and each running one whose lease ended, has its skill's suite run on its version.
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { insertOrSkip } from "../bus/index.js";
 import type { Loaded } from "../load-config.js";
-import { Plugins } from "../plugin-set.js";
 import { cliUserConfig } from "../core/config.js";
 import { type CliEnvironment, cliIdentity } from "../core/local-cli.js";
 import { SqlSkillEvalStore } from "../impl/store/sql/skill-evals.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { skillVersion } from "../runtime/capabilities/capabilities.js";
+import { gatedImport } from "../skill-evals.js";
 import type { Timestamp } from "../core/types.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import { PackEntriesStore, canonicalJson, descriptionHash } from "../packs/pack-entries.store.js";
@@ -55,6 +58,12 @@ export class SkillRefsStore {
       [s.kind, s.name, s.sha256, at, s.source, s.path, s.sha256, s.kind],
     );
     return changed === 1 ? "updated" : "already_added";
+  }
+
+  /** The stored path (a skill's SKILL.md) of ref `id`; null for an unknown ref. */
+  async pathOf(id: string): Promise<string | null> {
+    const [row] = await this.db.all("SELECT path FROM ext_skill_refs WHERE id = ?", [id]);
+    return row ? String(row.path) : null;
   }
 
   /** True when this exact file (its source, path, kind and SHA-256) is stored. */
@@ -125,26 +134,19 @@ export async function importItem(d: ImportDeps, item: Found, shared: ReadonlySet
 
 /**
  * Opens the configured store (migrated) and stores `found` as the CLI identity's user ID, with the configured
- * clock and egress scanner, through the same registry as build(). Throws on a bad `cli_user` config.
+ * clock and egress scanner, through the same registry as build(), then runs one gate pass over the store's due
+ * version gates. Throws on a bad `cli_user` config.
  */
 export async function storeFound(loaded: Loaded, env: CliEnvironment, found: readonly Found[]): Promise<ImportOutcome[]> {
   const added_by = cliIdentity(cliUserConfig(loaded.file), env).user;
-  const p = new Plugins(loaded);
-  const clock = await p.clock();
-  const secrets = await p.secrets();
-  const scanner = await p.scanner(secrets);
-  await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
-  const store = await p.store(secrets, clock);
-  try {
-    await store.migrate();
+  return gatedImport(loaded, async ({ store, clock, scanner }) => {
     const d: ImportDeps = { db: storeSql(store), now: () => clock.now().toISOString(), scanner, added_by };
     const shared = sharedKeys(found);
-    const out: ImportOutcome[] = [];
-    for (const item of found) out.push(await importItem(d, item, shared));
-    return out;
-  } finally {
-    await store.close();
-  }
+    const result: ImportOutcome[] = [];
+    for (const item of found) result.push(await importItem(d, item, shared));
+    const refs = new SkillRefsStore(d.db, d.now);
+    return { result, refPath: (id) => refs.pathOf(id) };
+  });
 }
 
 const what = (i: Found): string => `${i.kind} ${i.name} from ${i.source}`;

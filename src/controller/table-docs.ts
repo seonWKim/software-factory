@@ -84,6 +84,7 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   "controller_skill_eval_runs.errored": "How many cases the run could not judge; empty on older runs.",
   controller_skill_eval_suites: "Skill eval suites: one set of cases for a skill, and who made it.",
   "controller_skill_eval_suites.version": "Starts at 1 and goes up by one on each case added, edited or deleted.",
+  controller_skill_version_gates: "The gate of each new skill version: its state (pending, running, passed, held or rejected), the lease of the pass running it, its eval run and why it passed or was held.",
   controller_standing_proposals: "Offers to turn on a standing approval after a run of the same approvals.",
   controller_standing_rule_changes: "Every change to a standing approval (turned on, paused, threshold changed, removed): before, after and who made it.",
   "controller_standing_rule_changes.actor": "The user ID of who made the change, never a display name.",
