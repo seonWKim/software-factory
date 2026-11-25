@@ -37,7 +37,7 @@ export interface CommandCall {
 /** One stored skill-eval run with its figures, as `eval results` prints it. */
 export type SkillEvalRunRow = Awaited<ReturnType<FactoryStore["listSkillEvalRuns"]>>[number];
 
-/** `eval run <skill>`'s options, as typed: the replays' model class, the judge's class and replays per case. */
+/** `eval run <skill>`'s options, as typed: the replays' model class, the judge's class and replays per case (1 to 10). */
 export interface SkillEvalRunOptions {
   model_class?: string;
   judge_model_class?: string;
@@ -73,8 +73,22 @@ export interface SkillEvalRunSummary {
   errored: number | null;
 }
 
-/** Grid and compare, the same functions the read routes call. */
+/**
+ * A run's pass@1, pass^k and 95% Wilson interval over its replays: the shape of src/core/skill-eval-stats.ts RunStats,
+ * restated here for the same reason as SkillEvalRunSummary.
+ */
+export interface SkillEvalRunStats {
+  replays: number;
+  k: number;
+  pass_at_1: number | null;
+  pass_hat_k: number | null;
+  interval: { low: number; high: number } | null;
+}
+
+/** Grid, compare and run stats, the same functions the read routes call. */
 export interface SkillEvalReads {
+  /** A run's stats from its stored verdicts (src/core/skill-eval-stats.ts runStats). */
+  stats(verdicts: readonly { case_id: string; verdict: string }[]): SkillEvalRunStats;
   /** One row per (skill version, model class) from its newest run; runs with no figures left out. */
   grid(runs: readonly SkillEvalRunRow[]): SkillEvalRunSummary[];
   /**

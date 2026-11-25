@@ -21,7 +21,7 @@ import reviewRole from "../src/worker/roles/review.role.js";
 import { FakeRunner, FakeSandbox } from "./helpers/fakes/runner.js";
 import { cleanScanner, config, prompts } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
-import { type SkillEvalWiring, brokerGuard, improveWiring, judgeVersion, runFigures, runSkillEvalFor, scratchRunFor, skillImproveWiring } from "../src/skill-evals.js";
+import { type SkillEvalWiring, brokerGuard, improveWiring, judgeVersion, previousAnswers, runFigures, runSkillEvalFor, scratchRunFor, skillImproveWiring } from "../src/skill-evals.js";
 import { startIdentity } from "../src/identity/index.js";
 import { FakeNoteBroker } from "./helpers/fakes/broker.js";
 import { SKILL_IMPROVE_DEFAULTS } from "../src/core/skill-improve-config.js";
@@ -234,6 +234,39 @@ describe("runSkillEval", () => {
     expect(replay).toHaveBeenCalledTimes(1);
   });
 
+  it("replays each case N times, stores each verdict with its number 1 to N, and does not replay a stored (case, number) again", async () => {
+    const store = await suiteWith({ c1: { input: "x", expected: ["a"] }, c2: { input: "y", expected: ["a"] } });
+    let calls = 0;
+    const replay = vi.fn<SkillReplay>(async () => ({ output: `o${++calls}` }));
+    const judge: SkillJudgeFn = async (s) => [{ answer: s.output === "o4" ? "no" : "yes", reason: "r" }];
+    const ac = new AbortController();
+    // An abort after the third replay leaves the run part-done; the second call finishes it without repeating one.
+    const stopping: SkillReplay = async (c, sig) => {
+      const out = await replay(c, sig);
+      if (calls === 3) ac.abort();
+      return out;
+    };
+    const first = await runSkillEval({ store, replay: stopping, judge, scan: async () => [] }, { id: "r1", suite_id: "s1", created_by: OWNER, skill_version: "v", replays: 3 }, ac.signal);
+    expect(first.status).toBeNull();
+    const outcome = await runSkillEval({ store, replay: stopping, judge, scan: async () => [] }, { id: "r1", suite_id: "s1", created_by: OWNER, skill_version: "v", replays: 3 }, signal());
+    expect(replay).toHaveBeenCalledTimes(6);
+    expect(outcome.status).toBe("failed");
+    expect(outcome.verdicts).toHaveLength(6);
+    const stored = await store.listSkillEvalReplays("r1");
+    for (const c of ["c1", "c2"]) expect(stored.filter((x) => x.case_id === c).map((x) => x.replay).sort()).toEqual([1, 2, 3]);
+    expect(stored.filter((x) => x.verdict === "fail")).toEqual([expect.objectContaining({ case_id: "c2", replay: 2 })]);
+  });
+
+  it("a verdict stored with no replay number counts as replay 1 and is not replayed again", async () => {
+    const store = await suiteWith({ c1: { input: "x", expected: ["a"] } });
+    await store.startSkillEvalRun({ id: "r1", suite_id: "s1", created_by: OWNER });
+    await store.recordSkillEvalReplay({ run_id: "r1", case_id: "c1", verdict: "pass", detail: {} });
+    const replay = vi.fn<SkillReplay>(async () => ({ output: "o" }));
+    await runSkillEval({ store, replay, judge: async () => [{ answer: "yes", reason: "ok" }], scan: async () => [] }, { id: "r1", suite_id: "s1", created_by: OWNER, skill_version: "v", replays: 2 }, signal());
+    expect(replay).toHaveBeenCalledTimes(1);
+    expect((await store.listSkillEvalReplays("r1")).map((x) => x.replay)).toEqual(expect.arrayContaining([null, 2]));
+  });
+
   it("a second run after the skill folder changes stores a second version; the first run and its replays are unchanged", async () => {
     const skill = join(tmp, "skill");
     await mkdir(skill, { recursive: true });
@@ -348,16 +381,35 @@ describe("the eval wiring (runSkillEvalFor)", () => {
     expect(llm.requests[0]).toMatchObject({ model_class: "standard" });
   });
 
-  it("refuses an unknown --model class, another --judge-model class and --replays above 1, writing no run nor building a plugin", async () => {
+  it("--replays N replays each case N times: replays is cases × N, the pass rate passes over replays, errored the errored replays", async () => {
+    const store = await suiteWith({ c1: { input: "good", expected: ["a"] }, c2: { input: "bad", expected: ["a"] }, c3: { input: "x", expected: "no rubric" } });
+    const llm = new FakeLLM((req) => (req.messages[0]!.content.includes("did good") ? yesNo("yes") : yesNo("no")));
+    const { d, runner } = await wiring(store, llm);
+    const r = await runSkillEvalFor(d, { skill: "skills/tests-first", created_by: OWNER, signal: signal(), replays: 2 });
+    expect(r).toEqual({ run: expect.objectContaining({ id: "run1", status: "failed", replays: 6, pass_rate: 2 / 6, errored: 2 }) });
+    expect(runner.specs.length).toBe(4);
+    expect((await store.listSkillEvalReplays("run1")).map((x) => x.replay).sort()).toEqual([1, 1, 1, 2, 2, 2]);
+  });
+
+  it("refuses an unknown --model class, another --judge-model class and --replays outside 1 to 10, writing no run nor building a plugin", async () => {
     const store = await suiteWith({ c1: { input: "x", expected: ["a"] } });
     const { d, plugins } = await wiring(store, new FakeLLM(() => yesNo("yes")));
     const go = (o: { model_class?: string; judge_model_class?: string; replays?: number }) => runSkillEvalFor(d, { skill: "skills/tests-first", created_by: OWNER, signal: signal(), ...o });
     expect(await go({ model_class: "huge" })).toEqual({ refused: expect.stringMatching(/huge.*cheap, standard, strong/) });
     expect(await go({ judge_model_class: "standard" })).toEqual({ refused: expect.stringMatching(/--judge-model standard.*strong/) });
     expect(await go({ model_class: "cheap", judge_model_class: "cheap" })).toEqual({ refused: expect.stringMatching(/--judge-model cheap.*strong/) });
-    expect(await go({ replays: 3 })).toEqual({ refused: expect.stringMatching(/--replays 3.*one verdict per case/) });
+    for (const replays of [0, 11, 2.5, -1]) expect(await go({ replays })).toEqual({ refused: expect.stringMatching(new RegExp(`--replays ${replays}.*1 to 10`)) });
     expect(plugins).not.toHaveBeenCalled();
     expect(await store.db.all("SELECT id FROM controller_skill_eval_runs")).toEqual([]);
+  });
+
+  it("previousAnswers reads the replay numbered 1 of a run with repeats, else the replay stored with no number", async () => {
+    const store = await suiteWith({ c1: { input: "x", expected: ["a"] } });
+    for (const [id, v] of [["old", "v0"], ["rep", "v1"]] as const) await store.startSkillEvalRun({ id, suite_id: "s1", created_by: OWNER, skill_version: v });
+    await store.recordSkillEvalReplay({ run_id: "old", case_id: "c1", verdict: "pass", detail: {}, answer: "unnumbered" });
+    for (const replay of [2, 1, 3]) await store.recordSkillEvalReplay({ run_id: "rep", case_id: "c1", replay, verdict: "pass", detail: {}, answer: `answer ${replay}` });
+    expect(await previousAnswers(store, "skills/tests-first", "v2")("c1")).toBe("answer 1");
+    expect(await previousAnswers(store, "skills/tests-first", "v1")("c1")).toBe("unnumbered");
   });
 
   it("figures: one replay per case, a null pass rate with no replays, the judge on judgeClass of the replay's class", () => {

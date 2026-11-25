@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadCommands } from "../src/cli/index.js";
 import type { SkillEvalRunFn as RunFn } from "../src/cli/command.js";
 import { compareSkillEvalRuns, skillEvalGrid } from "../src/core/skill-eval-compare.js";
+import { runStats } from "../src/core/skill-eval-stats.js";
 import type { UserId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Loaded } from "../src/load-config.js";
@@ -19,7 +20,7 @@ import { newStore } from "./helpers/store.js";
 const OWNER = "local:owner" as UserId;
 const SKILL = "skills/tests-first";
 const ENV = async () => ({ gitEmail: "owner@example.com", osUser: null });
-const READS = { grid: skillEvalGrid, compare: compareSkillEvalRuns };
+const READS = { grid: skillEvalGrid, compare: compareSkillEvalRuns, stats: runStats };
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -112,6 +113,68 @@ describe("factory eval results", () => {
   });
 });
 
+/** A fake run function that replays each of cases c1 and c2 `--replays` times and stores the verdicts `verdict` gives. */
+function repeatingRun(id: string, verdict: (case_id: string, replay: number) => string): RunFn {
+  return async (store, _loaded, r) => {
+    const suite = (await store.listSkillEvalSuites()).find((s) => s.skill_ref === r.skill)!;
+    await store.startSkillEvalRun({ id, suite_id: suite.id, created_by: r.created_by, skill_version: "v1" });
+    const n = r.replays ?? 1;
+    const verdicts: string[] = [];
+    for (let replay = 1; replay <= n; replay++) {
+      for (const case_id of ["c1", "c2"]) {
+        verdicts.push(verdict(case_id, replay));
+        await store.recordSkillEvalReplay({ run_id: id, case_id, replay, verdict: verdicts.at(-1)!, detail: {} });
+      }
+    }
+    await store.finishSkillEvalRun(id, "failed");
+    const passes = verdicts.filter((v) => v === "pass").length;
+    await store.recordSkillEvalRunFigures(id, { model_class: "standard", judge_model_class: "strong", replays: verdicts.length, pass_rate: passes / verdicts.length, errored: 0 });
+    return { run: (await store.getSkillEvalRun(id))! };
+  };
+}
+
+describe("factory eval run --replays N: pass@1, pass^k and the 95% Wilson interval", () => {
+  it("prints pass@1 over the replays, pass^k with k = N and the interval, on eval run and on eval results", async () => {
+    const { store } = await newStore();
+    await store.createSkillEvalSuite({ id: "s1", skill_ref: SKILL, title: "t", created_by: OWNER });
+    // c1 passes all 3 replays; c2 fails its second: pass@1 5/6, pass^3 1/2.
+    const run = vi.fn(repeatingRun("r1", (c, n) => (c === "c2" && n === 2 ? "fail" : "pass")));
+    const r = await evalCommand(store, ["run", SKILL, "--replays", "3"], run);
+    expect(run.mock.calls[0]![2]).toMatchObject({ replays: 3 });
+    const w = runStats([...Array(5).fill({ case_id: "c", verdict: "pass" }), { case_id: "c", verdict: "fail" }]).interval!;
+    const shown = `replays 6, pass rate 0.83, errored 0  (model standard, judge strong, skill version v1)  pass@1 0.83, pass^3 0.50, 95% interval ${w.low.toFixed(2)}-${w.high.toFixed(2)}`;
+    expect(r.out.join("\n")).toContain(shown);
+    expect((await evalCommand(store, ["results", SKILL])).out[0]).toContain(shown);
+  });
+
+  it("accepts 1 to 10; any other --replays exits 1, prints the usage and writes no run and no replay", async () => {
+    const { store } = await newStore();
+    await store.createSkillEvalSuite({ id: "s1", skill_ref: SKILL, title: "t", created_by: OWNER });
+    const run = vi.fn(repeatingRun("r10", () => "pass"));
+    expect((await evalCommand(store, ["run", SKILL, "--replays", "10"], run)).code).toBe(1); // the fake run is stored failed
+    expect(run.mock.calls[0]![2]).toMatchObject({ replays: 10 });
+    expect((await store.listSkillEvalReplays("r10")).map((x) => x.replay)).toEqual(expect.arrayContaining([1, 10]));
+    const refused = vi.fn(repeatingRun("bad", () => "pass"));
+    for (const bad of ["0", "11", "100", "-1", "2.5", "01", "ten"]) {
+      const r = await evalCommand(store, ["run", SKILL, "--replays", bad], refused);
+      expect(r.code).toBe(1);
+      expect(r.err.join("\n")).toContain("usage:");
+    }
+    expect(refused).not.toHaveBeenCalled();
+    expect(await store.db.all("SELECT id FROM controller_skill_eval_runs WHERE id = 'bad'")).toEqual([]);
+    expect(await store.listSkillEvalReplays("bad")).toEqual([]);
+  });
+
+  it("a run stored before replay numbers shows k 1 and pass^1 equal to pass@1", async () => {
+    const { store } = await newStore();
+    await store.createSkillEvalSuite({ id: "s1", skill_ref: SKILL, title: "t", created_by: OWNER });
+    await store.startSkillEvalRun({ id: "old", suite_id: "s1", created_by: OWNER });
+    await store.recordSkillEvalReplay({ run_id: "old", case_id: "c1", verdict: "pass", detail: {} });
+    await store.recordSkillEvalReplay({ run_id: "old", case_id: "c2", verdict: "fail", detail: {} });
+    expect((await evalCommand(store, ["results", SKILL])).out[0]).toMatch(/pass@1 0\.50, pass\^1 0\.50, 95% interval 0\.\d\d-0\.\d\d$/);
+  });
+});
+
 /** A finished run of suite s1 with its skill version and figures. */
 async function storedRun(store: FactoryStore, id: string, f: { version: string; model: string; pass_rate: number | null; replays: number; judge_version?: string }) {
   await store.startSkillEvalRun({ id, suite_id: "s1", created_by: OWNER, skill_version: f.version, judge_version: f.judge_version ?? "j1" });
@@ -134,10 +197,10 @@ describe("factory eval run options", () => {
   it("prints the run's refusal of an option and exits 1; a --replays that is no whole number or a valueless flag is a usage error", async () => {
     const { store } = await newStore();
     await store.createSkillEvalSuite({ id: "s1", skill_ref: SKILL, title: "t", created_by: OWNER });
-    const refusing: RunFn = async () => ({ refused: "--replays 3: a run stores one verdict per case, so it replays each case once: nothing run" });
-    const r = await evalCommand(store, ["run", SKILL, "--replays", "3"], refusing);
+    const refusing: RunFn = async () => ({ refused: "--model huge: no such model class; use one of cheap, standard, strong: nothing run" });
+    const r = await evalCommand(store, ["run", SKILL, "--model", "huge"], refusing);
     expect(r.code).toBe(1);
-    expect(r.err.join("\n")).toContain("one verdict per case");
+    expect(r.err.join("\n")).toContain("no such model class");
     const run = vi.fn(fakeRun("r1", "passed"));
     for (const bad of [["--replays", "two"], ["--replays", "0"], ["--model"], ["--judge-model", "--json"], ["--other", "x"]]) {
       expect((await evalCommand(store, ["run", SKILL, ...bad], run)).code).toBe(1);
