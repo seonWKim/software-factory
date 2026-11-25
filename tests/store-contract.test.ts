@@ -2370,6 +2370,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_skill_eval_replays",
       "controller_skill_drafts", // skill improvement: the *-controller-skill-improve migration
       "controller_skill_draft_days",
+      "controller_skill_version_gates", // new skill versions' gates (design 07-self-improvement): the *-controller-skill-eval-gate migration
       "controller_tasks", // plain tasks: src/controller/migrations/20261111T1610-controller-tasks
       "controller_notices", // owner notices: src/controller/migrations/20261112T0900-controller-notices
       "controller_notice_messages", "controller_notice_questions", // Slack notice records: 20261112T2100-controller-notice-messages

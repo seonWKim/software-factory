@@ -18,13 +18,16 @@
 // main.ts passes skillEvalRun to every command through the command call (CommandCall.runSkillEval), so the CLI
 // handler imports no root or legacy module. The composition root builds the improve run's skill improvement wiring
 // here (skillImproveWiring, design 07-self-improvement): the scratch run, the re-run after a promote, and SKILL.md I/O.
+// The new-version gate pass (skillVersionGatePass, design 07-self-improvement) runs a new version's suite through
+// runSkillEvalFor on that stored version, after a plugin import records one.
 
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { codeVersion } from "./config-values.js";
 import { type ToolGrants, capabilitiesConfig, skillImproveConfig, toolGrantsConfig } from "./core/config.js";
 import { type SkillImproveWiring, baselineVersion } from "./core/skill-improve.js";
+import { type SkillGateResult, type SkillGateWiring, runSkillVersionGates } from "./core/skill-eval-gate.js";
 import type { UserId } from "./core/types.js";
 import { type Loaded, localProject } from "./load-config.js";
 import { Plugins } from "./plugin-set.js";
@@ -352,6 +355,33 @@ export function improveWiring(d: SkillEvalWiring, config: SkillImproveWiring["co
       return "run" in res ? res.run : null;
     },
   };
+}
+
+/**
+ * The gate pass's wiring over `d` (SkillGateWiring): an imported skill's suite is the one whose skill_ref resolves to
+ * the folder of its SKILL.md (`refPath`, null for an unknown ref), and a gate run is `eval run` on the stored version.
+ */
+export function gateWiring(d: SkillEvalWiring, refPath: (ref_id: string) => Promise<string | null>): SkillGateWiring {
+  return {
+    newToken: d.newId,
+    suiteOf: async (ref_id) => {
+      const path = await refPath(ref_id);
+      if (path === null) return null;
+      const folder = resolve(dirname(path));
+      return (await d.store.listSkillEvalSuites()).find((s) => resolve(skillFolderPath(s.skill_ref, d.root)) === folder)?.skill_ref ?? null;
+    },
+    run: async (r, signal) => {
+      const res = await runSkillEvalFor(d, { skill: r.skill_ref, version: r.folder_hash, replays: r.replays, model_class: r.model_class, created_by: r.created_by, signal });
+      return "run" in res ? res.run : null;
+    },
+  };
+}
+
+/** One gate pass over the configured plugins and `store`, with the import's Clock and scanner (src/import/import-plugins.ts). */
+export function skillVersionGatePass(
+  store: FactoryStore, loaded: Loaded, d: { clock: { now(): Date }; scanner: EgressScanner; refPath: (ref_id: string) => Promise<string | null>; signal: AbortSignal },
+): Promise<SkillGateResult[]> {
+  return runSkillVersionGates({ store, scanner: d.scanner, clock: d.clock, config: skillImproveConfig(loaded.file), wiring: gateWiring(wiringOf(store, loaded), d.refPath), signal: d.signal });
 }
 
 /** One `eval case try <case>`: the case id, the class the replay runs on, and the stop signal. */

@@ -461,6 +461,19 @@ CREATE TABLE controller_skill_eval_suites (
     created_at  TEXT NOT NULL
   , version INTEGER NOT NULL DEFAULT 1);
 
+CREATE TABLE controller_skill_version_gates (
+    ref_id       TEXT NOT NULL,
+    version      INTEGER NOT NULL,
+    state        TEXT NOT NULL CHECK (state IN ('pending', 'running', 'passed', 'held', 'rejected')),
+    lease_token  TEXT,
+    lease_until  TEXT,
+    run_id       TEXT,
+    detail       TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    PRIMARY KEY (ref_id, version)
+  );
+
 CREATE TABLE controller_standing_proposals (
     id          TEXT PRIMARY KEY,
     gate        TEXT NOT NULL,

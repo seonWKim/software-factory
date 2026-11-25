@@ -1,8 +1,12 @@
-// Skill evals: the SkillEvalStore methods over `controller_skill_eval_*` and `ext_skill_versions`, as SqlSkillEvalStore, which SqlFactoryStore
+// Skill evals: the SkillEvalStore methods over `controller_skill_eval_*`, `ext_skill_versions` and
+// `controller_skill_version_gates`, as SqlSkillEvalStore, which SqlFactoryStore
 // extends. Each method is one transaction; times come from the store's injected Clock. A duplicate key is "already
 // there": the stored row is returned.
 
-import type { SkillEvalCase, SkillEvalReplay, SkillEvalRun, SkillEvalRunFigures, SkillEvalRunStart, SkillEvalRunStatus, SkillEvalStore, SkillEvalSuite, SkillVersion } from "../../../interfaces/skill-eval-store.js";
+import type {
+  SkillEvalCase, SkillEvalReplay, SkillEvalRun, SkillEvalRunFigures, SkillEvalRunStart, SkillEvalRunStatus, SkillEvalStore, SkillEvalSuite, SkillVersion,
+  SkillVersionGate, SkillVersionGateFinish, SkillVersionGateState, SkillVersionGateTake,
+} from "../../../interfaces/skill-eval-store.js";
 import type { Timestamp, UserId } from "../../../core/types.js";
 import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
 import { SqlScheduleStore } from "./schedules.js";
@@ -14,6 +18,7 @@ const RUN_COLUMNS = "id, suite_id, status, started_at, finished_at, created_by, 
 const RUN_READ = `${RUN_COLUMNS}, model_class, judge_model_class, replays, pass_rate, errored`;
 const REPLAY_COLUMNS = "run_id, case_id, verdict, detail, recorded_at, transcript, answer, input_tokens, output_tokens, cost_usd, wall_ms, replay";
 const VERSION_COLUMNS = "ref_id, version, folder_hash, text, source, created_at";
+const GATE_COLUMNS = "ref_id, version, state, lease_token, lease_until, run_id, detail, created_at, updated_at";
 
 const ts = (v: unknown) => String(v) as Timestamp;
 const textOrNull = (v: unknown) => (v == null ? null : String(v));
@@ -34,6 +39,11 @@ const rowToRun = (r: Row): SkillEvalRun => ({
 });
 const rowToVersion = (r: Row): SkillVersion => ({
   ref_id: String(r.ref_id), version: Number(r.version), folder_hash: String(r.folder_hash), text: String(r.text), source: String(r.source), created_at: ts(r.created_at),
+});
+const rowToGate = (r: Row): SkillVersionGate => ({
+  ref_id: String(r.ref_id), version: Number(r.version), state: String(r.state) as SkillVersionGateState, lease_token: textOrNull(r.lease_token),
+  lease_until: r.lease_until == null ? null : ts(r.lease_until), run_id: textOrNull(r.run_id), detail: JSON.parse(String(r.detail)),
+  created_at: ts(r.created_at), updated_at: ts(r.updated_at),
 });
 /** Gives a suite its next version, inside the transaction of the case change that calls for it. */
 const bumpSuiteVersion = (tx: SqlExecutor, suite_id: string) => tx.run("UPDATE controller_skill_eval_suites SET version = version + 1 WHERE id = ?", [suite_id]);
@@ -185,11 +195,51 @@ export class SqlSkillEvalStore extends SqlScheduleStore implements SkillEvalStor
       const row = { ...v, version: next, created_at: this.evalStamp() };
       // A clash on (ref_id, version) means another worker wrote this version first: nothing more to write.
       const wrote = await tx.run(`INSERT OR IGNORE INTO ext_skill_versions (${VERSION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?)`, [row.ref_id, row.version, row.folder_hash, row.text, row.source, row.created_at]);
-      return wrote === 1 ? row : null;
+      if (wrote !== 1) return null;
+      // The version's gate, in this transaction: it is not current until a gate pass passes it.
+      await tx.run(`INSERT INTO controller_skill_version_gates (${GATE_COLUMNS}) VALUES (?, ?, 'pending', NULL, NULL, NULL, '{}', ?, ?)`, [row.ref_id, row.version, row.created_at, row.created_at]);
+      return row;
     });
   }
 
   async listSkillVersions(ref_id: string): Promise<SkillVersion[]> {
     return (await this.db.all(`SELECT ${VERSION_COLUMNS} FROM ext_skill_versions WHERE ref_id = ? ORDER BY version`, [ref_id])).map(rowToVersion);
+  }
+
+  async currentSkillVersion(ref_id: string, before?: number): Promise<SkillVersion | null> {
+    const cols = VERSION_COLUMNS.split(", ").map((c) => `v.${c}`).join(", ");
+    const [row] = await this.db.all(
+      `SELECT ${cols} FROM ext_skill_versions v LEFT JOIN controller_skill_version_gates g ON g.ref_id = v.ref_id AND g.version = v.version
+       WHERE v.ref_id = ? AND v.version < ? AND (g.state IS NULL OR g.state = 'passed') ORDER BY v.version DESC LIMIT 1`,
+      [ref_id, before ?? Number.MAX_SAFE_INTEGER],
+    );
+    return row ? rowToVersion(row) : null;
+  }
+
+  async listDueSkillVersionGates(now: Timestamp): Promise<SkillVersionGate[]> {
+    return (await this.db.all(
+      `SELECT ${GATE_COLUMNS} FROM controller_skill_version_gates WHERE state = 'pending' OR (state = 'running' AND lease_until <= ?) ORDER BY ref_id, version`, [now],
+    )).map(rowToGate);
+  }
+
+  takeSkillVersionGate(t: SkillVersionGateTake): Promise<boolean> {
+    return this.db.transaction(async (tx) => (await tx.run(
+      `UPDATE controller_skill_version_gates SET state = 'running', lease_token = ?, lease_until = ?, updated_at = ?
+       WHERE ref_id = ? AND version = ? AND (state = 'pending' OR (state = 'running' AND lease_until <= ?))`,
+      [t.lease_token, t.lease_until, this.evalStamp(), t.ref_id, t.version, t.now],
+    )) === 1);
+  }
+
+  finishSkillVersionGate(f: SkillVersionGateFinish): Promise<boolean> {
+    return this.db.transaction(async (tx) => (await tx.run(
+      `UPDATE controller_skill_version_gates SET state = ?, lease_token = NULL, lease_until = NULL, run_id = ?, detail = ?, updated_at = ?
+       WHERE ref_id = ? AND version = ? AND state = 'running' AND lease_token = ?`,
+      [f.state, f.run_id, JSON.stringify(f.detail), this.evalStamp(), f.ref_id, f.version, f.lease_token],
+    )) === 1);
+  }
+
+  async getSkillVersionGate(ref_id: string, version: number): Promise<SkillVersionGate | null> {
+    const [row] = await this.db.all(`SELECT ${GATE_COLUMNS} FROM controller_skill_version_gates WHERE ref_id = ? AND version = ?`, [ref_id, version]);
+    return row ? rowToGate(row) : null;
   }
 }

@@ -4,7 +4,8 @@
 // (src/runtime/skill-evals/) calls them; the eval wiring (src/skill-evals.ts) records a finished run's figures, and
 // `factory eval results` and GET /api/v1/evals/<skill>/runs list a skill's runs; `factory eval compare` and
 // GET /api/v1/evals/<skill>/compare read runs by id. Skill versions are rows of `ext_skill_versions`: the plugin import
-// (src/import/import-plugins.ts) records one each time an imported skill's folder hash changes.
+// (src/import/import-plugins.ts) records one each time an imported skill's folder hash changes, with its gate row
+// (`controller_skill_version_gates`, design 07-self-improvement) in the same transaction.
 
 import type { Timestamp, UserId } from "../core/types.js";
 
@@ -112,6 +113,44 @@ export interface SkillVersion {
   created_at: Timestamp;
 }
 
+/** A new version's gate: pending until a gate pass takes it, running under a lease, then passed or held (rejected: the owner's, later). */
+export type SkillVersionGateState = "pending" | "running" | "passed" | "held" | "rejected";
+
+/** The gate row of one skill version (design 07-self-improvement); a version recorded before the gate has none. */
+export interface SkillVersionGate {
+  ref_id: string;
+  version: number;
+  state: SkillVersionGateState;
+  /** The holder's token and its lease end while running; null otherwise. */
+  lease_token: string | null;
+  lease_until: Timestamp | null;
+  /** The gate's eval run; null before it ran or when it ran none. */
+  run_id: string | null;
+  /** JSON: the reason, the pass rates compared and the cases whose pass rate fell. */
+  detail: unknown;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+/** A take of a gate: the holder's new token, the take's time (the gate pass's Clock) and its lease end. */
+export interface SkillVersionGateTake {
+  ref_id: string;
+  version: number;
+  lease_token: string;
+  now: Timestamp;
+  lease_until: Timestamp;
+}
+
+/** A gate's end as its holder writes it: passed, held, or pending again (its run gave no pass rate). */
+export interface SkillVersionGateFinish {
+  ref_id: string;
+  version: number;
+  lease_token: string;
+  state: "passed" | "held" | "pending";
+  run_id: string | null;
+  detail: unknown;
+}
+
 export interface SkillEvalStore {
   /** Idempotent on the id: a second call returns the stored suite. */
   createSkillEvalSuite(s: Omit<SkillEvalSuite, "created_at">): Promise<SkillEvalSuite>;
@@ -151,10 +190,26 @@ export interface SkillEvalStore {
   /** Writes a finished run's figures once; false when the run is unknown, still running or already has them. */
   recordSkillEvalRunFigures(id: string, f: SkillEvalRunFigures): Promise<boolean>;
   /**
-   * Writes the ref's next version, in one transaction, when `folder_hash` differs from its latest version's (none:
-   * version 1). Null when the hash is unchanged, or when another worker wrote that version first (the unique key).
+   * Writes the ref's next version with its gate row in `pending`, in one transaction, when `folder_hash` differs from
+   * its latest version's (none: version 1). Null when the hash is unchanged, or when another worker wrote that version
+   * first (the unique key).
    */
   recordSkillVersion(v: Omit<SkillVersion, "version" | "created_at">): Promise<SkillVersion | null>;
   /** A ref's versions, oldest first. */
   listSkillVersions(ref_id: string): Promise<SkillVersion[]>;
+  /**
+   * The ref's current version: its newest version (below `before` when given) whose gate is passed or that has no gate
+   * row; a pending, running, held or rejected version is not current. Null when there is none.
+   */
+  currentSkillVersion(ref_id: string, before?: number): Promise<SkillVersion | null>;
+  /** The gates a pass may take at `now`: pending, or running with its lease ended; oldest first (ref, then version). */
+  listDueSkillVersionGates(now: Timestamp): Promise<SkillVersionGate[]>;
+  /**
+   * Takes a gate by one conditional update: running, with the new token and lease end, only while it is pending or
+   * running with its lease ended at `now`. False when another holder has it or it is finished.
+   */
+  takeSkillVersionGate(t: SkillVersionGateTake): Promise<boolean>;
+  /** Writes a gate's end only while it is running under `lease_token`; false (nothing written) for a late holder. */
+  finishSkillVersionGate(f: SkillVersionGateFinish): Promise<boolean>;
+  getSkillVersionGate(ref_id: string, version: number): Promise<SkillVersionGate | null>;
 }
