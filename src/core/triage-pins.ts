@@ -11,12 +11,25 @@ const QUOTED = /"([^"\n]*)"/g;
 
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 
+/** The distinct double-quoted strings of four or more characters in `text`, in order: the pin rule. */
+export function pinStrings(text: string): string[] {
+  return [...new Set([...text.matchAll(QUOTED)].map((m) => m[1]!).filter((s) => s.trim().length >= MIN_PIN_CHARS))];
+}
+
+/**
+ * The pin strings of `text` (a test file) that a removed line of `diff` (`git diff -U0` output: a line starting with
+ * `-`, not `---`) contains, in order. Empty: the file quotes no text the diff removed (design 04-pre-push-gates).
+ */
+export function removedPins(text: string, diff: string): string[] {
+  const removed = diff.split("\n").filter((l) => l.startsWith("-") && !l.startsWith("---")).map((l) => l.slice(1));
+  return removed.length === 0 ? [] : pinStrings(text).filter((s) => removed.some((l) => l.includes(s)));
+}
+
 /** The distinct double-quoted strings of four or more characters in an answer's problem, done criteria and desired output, in order. */
 export function quotedStrings(answer: unknown): string[] {
   if (!isObj(answer)) return [];
   const texts = [answer.problem, ...strs(answer.done_criteria), answer.desired_output].filter((t): t is string => typeof t === "string");
-  const found = texts.flatMap((t) => [...t.matchAll(QUOTED)].map((m) => m[1]!)).filter((s) => s.trim().length >= MIN_PIN_CHARS);
-  return [...new Set(found)];
+  return [...new Set(texts.flatMap(pinStrings))];
 }
 
 /**

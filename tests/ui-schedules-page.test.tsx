@@ -19,6 +19,14 @@ const BADGE_MODULE = "../web/src/components/ui/badge.js";
 // tested over the real store in the phase 1 tests.
 
 const SLOW = { timeout: 5_000 };
+/** The missed-time rule's Select, in the owner's words. */
+const MISSED = "If the factory was off or busy at the time";
+const RUN_NOW = "Run now too";
+/** Picks a choice of the dialog's Select (the shared one draws its own list): opens it, then clicks the option. */
+const pick = (dialog: HTMLElement, label: string, choice: string) => {
+  fireEvent.click(within(dialog).getByLabelText(label));
+  fireEvent.click(within(dialog).getByRole("option", { name: choice }));
+};
 const TOKEN = "tok_schedules";
 const schedule = (id: string, title: string, over: Partial<ScheduleRow> = {}): ScheduleRow => ({
   id, title, cadence: { kind: "daily", spec: "09:00" }, zone: "Europe/Paris", next_due_at: "2026-11-25T08:00:00.000Z", running_since: null,
@@ -73,6 +81,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -233,7 +242,8 @@ describe("Schedules page", () => {
     expect(pairs["Does"]).toBe("Gives feedback as tasks. An agent takes the role this text describes, reads the code and files up to 3 tasks, each with evidence");
     expect(pairs["Repeats"]).toBe("Every day at 09:00");
     expect(pairs["Time zone"]).toBe("Europe/Paris");
-    expect(pairs["While the factory is busy"]).toBe("Skips the run");
+    expect(pairs["If the factory was off or busy at the time"]).toBe("Skip that time");
+    expect(detail.textContent).not.toMatch(/While the factory is busy|Skips the run|Runs anyway/);
     expect(pairs["Token limit"]).toBe("50,000");
     await waitFor(() => expect(Object.fromEntries([...dl.querySelectorAll("dt")].map((dt) => [dt.textContent, dt.nextElementSibling!.textContent]))["Last run"]).not.toBe(""), SLOW);
     expect([...dl.querySelectorAll("dd")].every((dd) => dd.className.includes("min-w-0") && dd.className.includes("wrap-anywhere"))).toBe(true);
@@ -248,7 +258,7 @@ describe("Schedules page", () => {
     const detail = await screen.findByRole("region", { name: "About Weekly review" }, SLOW);
     await waitFor(() => expect(detail.textContent).toContain("Not run yet"), SLOW);
     expect(detail.textContent).toContain("Default (200,000)");
-    expect(detail.textContent).toContain("Runs anyway");
+    expect(detail.textContent).toContain("If the factory was off or busy at the timeRun once when it's back");
   });
 
   it("the selected schedule's row is marked current, not its title drawn as a pressed pill", async () => {
@@ -297,10 +307,11 @@ describe("Schedules page", () => {
     await ready();
     fireEvent.click(screen.getByRole("button", { name: "New schedule" }));
     const dialog = await screen.findByRole("dialog", undefined, SLOW);
-    for (const label of ["Title", "Repeats", "When", "Time zone", "Does", "Text", "Skip while the factory is busy", "Token limit"]) expect(within(dialog).getByLabelText(label)).toBeTruthy();
+    for (const label of ["Title", "Repeats", "When", "Time zone", "Does", "Text", MISSED, "Token limit"]) expect(within(dialog).getByLabelText(label)).toBeTruthy();
+    expect(within(dialog).queryByLabelText("Skip while the factory is busy")).toBeNull();
     fireEvent.change(within(dialog).getByLabelText("Title"), { target: { value: "Nightly docs check" } });
     fireEvent.change(within(dialog).getByLabelText("Text"), { target: { value: "Look for stale pages." } });
-    fireEvent.click(within(dialog).getByLabelText("Skip while the factory is busy"));
+    pick(dialog, MISSED, "Skip that time");
     fireEvent.change(within(dialog).getByLabelText("Token limit"), { target: { value: "5000" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Add schedule" }));
     await waitFor(() => expect(posts).toHaveLength(1), SLOW);
@@ -361,6 +372,77 @@ describe("Schedules page", () => {
   };
   const press = (dialog: HTMLElement, name: string) => fireEvent.click(within(dialog).getByRole("button", { name }));
 
+  /** The picked choice of the missed-time Select, as its field shows it. */
+  const missedText = (dialog: HTMLElement) => within(dialog).getByLabelText(MISSED).textContent;
+
+  it("the missed-time Select offers Run once when it's back and Skip that time; New starts on Run once when it's back", async () => {
+    const dialog = await openNew();
+    expect(missedText(dialog)).toBe("Run once when it's back");
+    fireEvent.click(within(dialog).getByLabelText(MISSED));
+    expect(within(dialog).getAllByRole("option").map((o) => o.textContent)).toEqual(["Run once when it's back", "Skip that time"]);
+  });
+
+  it("Edit starts the missed-time Select on Skip that time for a skip_when_busy schedule, and sends the change as skip_when_busy", async () => {
+    schedules[0] = { ...schedules[0]!, skip_when_busy: true };
+    const dialog = await openEdit();
+    expect(missedText(dialog)).toBe("Skip that time");
+    pick(dialog, MISSED, "Run once when it's back");
+    press(dialog, "Save");
+    await waitFor(() => expect(posts).toHaveLength(1), SLOW);
+    expect(posts[0]!.body).toEqual({ id: "sch_aaaa1111", skip_when_busy: false });
+  });
+
+  it("Edit starts on Run once when it's back for a schedule that does not skip, and never shows Run now too", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 10, 25, 12, 0) });
+    const dialog = await openEdit();
+    expect(missedText(dialog)).toBe("Run once when it's back");
+    expect(within(dialog).queryByLabelText(RUN_NOW)).toBeNull();
+  });
+
+  it("Run now too shows on New only for a daily or weekly time already passed today in the browser's zone, off by default", async () => {
+    // A Wednesday, noon in the browser's own zone.
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 10, 25, 12, 0) });
+    const dialog = await openNew();
+    const runNow = () => within(dialog).queryByLabelText(RUN_NOW);
+    const set = (label: string, value: string) => fireEvent.change(within(dialog).getByLabelText(label), { target: { value } });
+    set("When", "09:00");
+    expect(runNow()!.getAttribute("aria-checked")).toBe("false");
+    set("When", "13:00");
+    expect(runNow()).toBeNull();
+    pick(dialog, "Repeats", "Weekly");
+    set("When", "wed,fri 09:00");
+    expect(runNow()).toBeTruthy();
+    set("When", "mon,fri 09:00");
+    expect(runNow()).toBeNull();
+    set("When", "wed 13:00");
+    expect(runNow()).toBeNull();
+    pick(dialog, "Repeats", "At an interval");
+    set("When", "30");
+    expect(runNow()).toBeNull();
+    pick(dialog, "Repeats", "Cron rule");
+    set("When", "0 9 * * *");
+    expect(runNow()).toBeNull();
+  });
+
+  it("Add posts run_now: true when Run now too is on, and no run_now when it is off", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 10, 25, 12, 0) });
+    const dialog = await openNew();
+    fireEvent.change(within(dialog).getByLabelText("Title"), { target: { value: "Now too" } });
+    fireEvent.change(within(dialog).getByLabelText("When"), { target: { value: "09:00" } });
+    fireEvent.click(within(dialog).getByLabelText(RUN_NOW));
+    press(dialog, "Add schedule");
+    await waitFor(() => expect(posts).toHaveLength(1), SLOW);
+    expect(posts[0]!.body).toMatchObject({ id: "now-too", spec: "09:00", skip_when_busy: false, run_now: true });
+    cleanup();
+    posts = [];
+    const again = await openNew();
+    fireEvent.change(within(again).getByLabelText("Title"), { target: { value: "Later" } });
+    fireEvent.change(within(again).getByLabelText("When"), { target: { value: "09:00" } });
+    press(again, "Add schedule");
+    await waitFor(() => expect(posts).toHaveLength(1), SLOW);
+    expect("run_now" in posts[0]!.body).toBe(false);
+  });
+
   it("New schedule shows Describe what should run and when over a text box, with a Draft button, and sends nothing until Draft is pressed", async () => {
     const dialog = await openNew();
     expect(within(dialog).getByLabelText("Describe what should run and when").tagName).toBe("TEXTAREA");
@@ -372,7 +454,7 @@ describe("Schedules page", () => {
 
   it("Draft posts the words, fills the fields, leaves the busy rule and token limit, and rings the fields it changed until they are edited", async () => {
     const dialog = await openNew();
-    fireEvent.click(within(dialog).getByLabelText("Skip while the factory is busy"));
+    pick(dialog, MISSED, "Skip that time");
     fireEvent.change(within(dialog).getByLabelText("Token limit"), { target: { value: "700" } });
     fireEvent.change(within(dialog).getByLabelText("Describe what should run and when"), { target: { value: "every monday summarise the week" } });
     press(dialog, "Draft");
@@ -383,7 +465,7 @@ describe("Schedules page", () => {
     expect(within(dialog).getByLabelText("Repeats").textContent).toContain("Weekly");
     expect(within(dialog).getByLabelText("Does").textContent).toContain("Asks an agent");
     expect((within(dialog).getByLabelText("Token limit") as HTMLInputElement).value).toBe("700");
-    expect(within(dialog).getByLabelText("Skip while the factory is busy").getAttribute("aria-checked") ?? (within(dialog).getByLabelText("Skip while the factory is busy") as HTMLInputElement).checked).toBeTruthy();
+    expect(within(dialog).getByLabelText(MISSED).textContent).toBe("Skip that time");
     const title = within(dialog).getByLabelText("Title");
     expect(title.hasAttribute("data-changed")).toBe(true);
     expect(title.className).toContain("ring-2");

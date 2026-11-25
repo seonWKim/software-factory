@@ -1,11 +1,12 @@
 // An implement run's needs_human ask the controller answers itself, once per item (design 05-restarts): test paths
 // only (decided 2026-11-15) or a few ordinary files (2026-11-19, src/core/auto-grant.ts fewOrdinaryPaths), the owner's `/retry +paths` applied by the controller; or paths already allowed only
-// (decided 2026-11-16: a ratchet list or a path under allowed_paths), a plain retry that says they are allowed.
+// (decided 2026-11-16: a ratchet list or a path under allowed_paths), a plain retry that says they are allowed. A
+// checks_failed run's failing test files that quote text the branch removed get the same once-per-item grant (checksGrant, 2026-11-25).
 // Kept out of run-results.unit.ts, which may not grow (file budget); the path check (src/core/auto-grant.ts) is
 // reached through the live settings, so no new legacy import.
 
 import type { Ctx } from "../context.js";
-import { type Decision, SYSTEM, footerAfter, retry } from "../support.js";
+import { type Decision, type Run, type WorkItem, SYSTEM, footerAfter, retry } from "../support.js";
 import type { needsHuman } from "./notices.js";
 
 type Stop = Parameters<typeof needsHuman>;
@@ -51,6 +52,53 @@ export async function autoGrant(c: Ctx, stopped: Stop[1], run: Stop[2], ask: Ask
   await c.unit("outbox").comment(stopped, `auto-grant:${run.id}`, body);
   c.k.d.log.info(t.log, { work_item_id: stopped.id, run_id: run.id, paths: (covered ? ask.named : ask.asked).join(" ") });
   return { ...d, patch: { ...d.patch, token_cost: tokens }, detail: { ...d.detail, run_id: run.id, [AUTO_GRANT]: true }, ack_run: run.id };
+}
+
+/** A test file the worker found grantable on `checks_failed` (implement-checks.ts grantTests), with the removed text it quotes. */
+type GrantTest = { file: string; quotes: string[] };
+
+/** The `grant_tests` of a failed implement run's outcome, when it has a well-formed list; else none. */
+function grantTests(run: Run): GrantTest[] {
+  const v = run.outcome?.status === "failed" ? (run.outcome as { grant_tests?: unknown }).grant_tests : undefined;
+  if (!Array.isArray(v)) return [];
+  const ok = v.every((g) => typeof g?.file === "string" && Array.isArray(g.quotes) && g.quotes.length > 0 && g.quotes.every((q: unknown) => typeof q === "string"));
+  return ok ? (v as GrantTest[]) : [];
+}
+
+/**
+ * The checks grant (design 04-pre-push-gates, 2026-11-25): a `checks_failed` implement run whose every failing test
+ * file is outside allowed_paths and quotes text the branch diff removed (`grant_tests`) gets those files once, as
+ * `/retry +paths` widens them, when auto_grant_test_paths is on for the project, every file is a test path
+ * (testPathsOnly) and the item had no automatic grant yet (MAX_AUTO_GRANTS, shared with the needs-human grant). The
+ * retry starts a new step, so the granted run is not counted toward repeated_failure. undefined: retry or block as
+ * before. null: this run's grant is stored already.
+ */
+export async function checksGrant(c: Ctx, it: WorkItem, run: Run): Promise<Decision | undefined> {
+  const tests = grantTests(run), files = tests.map((g) => g.file);
+  if (files.length === 0) return undefined;
+  const grants = autoGrants(await c.k.reader.listStateChanges(it.id));
+  if (grants.some((g) => g.detail?.run_id === run.id)) return null;
+  if (grants.length >= MAX_AUTO_GRANTS || !switchedOn(c, it.project) || !c.k.live.testPathsOnly(files)) return undefined;
+  const stopped: WorkItem = { ...it, blocked_on: "human", blocked_reason: "run_failed:implement:checks_failed" };
+  const note = `${files.join(", ")} granted automatically because the checks failed only in test files that quote text this change removed (auto_grant_test_paths)`;
+  const d = retry(stopped, SYSTEM, "implement", note, c.unit("commands").widen(stopped, files), (k) => c.unit("run-results").kindLabel(k));
+  if (!d || "refuse" in d) return undefined;
+  const failed = run.outcome?.status === "failed" ? run.outcome.detail.split(" after one fix step")[0]!.trim() : "";
+  const body = [
+    "## Factory: failing tests granted automatically",
+    "",
+    `The implement run's checks failed${failed ? ` (${failed})` : ""}, also after one fix step. Every failing test file is outside the allowed paths and quotes text this change removed, so the factory allowed them itself:`,
+    "",
+    ...tests.map((g) => `- \`${g.file}\` quotes ${g.quotes.map((q) => `"${q}"`).join(", ")}`),
+    "",
+    `Granted automatically (\`auto_grant_test_paths\`). The implementer runs again to update them; the review checks that the edits there only follow the change. ${ONCE}`,
+    "",
+    footerAfter(stopped, d.patch),
+  ].join("\n");
+  if (!(await c.k.d.scanner.scan("comment", body)).clean) return undefined;
+  await c.unit("outbox").comment(stopped, `auto-grant:${run.id}`, body);
+  c.k.d.log.info("failing test files granted automatically because they quote text the change removed", { work_item_id: it.id, run_id: run.id, paths: files.join(" ") });
+  return { ...d, detail: { ...d.detail, run_id: run.id, error_code: "checks_failed", [AUTO_GRANT]: true }, ack_run: run.id };
 }
 
 const ONCE = "This happens once per item: a later ask waits for you.";
