@@ -1,5 +1,6 @@
 ## History
 
+- **The Mode help line said "tier 4"** (until 2026-11-26, issue #849; the Mode decision at the top of 09-dashboard-settings.md). Before: the line read "tier 4 and the gate list always wait for a person", with no word for what the gate list holds.
 - **Connect asks for read access only** (until 2026-11-25, the "Reconnect with write access" decision at the top of 09-dashboard-settings.md, phase 3 of local-task-tk_dc8c579a). Before: the Calendar section posted no `write`, so only the CLI's "Allow writes" question could connect a calendar with write access.
 - **A calendar row's head centred its actions on the name group; General placed its labels and hints by hand** (decision changed 2026-11-24, the Settings rhythm decision of 09-dashboard-settings.md, alignment audit). Before: the head was `items-center`, so when the last sync wrapped under the long name the Disconnect button centred on both lines, 11px below the name's line; General drew `<span>` labels, the quiet hours hint as a paragraph between its label and its field, and the tier levels as a list under the tier's control.
 

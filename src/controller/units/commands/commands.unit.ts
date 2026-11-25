@@ -13,7 +13,7 @@ import { latestSpec, overCap, overCapApproval,
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, syncedCommand } from "../../../core/command-inbox.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMessage, interpretReply, interpretTexts, openItems, proposalEvent } from "../../../core/interpret.js";
-import { type Actor, type RunKind, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
+import { type Actor, RECURRING_FAILURE, type RunKind, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { AppCommandRequest, CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
@@ -697,10 +697,10 @@ export class CommandsUnit {
     return it.blocked_reason === AGENT_NEEDS_HUMAN ? this.blockedBy(it) : undefined;
   }
 
-  /** The step a `/retry` restarts: implement at the loop limit, the run behind an agent block, else what the item's fields say. */
+  /** The step a `/retry` restarts: implement at the loop limit, the run behind an agent block or a recurring failure's hold (its last failed run, as at repeated_failure), else what the item's fields say. */
   async retryKind(it: WorkItem): Promise<RunKind | undefined> {
     if (it.blocked_on === "human" && it.blocked_reason === "max_loops") return "implement";
-    return (await this.blockedBy(it)) ?? failedRunKind(it);
+    return it.blocked_reason === RECURRING_FAILURE ? blockingRunKind(REPEATED_FAILURE, await this.c.k.reader.listRuns(it.id)) : (await this.blockedBy(it)) ?? failedRunKind(it);
   }
 
   /** The command state of `it`, with the kind of run that asked at agent_needs_human and whether a failed merge check stopped it at max_loops. */
