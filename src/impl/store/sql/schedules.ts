@@ -5,10 +5,13 @@
 // A held checkpoint is resumed or rejected by UPDATEs conditional on its run row still being held. An edit, pause,
 // resume or run is one UPDATE conditional on the `next_due_at` it read, so it and a claim never both apply. The
 // missed-time rule is `missed_rule`; `skip_when_busy`, the column it replaced, is no longer read or written. A delete
-// removes the schedule row and ends its held checkpoints as `rejected` in one transaction; its other run rows stay.
+// removes the schedule row and its suggestions and ends its held checkpoints as `rejected` in one transaction; its
+// other run rows stay.
 // `scheduleTokensUsed` with a UTC date sums only the runs whose occurrence falls on it (a `day` token_period's cap).
-// The schedule list and the due list leave out Check a page rows (action_kind 'check_page', routines copied by the
-// 20261124T1100-controller-routines-into-schedules migration): the Schedules page, API and CLI do not show them, and
+// The schedule list (unless asked for them: the CLI's list and every write's read) and the due list leave out Check a
+// page rows (action_kind 'check_page', routines copied by the 20261124T1100-controller-routines-into-schedules
+// migration, or added by `schedule add --action check-page`, its `instruction` and `url` in their columns): the
+// Schedules page and its API do not show them, and
 // the claim pass reads them through `listCheckPages` instead, with the row's `instruction` and `url` as the action's
 // settings, and claims each with `claimCheckPage`, conditional on its marks (a trigger row has no `next_due_at`).
 // The routine store (src/impl/store/sql/routines.ts) writes the same rows; a trigger routine's row has a null
@@ -50,6 +53,13 @@ export const rowCapRaise = (r: Row): Schedule["cap_raise"] =>
 const rowSettings = (r: Row): Record<string, unknown> =>
   String(r.action_kind) === "check_page" ? { instruction: String(r.instruction ?? ""), url: r.url == null ? null : String(r.url) } : (JSON.parse(String(r.action_settings ?? "{}")) as Record<string, unknown>);
 
+/** The action's `action_settings`, `instruction` and `url` columns: a Check a page action's settings go in the last two. */
+function actionColumns(a: Schedule["action"]): [SqlValue, SqlValue, SqlValue] {
+  if (a?.kind !== "check_page") return [a ? JSON.stringify(a.settings) : null, null, null];
+  const v = (k: string) => (typeof a.settings[k] === "string" ? (a.settings[k] as string) : null);
+  return [null, v("instruction") ?? "", v("url")];
+}
+
 function rowToSchedule(r: Row): Schedule {
   return {
     id: String(r.id), title: String(r.title), cadence: rowCadence(r), zone: String(r.zone),
@@ -78,21 +88,23 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
 
   async addSchedule(s: NewSchedule): Promise<Schedule> {
     try {
-      await this.db.run(`INSERT INTO controller_schedules (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
-        s.id, s.title, s.cadence.kind, s.cadence.spec, s.zone, s.created_by, s.created_at, s.next_due_at, s.missed_rule ?? "catch_up",
-        s.action?.kind ?? null, s.action ? JSON.stringify(s.action.settings) : null, s.token_cap ?? null, s.token_period ?? null,
+      const [settings, instruction, url] = actionColumns(s.action ?? null);
+      await this.db.run(`INSERT INTO controller_schedules (${COLUMNS}, instruction, url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+        s.id, s.title, s.cadence?.kind ?? null, s.cadence?.spec ?? null, s.zone, s.created_by, s.created_at, s.next_due_at, s.missed_rule ?? "catch_up",
+        s.action?.kind ?? null, settings, s.token_cap ?? null, s.token_period ?? null,
         s.trigger ?? null, s.run_cap_usd ?? null, s.daily_cap_usd ?? null, s.cap_raise?.usd ?? null, s.cap_raise?.day ?? null, s.cap_raise?.hold_key ?? null,
-        s.paused ? 1 : null, s.last_run_at ?? null,
+        s.paused ? 1 : null, s.last_run_at ?? null, instruction, url,
       ]);
     } catch (err) {
       if (!this.db.isDuplicateKey(err)) throw err;
     }
-    const [row] = await this.db.all(`SELECT ${COLUMNS} FROM controller_schedules WHERE id = ?`, [s.id]);
+    const [row] = await this.db.all(`SELECT ${COLUMNS}, instruction, url FROM controller_schedules WHERE id = ?`, [s.id]);
     return rowToSchedule(row!);
   }
 
-  async listSchedules(): Promise<Schedule[]> {
-    return (await this.db.all(`SELECT ${COLUMNS} FROM controller_schedules WHERE ${NOT_CHECK_PAGE} ORDER BY created_at, id`)).map(rowToSchedule);
+  async listSchedules(opts: { check_pages?: boolean } = {}): Promise<Schedule[]> {
+    const where = opts.check_pages ? "" : ` WHERE ${NOT_CHECK_PAGE}`;
+    return (await this.db.all(`SELECT ${COLUMNS}, instruction, url FROM controller_schedules${where} ORDER BY created_at, id`)).map(rowToSchedule);
   }
 
   async listDueSchedules(due_by: Timestamp): Promise<Schedule[]> {
@@ -184,12 +196,18 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
   async updateSchedule(id: string, read: Timestamp | null, patch: SchedulePatch): Promise<boolean> {
     const cols: [string, SqlValue][] = [];
     if (patch.title !== undefined) cols.push(["title", patch.title]);
-    if (patch.cadence !== undefined) cols.push(["cadence_kind", patch.cadence.kind], ["cadence_spec", patch.cadence.spec]);
+    if (patch.cadence !== undefined) cols.push(["cadence_kind", patch.cadence?.kind ?? null], ["cadence_spec", patch.cadence?.spec ?? null]);
     if (patch.zone !== undefined) cols.push(["zone", patch.zone]);
     if (patch.next_due_at !== undefined) cols.push(["next_due_at", patch.next_due_at]);
     if (patch.missed_rule !== undefined) cols.push(["missed_rule", patch.missed_rule]);
-    if (patch.action !== undefined) cols.push(["action_kind", patch.action?.kind ?? null], ["action_settings", patch.action ? JSON.stringify(patch.action.settings) : null]);
+    if (patch.action !== undefined) {
+      const [settings, instruction, url] = actionColumns(patch.action);
+      cols.push(["action_kind", patch.action?.kind ?? null], ["action_settings", settings], ["instruction", instruction], ["url", url]);
+    }
     if (patch.token_cap !== undefined) cols.push(["token_cap", patch.token_cap]);
+    if (patch.run_cap_usd !== undefined) cols.push(["run_cap_usd", patch.run_cap_usd]);
+    if (patch.daily_cap_usd !== undefined) cols.push(["daily_cap_usd", patch.daily_cap_usd]);
+    if (patch.paused !== undefined) cols.push(["paused", patch.paused ? 1 : null]);
     if (cols.length === 0) return false;
     const due = read === null ? "next_due_at IS NULL" : "next_due_at = ?";
     const sql = `UPDATE controller_schedules SET ${cols.map(([c]) => `${c} = ?`).join(", ")} WHERE id = ? AND ${due}`;
@@ -200,6 +218,7 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
     return this.db.transaction(async (tx) => {
       if ((await tx.run("DELETE FROM controller_schedules WHERE id = ?", [id])) !== 1) return false;
       await tx.run(`UPDATE controller_schedule_runs SET outcome = 'rejected' WHERE schedule_id = ? AND ${HELD}`, [id]);
+      await tx.run("DELETE FROM controller_schedule_suggestions WHERE schedule_id = ?", [id]);
       return true;
     });
   }

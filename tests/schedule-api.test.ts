@@ -240,3 +240,87 @@ describe("POST /api/v1/schedules/draft and /improve", () => {
     expect(await bad.store.listSchedules()).toEqual([]);
   });
 });
+
+// Check a page schedules over HTTP (design 08-schedules): the CLI's fields, the on-merge cadence, the suggestions read
+// and delete removing the suggestions too. GET /api/v1/schedules leaves them out, so the Schedules page is unchanged.
+const PAGE = { id: "cp_1", title: "Docs page", action: "check-page", url: "https://example.com/docs", instruction: "Find broken links" };
+
+describe("POST /api/v1/schedules/add and /edit with a Check a page schedule", () => {
+  it("adds one on a cadence or on each merge, with its page, instruction and USD caps; GET /api/v1/schedules leaves it out", async () => {
+    const { store, send, get } = await setup();
+    expect(await send("add", { ...PAGE, cadence: "daily", spec: "09:00", zone: "Asia/Seoul", run_cap_usd: 0.5, daily_cap_usd: 2 })).toMatchObject({
+      status: 200,
+      value: { schedule: { id: "cp_1", next_due_at: FIRST, run_cap_usd: 0.5, daily_cap_usd: 2, action: { kind: "check_page", settings: { instruction: "Find broken links", url: "https://example.com/docs" } } } },
+    });
+    const { instruction, ...noInstruction } = PAGE;
+    expect(await send("add", { ...noInstruction, id: "cp_2", body: instruction, cadence: "on-merge" })).toMatchObject({
+      status: 200, value: { schedule: { id: "cp_2", cadence: null, trigger: "merge", zone: "UTC", next_due_at: null, action: { settings: { instruction: "Find broken links" } } } },
+    });
+    expect(await get("/api/v1/schedules")).toEqual({ status: 200, value: { schedules: [] } });
+    expect((await store.listCheckPages()).map((s) => s.id)).toEqual(["cp_1", "cp_2"]);
+    // The routine routes read the same rows.
+    expect((await get("/api/v1/routines")).value.routines).toMatchObject([{ id: "cp_1", name: "Docs page" }, { id: "cp_2", trigger: "merge" }]);
+  });
+
+  it("edits its title, page, instruction and caps (null clears one)", async () => {
+    const { store, send } = await setup();
+    await send("add", { ...PAGE, cadence: "on-merge", run_cap_usd: 1 });
+    expect(await send("edit", { id: "cp_1", title: "Docs", url: "https://example.com/new", instruction: "Check spelling", run_cap_usd: null, daily_cap_usd: 3 })).toMatchObject({ status: 200 });
+    expect((await store.listCheckPages())[0]).toMatchObject({
+      title: "Docs", run_cap_usd: null, daily_cap_usd: 3, trigger: "merge", action: { settings: { instruction: "Check spelling", url: "https://example.com/new" } },
+    });
+  });
+
+  it("refuses a bad page or cap, on-merge with another action and a spec with on-merge, storing nothing", async () => {
+    const { store, send } = await setup();
+    for (const [body, status, why] of [
+      [{ ...PAGE, cadence: "on-merge", url: "ftp://example.com" }, 409, "an http or https URL"],
+      [{ ...PAGE, cadence: "on-merge", run_cap_usd: 0 }, 409, "a cap is a positive dollar amount"],
+      [{ ...PAGE, cadence: "on-merge", daily_cap_usd: -2 }, 409, "a cap is a positive dollar amount"],
+      [{ ...PAGE, cadence: "on-merge", daily_cap_usd: "2" }, 400, "daily_cap_usd must be a number or null"],
+      [{ ...PAGE, cadence: "on-merge", url: 3 }, 400, "url must be a string"],
+      [{ ...PAGE, cadence: "on-merge", spec: "09:00" }, 409, "on-merge takes no --spec"],
+      [{ ...ADD, cadence: "on-merge" }, 409, "on-merge goes only with --action check-page"],
+      [{ ...ADD, url: "https://example.com" }, 409, "only a check-page schedule takes"],
+    ] as [Record<string, unknown>, number, string][]) {
+      expect({ body, r: await send("add", body) }).toMatchObject({ body, r: { status, value: { error: expect.stringContaining(why) } } });
+    }
+    expect(await store.listCheckPages()).toEqual([]);
+    expect(await store.listSchedules()).toEqual([]);
+  });
+});
+
+describe("GET /api/v1/schedules/suggestions", () => {
+  it("lists a schedule's suggestions; 400 without ?schedule, 404 for an unknown ID", async () => {
+    const { store, send, get } = await setup();
+    await send("add", { ...PAGE, cadence: "on-merge" });
+    expect(await get("/api/v1/schedules/suggestions?schedule=cp_1")).toEqual({ status: 200, value: { suggestions: [] } });
+    await store.addRoutineSuggestions("cp_1", "run_1", [{ fingerprint: "f1", text: "A broken link" }]);
+    expect((await get("/api/v1/schedules/suggestions?schedule=cp_1")).value.suggestions).toMatchObject([{ routine_id: "cp_1", text: "A broken link", state: "pending" }]);
+    expect((await get("/api/v1/schedules/suggestions")).status).toBe(400);
+    expect((await get("/api/v1/schedules/suggestions?schedule=")).status).toBe(400);
+    expect(await get("/api/v1/schedules/suggestions?schedule=nope")).toEqual({ status: 404, value: { error: "No schedule nope." } });
+  });
+});
+
+describe("POST /api/v1/schedules/delete on a Check a page schedule", () => {
+  it("removes it and its suggestions, owner only", async () => {
+    const { store, send } = await setup();
+    await send("add", { ...PAGE, cadence: "on-merge" });
+    await store.addRoutineSuggestions("cp_1", "run_1", [{ fingerprint: "f1", text: "A broken link" }]);
+    const guest = await setup("local:guest@example.com" as UserId);
+    await guest.store.addSchedule({ ...PAGE_ROW });
+    await guest.store.addRoutineSuggestions("cp_1", "run_1", [{ fingerprint: "f1", text: "A broken link" }]);
+    expect((await guest.send("delete", { id: "cp_1" })).status).toBe(403);
+    expect(await guest.store.listRoutineSuggestions("cp_1")).toHaveLength(1);
+    expect(await send("delete", { id: "cp_1" })).toMatchObject({ status: 200, value: { schedule: { id: "cp_1" } } });
+    expect(await store.listCheckPages()).toEqual([]);
+    expect(await store.listRoutineSuggestions("cp_1")).toEqual([]);
+    expect(await send("delete", { id: "cp_1" })).toEqual({ status: 404, value: { error: "no schedule cp_1" } });
+  });
+});
+
+const PAGE_ROW = {
+  id: "cp_1", title: "Docs page", cadence: null, trigger: "merge" as const, zone: "UTC", created_by: OWNER, created_at: "2026-11-22T12:00:00.000Z" as never, next_due_at: null,
+  action: { kind: "check_page" as const, settings: { instruction: "Find broken links", url: "https://example.com/docs" } },
+};
