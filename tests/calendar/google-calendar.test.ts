@@ -6,6 +6,7 @@ import { CALENDAR_SYNC_MS, syncCalendars } from "../../src/calendar/index.js";
 import { syncWindow as windowAt } from "../../src/calendar/calendar-sync.js";
 import descriptor, { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN } from "../../src/calendar/plugins/google-calendar/google-calendar.plugin.js";
 import {
+  CALENDAR_EVENTS_SCOPE,
   CALENDAR_READONLY_SCOPE,
   EVENTS_API,
   GoogleCalendarSource,
@@ -73,7 +74,7 @@ class FakeHttp {
     let a: Answer;
     if (url === TOKEN_URL) a = this.token(new URLSearchParams(init.body));
     else {
-      const m = /^\/calendar\/v3\/calendars\/([^/]+)\/events$/.exec(u.pathname);
+      const m = /^\/calendar\/v3\/calendars\/([^/]+)\/events(?:\/[^/]+)?$/.exec(u.pathname);
       if (!url.startsWith(EVENTS_API) || !m) throw new Error(`unexpected request ${url}`);
       a = this.events(decodeURIComponent(m[1]!), u.searchParams, init.headers);
     }
@@ -122,14 +123,14 @@ async function errorOf(p: Promise<unknown>): Promise<string> {
 }
 
 describe("google-calendar: scope", () => {
-  it("asks only for calendar.readonly, with the refresh token, client ID and client secret from the SecretStore", async () => {
+  it("asks for no new scope on a refresh (the sign-in's grant stands), with the refresh token, client ID and client secret from the SecretStore", async () => {
     const { http, source, clock } = setup();
     await source.events(syncWindow(clock));
     const [token] = http.tokenRequests();
     const body = new URLSearchParams(token!.init.body);
     expect(token!.init.method).toBe("POST");
     expect(body.get("grant_type")).toBe("refresh_token");
-    expect(body.get("scope")).toBe(CALENDAR_READONLY_SCOPE);
+    expect(body.get("scope")).toBeNull();
     expect(CALENDAR_READONLY_SCOPE.endsWith("/calendar.readonly")).toBe(true);
     expect([body.get("refresh_token"), body.get("client_id"), body.get("client_secret")]).toEqual([
       SECRETS.GOOGLE_REFRESH_TOKEN, SECRETS.GOOGLE_CLIENT_ID, SECRETS.GOOGLE_CLIENT_SECRET,
@@ -138,8 +139,8 @@ describe("google-calendar: scope", () => {
     expect(http.eventReads().map((r) => r.init.method)).toEqual(["GET"]);
   });
 
-  it("a token answer whose scope is not exactly calendar.readonly is refused, and no event is read", async () => {
-    for (const scope of [`${CALENDAR_READONLY_SCOPE} https://www.googleapis.com/auth/calendar`, "https://www.googleapis.com/auth/calendar", undefined, ""]) {
+  it("a token answer with any scope other than calendar.readonly or calendar.events is refused, and no event is read", async () => {
+    for (const scope of [`${CALENDAR_READONLY_SCOPE} https://www.googleapis.com/auth/calendar`, `${CALENDAR_EVENTS_SCOPE} https://www.googleapis.com/auth/calendar`, "https://www.googleapis.com/auth/calendar", undefined, ""]) {
       const { http, source, clock } = setup();
       http.token = () => ({ status: 200, body: { access_token: "access-1", expires_in: 3600, scope } });
       expect(await errorOf(source.events(syncWindow(clock)))).toMatch(/scope other than calendar\.readonly/);
@@ -156,6 +157,57 @@ describe("google-calendar: scope", () => {
     clock.advance(3600_000);
     await source.events(syncWindow(clock));
     expect(http.tokenRequests()).toHaveLength(2);
+  });
+});
+
+describe("google-calendar: the sync port (copies of the owner's local events)", () => {
+  const COPY = { title: "Gym", starts_at: "2026-11-20T07:00:00.000Z", ends_at: "2026-11-20T08:00:00.000Z", all_day: false, repeats: "weekly" as const, time_zone: "Asia/Seoul" };
+  const writes = (http: FakeHttp) => http.eventReads().filter((r) => r.init.method !== "GET");
+  function writable(ids: readonly string[] = []) {
+    const s = setup(ids);
+    s.http.token = () => ({ status: 200, body: { access_token: "access-1", expires_in: 3600, scope: `${CALENDAR_EVENTS_SCOPE}` } });
+    s.http.events = () => ({ status: 200, body: { id: "g1", items: [] } });
+    return s;
+  }
+
+  it("a read-only grant answers not writable and makes no events call; a write is refused before any", async () => {
+    const { http, source } = setup();
+    expect(source.sync.label).toBe("Google Calendar");
+    expect(await source.sync.writable()).toBe(false);
+    expect(await errorOf(source.sync.add(COPY))).toMatch(/read-only/);
+    expect(http.eventReads()).toEqual([]);
+  });
+
+  it("with calendar.events, an add, an edit and a delete each make one events call, a repeat as one recurring event", async () => {
+    const { http, source } = writable();
+    expect(await source.sync.writable()).toBe(true);
+    expect(await source.sync.add(COPY)).toBe("g1");
+    expect(writes(http).map((r) => [r.init.method, r.url.pathname])).toEqual([["POST", "/calendar/v3/calendars/primary/events"]]);
+    const body = JSON.parse(writes(http)[0]!.init.body!) as Record<string, unknown>;
+    expect(body).toEqual({ summary: "Gym", start: { dateTime: COPY.starts_at, timeZone: "Asia/Seoul" }, end: { dateTime: COPY.ends_at, timeZone: "Asia/Seoul" }, recurrence: ["RRULE:FREQ=WEEKLY"] });
+    await source.sync.edit("g1", { ...COPY, title: "Swim" });
+    await source.sync.remove("g1");
+    expect(writes(http).map((r) => [r.init.method, r.url.pathname])).toEqual([
+      ["POST", "/calendar/v3/calendars/primary/events"], ["PUT", "/calendar/v3/calendars/primary/events/g1"], ["DELETE", "/calendar/v3/calendars/primary/events/g1"],
+    ]);
+    // The access token is reused: one refresh for the four calls.
+    expect(http.tokenRequests()).toHaveLength(1);
+  });
+
+  it("with several calendars, a copy goes to the first and its ID names that calendar, as the read does", async () => {
+    const { http, source } = writable(["work@example.com", "home@example.com"]);
+    expect(await source.sync.add({ ...COPY, repeats: "none" })).toBe("work@example.com/g1");
+    await source.sync.remove("work@example.com/g1");
+    expect(writes(http).map((r) => decodeURIComponent(r.url.pathname))).toEqual(["/calendar/v3/calendars/work@example.com/events", "/calendar/v3/calendars/work@example.com/events/g1"]);
+  });
+
+  it("a failed write throws its step and HTTP status, never a body or a token; a delete of a copy already gone passes", async () => {
+    const { http, source } = writable();
+    http.events = () => ({ status: 500, body: { error: "access-1 refresh-secret-value" } });
+    const error = await errorOf(source.sync.edit("g1", COPY));
+    expect(error).toBe("google-calendar: event edit failed (HTTP 500)");
+    http.events = () => ({ status: 410 });
+    await source.sync.remove("g1");
   });
 });
 
