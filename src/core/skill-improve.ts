@@ -1,10 +1,11 @@
 // Skill improvement (design 07-self-improvement): the improve run reads each seeded skill's measured eval runs and,
 // for a skill below skill_improve_target whose score dropped or stalled, drafts one new SKILL.md with one plain model
-// call that sees only the failed check names. The draft is measured in scratch (the skill's suite replayed with the
-// draft as the skill's system prompt, the run stored) and stored `proposed` when it beats the current version's latest
-// run by more than skill_improve_noise and carries an owner label (ownerLabelled), else `tried` with its reason. Scratch
-// (`draft:`) and baseline (`baseline:`) runs are never read as measured. No skill file changes before a verdict: promote,
-// reject and hold are the functions below, each a conditional change of the draft row. A seeded skill is a suite whose
+// call that sees only the failed check names of `dev` cases. The draft is measured in scratch (the suite's dev cases
+// replayed with the draft as the skill's system prompt, the run stored) and stored `proposed` when it beats the current
+// version's latest run on its dev cases by more than skill_improve_noise and carries an owner label (ownerLabelled),
+// else `tried` with its reason. Scratch (`draft:`) and baseline (`baseline:`) runs are never read as measured. No skill
+// file changes before a verdict: promote, reject and hold are the functions below, each a conditional change of the
+// draft row; promote first checks the draft against the current text on the `held-out` cases. A seeded skill is a suite whose
 // skill_ref is inside capabilities.skill_folders; with none configured the composition root passes no wiring and the
 // feature is off. File reads and writes, the replay and the judge come through SkillImproveWiring (src/skill-evals.ts).
 // With the owner's tacit ledger on, each `proposed` draft and each verdict the store accepts on it are also handed to
@@ -19,13 +20,15 @@ import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { LLMProvider, LLMResponse } from "../interfaces/llm-provider.js";
 import type { SkillDraft, SkillDraftState } from "../interfaces/skill-draft-store.js";
-import type { SkillEvalRun } from "../interfaces/skill-eval-store.js";
+import type { SkillEvalReplay, SkillEvalRun, SkillEvalSplit } from "../interfaces/skill-eval-store.js";
 import type { TacitChangeProposal, TacitHandOff, TacitLedger, TacitVerdictRecord } from "../interfaces/tacit-ledger.js";
 
 /** Who starts the scratch runs. */
 export const SKILL_IMPROVER = "system:skill-improve" as UserId;
 /** The skill_version of a scratch run: never a folder's version, so no trigger or baseline reads it as the skill's. */
 export const scratchVersion = (draft_id: string) => `draft:${draft_id}`;
+/** The skill_version of a held-out run before a promotion, of the draft text or the current SKILL.md text: a scratch run too. */
+export const heldOutVersion = (draft_id: string, text: "draft" | "current") => `${scratchVersion(draft_id)}:held-out:${text}`;
 /** The skill_version of a baseline run (`eval run --baseline`): the suite with no skill, beside the folder's version it was run at. */
 export const baselineVersion = (folder_hash: string) => `baseline:${folder_hash}`;
 /** Whether `skill_version` names a run that replays no folder version as the skill's: a scratch run or a baseline run. */
@@ -50,15 +53,15 @@ export interface SkillImproveWiring {
   writeSkill(folder: string, text: string): Promise<void>;
   /** The folder's version (capabilities skillVersion); null when unreadable. */
   version(folder: string): Promise<string | null>;
-  /** The skill's suite run with `system_prompt` as the skill's system prompt, judged, stored with its figures; null when nothing ran. */
-  scratch(r: { skill_ref: string; system_prompt: string; run_id: string; skill_version: string; model_class: ModelClass; created_by: UserId }, signal: AbortSignal): Promise<SkillEvalRun | null>;
+  /** The `split` cases of the skill's suite run with `system_prompt` as the skill's system prompt, judged, stored with its figures; null when nothing ran. */
+  scratch(r: { skill_ref: string; system_prompt: string; run_id: string; skill_version: string; model_class: ModelClass; created_by: UserId; split: SkillEvalSplit }, signal: AbortSignal): Promise<SkillEvalRun | null>;
   /** The skill's suite run with its SKILL.md as it is now (`eval run`), stored; null when nothing ran. */
   rerun(r: { skill_ref: string; model_class: ModelClass; created_by: UserId }, signal: AbortSignal): Promise<SkillEvalRun | null>;
   newId(): string;
 }
 
 type Store = Pick<FactoryStore,
-  "listSkillEvalSuites" | "listSkillEvalRuns" | "listSkillEvalReplays" | "getSkillDraft" | "addSkillDraft" | "setSkillDraftState" | "takeSkillDraftSlot" | "recordAlert">;
+  "listSkillEvalSuites" | "listSkillEvalCases" | "listSkillEvalRuns" | "listSkillEvalReplays" | "getSkillDraft" | "addSkillDraft" | "setSkillDraftState" | "takeSkillDraftSlot" | "recordAlert">;
 
 export interface SkillImproveDeps {
   store: Store;
@@ -181,7 +184,8 @@ async function draftSkill(d: SkillImproveDeps, project: string, skill_ref: strin
     return { skipped: "day_cap" };
   }
   const model_class = classOf(runs[0]!);
-  const failed_checks = await failedChecks(d.store, runs[0]!.id);
+  const dev = await devReplays(d.store, runs[0]!);
+  const failed_checks = failedChecks(dev);
   const base = { skill_version: version, model_class, failed_checks };
   const store = async (state: SkillDraftState, tokens: number, detail: Record<string, unknown>) => {
     const reason = detail.reason as DraftReason | undefined;
@@ -199,14 +203,14 @@ async function draftSkill(d: SkillImproveDeps, project: string, skill_ref: strin
     return store("held", call.tokens, { reason: "token_budget", draft: call.text, budget: { tokens: call.tokens, limit } });
   }
 
-  const scratch = await w.scratch({ skill_ref, system_prompt: call.text, run_id: w.newId(), skill_version: scratchVersion(id), model_class, created_by: SKILL_IMPROVER }, d.signal)
-    .catch((err: unknown) => { if (d.signal.aborted) throw err; return null; });
+  const scratch = await scratchOrNull(d.signal, w.scratch({ skill_ref, system_prompt: call.text, run_id: w.newId(), skill_version: scratchVersion(id), model_class, created_by: SKILL_IMPROVER, split: "dev" }, d.signal));
   const drafted = { draft: call.text, ...(scratch ? { scratch_run: { id: scratch.id, pass_rate: scratch.pass_rate } } : {}) };
   if (!scratch || scratch.pass_rate === null) return store("tried", call.tokens, { ...drafted, reason: "failed_replay" });
-  const baseline = runs.find((r) => r.skill_version === version && r.model_class === model_class);
-  if (!baseline) return store("tried", call.tokens, { ...drafted, reason: "no_baseline" });
-  const gain = scratch.pass_rate - baseline.pass_rate!;
-  const scores = { ...drafted, baseline_run: { id: baseline.id, pass_rate: baseline.pass_rate }, gain };
+  const baselineRun = runs.find((r) => r.skill_version === version && r.model_class === model_class);
+  const baseline = baselineRun ? { id: baselineRun.id, pass_rate: passRate(baselineRun.id === runs[0]!.id ? dev : await devReplays(d.store, baselineRun)) } : null;
+  if (!baseline || baseline.pass_rate === null) return store("tried", call.tokens, { ...drafted, reason: "no_baseline" });
+  const gain = scratch.pass_rate - baseline.pass_rate;
+  const scores = { ...drafted, baseline_run: baseline, gain };
   if (!past(gain, c.skill_improve_noise)) return store("tried", call.tokens, { ...scores, reason: "no_gain" });
   if (!ownerLabelled(id)) return store("tried", call.tokens, { ...scores, reason: "untrusted" });
   const stored = await store("proposed", call.tokens, scores);
@@ -233,10 +237,27 @@ function classOf(run: SkillEvalRun): ModelClass {
   return MODEL_CLASSES.find((c) => c === run.model_class) ?? "standard";
 }
 
-/** The check texts the judge answered no to in `run_id`'s replays, in order, each once. Never an output or a reason. */
-async function failedChecks(store: Store, run_id: string): Promise<string[]> {
+/** A scratch run, or null when it threw (an abort is thrown on). */
+function scratchOrNull(signal: AbortSignal, run: Promise<SkillEvalRun | null>): Promise<SkillEvalRun | null> {
+  return run.catch((err: unknown) => { if (signal.aborted) throw err; return null; });
+}
+
+/** The replays of `run` whose case is a `dev` case of its suite now: a held-out or deleted case's replays are left out. */
+async function devReplays(store: Pick<Store, "listSkillEvalCases" | "listSkillEvalReplays">, run: SkillEvalRun): Promise<SkillEvalReplay[]> {
+  const [cases, replays] = await Promise.all([store.listSkillEvalCases(run.suite_id), store.listSkillEvalReplays(run.id)]);
+  const dev = new Set(cases.filter((c) => c.split === "dev").map((c) => c.id));
+  return replays.filter((r) => dev.has(r.case_id));
+}
+
+/** Pass verdicts ÷ replays, as a run's figures count them; null with no replay. */
+function passRate(replays: readonly SkillEvalReplay[]): number | null {
+  return replays.length === 0 ? null : replays.filter((r) => r.verdict === "pass").length / replays.length;
+}
+
+/** The check texts the judge answered no to in `replays` (dev cases only), in order, each once. Never an output or a reason. */
+function failedChecks(replays: readonly SkillEvalReplay[]): string[] {
   const names = new Set<string>();
-  for (const r of await store.listSkillEvalReplays(run_id)) {
+  for (const r of replays) {
     const answers = (r.detail as { answers?: unknown } | null)?.answers;
     if (!Array.isArray(answers)) continue;
     for (const a of answers as { check?: unknown; answer?: unknown }[]) if (a.answer === "no" && typeof a.check === "string") names.add(a.check);
@@ -309,13 +330,16 @@ function recordVerdict(ledger: SkillLedger | undefined, draft: SkillDraft, decis
   return handOff(ledger, { verdict: { id: draft.id, decision, target: skillTarget(draft.skill_ref), reason: `The owner's ${decision} of skill draft ${draft.id} in the factory.` } });
 }
 
+type PromoteStore = VerdictStore & Pick<FactoryStore, "listSkillEvalSuites" | "listSkillEvalCases">;
+
 /**
- * proposed or held → promoted: stores the old SKILL.md text in the draft's detail, writes the draft to SKILL.md,
- * re-runs the suite (the run is stored) and sets the draft promoted with that run. Refused, nothing written, for a
- * skill outside capabilities.skill_folders, a decided draft, or an unreadable skill.
+ * proposed or held → promoted: runs the held-out check (heldOutCheck), then stores the old SKILL.md text and both
+ * held-out pass rates in the draft's detail, writes the draft to SKILL.md, re-runs the suite (the run is stored) and
+ * sets the draft promoted with that run. Refused, nothing written, for a skill outside capabilities.skill_folders, a
+ * decided draft, an unreadable skill, or a held-out check that refuses.
  */
 export async function promoteSkillDraft(
-  d: { store: VerdictStore; wiring: SkillImproveWiring; signal: AbortSignal }, id: string, created_by: UserId, ledger?: SkillLedger,
+  d: { store: PromoteStore; wiring: SkillImproveWiring; signal: AbortSignal }, id: string, created_by: UserId, ledger?: SkillLedger,
 ): Promise<SkillVerdict> {
   const draft = await d.store.getSkillDraft(id);
   if (!draft) return { refused: `no skill draft ${id}` };
@@ -325,12 +349,44 @@ export async function promoteSkillDraft(
   const detail = (draft.detail ?? {}) as Record<string, unknown>;
   const old = await d.wiring.readSkill(folder);
   if (typeof detail.draft !== "string" || old === null) return { refused: `skill draft ${id} has no text or ${draft.skill_ref}/SKILL.md cannot be read: nothing written` };
-  const kept = { ...detail, old_text: typeof detail.old_text === "string" ? detail.old_text : old };
+  const model_class = MODEL_CLASSES.find((c) => c === detail.model_class) ?? "standard";
+  const held_out = await heldOutCheck(d, { id, skill_ref: draft.skill_ref, draft: detail.draft, current: old, model_class, created_by });
+  if ("refused" in held_out) return held_out;
+  const kept = { ...detail, old_text: typeof detail.old_text === "string" ? detail.old_text : old, held_out };
   if (!(await d.store.setSkillDraftState(id, draft.state, draft.state, kept))) return { refused: `skill draft ${id} changed meanwhile: nothing written` };
   await d.wiring.writeSkill(folder, detail.draft);
-  const model_class = MODEL_CLASSES.find((c) => c === detail.model_class) ?? "standard";
   const run = await d.wiring.rerun({ skill_ref: draft.skill_ref, model_class, created_by }, d.signal);
   const promoted = await d.store.setSkillDraftState(id, draft.state, "promoted", { ...kept, promoted_run: run ? { id: run.id, pass_rate: run.pass_rate } : null });
   if (promoted) await recordVerdict(ledger, draft, "promote");
   return { draft: (await d.store.getSkillDraft(id))! };
+}
+
+type HeldOutScore = { id: string; pass_rate: number };
+
+/**
+ * The check before a promotion (design 07-self-improvement): the draft text and the current SKILL.md text each run in
+ * scratch on the suite's `held-out` cases. Their pass rates when the draft's is not more than skill_improve_noise below
+ * the current text's; else refused, as it is when the suite has no held-out case or a run gives no pass rate (a failed
+ * model call). Writes no file and no draft state; its two runs are stored as scratch runs.
+ */
+async function heldOutCheck(
+  d: { store: PromoteStore; wiring: SkillImproveWiring; signal: AbortSignal },
+  r: { id: string; skill_ref: string; draft: string; current: string; model_class: ModelClass; created_by: UserId },
+): Promise<{ draft: HeldOutScore; current: HeldOutScore } | { refused: string }> {
+  const suite = (await d.store.listSkillEvalSuites()).find((s) => s.skill_ref === r.skill_ref);
+  const held = suite ? (await d.store.listSkillEvalCases(suite.id)).filter((c) => c.split === "held-out") : [];
+  if (held.length === 0) return { refused: `${r.skill_ref} has no held-out case, so skill draft ${r.id} cannot be checked before promotion: nothing written` };
+  const scratch = async (text: "draft" | "current"): Promise<HeldOutScore | null> => {
+    const run = await scratchOrNull(d.signal, d.wiring.scratch({
+      skill_ref: r.skill_ref, system_prompt: r[text], run_id: d.wiring.newId(), skill_version: heldOutVersion(r.id, text), model_class: r.model_class, created_by: r.created_by, split: "held-out",
+    }, d.signal));
+    return run && run.pass_rate !== null ? { id: run.id, pass_rate: run.pass_rate } : null;
+  };
+  const draft = await scratch("draft");
+  const current = draft ? await scratch("current") : null;
+  if (!draft || !current) return { refused: `the held-out check of skill draft ${r.id} gave no pass rate (a replay or model call failed): nothing written` };
+  if (past(current.pass_rate - draft.pass_rate, d.wiring.config.skill_improve_noise)) {
+    return { refused: `skill draft ${r.id} scored ${draft.pass_rate} on held-out cases against ${current.pass_rate} for the current text, more than skill_improve_noise below it: nothing written` };
+  }
+  return { draft, current };
 }

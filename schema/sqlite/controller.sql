@@ -427,7 +427,7 @@ CREATE TABLE controller_skill_eval_cases (
     input       TEXT NOT NULL,
     expected    TEXT NOT NULL,
     created_at  TEXT NOT NULL
-  , seed TEXT, mcp TEXT);
+  , seed TEXT, mcp TEXT, split TEXT NOT NULL DEFAULT 'dev' CHECK (split IN ('dev', 'held-out')));
 
 CREATE TABLE "controller_skill_eval_replays" (
     run_id        TEXT NOT NULL,

@@ -17,7 +17,8 @@
 //
 // main.ts passes skillEvalRun to every command through the command call (CommandCall.runSkillEval), so the CLI
 // handler imports no root or legacy module. The composition root builds the improve run's skill improvement wiring
-// here (skillImproveWiring, design 07-self-improvement): the scratch run, the re-run after a promote, and SKILL.md I/O.
+// here (skillImproveWiring, design 07-self-improvement): the scratch run (one split's cases only), the re-run after a
+// promote (every case, as `eval run`), and SKILL.md I/O.
 // The new-version gate pass (gatedImport, design 07-self-improvement) runs a new version's suite through
 // runSkillEvalFor on that stored version, after a plugin import records one.
 
@@ -47,7 +48,7 @@ import { PassportToolBroker } from "./impl/broker/passport-broker.js";
 import { packToolBrokers } from "./impl/broker/pack-tools.js";
 import { RunPassports } from "./worker/passports/run-passports.js";
 import { storeProjectResolver } from "./ui/settings-api.js";
-import type { SkillEvalRun, SkillEvalRunFigures, SkillEvalStore } from "./interfaces/skill-eval-store.js";
+import type { SkillEvalRun, SkillEvalRunFigures, SkillEvalSplit, SkillEvalStore } from "./interfaces/skill-eval-store.js";
 import { frontMatterTools, skillFolderPath, skillVersion } from "./runtime/capabilities/capabilities.js";
 import { skillVersionsOf } from "./ui/plugins-api.js";
 import { storeSql, storeSqlOrNull } from "./impl/store/sql/store-sql.js";
@@ -164,12 +165,15 @@ export function previousAnswers(store: Pick<SkillEvalStore, "listSkillEvalRuns" 
   };
 }
 
-/** The engine's store with the run's judge and factory versions added to its start (the suite version the store reads). */
-function versionedStore(store: SkillEvalWiring["store"], v: { judge_version: string; factory_version: string }): SkillEvalEngineDeps["store"] {
+/**
+ * The engine's store with the run's judge and factory versions added to its start (the suite version the store reads),
+ * and its case list narrowed to `split` when one is given (a scratch run, design 07-self-improvement).
+ */
+function versionedStore(store: SkillEvalWiring["store"], v: { judge_version: string; factory_version: string }, split?: SkillEvalSplit): SkillEvalEngineDeps["store"] {
   return {
     // The engine passes the run's created_by as text; it is the request's user or agent ID.
     startSkillEvalRun: (r) => store.startSkillEvalRun({ ...r, created_by: r.created_by as UserId, skill_version: r.skill_version ?? null, ...v }),
-    listSkillEvalCases: (id) => store.listSkillEvalCases(id),
+    listSkillEvalCases: async (id) => (await store.listSkillEvalCases(id)).filter((c) => split === undefined || c.split === split),
     listSkillEvalReplays: (id) => store.listSkillEvalReplays(id),
     recordSkillEvalReplay: (r) => store.recordSkillEvalReplay(r),
     finishSkillEvalRun: (id, status) => store.finishSkillEvalRun(id, status),
@@ -292,12 +296,12 @@ async function versionParts(d: SkillEvalWiring, skill: string, hash: string, mod
   return { engine: await engineOf(d, skill, v.text, model_class, v.folder_hash), skill_version: v.folder_hash };
 }
 
-/** Runs the suite through the engine as run `id`, records its figures and returns the stored run. */
+/** Runs the suite (only its `split` cases when given) through the engine as run `id`, records its figures and returns the stored run. */
 async function runAndRecord(
-  d: SkillEvalWiring, engine: Engine, r: { id: string; suite_id: string; created_by: string; skill_version: string; model_class: ModelClass; replays?: number }, signal: AbortSignal,
+  d: SkillEvalWiring, engine: Engine, r: { id: string; suite_id: string; created_by: string; skill_version: string; model_class: ModelClass; replays?: number; split?: SkillEvalSplit }, signal: AbortSignal,
 ): Promise<SkillEvalRun> {
   const { judge_version, close, ...parts } = engine;
-  const store = versionedStore(d.store, { judge_version, factory_version: d.factory_version ?? "dev" });
+  const store = versionedStore(d.store, { judge_version, factory_version: d.factory_version ?? "dev" }, r.split);
   const input = { id: r.id, suite_id: r.suite_id, created_by: r.created_by, skill_version: r.skill_version, ...(r.replays !== undefined ? { replays: r.replays } : {}) };
   const outcome = await runSkillEval({ store, ...parts }, input, signal).finally(close);
   if (outcome.status !== null) await d.store.recordSkillEvalRunFigures(r.id, runFigures(r.model_class, outcome.verdicts));
@@ -329,16 +333,18 @@ export async function runSkillEvalFor(d: SkillEvalWiring, r: SkillEvalRequest): 
 }
 
 /**
- * A scratch run (design 07-self-improvement): `skill`'s suite replayed with `system_prompt` (a draft) as the skill's
- * system prompt instead of its SKILL.md, judged, stored under `skill_version` with its figures. Reads no skill file and
- * writes none. Null when the skill has no suite.
+ * A scratch run (design 07-self-improvement): only the `split` cases of `skill`'s suite (`dev` to measure a draft,
+ * `held-out` for the check before a promotion) replayed with `system_prompt` as the skill's system prompt instead of
+ * its SKILL.md, judged, stored under `skill_version` with its figures, which count those cases only. Reads no skill
+ * file and writes none. Null when the skill has no suite.
  */
 export async function scratchRunFor(
-  d: SkillEvalWiring, r: { skill_ref: string; system_prompt: string; run_id: string; skill_version: string; model_class: ModelClass; created_by: UserId }, signal: AbortSignal,
+  d: SkillEvalWiring, r: { skill_ref: string; system_prompt: string; run_id: string; skill_version: string; model_class: ModelClass; created_by: UserId; split: SkillEvalSplit }, signal: AbortSignal,
 ): Promise<SkillEvalRun | null> {
   const suite = (await d.store.listSkillEvalSuites()).find((s) => s.skill_ref === r.skill_ref);
   if (!suite) return null;
-  return runAndRecord(d, await engineOf(d, r.skill_ref, r.system_prompt, r.model_class, r.skill_version), { id: r.run_id, suite_id: suite.id, created_by: r.created_by, skill_version: r.skill_version, model_class: r.model_class }, signal);
+  const run = { id: r.run_id, suite_id: suite.id, created_by: r.created_by, skill_version: r.skill_version, model_class: r.model_class, split: r.split };
+  return runAndRecord(d, await engineOf(d, r.skill_ref, r.system_prompt, r.model_class, r.skill_version), run, signal);
 }
 
 /** The improve run's skill improvement over `d` (SkillImproveWiring): `folders` are capabilities.skill_folders, absolute. */
