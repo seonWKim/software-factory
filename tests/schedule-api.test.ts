@@ -94,6 +94,12 @@ describe("POST /api/v1/schedules/…", () => {
     expect((await runDueSchedules(store, clock.now())).fired).toHaveLength(1);
   });
 
+  it("add takes run_now: true stores the schedule due now, false or none at its first slot", async () => {
+    const { clock, send } = await setup();
+    expect(await send("add", { ...ADD, run_now: true })).toMatchObject({ status: 200, value: { schedule: { id: "sch_fb", next_due_at: clock.now().toISOString() } } });
+    expect(await send("add", { ...ADD, id: "sch_off", run_now: false })).toMatchObject({ status: 200, value: { schedule: { id: "sch_off", next_due_at: FIRST } } });
+  });
+
   it("a refusal of the core is a 409 with its reason, and stores nothing", async () => {
     const { store, send } = await setup();
     await send("add", ADD);
@@ -118,8 +124,8 @@ describe("POST /api/v1/schedules/…", () => {
     const { calls, send } = await setup();
     for (const [verb, body] of [
       ["add", null], ["add", [ADD]], ["add", "sch_fb"], ["add", { ...ADD, id: undefined }], ["add", { ...ADD, id: 7 }], ["add", { ...ADD, title: 3 }],
-      ["add", { ...ADD, skip_when_busy: "on" }], ["add", { ...ADD, missed_rule: "skip" }], ["add", { ...ADD, run_now: true }], ["add", { ...ADD, token_cap: "100" }], ["add", { ...ADD, owner: OWNER }],
-      ["edit", { id: "sch_fb", cadence: ["daily"] }], ["pause", { id: "sch_fb", title: "x" }], ["run", {}], ["resume", { id: " " }],
+      ["add", { ...ADD, skip_when_busy: "on" }], ["add", { ...ADD, missed_rule: "skip" }], ["add", { ...ADD, run_now: "on" }], ["add", { ...ADD, run_now: 1 }], ["add", { ...ADD, token_cap: "100" }], ["add", { ...ADD, owner: OWNER }],
+      ["edit", { id: "sch_fb", cadence: ["daily"] }], ["edit", { id: "sch_fb", run_now: true }], ["pause", { id: "sch_fb", title: "x" }], ["run", {}], ["resume", { id: " " }],
     ] as [string, unknown][]) {
       const r = await send(verb, body);
       expect({ verb, body, status: r.status }).toEqual({ verb, body, status: 400 });

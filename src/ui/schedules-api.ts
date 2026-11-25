@@ -2,7 +2,8 @@
 // (src/core/schedule.ts). GET /api/v1/schedules lists them; GET /api/v1/schedules/runs?schedule=<id> lists one's runs
 // (400 without the parameter, 404 for an unknown ID). POST /api/v1/schedules/add, /edit, /pause, /resume, /run and /delete
 // take a JSON body with `id` and, for add and edit, the CLI's fields (`title`, `cadence`, `spec`, `zone`, `action`,
-// `body`, `skip_when_busy`, `token_cap`; `skip_when_busy` true stores `missed_rule` skip, false catch_up). After the request guards (write-routes.ts, the pauses CSRF token) a body that
+// `body`, `skip_when_busy`, `token_cap`; `skip_when_busy` true stores `missed_rule` skip, false catch_up; add alone also takes
+// `run_now`, true storing the schedule due now). After the request guards (write-routes.ts, the pauses CSRF token) a body that
 // is not an object or has an unknown, missing or wrongly typed field is a 400 before any store call; then the owner
 // check (rules-api.ts ownerOf, passed in, 403); a delete of an unknown ID is a 404; any other refusal of the core is a
 // 409 with its reason; else 200 with the schedule (a delete's as it was before it went). POST /api/v1/schedules/draft
@@ -43,7 +44,7 @@ function bodyOf(w: ScheduleWrite, body: unknown): { id: string; fields: Schedule
   if (typeof body !== "object" || body === null || Array.isArray(body)) return "The body must be a JSON object.";
   const b = body as Record<string, unknown>;
   const takes = w === "add" || w === "edit";
-  const known: readonly string[] = takes ? ["id", ...TEXT_FIELDS, "skip_when_busy", "token_cap"] : ["id"];
+  const known: readonly string[] = takes ? ["id", ...TEXT_FIELDS, "skip_when_busy", "token_cap", ...(w === "add" ? ["run_now"] : [])] : ["id"];
   const unknown = Object.keys(b).find((k) => !known.includes(k));
   if (unknown !== undefined) return `Unknown field "${unknown}".`;
   if (typeof b.id !== "string" || b.id.trim() === "") return "id must be the schedule's ID.";
@@ -56,6 +57,10 @@ function bodyOf(w: ScheduleWrite, body: unknown): { id: string; fields: Schedule
   if (b.skip_when_busy !== undefined) {
     if (typeof b.skip_when_busy !== "boolean") return "skip_when_busy must be true or false.";
     fields.missed = b.skip_when_busy ? "skip" : "catch_up";
+  }
+  if (b.run_now !== undefined) {
+    if (typeof b.run_now !== "boolean") return "run_now must be true or false.";
+    fields.run_now = b.run_now;
   }
   if (b.token_cap !== undefined) {
     if (typeof b.token_cap !== "number") return "token_cap must be a number.";
