@@ -88,7 +88,7 @@ function conflictPending(it: WorkItem): boolean {
 /**
  * The comment command event of an app gate command on `item`, keyed `key`: the note is the approve's or retry's
  * note, the resolve's notes, the reject's reason or the revise's feedback. Never on a PR: a revise here is the
- * issue's `/revise`, and no `+paths` is read.
+ * issue's `/revise`. Only a `/retry` or `/resolve` reads `+paths` (APP_PATHS).
  */
 function appGateEvent(kind: Exclude<CommandEvent["kind"], "budget_continue">, item: WorkItem, key: string, r: AppCommandRequest, note: string): CommandEvent {
   const who = { provider: "local" as const, subject: r.actor };
@@ -101,6 +101,12 @@ function appGateEvent(kind: Exclude<CommandEvent["kind"], "budget_continue">, it
     case "resolve_requested": return { kind, ...at, requester: who, notes: note, pr: null };
   }
 }
+
+/**
+ * The app requests whose first line `+paths` widens allowed_paths as a comment's does (design 09-dashboard-item-commands,
+ * 2026-11-26): `/retry` and `/resolve`. A dashboard `/approve` reads none (it is applied in core requestTransition).
+ */
+const APP_PATHS: readonly CommandEvent["kind"][] = ["retry_requested", "resolve_requested"];
 
 /** Gate commands from any source (approve, reject, revise, retry, resolve, budget), help, plain comments, links and PR feedback. */
 export class CommandsUnit {
@@ -222,12 +228,12 @@ export class CommandsUnit {
   }
 
   /** A gate command from a comment (`app` null) or an app request (its user), design §4: `approve_spec`, the
-   * note (a comment's `+paths` too) through G5, the transition (`tag` on its change), an "already allowed" `+paths` reply, the standing follow-up, a reject's close, the pushback's capture. */
+   * note (with its `+paths`: a comment's, or an app request's `/retry` or `/resolve`, APP_PATHS) through G5, the transition (`tag` on its change), an "already allowed" `+paths` reply, the standing follow-up, a reject's close, the pushback's capture. */
   async gateCommand(item: WorkItem, e: CommandEvent, app: AppSender = null, tag: StateChangeDetail | null = null): Promise<string | null> {
     const who = e.kind === "spec_approved" || e.kind === "spec_rejected" || e.kind === "budget_continue" ? e.approver : e.requester;
     const principal = app ? await this.c.unit("auth").allowed({ user_id: app.user_id }, "approve_spec", item.id) : await this.c.unit("auth").authorize(who, "approve_spec", item.id);
     if ("refuse" in principal) return principal.refuse;
-    const input = await this.commandInput(item.id, e, app === null);
+    const input = await this.commandInput(item.id, e, app === null || APP_PATHS.includes(e.kind));
     if ("refuse" in input) return input.refuse;
     const refusal = await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, input.note, tag, input.paths);
     const said = refusal === null ? alreadyAllowed(item, e, input.paths) : null; if (said) await this.c.unit("outbox").post(item, said.target, said.body, said.marker); if (refusal === null) await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
@@ -435,7 +441,7 @@ export class CommandsUnit {
   /**
    * The note and the `+paths` of an `/approve`, `/retry`, `/resolve` or `/paths` (design §4, issue #280); none for other
    * commands. The whole text is egress-scanned first (so a refusal never quotes a flagged path), then `+paths` is
-   * split off and checked (unless `paths` is false: an app request's), the note what is left, capped. A finding or a bad path refuses it.
+   * split off and checked (unless `paths` is false: an app request's other than APP_PATHS), the note what is left, capped. A finding or a bad path refuses it.
    */
   async commandInput(id: WorkItemId, e: CommandEvent, paths = true): Promise<{ note: string | null; paths: string[] } | Refusal> {
     const text = commandText(e); if (text === null) return { note: null, paths: [] }; if (typeof text === "object") return text; // paths.ts: `/paths +a` as `+paths a`
