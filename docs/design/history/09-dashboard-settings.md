@@ -1,5 +1,6 @@
 ## History
 
+- **Connect asks for read access only** (until 2026-11-25, the "Reconnect with write access" decision at the top of 09-dashboard-settings.md, phase 3 of local-task-tk_dc8c579a). Before: the Calendar section posted no `write`, so only the CLI's "Allow writes" question could connect a calendar with write access.
 - **A calendar row's head centred its actions on the name group; General placed its labels and hints by hand** (decision changed 2026-11-24, the Settings rhythm decision of 09-dashboard-settings.md, alignment audit). Before: the head was `items-center`, so when the last sync wrapped under the long name the Disconnect button centred on both lines, 11px below the name's line; General drew `<span>` labels, the quiet hours hint as a paragraph between its label and its field, and the tier levels as a list under the tier's control.
 
 - **The Skills Path cell was one line at every width** (until 2026-11-24, wi_03f92e2e; the Path wrap decision at the top of 09-dashboard-settings.md). Before: `PathText` was a `whitespace-nowrap` flex row, so at 390px the 41-character path and its Copy button ran past the card and the window (Copy Path at x 440 to 485); `offscreen` skipped it because a scrolling ancestor held it.

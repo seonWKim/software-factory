@@ -237,4 +237,27 @@ describe("Calendar section", () => {
     fireEvent.click(screen.getByRole("button", { name: `Connect ${NAME}` }));
     expect((await screen.findByRole("alert")).textContent).toBe("Only the owner connects a calendar; you are local:other.");
   });
+
+  it("a connected read-only calendar has Reconnect with write access beside Disconnect, which posts write: true and opens the consent page", async () => {
+    view = { plugins: [plugin({ connected: true, write_access: false })] };
+    const section = await show();
+    const row = section.querySelector<HTMLElement>(`[data-calendar="${NAME}"]`)!;
+    const actions = row.querySelector<HTMLElement>("[data-calendar-actions]")!;
+    expect(within(actions).getAllByRole("button").map((b) => b.textContent)).toEqual(["Reconnect with write access", "Disconnect"]);
+    answers = [{ status: 202, body: { plugin: NAME, state: "signing_in", consent_url: URL_ } }];
+    view = { plugins: [plugin({ connected: true, write_access: false, attempt: { state: "signing_in", events: null, error: null } })] };
+    fireEvent.click(within(actions).getByRole("button", { name: `Reconnect ${NAME} with write access, so the factory's events can be added there` }));
+    expect(await screen.findByRole("link", { name: "Open the sign-in page" })).toHaveProperty("href", URL_);
+    expect(posts).toEqual([{ url: "/api/v1/calendar/connect", body: { plugin: NAME, write: true }, token: TOKEN }]);
+    expect(opened).toEqual([URL_]);
+  });
+
+  it("no Reconnect with write access once the calendar takes writes, for a calendar that cannot take them, or when not connected", async () => {
+    for (const p of [plugin({ connected: true, write_access: true }), plugin({ connected: true, write_access: null }), plugin({ connected: true }), plugin({ write_access: false })]) {
+      view = { plugins: [p] };
+      const section = await show();
+      expect(within(section).queryByRole("button", { name: /with write access/ })).toBeNull();
+      cleanup();
+    }
+  });
 });

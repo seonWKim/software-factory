@@ -1,14 +1,29 @@
-// The google-calendar CalendarSource (docs/plugins/calendar-source.md): reads events, read-only, from the owner's
-// primary calendar or the calendars `calendar_ids` lists: every event that overlaps the window the sync passes. It reads
-// Google for the whole local days that window touches, so the read's bounds hold for a local day and one sync per day
-// after the first reads incrementally.
-// It asks only for the calendar.readonly scope. Its access token, sync tokens, ETags and last events are in-process
-// caches: losing them costs one full read. Every HTTP call goes through the injected client, so no test calls Google.
+// The google-calendar CalendarSource (docs/plugins/calendar-source.md): reads events from the owner's primary calendar
+// or the calendars `calendar_ids` lists: every event that overlaps the window the sync passes. It reads Google for the
+// whole local days that window touches, so the read's bounds hold for a local day and one sync per day after the
+// first reads incrementally.
+// Its sync port (`sync`, design 02-tasks-calendar, copy to a connected calendar) copies the owner's local events into
+// the first calendar it reads: one events call per add, edit or delete, a repeating event as one recurring event, so
+// an edit or a delete acts on the whole series. It writes only when the token answer grants calendar.events: a
+// connection with calendar.readonly alone is read-only and makes no write call. A token answer with any other scope
+// is refused. Its access token, sync tokens, ETags and last events are in-process caches: losing them costs one full
+// read. Every HTTP call goes through the injected client, so no test calls Google.
 
+import type { CopyFields, SyncPort } from "../../calendar-write.js";
 import type { CalendarFeed, EventDetails, EventPerson, FeedEvent } from "../../index.js";
 
-/** The one scope the plugin asks for, and the only one a token answer may carry. */
+/** The read scope of a read-only connection. */
 export const CALENDAR_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
+/** The scope a connection with write access asks for: it reads and writes events. */
+export const CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events";
+const CALENDAR_SCOPES: ReadonlySet<string> = new Set([CALENDAR_READONLY_SCOPE, CALENDAR_EVENTS_SCOPE]);
+
+/** The scopes of a token answer's space-separated `scope`, or null when it names none or any other scope. */
+export function calendarScopes(scope: unknown): ReadonlySet<string> | null {
+  if (typeof scope !== "string") return null;
+  const granted = new Set(scope.split(" ").filter((s) => s !== ""));
+  return granted.size > 0 && [...granted].every((s) => CALENDAR_SCOPES.has(s)) ? granted : null;
+}
 export const TOKEN_URL = "https://oauth2.googleapis.com/token";
 export const EVENTS_API = "https://www.googleapis.com/calendar/v3/calendars";
 /** The calendar read when `calendar_ids` lists none. */
@@ -23,7 +38,7 @@ const EXPIRY_MARGIN_MS = 60_000;
 
 /** One HTTP request; the real client is fetch. */
 export interface HttpRequest {
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "PUT" | "DELETE";
   headers: Record<string, string>;
   body?: string;
 }
@@ -105,8 +120,16 @@ interface CalendarCache {
 export const fail = (what: string): Error => new Error(`google-calendar: ${what}`);
 
 export class GoogleCalendarSource<N extends string> implements CalendarFeed {
-  private access: { token: string; expiresAt: number } | null = null;
+  private access: { token: string; expiresAt: number; write: boolean } | null = null;
   private readonly caches = new Map<string, CalendarCache>();
+  /** The sync port: copies of the owner's local events in the first calendar read. */
+  readonly sync: SyncPort = {
+    label: "Google Calendar",
+    writable: async () => (await this.grant()).write,
+    add: async (copy) => this.addCopy(copy),
+    edit: async (id, copy) => void (await this.write("PUT", "event edit", id, copy)),
+    remove: async (id) => void (await this.write("DELETE", "event delete", id)),
+  };
 
   constructor(private readonly o: GoogleCalendarOptions<N>) {}
 
@@ -189,10 +212,40 @@ export class GoogleCalendarSource<N extends string> implements CalendarFeed {
     }
   }
 
+  /** One add: the new event's ID as this source's read reports it (prefixed by its calendar when it reads several). */
+  private async addCopy(copy: CopyFields): Promise<string> {
+    const created = await this.write("POST", "event add", null, copy);
+    if (typeof created?.id !== "string" || created.id === "") throw fail("event add answered no event ID");
+    return this.calendars.length > 1 ? `${this.calendars[0]}/${created.id}` : created.id;
+  }
+
+  /**
+   * One events call on a copy: POST adds (no `id`), PUT replaces it whole (its series when it repeats), DELETE removes
+   * it (an event already gone counts as removed). Refused before any call when the connection is read-only.
+   */
+  private async write(method: "POST" | "PUT" | "DELETE", what: string, id: string | null, copy?: CopyFields): Promise<{ id?: unknown } | null> {
+    const { token, write } = await this.grant();
+    if (!write) throw fail(`${what} refused: the connection is read-only (calendar.readonly); reconnect with write access`);
+    const at = id === null ? { calendar: this.calendars[0]!, event: null } : copyAddress(id, this.calendars[0]!);
+    const url = `${EVENTS_API}/${encodeURIComponent(at.calendar)}/events${at.event === null ? "" : `/${encodeURIComponent(at.event)}`}`;
+    const headers: Record<string, string> = { authorization: `Bearer ${token}`, accept: "application/json" };
+    if (copy) headers["content-type"] = "application/json";
+    const res = await this.call(url, { method, headers, ...(copy ? { body: JSON.stringify(eventBody(copy)) } : {}) }, what);
+    if (res.status === 401) this.access = null;
+    if (method === "DELETE" && (res.status === 404 || res.status === 410)) return null;
+    if (res.status !== 200 && res.status !== 204) throw fail(`${what} failed (HTTP ${res.status})`);
+    return method === "DELETE" ? null : json<{ id?: unknown }>(res, what);
+  }
+
   /** The cached access token, refreshed from the refresh token when missing or about to expire. */
   private async accessToken(): Promise<string> {
+    return (await this.grant()).token;
+  }
+
+  /** The cached access token and whether it may write, refreshed when missing or about to expire. */
+  private async grant(): Promise<{ token: string; write: boolean }> {
     const now = this.o.now().getTime();
-    if (this.access && this.access.expiresAt > now) return this.access.token;
+    if (this.access && this.access.expiresAt > now) return this.access;
     const [refresh, clientId, clientSecret] = await Promise.all([
       this.secret(this.o.names.refreshToken),
       this.secret(this.o.names.clientId),
@@ -203,18 +256,18 @@ export class GoogleCalendarSource<N extends string> implements CalendarFeed {
       refresh_token: refresh,
       client_id: clientId,
       client_secret: clientSecret,
-      scope: CALENDAR_READONLY_SCOPE,
     }).toString();
     const res = await this.call(TOKEN_URL, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body }, "token refresh");
     if (res.status === 400 && (await errorCode(res)) === INVALID_GRANT) throw new Error(INVALID_GRANT);
     if (res.status !== 200) throw fail(`token refresh failed (HTTP ${res.status})`);
     const answer = await json<{ access_token?: unknown; expires_in?: unknown; scope?: unknown }>(res, "token refresh");
-    if (answer.scope !== CALENDAR_READONLY_SCOPE) throw fail("token refresh answered a scope other than calendar.readonly");
+    const scopes = calendarScopes(answer.scope);
+    if (scopes === null) throw fail("token refresh answered a scope other than exactly calendar.readonly or calendar.events");
     if (typeof answer.access_token !== "string" || answer.access_token === "" || typeof answer.expires_in !== "number") {
       throw fail("token refresh answered no access token");
     }
-    this.access = { token: answer.access_token, expiresAt: now + answer.expires_in * 1000 - EXPIRY_MARGIN_MS };
-    return this.access.token;
+    this.access = { token: answer.access_token, expiresAt: now + answer.expires_in * 1000 - EXPIRY_MARGIN_MS, write: scopes.has(CALENDAR_EVENTS_SCOPE) };
+    return this.access;
   }
 
   private async secret(name: N): Promise<string> {
@@ -244,6 +297,31 @@ function readWindow(window: { from: string; to: string }): { timeMin: string; ti
     return new Date(t.getFullYear(), t.getMonth(), t.getDate() + days).toISOString();
   };
   return { timeMin: midnight(window.from, 0), timeMax: midnight(window.to, 1) };
+}
+
+/** A copy's calendar and event ID: `calendar/event` when the source reads several calendars, else the event in `first`. */
+function copyAddress(id: string, first: string): { calendar: string; event: string } {
+  const slash = id.lastIndexOf("/");
+  return slash < 0 ? { calendar: first, event: id } : { calendar: id.slice(0, slash), event: id.slice(slash + 1) };
+}
+
+const RRULE: Readonly<Record<CopyFields["repeats"], string | null>> = { none: null, daily: "RRULE:FREQ=DAILY", weekly: "RRULE:FREQ=WEEKLY", monthly: "RRULE:FREQ=MONTHLY" };
+
+/** The day (YYYY-MM-DD) the clock in `zone` reads at the instant `iso`. */
+function dayIn(iso: string, zone: string): string {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(iso)).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
+/**
+ * The event resource for a copy: its title and times (an all-day one as the local days it spans, the end day not
+ * included), the zone, and a repeat as one recurrence rule with no end, stepping from the first start as the local
+ * read does (a monthly one on the 29th to 31st skips the months without that day).
+ */
+function eventBody(c: CopyFields): Record<string, unknown> {
+  const at = (iso: string) => (c.all_day ? { date: dayIn(iso, c.time_zone) } : { dateTime: iso, timeZone: c.time_zone });
+  const rule = RRULE[c.repeats];
+  return { summary: c.title, start: at(c.starts_at), end: at(c.ends_at), ...(rule === null ? {} : { recurrence: [rule] }) };
 }
 
 class SyncTokenGone extends Error {
