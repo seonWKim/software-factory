@@ -167,7 +167,7 @@ const defaultThreshold = (checks: readonly Check[]): number => (checks.some((c) 
 /** A case's `expected` parsed into its checks and threshold, or what is wrong with it. */
 export function parseCaseChecks(expected: unknown): { value: CaseChecks } | { refused: string } {
   const list = Array.isArray(expected) ? expected : isObject(expected) ? expected.checks : undefined;
-  if (!Array.isArray(list) || list.length === 0) return { refused: 'expected must be a list of checks, or {"checks": [...]}' };
+  if (!Array.isArray(list) || list.length === 0) return { refused: 'expected must be a list of rubric check texts or check objects, or {"checks": [...]}' };
   const checks: Check[] = [];
   for (const item of list) {
     const c = text(item) ? { kind: "yes/no" as const, check: item, weight: 1, must: true } : isObject(item) ? parseObject(item) : "a check is a text or an object with a kind";
