@@ -262,7 +262,7 @@ export class GoogleCalendarSource<N extends string> implements CalendarFeed {
     if (res.status !== 200) throw fail(`token refresh failed (HTTP ${res.status})`);
     const answer = await json<{ access_token?: unknown; expires_in?: unknown; scope?: unknown }>(res, "token refresh");
     const scopes = calendarScopes(answer.scope);
-    if (scopes === null) throw fail("token refresh answered a scope other than calendar.readonly or calendar.events");
+    if (scopes === null) throw fail("token refresh answered a scope other than exactly calendar.readonly or calendar.events");
     if (typeof answer.access_token !== "string" || answer.access_token === "" || typeof answer.expires_in !== "number") {
       throw fail("token refresh answered no access token");
     }

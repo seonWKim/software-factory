@@ -31,20 +31,26 @@ export interface LocalEventFields {
   readonly repeats: Repeat;
 }
 
-/**
- * One stored local event. `created_by` is the identity that added it, never a display name. `provider` and
- * `provider_event_id`: the connected calendar that holds its copy and the copy's ID there (null: no copy);
- * `sync_error`: the last copy write's error, null after a success (calendar-write.ts).
- */
+/** One local event. `created_by` is the identity that added it, never a display name. */
 export interface LocalEvent extends LocalEventFields {
   readonly id: string;
   readonly created_by: string;
   readonly created_at: string;
   readonly updated_at: string;
+}
+
+/**
+ * An event's copy state (calendar-write.ts). `provider` and `provider_event_id`: the connected calendar that holds its
+ * copy and the copy's ID there (null: no copy); `sync_error`: the last copy write's error, null after a success.
+ */
+interface LocalEventCopy {
   readonly provider: string | null;
   readonly provider_event_id: string | null;
   readonly sync_error: string | null;
 }
+
+/** One stored local event, with its copy state. */
+export type StoredLocalEvent = LocalEvent & LocalEventCopy;
 
 /** One occurrence as the calendar read places it: the stored event's fields at that occurrence's instants. */
 export interface LocalOccurrence {
@@ -96,7 +102,7 @@ const iso = (v: string) => new Date(Date.parse(v)).toISOString();
 
 const textOrNull = (v: unknown): string | null => (v == null ? null : String(v));
 
-function row(r: Record<string, unknown>): LocalEvent {
+function row(r: Record<string, unknown>): StoredLocalEvent {
   return {
     provider: textOrNull(r.provider), provider_event_id: textOrNull(r.provider_event_id), sync_error: textOrNull(r.sync_error),
     id: String(r.id), title: String(r.title), starts_at: String(r.starts_at), ends_at: String(r.ends_at), all_day: Number(r.all_day) === 1,
@@ -105,7 +111,7 @@ function row(r: Record<string, unknown>): LocalEvent {
 }
 
 /** The stored event `id`, or null. */
-async function getLocalEvent(db: SqlExecutor, id: string): Promise<LocalEvent | null> {
+async function getLocalEvent(db: SqlExecutor, id: string): Promise<StoredLocalEvent | null> {
   const [r] = await db.all("SELECT * FROM calendar_local_events WHERE id = ?", [id]);
   return r === undefined ? null : row(r);
 }
@@ -114,7 +120,7 @@ async function getLocalEvent(db: SqlExecutor, id: string): Promise<LocalEvent | 
  * Stores one event (fields checked by localEventError first) under `id` (a new `le_` ID when null), its instants
  * normalised to UTC ISO. Safe to run twice: a second add under the same ID writes nothing and answers the stored one.
  */
-async function addLocalEvent(db: SqlExecutor, a: { id: string | null; fields: LocalEventFields; by: string; nowMs: number }): Promise<LocalEvent> {
+async function addLocalEvent(db: SqlExecutor, a: { id: string | null; fields: LocalEventFields; by: string; nowMs: number }): Promise<StoredLocalEvent> {
   const id = a.id ?? `le_${randomUUID()}`;
   const now = new Date(a.nowMs).toISOString();
   const f = a.fields;
@@ -126,7 +132,7 @@ async function addLocalEvent(db: SqlExecutor, a: { id: string | null; fields: Lo
 }
 
 /** Replaces the fields of event `id`, the whole series for a repeating one; null when no such event is stored. */
-async function editLocalEvent(db: SqlExecutor, id: string, fields: LocalEventFields, nowMs: number): Promise<LocalEvent | null> {
+async function editLocalEvent(db: SqlExecutor, id: string, fields: LocalEventFields, nowMs: number): Promise<StoredLocalEvent | null> {
   const changed = await db.run(
     "UPDATE calendar_local_events SET title = ?, starts_at = ?, ends_at = ?, all_day = ?, repeats = ?, updated_at = ? WHERE id = ?",
     [fields.title.trim(), iso(fields.starts_at), iso(fields.ends_at), fields.all_day ? 1 : 0, fields.repeats, new Date(nowMs).toISOString(), id],
@@ -145,14 +151,14 @@ export interface LocalEvents {
   check(fields: Record<string, unknown>): string | null;
   /** Whether `id` is a local event ID. */
   isId(id: unknown): id is string;
-  get(id: string): Promise<LocalEvent | null>;
-  add(a: { id: string | null; fields: LocalEventFields; by: string; nowMs: number }): Promise<LocalEvent>;
-  edit(id: string, fields: LocalEventFields, nowMs: number): Promise<LocalEvent | null>;
+  get(id: string): Promise<StoredLocalEvent | null>;
+  add(a: { id: string | null; fields: LocalEventFields; by: string; nowMs: number }): Promise<StoredLocalEvent>;
+  edit(id: string, fields: LocalEventFields, nowMs: number): Promise<StoredLocalEvent | null>;
   remove(id: string): Promise<boolean>;
   /** After an add or edit of `event`: its copy in a connected calendar, at most one port call (calendar-write.ts copyEvent). */
-  copy(event: LocalEvent, a: { want: boolean; ports: SyncPorts }): Promise<SyncResult>;
+  copy(event: StoredLocalEvent, a: { want: boolean; ports: SyncPorts }): Promise<SyncResult>;
   /** After a delete of `event`: its copy removed, if it has one (calendar-write.ts removeCopy). */
-  uncopy(event: LocalEvent, ports: SyncPorts): Promise<SyncResult>;
+  uncopy(event: StoredLocalEvent, ports: SyncPorts): Promise<SyncResult>;
   /** `events` less the copies of local events, so each shows once (calendar-write.ts hideCopies). */
   hideCopies<E extends { readonly source: string; readonly id: string }>(events: readonly E[]): Promise<E[]>;
   /** Whether a calendar takes writes, as stored (calendar-write.ts): read with no provider call; null forgets it. */
@@ -177,7 +183,7 @@ function rangeBounds(from: string, to: string): { from: number; to: number } {
 }
 
 /** The stored events that can have an occurrence in the local days `from` through `to`: one read, no write. */
-export async function readLocalEvents(db: SqlExecutor, from: string, to: string): Promise<LocalEvent[]> {
+export async function readLocalEvents(db: SqlExecutor, from: string, to: string): Promise<StoredLocalEvent[]> {
   const b = rangeBounds(from, to);
   const rows = await db.all(
     "SELECT * FROM calendar_local_events WHERE starts_at < ? AND (repeats <> 'none' OR ends_at > ?) ORDER BY starts_at, id",
@@ -208,7 +214,7 @@ function firstStep(first: Date, repeats: Exclude<Repeat, "none">, lengthMs: numb
  * 31st skips the months without that day. A timed occurrence keeps the first's length; an all-day one its number of
  * days, ending at a local midnight. Pure.
  */
-export function expandLocalEvents(events: readonly LocalEvent[], from: string, to: string): LocalOccurrence[] {
+export function expandLocalEvents(events: readonly (LocalEvent & Partial<LocalEventCopy>)[], from: string, to: string): LocalOccurrence[] {
   const b = rangeBounds(from, to);
   const out: LocalOccurrence[] = [];
   for (const e of events) {
@@ -220,7 +226,7 @@ export function expandLocalEvents(events: readonly LocalEvent[], from: string, t
       if (s.getTime() < b.to && end.getTime() > b.from) {
         out.push({
           source: LOCAL_SOURCE, id: e.id, title: e.title, starts_at: s.toISOString(), ends_at: end.toISOString(), all_day: e.all_day, repeats: e.repeats, details: null,
-          copied_to: e.provider_event_id === null ? null : e.provider, sync_error: e.sync_error,
+          copied_to: e.provider_event_id == null ? null : (e.provider ?? null), sync_error: e.sync_error ?? null,
         });
       }
     };

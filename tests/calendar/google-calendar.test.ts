@@ -143,7 +143,7 @@ describe("google-calendar: scope", () => {
     for (const scope of [`${CALENDAR_READONLY_SCOPE} https://www.googleapis.com/auth/calendar`, `${CALENDAR_EVENTS_SCOPE} https://www.googleapis.com/auth/calendar`, "https://www.googleapis.com/auth/calendar", undefined, ""]) {
       const { http, source, clock } = setup();
       http.token = () => ({ status: 200, body: { access_token: "access-1", expires_in: 3600, scope } });
-      expect(await errorOf(source.events(syncWindow(clock)))).toMatch(/scope other than calendar\.readonly/);
+      expect(await errorOf(source.events(syncWindow(clock)))).toMatch(/scope other than exactly calendar\.readonly/);
       expect(http.eventReads()).toEqual([]);
     }
   });

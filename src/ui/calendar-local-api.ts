@@ -12,7 +12,8 @@
 // failed with its error); a failure keeps the local change and its error is stored on the event. Nothing retries it
 // on a poll: the next save of that event (the add again, or an edit) retries the copy.
 
-import type { LocalEvent, LocalEventFields, LocalEvents } from "../calendar/index.js";
+import type { LocalEventFields, LocalEvents } from "../calendar/index.js";
+import type { StoredLocalEvent } from "../calendar/calendar-local.js";
 import { type ApiResult, apiError } from "./api.js";
 import type { UiDeps } from "./deps.js";
 import { Withholder } from "./withhold.js";
@@ -46,7 +47,7 @@ function checked(events: LocalEvents, base: Partial<LocalEventFields>, b: Record
 }
 
 /** The stored event as answered, with what its copy did: its texts through the Withholder, as on the other routes. */
-async function shown(d: UiDeps, e: LocalEvent, sync: SyncResult): Promise<ApiResult> {
+async function shown(d: UiDeps, e: StoredLocalEvent, sync: SyncResult): Promise<ApiResult> {
   const w = new Withholder(d.scanner);
   const plain = async (v: string | null) => (v === null ? null : (await w.plain(v)).text);
   const answered = sync.state === "failed" ? { ...sync, error: await plain(sync.error) } : sync;
@@ -54,7 +55,7 @@ async function shown(d: UiDeps, e: LocalEvent, sync: SyncResult): Promise<ApiRes
 }
 
 /** `e` after its copy: the stored row, which now holds the copy's calendar and ID or its error. */
-async function copied(d: UiDeps, events: LocalEvents, e: LocalEvent, want: boolean): Promise<ApiResult> {
+async function copied(d: UiDeps, events: LocalEvents, e: StoredLocalEvent, want: boolean): Promise<ApiResult> {
   const sync = await events.copy(e, { want, ports: portsOf(d) });
   return shown(d, (await events.get(e.id)) ?? e, sync);
 }

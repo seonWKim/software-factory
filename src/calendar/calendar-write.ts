@@ -10,7 +10,7 @@
 // This file knows a local event and a sync port only: no provider.
 
 import type { SqlExecutor } from "../state/index.js";
-import type { LocalEvent, Repeat } from "./calendar-local.js";
+import type { StoredLocalEvent, Repeat } from "./calendar-local.js";
 
 /**
  * A local event as a sync port copies it. The same shape as CalendarCopy (src/interfaces/calendar-source.ts),
@@ -59,12 +59,12 @@ const ERROR_MAX = 1000;
 
 const errorOf = (err: unknown): string => (err instanceof Error ? err.message : String(err)).slice(0, ERROR_MAX);
 
-const copyOf = (e: LocalEvent, timeZone: string): CopyFields => ({
+const copyOf = (e: StoredLocalEvent, timeZone: string): CopyFields => ({
   title: e.title, starts_at: e.starts_at, ends_at: e.ends_at, all_day: e.all_day, repeats: e.repeats, time_zone: timeZone,
 });
 
 /** Whether `e` has a copy in a connected calendar. */
-const copied = (e: LocalEvent): boolean => e.provider !== null && e.provider_event_id !== null;
+const copied = (e: StoredLocalEvent): boolean => e.provider !== null && e.provider_event_id !== null;
 
 async function setCopy(db: SqlExecutor, id: string, c: { provider: string | null; provider_event_id: string | null; sync_error: string | null }): Promise<void> {
   await db.run("UPDATE calendar_local_events SET provider = ?, provider_event_id = ?, sync_error = ? WHERE id = ?", [c.provider, c.provider_event_id, c.sync_error, id]);
@@ -86,7 +86,7 @@ export async function storeWriteAccess(db: SqlExecutor, source: string, writable
  * The port to write `e`'s copy through, or why there is none: a copied event's own calendar, else the first. Its
  * answer to `writable` (on a write only, never on a read) is stored, so the calendar read knows it.
  */
-async function portFor(db: SqlExecutor, e: LocalEvent, ports: SyncPorts): Promise<{ name: string; port: SyncPort } | { unavailable: string }> {
+async function portFor(db: SqlExecutor, e: StoredLocalEvent, ports: SyncPorts): Promise<{ name: string; port: SyncPort } | { unavailable: string }> {
   const target = await ports(copied(e) ? e.provider : null);
   if (target === null) {
     if (copied(e)) throw new Error(`${e.provider} is not connected: its copy of the event was not changed`);
@@ -105,7 +105,7 @@ async function portFor(db: SqlExecutor, e: LocalEvent, ports: SyncPorts): Promis
  * last copy failed (`sync_error`: saving it again is the retry). One port call at most. The outcome is stored on the
  * event: the copy's calendar and ID, or the error.
  */
-export async function copyEvent(db: SqlExecutor, e: LocalEvent, a: { want: boolean; ports: SyncPorts; timeZone: string }): Promise<SyncResult> {
+export async function copyEvent(db: SqlExecutor, e: StoredLocalEvent, a: { want: boolean; ports: SyncPorts; timeZone: string }): Promise<SyncResult> {
   if (!copied(e) && !a.want && e.sync_error === null) return { state: "off" };
   try {
     const target = await portFor(db, e, a.ports);
@@ -124,7 +124,7 @@ export async function copyEvent(db: SqlExecutor, e: LocalEvent, a: { want: boole
 }
 
 /** After a local delete of `e`: its copy, if any, is removed, the whole series. The event is gone, so a failure is only answered. */
-export async function removeCopy(db: SqlExecutor, e: LocalEvent, ports: SyncPorts): Promise<SyncResult> {
+export async function removeCopy(db: SqlExecutor, e: StoredLocalEvent, ports: SyncPorts): Promise<SyncResult> {
   if (!copied(e)) return { state: "off" };
   try {
     const target = await portFor(db, e, ports);

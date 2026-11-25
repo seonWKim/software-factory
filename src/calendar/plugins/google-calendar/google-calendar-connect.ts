@@ -117,7 +117,7 @@ async function connect<N extends string>(o: GoogleConnectOptions<N>, ctx: Connec
 
   const answer = await exchange(o.http, ctx.clock, { code, clientId, clientSecret, redirectUri: loopback.redirectUri, verifier });
   const granted = calendarScopes(answer.scope);
-  if (granted === null) throw fail("the token answer granted a scope other than calendar.readonly or calendar.events: refused, nothing stored");
+  if (granted === null) throw fail("the token answer granted a scope other than exactly calendar.readonly or calendar.events: refused, nothing stored");
   if (!granted.has(scope)) throw fail(`the token answer did not grant ${scope === CALENDAR_EVENTS_SCOPE ? "calendar.events" : "calendar.readonly"}: refused, nothing stored`);
   if (typeof answer.refresh_token !== "string" || answer.refresh_token === "") throw fail("the token answer carried no refresh token: nothing stored");
   await ctx.storeSecrets(new Map([[idName, clientId], [secretName, clientSecret], [refreshToken, answer.refresh_token]]));

@@ -324,7 +324,7 @@ describe("factory setup calendar google: refusals store nothing and exit non-zer
         r.write = write;
         r.google.exchange = () => ({ status: 200, body: { access_token: ACCESS, refresh_token: REFRESH, expires_in: 3600, scope } });
         await untouched(r, snapshot(r));
-        expect(r.printed.join("\n")).toMatch(/scope other than calendar\.readonly or calendar\.events/);
+        expect(r.printed.join("\n")).toMatch(/scope other than exactly calendar\.readonly or calendar\.events/);
       }
     }
   });

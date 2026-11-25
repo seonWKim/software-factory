@@ -351,9 +351,9 @@ describe("POST /api/v1/calendar/connect: refusals write nothing", () => {
     { name: "a wrong state", query: () => ({ code: CODE, state: "not-the-state" }), error: /state did not match/ },
     { name: "an error from Google", query: (u) => ({ error: "access_denied", state: u.searchParams.get("state")! }), error: /consent answered an error \(access_denied\)/ },
     {
-      name: "a scope other than calendar.readonly or calendar.events",
+      name: "a scope other than exactly calendar.readonly",
       arrange: (g) => (g.exchange = () => ({ status: 200, body: { access_token: ACCESS, refresh_token: REFRESH, expires_in: 3600, scope: `${CALENDAR_READONLY_SCOPE} https://www.googleapis.com/auth/calendar` } })),
-      error: /scope other than calendar\.readonly or calendar\.events/,
+      error: /scope other than exactly calendar\.readonly/,
     },
     {
       name: "a missing refresh token",
