@@ -20,6 +20,7 @@ import {
 import { commandOutcome, notAllowed, useCommandSend } from "./command-send.js";
 import { MergeButton } from "./merge-button.js";
 import { ApproveDialog, type DecisionChoice, DecisionsPanel, InShort, approvePhase, chosenAnswers, commandLabel, initialChoices } from "./item-decisions.js";
+import { AddContextActions, ContextDialog } from "./item-attachments.js";
 import { ModelCredentialDialog } from "./model-credential-dialog.js";
 import { summaryOf, threadOrder } from "./thread.js";
 
@@ -31,7 +32,8 @@ import { summaryOf, threadOrder } from "./thread.js";
 // buttons built from the item API's `commands`. The primary comes first (Merge, else the command that allows a
 // permission ask's paths, else Approve, Answer or Retry: primaryOf), then the verdict's Good and Bad (one tap each,
 // oneTapNote) and Feedback (the note box's text), the other commands (Revise, …) in the API's order, and the "…" menu
-// with Reject and Verdict (their dialogs). Every button and menu item carries `data-action`, its CLI command's name,
+// with Reject and Verdict (their dialogs). Revise opens the five-section form only for an item with a spec; without one
+// it opens the Add context modal, and on a New item Add context and Attach take its place. Every button and menu item carries `data-action`, its CLI command's name,
 // and `data-item`, the item's ID (Good, Bad and Feedback are `verdict` with `data-choice`), and sends that command
 // through the item commands route; one the API marks not allowed is disabled with the controller's
 // reason under the row (in the menu, in its label). The command help (every command, how to type it) is behind ? and
@@ -136,7 +138,10 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
     if (text !== null && !verdictOff) void post("verdict", text).then((ok) => ok && setNote(""));
   };
   const feedback = oneTapNote("feedback", note);
-  const rest = commands.filter((c) => c !== primary && !MENU.includes(c.name));
+  // A New item has no spec to comment on: Add context and Attach (AddContextActions) take Revise's place.
+  const revise = commands.find((c) => c.name === "revise");
+  const addContext = detail?.stage === "NEW" ? revise : undefined;
+  const rest = commands.filter((c) => c !== primary && c !== addContext && !MENU.includes(c.name));
   // Verdict and Reject: in the "…" menu, one the viewer may not send disabled with its reason.
   const menuItems = commands.filter((c) => MENU.includes(c.name)).map((c) => menuEntry(id, c, !enabled || busy, () => setOpen(c.name as FormName)));
   const actions = useRef<HTMLDivElement>(null);
@@ -252,6 +257,10 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
             </Button>
           )}
           {rest.map(button)}
+          {addContext && (
+            <AddContextActions id={id} title={itemTitle} token={session.data?.csrf_token} off={!enabled || busy || !addContext.allowed}
+              error={local.revise && "error" in local.revise ? local.revise.error : null} send={(text) => post("revise", text)} />
+          )}
           {menuItems.length > 0 && <OverflowMenu label={t("commands.more")} items={menuItems} />}
         </div>
         <div className="mt-2 flex flex-col items-start gap-1">
@@ -272,7 +281,17 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
             onClose={() => setOpen(null)}
           />
         )}
-        {open !== null && open !== "approve" && (
+        {open === "revise" && !data?.spec && (
+          <ContextDialog
+            title={`${t("attach.addContext")} ${itemTitle}`}
+            busy={busy || !enabled}
+            error={local.revise && "error" in local.revise ? local.revise.error : null}
+            returnFocusTo={opener}
+            onSend={(text) => void send("revise", text, false)}
+            onClose={() => setOpen(null)}
+          />
+        )}
+        {open !== null && open !== "approve" && !(open === "revise" && !data?.spec) && (
           <CommandDialog
             command={open}
             title={itemTitle}
