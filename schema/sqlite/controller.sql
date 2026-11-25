@@ -389,7 +389,7 @@ CREATE TABLE "controller_schedules" (
     cap_hold_key     TEXT,
     last_run_at      TEXT,
     trigger_kind     TEXT
-  , missed_rule TEXT NOT NULL DEFAULT 'catch_up');
+  , token_period TEXT, missed_rule TEXT NOT NULL DEFAULT 'catch_up');
 
 CREATE TABLE controller_signals (
     id            TEXT PRIMARY KEY,

@@ -1,4 +1,4 @@
-import { TRIAGE_SCHEMA, checkTestFiles, parseTriage } from "../../../core/outputs.js";
+import { TRIAGE_SCHEMA, checkTestFiles, parseTriage, pinTests } from "../../../core/outputs.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import { ownerAnswersFor } from "../../../shared/command-notes.js";
@@ -33,6 +33,19 @@ async function testFiles(w: Worker, handle: SandboxHandle): Promise<string[] | n
   }
 }
 
+/**
+ * The base's test files that hold `text`, from a git grep of the run folder's index (a fixed string, under tests/); none
+ * when nothing matches (exit 1) or git cannot run (a narrow test fake).
+ */
+async function testsHolding(w: Worker, handle: SandboxHandle, text: string): Promise<string[]> {
+  try {
+    const r = await w.gitRaw(handle, ["grep", "--cached", "-l", "-z", "-F", "-e", text, "--", "tests"]);
+    return r.exit_code === 0 ? r.stdout.split("\0").filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
 async function triage(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, model: RunCall["model"], step: RunCall["step"]) {
   // One journaled step: a takeover after it returns the stored spec.
   return step("run-agent", async () => {
@@ -54,18 +67,20 @@ async function triage(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle
     // The run folder is a checkout of the base (no clone of its own): its tests/ files are what the spec's test file names are checked against (design 04-pre-push-gates).
     const tests = await testFiles(w, handle);
     // A done-check test file the base lacks must be marked new and covered by allowed_paths (design 04-triage).
-    const parse = (output: unknown) => {
-      const checked = tests ? checkTestFiles(output, tests) : { answer: output, refusal: null };
+    // The base tests that hold a string the answer quotes join its paths, as "Tests that pin this" (design 04-triage).
+    const parse = async (output: unknown) => {
+      const pinned = await pinTests(output, (text) => testsHolding(w, handle, text));
+      const checked = tests ? checkTestFiles(pinned, tests) : { answer: pinned, refusal: null };
       const spec = parseTriage(checked.answer);
       if (!spec.ok) return { ...spec, retry: spec.error.endsWith(MARKUP_REFUSAL) ? RETRY.markup : null };
       return checked.refusal ? { ok: false as const, error: checked.refusal, retry: RETRY.check_files } : spec;
     };
     let result = await ask(prompt);
-    let spec = parse(result.output);
+    let spec = await parse(result.output);
     if (!spec.ok && spec.retry) {
       // One more call in the same step, naming the error; a second refusal fails the run with that error.
       result = await ask(`${prompt}\n\n## Your previous answer was refused\n\n${spec.error}\n\n${spec.retry.text}`, spec.retry.step);
-      spec = parse(result.output);
+      spec = await parse(result.output);
     }
     if (!spec.ok) throw new RunFailure("invalid_output", spec.error, false, { output_tail: tail(result.transcript) });
     return { spec: spec.value };
