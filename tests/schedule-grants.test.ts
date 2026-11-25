@@ -4,10 +4,16 @@
 import { describe, expect, it } from "vitest";
 import {
   type GrantBrokerDeps, SCHEDULE_SHELL_COMMAND, SQLITE_TOOL, ScheduleGrantBroker, grantWords, grantsOfWords, notesFolder, scheduleGrantTools, storedGrants, storedScheduleGrants,
+  SCHEDULE_PASSPORT_KIND, withSchedulePassports,
 } from "../src/core/schedule-grants.js";
 import type { ToolBroker } from "../src/interfaces/tool-broker.js";
 import { type ToolContext, guardPolicy } from "../src/core/tools/index.js";
 import { READ_TOOLS } from "../src/worker/index.js";
+import { PassportService, REVOCATIONS_TICK, secretKeyring } from "../src/identity/index.js";
+import { PassportToolBroker } from "../src/impl/broker/passport-broker.js";
+import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
+import { ManualTickGenerator } from "../src/shared/ticks/plugins/manual/manual-tick-generator.js";
+import { RunPassports } from "../src/worker/passports/run-passports.js";
 
 const base = { tools: READ_TOOLS, repo: "/factory", base_ref: "main" };
 const ctxCall = { run_id: "r" as never, work_item_id: "w" as never, lease_token: 0 };
@@ -152,5 +158,66 @@ describe("scheduleGrantTools: the runner's broker with the shell grant's tool", 
   it("refuses the call when the schedule's stored grants are refused", async () => {
     const broker = scheduleGrantTools(inner, async () => { throw new Error("the schedule's grant is refused: unknown grant"); }, deps().d);
     expect(await broker.call({ ...ctxCall, work_item_id: "schedule:s1" as never }, SQLITE_TOOL, { sql: "select 1" })).toMatchObject({ ok: false, error_code: "not_granted" });
+  });
+});
+
+describe("the shell grant's tool inside the G2 guard", () => {
+  const shell = { kind: "shell", command: SCHEDULE_SHELL_COMMAND, db: "/data/app.db" } as const;
+
+  async function setup() {
+    const db = new SqliteDriver(":memory:");
+    await db.migrate();
+    const ticks = new ManualTickGenerator();
+    let n = 0;
+    const identity = new PassportService({ db, keys: secretKeyring({ get: async () => ({ reveal: () => "k".repeat(40) }) }, { current: "K" }), providers: [], ticks, newId: () => `pp_${++n}` });
+    await ticks.tick(REVOCATIONS_TICK, Date.parse("2026-11-25T12:00:00.000Z"));
+    const passports = new RunPassports(identity);
+    const { d, ran } = deps();
+    const inner: ToolBroker = { listTools: () => [], allTools: () => [], call: async (_c, name) => ({ ok: true, content: name }) };
+    const broker = new PassportToolBroker(scheduleGrantTools(inner, async (id) => (id === "s1" || id === "s2" ? [shell] : []), d), { checker: identity, passportOf: (run) => passports.passportOf(run) });
+    const audit = () => db.all("SELECT action, decision, reason FROM authz_audit ORDER BY seq");
+    return { identity, passports, broker, ran, audit };
+  }
+  const spec = (id: string, tool_grants: string[]) => ({ run_id: `schedule_${id}_x`, work_item_id: `schedule:${id}`, lease_token: 0, tool_grants }) as never;
+  const ctxOf = (id: string) => ({ run_id: `schedule_${id}_x` as never, work_item_id: `schedule:${id}` as never, lease_token: 0 });
+
+  it("passes a schedule run's own granted call, audited, with the passport minted for the run and dropped after it", async () => {
+    const t = await setup();
+    let during: unknown;
+    const runner = withSchedulePassports({ run: async () => {
+      during = await t.broker.call(ctxOf("s1"), SQLITE_TOOL, { sql: "select 1" });
+      return {} as never;
+    } }, t.passports, "proj");
+    await runner.run(spec("s1", [SQLITE_TOOL]));
+    expect(during).toEqual({ ok: true, content: "1|ok\n" });
+    expect(t.ran).toHaveLength(1);
+    expect(await t.audit()).toEqual([{ action: "use_tool", decision: "allow", reason: "allowed" }]);
+    expect(t.passports.passportOf("schedule_s1_x")).toBeNull();
+  });
+
+  it("refuses and audits a sqlite_readonly call without a matching passport, and refuses one with none", async () => {
+    const t = await setup();
+    expect(await t.broker.call(ctxOf("s1"), SQLITE_TOOL, { sql: "select 1" })).toMatchObject({ ok: false, error_code: "passport_missing" });
+    // A passport minted for schedule s2's run, presented for s1's: its runs and items do not match.
+    await t.passports.begin({ run: "schedule_s2_x", lease_token: 0, kind: SCHEDULE_PASSPORT_KIND, item: "schedule:s2", project: "proj", branch: "schedule/schedule_s2_x", grants: [SQLITE_TOOL] });
+    const s2 = t.passports.passportOf("schedule_s2_x");
+    const borrowed = new PassportToolBroker(scheduleGrantTools({ listTools: () => [], allTools: () => [], call: async () => ({ ok: true, content: "" }) }, async () => [shell], deps().d),
+      { checker: t.identity, passportOf: () => s2 });
+    expect(await borrowed.call(ctxOf("s1"), SQLITE_TOOL, { sql: "select 1" })).toMatchObject({ ok: false, error_code: "passport_denied" });
+    // A schedule run whose passport does not name the tool.
+    await t.passports.begin({ run: "schedule_s1_x", lease_token: 0, kind: SCHEDULE_PASSPORT_KIND, item: "schedule:s1", project: "proj", branch: "schedule/schedule_s1_x", grants: ["forge.read"] });
+    expect(await t.broker.call(ctxOf("s1"), SQLITE_TOOL, { sql: "select 1" })).toMatchObject({ ok: false, error_code: "passport_denied", message: `${SQLITE_TOOL}: outside_tools` });
+    expect(t.ran).toEqual([]);
+    const rows = await t.audit() as { decision: string }[];
+    expect(rows.filter((r) => r.decision === "deny")).toHaveLength(2);
+    expect(rows.some((r) => r.decision === "allow")).toBe(false);
+  });
+
+  it("mints no passport for a run with no broker tools or another item", async () => {
+    const begun: string[] = [];
+    const runner = withSchedulePassports({ run: async () => ({}) as never }, { begin: async (r) => void begun.push(r.run), end: () => {} }, "proj");
+    await runner.run(spec("s1", []));
+    await runner.run({ run_id: "run_1", work_item_id: "wi_1", lease_token: 1, tool_grants: [SQLITE_TOOL] } as never);
+    expect(begun).toEqual([]);
   });
 });

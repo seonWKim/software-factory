@@ -6,8 +6,10 @@
 //   shell    one command: `sqlite3 -readonly` on the database file the owner names
 // Every grant is checked and handed out by ScheduleGrantBroker, a ToolBroker: a grant it refuses fails the run
 // before any agent starts, and the shell grant's only tool is a broker tool (`tool_grants`), served through the
-// runner's tool bridge by scheduleGrantTools, which calls the run's schedule's broker.
+// runner's tool bridge by scheduleGrantTools, which calls the run's schedule's broker, inside the G2 guard: each call
+// is checked against the schedule run's passport (withSchedulePassports) and audited like every broker tool.
 
+import type { AgentRunner } from "../interfaces/agent-runner.js";
 import type { ToolCallContext, ToolDescriptor, ToolBroker, ToolResult as BrokerResult } from "../interfaces/tool-broker.js";
 import { Browse, Edit, Write } from "./tools/index.js";
 import { isAbsolute, isUnder, normalize, resolvePath } from "./tools/paths.js";
@@ -240,6 +242,8 @@ const SCHEDULE_ITEM = "schedule:";
  * The runner's broker `inner` with the shell grant's tool: listed when a run is granted it, and each call served by
  * the ScheduleGrantBroker of the run's schedule (work item `schedule:<id>`) over its stored grants, read per call by
  * `grantsOf`. Any other run, or a schedule with no shell grant, gets not_granted. Every other tool goes to `inner`.
+ * Compose wraps the result in the G2 guard (PassportToolBroker), so each call is checked against the run's passport
+ * and audited in authz_audit first; withSchedulePassports gives a schedule run that passport.
  */
 export function scheduleGrantTools(inner: ToolBroker, grantsOf: (schedule_id: string) => Promise<readonly ScheduleGrant[]>, deps: GrantBrokerDeps): ToolBroker {
   return {
@@ -250,6 +254,35 @@ export function scheduleGrantTools(inner: ToolBroker, grantsOf: (schedule_id: st
       const id = ctx.work_item_id.startsWith(SCHEDULE_ITEM) ? ctx.work_item_id.slice(SCHEDULE_ITEM.length) : null;
       const grants = id === null ? [] : await grantsOf(id).catch(() => []);
       return new ScheduleGrantBroker(id ?? ctx.work_item_id, grants, deps).call(ctx, name, args);
+    },
+  };
+}
+
+/** The run passport kind of a schedule run: it names no worker tool, only the broker tools its grants hand out. */
+export const SCHEDULE_PASSPORT_KIND = "schedule";
+
+/** What withSchedulePassports mints and drops a run passport through (RunPassports, src/worker/passports/run-passports.ts). */
+export interface SchedulePassports {
+  begin(req: { run: string; lease_token: number; kind: string; item: string; project: string; branch: string; grants: readonly string[] }): Promise<unknown>;
+  end(run: string, lease_token: number): void;
+}
+
+/**
+ * The schedule action's runner: a schedule run (work item `schedule:<id>`) granted broker tools holds a run passport
+ * for project `project`, narrowed to its run, item and `tool_grants`, minted before the run and dropped after it, so
+ * the G2 guard passes only that run's own granted calls. Any other run goes to `runner` as it is.
+ */
+export function withSchedulePassports(runner: AgentRunner, passports: SchedulePassports, project: string): AgentRunner {
+  return {
+    run: async (spec) => {
+      if (!spec.work_item_id.startsWith(SCHEDULE_ITEM) || spec.tool_grants.length === 0) return runner.run(spec);
+      const held = { run: spec.run_id, lease_token: spec.lease_token };
+      await passports.begin({ ...held, kind: SCHEDULE_PASSPORT_KIND, item: spec.work_item_id, project, branch: `schedule/${spec.run_id}`, grants: spec.tool_grants });
+      try {
+        return await runner.run(spec);
+      } finally {
+        passports.end(held.run, held.lease_token);
+      }
     },
   };
 }

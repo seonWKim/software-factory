@@ -25,7 +25,7 @@ import { ControllerRole } from "./runtime/roles/controller-role.js";
 import { SqlHookAudit, loadHooks } from "./runtime/index.js";
 import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
-import { feedbackGrantHandOut, scheduleGrantTools, storedScheduleGrants } from "./core/schedule-grants.js";
+import { feedbackGrantHandOut, scheduleGrantTools, storedScheduleGrants, withSchedulePassports } from "./core/schedule-grants.js";
 import { nodeGrantDeps } from "./impl/schedule-action/routed-action.js";
 import { type LearnedSettingsSource, LiveSettings, maxWorkers, workerCount } from "./core/settings.js";
 import { settingsBase } from "./core/settings-base.js";
@@ -239,8 +239,8 @@ export async function build(
   const { guard, passports } = brokerGuard(loaded, { store, secrets, identity: identity.passports, tool_grants });
   const local = { ...unguardedLocal, broker: guard(unguardedLocal.broker) };
   const guarded = guard(broker);
-  // A feedback schedule's shell grant: its broker tool reaches the run through the runner's tool bridge (design 08-schedules).
-  const runner = await p.runner(sandbox, secrets, { broker: scheduleGrantTools(guarded, storedScheduleGrants(store), nodeGrantDeps), scanner });
+  // A feedback schedule's shell grant: its broker tool reaches the run through the runner's tool bridge, inside G2 (design 08-schedules).
+  const runner = await p.runner(sandbox, secrets, { broker: guard(scheduleGrantTools(broker, storedScheduleGrants(store), nodeGrantDeps)), scanner });
   const granted = [...new Set(Object.values(tool_grants ?? {}).flat())];
   if (granted.length > 0 && !runner.exposes_tools) {
     throw new Error(`tool_grants grants ${granted.join(", ")}, but the ${selectedRunners(sel).join(", ")} agent runner cannot expose broker tools; remove tool_grants or pick a runner that can`);
@@ -266,7 +266,7 @@ export async function build(
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
   // What a fired schedule occurrence runs (design 08-schedules): none unless `plugins.schedule_action` names one; its routes are the schedule unit's action folders.
-  const routes = { build: buildAction, agent: agentAction, feedback: feedbackActionWith(feedbackGrantHandOut({ tools: READ_TOOLS, repo: resolve(loaded.config.repo.path), base_ref: loaded.config.repo.base_branch }, nodeGrantDeps)), improve: improveAction((slot) => enqueueImprove({ store, clock }, project.key, { slot })), check_page: checkPageAction(routineQueue(store, project.key)) }, actionCtx = { ...base, store, runner, sandbox, scanner, tools: READ_TOOLS, project: project.key, routes };
+  const routes = { build: buildAction, agent: agentAction, feedback: feedbackActionWith(feedbackGrantHandOut({ tools: READ_TOOLS, repo: resolve(loaded.config.repo.path), base_ref: loaded.config.repo.base_branch }, nodeGrantDeps)), improve: improveAction((slot) => enqueueImprove({ store, clock }, project.key, { slot })), check_page: checkPageAction(routineQueue(store, project.key)) }, actionCtx = { ...base, store, runner: withSchedulePassports(runner, passports, project.key), sandbox, scanner, tools: READ_TOOLS, project: project.key, routes };
   const schedule_action = sel.schedule_action === undefined ? undefined : scheduledAction(store, await createPlugin(registry, "schedule_action", sel.schedule_action, actionCtx), new ConsoleLogger(clock, "schedule"), project.key);
   // The pack checks `hooks` names (design §4, issue #494), refused here when bad; its other names are `*.hook.ts`.
   const checks = packChecks(loaded.packs, config.hooks ?? [], { toolHooks: runner.supports_tool_hooks === true });
