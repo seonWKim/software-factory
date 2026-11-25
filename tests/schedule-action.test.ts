@@ -49,13 +49,16 @@ async function setup(start = "2026-11-22T12:00:00.000Z") {
   return { clock, store };
 }
 
+/** The controller's tick period the unit's kernel config gives. */
+const TICK_MS = 2_000;
+
 /**
- * The unit over a kernel whose deps hold only the action, bound to `store` as compose binds it: it has no clock to
- * read, so a claim can only go by the tick's time. No action: the deps hold nothing.
+ * The unit over a kernel whose deps hold only the action, bound to `store` as compose binds it, and whose config holds
+ * the tick period: it has no clock to read, so a claim can only go by the tick's time. No action: the deps hold nothing.
  */
 function unitOver(store: SqlFactoryStore, action?: ScheduleAction, log = silent): ScheduleUnit {
   const d = action ? { schedule_action: scheduledAction(store, action, log, "local:here:repo") } : {};
-  return new ScheduleUnit({ k: { d } } as unknown as Ctx);
+  return new ScheduleUnit({ k: { d, cfg: { tick_ms: TICK_MS } } } as unknown as Ctx);
 }
 
 const tickOf = (ms: number) => tickAt("decide", 1, ms);
@@ -84,6 +87,17 @@ describe("the scheduler unit", () => {
     await unitOver(store, action).scheduleStep(tickOf(clock.now().getTime()));
     expect(await store.listSchedules()).toEqual([]);
     expect(action.ran).toEqual([]);
+    await store.close();
+  });
+
+  it("passes the controller's tick period: a skip schedule's tick over a tick late skips, a catch_up one fires once", async () => {
+    const { clock, store } = await setup();
+    await addSchedule(store, { ...DAILY, missed_rule: "skip" }, clock.now());
+    await addSchedule(store, { ...DAILY, id: "sch_catch", title: "Catch up" }, clock.now());
+    const action = fakeAction();
+    await unitOver(store, action).scheduleStep(tickOf(Date.parse("2026-11-23T00:00:00.000Z") + TICK_MS + 1));
+    expect(action.ran).toEqual(["sch_catch@2026-11-23T00:00:00.000Z"]);
+    expect((await store.listScheduleRuns("sch_daily")).map((r) => [r.occurrence_at, r.outcome])).toEqual([["2026-11-23T00:00:00.000Z", "skipped"]]);
     await store.close();
   });
 

@@ -24,6 +24,7 @@ const EXEMPT: Record<string, string> = {
   "src/compose.ts": "wiring only: builds the SecretStore plugin and hands it to other plugins; reads no value",
   "src/plugin-set.ts": "wiring only: builds the configured plugins (moved out of compose.ts) and hands the SecretStore to them; reads no value",
   "src/golden.ts": "wiring only: hands the SecretStore to the runner for golden runs; reads no value",
+  "src/skill-evals.ts": "wiring only: hands the SecretStore to the broker, pack tools and runner for skill-eval replays; reads no value",
   "src/impl/claude/claude-shared.ts": "declares the Claude secret names for the plugin descriptors; reads no value",
   "src/impl/llm/claude-cli-llm-provider.ts": "follow-up: reads the Claude model credential",
   "src/impl/llm/openai-compatible-llm-provider.ts": "follow-up: reads OPENAI_COMPATIBLE_API_KEY",
