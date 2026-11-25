@@ -891,7 +891,8 @@ describe("Settings page: Mode lines, grouped Advanced keys and plain timing (des
     expect(lines).toEqual(expect.arrayContaining(["Manual: you approve specs and merge.", "Back to manual on a red main, a crash loop or a budget checkpoint."]));
     expect(lines.filter((l) => /^(Manual|Auto|Back to manual)/.test(l ?? ""))).toHaveLength(3);
     expect(document.body.textContent).toContain("Merge on its own up to risk level…");
-    expect([...document.querySelectorAll("[data-tier-levels] li")].map((l) => l.textContent)).toEqual(["0: none", "1: docs and tests only", "2: a small local code change", "3: core logic, config, prompts or gates", "Tier 4 and the gate list always wait for a person."]);
+    expect(screen.getByRole("spinbutton", { name: /risk level/i })).toBeTruthy();
+    expect([...document.querySelectorAll("[data-tier-levels] li")].map((l) => l.textContent)).toEqual(["0: none", "1: docs and tests only", "2: a small local code change", "3: core logic, config, prompts or gates", "Risk level: high (4) and the gate list (changes to protected areas) always wait for a person."]);
   });
 
   it("the extra pages line reads More pages", async () => {

@@ -156,7 +156,7 @@ describe("item page: DecisionCard", () => {
     // First: after the title, before the facts, the thread, the runs and the timeline.
     const title = screen.getByRole("heading", { name: "Check the scope in CI" });
     expect(title.compareDocumentPosition(decide) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    for (const later of [screen.getByText("Tier"), screen.getByRole("region", { name: "Thread" }), screen.getByRole("region", { name: "Runs" }), screen.getByRole("region", { name: "Timeline" })]) {
+    for (const later of [screen.getByText("Risk level"), screen.getByRole("region", { name: "Thread" }), screen.getByRole("region", { name: "Runs" }), screen.getByRole("region", { name: "Timeline" })]) {
       expect(decide.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
     // The question, then the evidence, then the buttons.

@@ -76,7 +76,7 @@ export const work = {
   "item.splitParent": "its split parent",
   "item.source": "Source",
   "item.facts": "Facts",
-  "item.tier": "Tier",
+  "item.tier": "Risk level",
   "item.specComment": "Plan",
   "item.specCommentLink": "Open the posted plan",
   "item.closedLine": "Closed: {what}",

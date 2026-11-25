@@ -131,7 +131,7 @@ describe("Rules page", () => {
     const rows = [...effect.querySelectorAll<HTMLElement>(":scope > li")];
     expect(rows.map((r) => r.dataset.rule ?? r.dataset.applied ?? "raw")).toEqual(["spec-t1", "C-001", "C-002", "raw"]);
     expect(rows.every((r) => r.matches("[data-list-row]"))).toBe(true);
-    expect(within(section("In effect")).getByText("Approves tier 1 plans for you")).not.toBeNull();
+    expect(within(section("In effect")).getByText("Approves risk level 1 plans for you")).not.toBeNull();
     // Waiting for you: the standing proposal, then candidates, then structure proposals, each group a list of its own.
     const waiting = section("Waiting for you");
     expect([...waiting.querySelectorAll("ul")].map((u) => u.getAttribute("aria-label"))).toEqual(["Turn on auto-approve", "Rule candidates", "Structure proposals"]);
@@ -177,7 +177,7 @@ describe("Rules page", () => {
     await show();
     const details = await openDetails();
     await waitFor(() => expect(details.querySelector('[data-standing-off] [data-rule="spec-t1"]')).not.toBeNull(), SLOW);
-    expect(within(details).getByRole("switch", { name: "Approves tier 1 plans for you" })).not.toBeNull();
+    expect(within(details).getByRole("switch", { name: "Approves risk level 1 plans for you" })).not.toBeNull();
     expect(section("In effect").querySelector('[data-rule="spec-t1"]')).toBeNull();
     expect(section("In effect").querySelector("[data-in-effect-empty]")!.textContent).toBe("No rule is in effect yet.");
   });
@@ -258,7 +258,7 @@ describe("Rules page", () => {
     copy.querySelectorAll("details, [data-raw], [role=tooltip]").forEach((n) => n.remove());
     const text = copy.textContent!;
     for (const raw of ["spec-t1", "github:", "2026-11-19T", "edit-asset"]) expect(text).not.toContain(raw);
-    expect(text).toContain("Approves tier 1 plans for you");
+    expect(text).toContain("Approves risk level 1 plans for you");
     const how = document.querySelector<HTMLElement>("[data-how]")!.textContent!;
     for (const word of [/pushback/i, /ledger/i, /agents home/i]) expect(how).not.toMatch(word);
   });
