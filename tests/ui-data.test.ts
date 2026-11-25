@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { collectStats } from "../src/core/stats.js";
-import type { UserId, WorkItemId, WorkerId } from "../src/core/types.js";
+import type { Timestamp, UserId, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -23,6 +23,7 @@ const SECRET = `ghp_${"Ab3".repeat(12)}`;
 const RUN_TOKEN = 7391846250913;
 const ATTEMPT_TOKEN = 6182735460192;
 const LISTENER_TOKEN = 5073624351281;
+const GATE_TOKEN = "gate-lease-4962817305";
 const LINK_CODE = "ABCD-EFGH";
 const LINK_HASH = createHash("sha256").update(LINK_CODE).digest("hex");
 
@@ -67,6 +68,8 @@ async function seeded() {
   await driver.run("UPDATE worker_runs SET lease_token = ?", [RUN_TOKEN]);
   await driver.run("UPDATE worker_run_attempts SET lease_token = ?", [ATTEMPT_TOKEN]);
   await driver.run("UPDATE inbound_listener_leases SET token = ?", [LISTENER_TOKEN]);
+  await store.recordSkillVersion({ ref_id: "ref1", folder_hash: "h1", text: "A", source: "claude" });
+  await store.takeSkillVersionGate({ ref_id: "ref1", version: 1, lease_token: GATE_TOKEN, now: clock.now().toISOString() as Timestamp, lease_until: clock.now().toISOString() as Timestamp });
   const calls: string[] = [];
   const d: UiDeps = {
     store: spied(store, calls),
@@ -191,7 +194,7 @@ describe("ui api: data tables", () => {
     const bodies: string[] = [(await get(d, "/api/v1/data/tables")).body];
     for (const t of tables) bodies.push((await get(d, `/api/v1/data/tables/${t}`)).body);
     for (const b of bodies) {
-      for (const v of [RUN_TOKEN, ATTEMPT_TOKEN, LISTENER_TOKEN, LINK_HASH]) expect(b).not.toContain(String(v));
+      for (const v of [RUN_TOKEN, ATTEMPT_TOKEN, LISTENER_TOKEN, GATE_TOKEN, LINK_HASH]) expect(b).not.toContain(String(v));
     }
     for (const [table, cols] of Object.entries(HIDDEN_COLUMNS)) {
       const p = await json<Page>(d, `/api/v1/data/tables/${table}`);
