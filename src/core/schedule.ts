@@ -2,9 +2,10 @@
 // task's repeat. Each due occurrence is claimed by one conditional store update that moves `next_due_at` from the
 // value the worker read; a second worker that read the same value changes nothing and fires nothing. Slots missed
 // while no worker ran are one occurrence on return, recorded against the slot it was due for. A due occurrence of a
-// schedule still running is refused, and the refusal is a run row too. A schedule with `skip_when_busy` on skips a
-// due occurrence while the store holds the threshold or more queued implement runs: a `skipped` run row with the
-// count, `next_due_at` moved on, never run later. A schedule whose action calls a model and whose runs used its
+// schedule still running is refused, and the refusal is a run row too. A schedule whose `missed_rule` is `skip` skips
+// a due occurrence claimed more than one tick after its slot (a `skipped` run row with no count), or while the store
+// holds the threshold or more queued implement runs (a `skipped` run row with the count); either way `next_due_at`
+// moves on and the slot never runs later. A `catch_up` schedule fires its due occurrence once, however late or busy. A schedule whose action calls a model and whose runs used its
 // token cap holds a due occurrence at a `checkpoint`: no model is called, the schedule stays idle, and a local item
 // asks the owner, whose common `/approve` raises the cap and runs it and whose `/reject` ends it as `rejected`. Pure
 // decisions over a ScheduleStore; the caller's tick supplies the time, and `fired` says which occurrences are to run.
@@ -20,8 +21,11 @@ export type ClaimOutcome = "fired" | "refused" | "skipped" | "checkpoint";
 /** A run row's outcome: its claim's, or `rejected` once the owner rejected a held checkpoint. */
 export type ScheduleOutcome = ClaimOutcome | "rejected";
 
-/** Queued implement runs at which a `skip_when_busy` schedule skips its due occurrence (the owner's "under 15"). */
+/** Queued implement runs at which a `skip` schedule skips its due occurrence (the owner's "under 15"). */
 export const SKIP_WHEN_BUSY_THRESHOLD = 15;
+
+/** What a schedule does with a due occurrence claimed late or while busy: `catch_up` fires it once, `skip` drops it. */
+export type MissedRule = "catch_up" | "skip";
 
 /**
  * What a fired occurrence does: file one work item, run one read-only agent, file the feedback agent's tasks, queue
@@ -59,8 +63,8 @@ export interface Schedule {
   next_due_at: Timestamp | null;
   /** When the fired occurrence started; null while idle. */
   running_since: Timestamp | null;
-  /** Skip a due occurrence while the factory is busy (SKIP_WHEN_BUSY_THRESHOLD queued implement runs); off when unset. */
-  skip_when_busy: boolean;
+  /** `skip`: a due occurrence claimed more than a tick late, or while SKIP_WHEN_BUSY_THRESHOLD implement runs are queued, is skipped; `catch_up` when unset. */
+  missed_rule: MissedRule;
   /** What a fired occurrence does; null: none, and the selected ScheduleAction refuses it. */
   action: ScheduleActionSpec | null;
   /** Tokens its runs may use in total; null: SCHEDULE_TOKEN_CAP. */
@@ -80,7 +84,7 @@ export interface Schedule {
 }
 
 /** The fields a new row may leave out: each defaults to off, none or null. */
-type Defaulted = "running_since" | "skip_when_busy" | "action" | "token_cap" | "trigger" | "run_cap_usd" | "daily_cap_usd" | "cap_raise" | "paused" | "last_run_at";
+type Defaulted = "running_since" | "missed_rule" | "action" | "token_cap" | "trigger" | "run_cap_usd" | "daily_cap_usd" | "cap_raise" | "paused" | "last_run_at";
 export type NewSchedule = Omit<Schedule, Defaulted | "cadence"> & { cadence: Cadence } & Partial<Pick<Schedule, Exclude<Defaulted, "running_since">>>;
 
 /** One row per claimed occurrence, unique per (schedule_id, occurrence_at). */
@@ -185,10 +189,10 @@ export interface ScheduleStore {
 }
 
 /** The fields an edit, pause, resume or run may change. */
-export type SchedulePatch = Partial<Pick<NewSchedule, "title" | "cadence" | "zone" | "next_due_at" | "skip_when_busy" | "action" | "token_cap">>;
+export type SchedulePatch = Partial<Pick<NewSchedule, "title" | "cadence" | "zone" | "next_due_at" | "missed_rule" | "action" | "token_cap">>;
 
 export type AddScheduleInput = Pick<NewSchedule, "id" | "title" | "cadence" | "zone" | "created_by"> &
-  { skip_when_busy?: boolean; action?: ScheduleActionSpec | null; token_cap?: number | null };
+  { missed_rule?: MissedRule; action?: ScheduleActionSpec | null; token_cap?: number | null; run_now?: boolean };
 
 /** A write's result: the schedule as stored, or why nothing was stored. */
 export type ScheduleResult = { ok: true; schedule: Schedule } | { ok: false; problem: string };
@@ -201,13 +205,16 @@ function actionProblem(action: ScheduleActionSpec | null | undefined, cap: numbe
   return null;
 }
 
-/** Stores a new schedule, first due at its cadence's next slot after `now`; refused with the cadence's or the action's problem. */
-export async function addSchedule(store: Pick<ScheduleStore, "addSchedule">, input: AddScheduleInput, now: Date): Promise<ScheduleResult> {
+/**
+ * Stores a new schedule, first due at `now` with `run_now`, else at its cadence's next slot after `now` (after a
+ * run-now occurrence, the claim sets the slot after it); refused with the cadence's or the action's problem.
+ */
+export async function addSchedule(store: Pick<ScheduleStore, "addSchedule">, { run_now, ...input }: AddScheduleInput, now: Date): Promise<ScheduleResult> {
   const problem = cadenceProblem(input.cadence, input.zone) ?? actionProblem(input.action, input.token_cap);
   if (problem) return { ok: false, problem };
   const first = nextDue(input.cadence, input.zone, now, now);
   if (!first) return { ok: false, problem: "the cadence never falls due" };
-  const schedule = await store.addSchedule({ ...input, created_at: now.toISOString() as Timestamp, next_due_at: first.toISOString() as Timestamp });
+  const schedule = await store.addSchedule({ ...input, created_at: now.toISOString() as Timestamp, next_due_at: (run_now ? now : first).toISOString() as Timestamp });
   return { ok: true, schedule };
 }
 
@@ -221,24 +228,30 @@ export async function overCap(store: Pick<ScheduleStore, "scheduleTokensUsed">, 
 
 /**
  * One pass over the due schedules at `now`: each due occurrence is claimed once, its next due time the first slot
- * after `now` (so missed slots make one occurrence), fired when idle, refused when running, skipped when idle,
- * set to skip when busy and the store holds `busy_threshold` or more queued implement runs (counted once per pass,
- * only when such a schedule is due), and held at a checkpoint when idle and over its token cap. Safe to run on
- * several workers at once and to run twice: a lost claim fires nothing.
+ * after `now` (so missed slots make one occurrence), fired when idle, refused when running, and held at a checkpoint
+ * when idle and over its token cap. An idle `skip` schedule's occurrence is skipped instead when claimed more than
+ * `tick_ms` after its slot (no count; with no `tick_ms`, no claim is late), else when the store holds
+ * `busy_threshold` or more queued implement runs (counted once per pass, only when such a schedule is due). Safe to
+ * run on several workers at once and to run twice: a lost claim fires nothing.
  */
 export async function runDueSchedules(
-  store: ScheduleStore, now: Date, { busy_threshold = SKIP_WHEN_BUSY_THRESHOLD }: { busy_threshold?: number } = {},
+  store: ScheduleStore, now: Date, { busy_threshold = SKIP_WHEN_BUSY_THRESHOLD, tick_ms }: { busy_threshold?: number; tick_ms?: number | undefined } = {},
 ): Promise<Record<ClaimOutcome, ScheduleRun[]>> {
   const runs: Record<ClaimOutcome, ScheduleRun[]> = { fired: [], refused: [], skipped: [], checkpoint: [] };
   let queued: number | undefined;
   for (const s of await store.listDueSchedules(now.toISOString() as Timestamp)) {
     const next = s.cadence && nextDue(s.cadence, s.zone, now, new Date(s.created_at));
     let outcome: ClaimOutcome = s.running_since === null ? "fired" : "refused";
-    if (outcome === "fired" && s.skip_when_busy && (queued ??= await store.countQueuedImplementRuns()) >= busy_threshold) outcome = "skipped";
+    let count: number | undefined;
+    if (outcome === "fired" && s.missed_rule === "skip") {
+      const late = tick_ms !== undefined && now.getTime() - Date.parse(s.next_due_at!) > tick_ms;
+      if (late) outcome = "skipped";
+      else if ((queued ??= await store.countQueuedImplementRuns()) >= busy_threshold) [outcome, count] = ["skipped", queued];
+    }
     if (outcome === "fired" && (await overCap(store, s))) outcome = "checkpoint";
     const run = await store.claimScheduleOccurrence({
       schedule_id: s.id, occurrence_at: s.next_due_at!, next_due_at: next === null ? null : (next.toISOString() as Timestamp), outcome,
-      ...(outcome === "skipped" ? { queued_implement_runs: queued! } : {}),
+      ...(count === undefined ? {} : { queued_implement_runs: count }),
     });
     if (run) runs[outcome].push(run);
   }
@@ -320,7 +333,10 @@ export interface ScheduleFields {
   action?: string;
   /** build: the item's body; agent and feedback: the prompt. */
   body?: string;
-  skip_when_busy?: boolean;
+  /** The missed-time rule (`--missed catch-up|skip`; HTTP `skip_when_busy` true is skip). */
+  missed?: MissedRule;
+  /** Add only: first due now (`--run-now on`), not at the cadence's next slot. */
+  run_now?: boolean;
   token_cap?: number;
 }
 
@@ -358,7 +374,8 @@ export async function createSchedule(store: ScheduleAdminStore, id: string, f: S
   const exists = `schedule ${id} is already stored`;
   if (await findSchedule(store, id)) return refused(exists);
   const r = await addSchedule(store, {
-    id, title: f.title!.trim(), cadence, zone: f.zone!.trim(), created_by, action, skip_when_busy: f.skip_when_busy ?? false, token_cap: f.token_cap ?? null,
+    id, title: f.title!.trim(), cadence, zone: f.zone!.trim(), created_by, action, missed_rule: f.missed ?? "catch_up", token_cap: f.token_cap ?? null,
+    run_now: f.run_now ?? false,
   }, now);
   // Another worker stored the ID between the read and the insert: theirs stays.
   return r.ok && r.schedule.created_at !== now.toISOString() ? refused(exists) : r;
@@ -406,6 +423,7 @@ export const runSchedule = (store: ScheduleAdminStore, id: string, now: Date): P
  */
 export async function editSchedule(store: ScheduleAdminStore, id: string, f: ScheduleFields, now: Date): Promise<ScheduleResult> {
   if (Object.values(f).every((v) => v === undefined)) return refused("nothing to change: give at least one field");
+  if (f.run_now !== undefined) return refused("run now is set only when a schedule is added: use schedule run");
   return decide(store, id, (s) => {
     const patch: SchedulePatch = {};
     if (f.title !== undefined) {
@@ -433,7 +451,7 @@ export async function editSchedule(store: ScheduleAdminStore, id: string, f: Sch
       if ("problem" in action) return action.problem;
       patch.action = { kind: action.kind, settings: { ...old, ...action.settings } };
     }
-    if (f.skip_when_busy !== undefined) patch.skip_when_busy = f.skip_when_busy;
+    if (f.missed !== undefined) patch.missed_rule = f.missed;
     if (f.token_cap !== undefined) {
       const problem = actionProblem(null, f.token_cap);
       if (problem) return problem;
@@ -455,8 +473,10 @@ export function writeSchedule(store: ScheduleAdminStore, w: ScheduleWrite, id: s
 export type ScheduleCommand = { verb: "list" } | { verb: "runs"; id: string } | { verb: ScheduleWrite; id: string; fields: ScheduleFields };
 
 const FLAGS: Readonly<Record<string, keyof ScheduleFields>> = {
-  "--title": "title", "--cadence": "cadence", "--spec": "spec", "--zone": "zone", "--action": "action", "--body": "body", "--skip-when-busy": "skip_when_busy", "--token-cap": "token_cap",
+  "--title": "title", "--cadence": "cadence", "--spec": "spec", "--zone": "zone", "--action": "action", "--body": "body", "--missed": "missed", "--run-now": "run_now", "--token-cap": "token_cap",
 };
+/** `--missed` words and the rule each stores. */
+const MISSED: Readonly<Record<string, MissedRule>> = { "catch-up": "catch_up", skip: "skip" };
 
 /** The words after `factory schedule`, or why they are no command (nothing is read or written). */
 export function parseScheduleArgs(args: readonly string[]): ScheduleCommand | string {
@@ -473,11 +493,16 @@ export function parseScheduleArgs(args: readonly string[]): ScheduleCommand | st
   for (let i = 0; i < rest.length; i += 2) {
     const [flag, v] = [rest[i]!, rest[i + 1]];
     const key = FLAGS[flag];
-    if (v === undefined || (flag === "--id" ? verb === "edit" || id !== undefined : key === undefined || key in fields)) return `schedule ${verb}: unexpected ${JSON.stringify(flag)}`;
+    const unexpected = flag === "--id" ? verb === "edit" || id !== undefined : key === undefined || key in fields || (key === "run_now" && verb === "edit");
+    if (v === undefined || unexpected) return `schedule ${verb}: unexpected ${JSON.stringify(flag)}`;
     if (flag === "--id") id = v;
-    else if (key === "skip_when_busy") {
-      if (v !== "on" && v !== "off") return "--skip-when-busy takes on or off";
-      fields.skip_when_busy = v === "on";
+    else if (key === "missed") {
+      const rule = Object.hasOwn(MISSED, v) ? MISSED[v] : undefined;
+      if (rule === undefined) return "--missed takes catch-up or skip";
+      fields.missed = rule;
+    } else if (key === "run_now") {
+      if (v !== "on" && v !== "off") return "--run-now takes on or off";
+      fields.run_now = v === "on";
     } else if (key === "token_cap") {
       if (!/^\d+$/.test(v)) return "--token-cap takes a whole number of tokens";
       fields.token_cap = Number(v);
@@ -490,7 +515,7 @@ export function parseScheduleArgs(args: readonly string[]): ScheduleCommand | st
 /** One schedule as `schedule list` prints it. */
 export const scheduleLine = (s: Schedule): string => [
   s.id, s.title, s.next_due_at ?? "paused", s.running_since === null ? "idle" : "running", s.action?.kind ?? "no action",
-  `skip when busy ${s.skip_when_busy ? "on" : "off"}`, `token cap ${tokenCap(s)}`,
+  `missed ${s.missed_rule === "skip" ? "skip" : "catch-up"}`, `token cap ${tokenCap(s)}`,
 ].join("\t");
 
 const runLine = (r: ScheduleRun): string =>

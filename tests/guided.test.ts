@@ -17,7 +17,7 @@ function fakeStore(o: { owner?: UserId | null; stored?: string[] } = {}) {
     getOwner: async () => (o.owner === undefined ? ME : o.owner),
     listSchedules: async () => rows,
     addSchedule: async (s: NewSchedule) => {
-      const row = { running_since: null, skip_when_busy: false, action: null, token_cap: null, ...s } as Schedule;
+      const row = { running_since: null, missed_rule: "catch_up", action: null, token_cap: null, ...s } as Schedule;
       rows.push(row);
       return row;
     },

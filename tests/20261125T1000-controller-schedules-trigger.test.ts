@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import stepOne from "../src/controller/migrations/20261124T1100-controller-routines-into-schedules.migration.js";
 import migration from "../src/controller/migrations/20261125T1000-controller-schedules-trigger.migration.js";
+import missed from "../src/controller/migrations/20261125T1100-controller-schedule-missed.migration.js";
 import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver } from "../src/state/index.js";
 import { newStore } from "./helpers/store.js";
 
@@ -83,7 +84,8 @@ describe("20261125T1000-controller-schedules-trigger", () => {
     await migration.up(mdb(db));
     expect(await db.all("SELECT * FROM controller_schedules ORDER BY id")).toEqual(schedules.map((s) => (s.id === "rt_docs" ? { ...s, title: "Edited" } : s)));
     expect(await db.all("SELECT * FROM controller_schedule_suggestions ORDER BY id")).toEqual(suggestions);
-    // The plain schedule is still listed; the routine rows are not.
+    // The plain schedule is still listed; the routine rows are not (the store reads missed_rule, added after this migration).
+    await missed.up(mdb(db));
     expect((await store.listSchedules()).map((s) => s.id)).toEqual(["sch_build"]);
   });
 

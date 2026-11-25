@@ -10,7 +10,7 @@ import { ItemChecks } from "./item-checks.js";
 // their checks and latest results, and the approved spec collapsed below them (without its done-when list while the
 // checks show it). A text the API withheld (`[withheld: <rule>]`) shows the withheld note, never the marker.
 
-const TEXT = "text-sm text-pretty break-words whitespace-pre-line";
+const TEXT = "text-sm text-pretty break-words whitespace-pre-line max-w-[75ch]";
 
 /** One text of About, or the withheld note in its place. */
 function AboutText({ value, as: As = "p" }: { value: string; as?: "p" | "li" }) {

@@ -33,6 +33,9 @@
 //   heading-size    an h1 or h2 is not the font size of the page's first one; responsive-check.mjs also compares each
 //                   page's sizes with the first page's at the same viewport and theme.
 //   page-width      <main>'s max-width is neither --page-wide nor --page-read (PageHeader's width prop picks one).
+//   prose-width     a paragraph of the item page's About ([data-about-request], [data-about-spec]: p and li) of more
+//                   than `proseMinLines` (2) lines has a line of more than `maxProseChars` (75) characters, counted
+//                   per rendered line (the 75ch cap of design 09-dashboard-item-about; the owner saw about 150).
 //   button-height   a button is not 28px or 32px tall (a switch, a listbox option, a menu item, a chart's bar,
 //                   [data-chart-bar], whose height is the chart's, and a content chip, [data-chip] (a calendar event),
 //                   whose height is its text's, are not checked; small-target still holds the chip to 24px).
@@ -72,6 +75,8 @@ export const LIMITS = {
   buttonHeights: [28, 32],
   pageWidths: ["--page-wide", "--page-read"],
   maxTitleLines: 2,
+  maxProseChars: 75,
+  proseMinLines: 2,
   minTarget: 24,
   rowAlignPx: 3,
   minPanelBodyPx: 60,
@@ -299,6 +304,27 @@ export function checkLayout(limits) {
   if (!main) fail("page-width", document.body, "no <main>");
   else if (!widths.some((w) => Math.abs(toPx(style(main).maxWidth) - w) < 0.5)) {
     fail("page-width", main, `max-width ${style(main).maxWidth}, not ${limits.pageWidths.map((n, i) => `${n} (${widths[i]}px)`).join(" or ")}`);
+  }
+
+  // prose-width: characters per rendered line of About's paragraphs, counted character by character.
+  for (const p of document.body.querySelectorAll("[data-about-request] p, [data-about-spec] p, [data-about-spec] li")) {
+    if (!painted(p)) continue;
+    const perLine = new Map();
+    const texts = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+    for (let n = texts.nextNode(); n; n = texts.nextNode()) {
+      for (let i = 0; i < n.textContent.length; i++) {
+        if (!n.textContent[i].trim()) continue;
+        const range = document.createRange();
+        range.setStart(n, i);
+        range.setEnd(n, i + 1);
+        const q = [...range.getClientRects()].find((x) => x.width > 0 && x.height > 0);
+        if (q) perLine.set(Math.round(q.top), (perLine.get(Math.round(q.top)) ?? 0) + 1);
+      }
+    }
+    const longest = Math.max(0, ...perLine.values());
+    if (perLine.size > limits.proseMinLines && longest > limits.maxProseChars) {
+      fail("prose-width", p, `${perLine.size} lines, the longest ${longest} characters, over ${limits.maxProseChars}`);
+    }
   }
 
   // button-height

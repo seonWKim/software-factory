@@ -1,5 +1,7 @@
 ## History
 
+- **Failing-test parsing reads only vitest output** (new decision, 2026-11-25, wi_a2a79767). Before: the topic did not say the parser matches only vitest's `FAIL` line, so a Gradle/JUnit check's missing failing-test names and flaky rerun looked like a gap in the gate rather than the rule for non-vitest runners.
+
 - **An unchanged head after a `bug` verdict** (decision changed 2026-11-23; changed "After a `bug` verdict nothing changes" of the 2026-11-08 decision). Before: "After a `bug` verdict nothing changes: a review_bug loop that pushes nothing still stops in `REVIEW` (follow-up issue)." The item sat in `REVIEW`, blocked on nothing, with no run queued and no command but `/reject` to move it (wi_bdd36b09, 2026-11-22).
 
 - **Red main per failing test** (decision changed 2026-11-23; changed step 2 "Red main" of the 2026-11-16 decision). Before: "when every failed PR check also fails on the base branch's head commit (`Forge.baseChecks`, the same summary rule as `prChecks`), the item stays in `REVIEW` with `blocked_on: ci` and `blocked_reason: main is red: <test>` [...] Only some failed checks red on base: the normal path." Check names only: a PR whose `test` check failed for its own reason while main's `test` was red waited on main, and one whose only failing test was main's could be sent back for it (wi_c3cba3a9, #772).
