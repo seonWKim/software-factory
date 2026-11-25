@@ -33,6 +33,7 @@ describe("controller table docs: skill eval version columns", () => {
     "controller_skill_eval_replays.transcript", "controller_skill_eval_replays.answer", "controller_skill_eval_replays.input_tokens",
     "controller_skill_eval_replays.output_tokens", "controller_skill_eval_replays.cost_usd", "controller_skill_eval_replays.wall_ms",
     "controller_skill_eval_cases.seed", "controller_skill_eval_cases.mcp",
+    "controller_skill_eval_replays.replay",
   ];
 
   it("describes every column the versions migration adds, one sentence each", () => {

@@ -294,13 +294,20 @@ export async function seedSkill(store, dir) {
 
 /**
  * Two plain schedules, so the Schedules page draws its table, Switches and row menus: a daily build, and a weekly agent
- * that is paused. Added through the same core write the API runs.
+ * that is paused. Beside them three Check a page samples: a long name on a weekly cadence, one paused on an interval, and
+ * one On each merge. Added through the same core write the API runs.
  */
 async function seedSchedules(store) {
   const now = new Date();
   const schedules = [
     { id: "sch_responsive_docs", title: "Nightly docs check", cadence: "daily", spec: "09:00", zone: "Europe/Paris", action: "build", body: "Check the docs for pages that no longer match the product." },
     { id: "sch_responsive_review", title: "Weekly review", cadence: "weekly", spec: "mon 09:00", zone: "Europe/Paris", action: "agent", body: "Summarize the week's merged changes." },
+    {
+      id: "sch_responsive_page_long", title: "Weekly check of the public pricing page for broken links, stale prices and out-of-date plan names", cadence: "weekly", spec: "mon,thu 09:00", zone: "Europe/Paris",
+      action: "check-page", url: "https://example.com/pricing", instruction: "Look for broken links, prices that differ from the product and plan names that no longer exist.", run_cap_usd: 0.5, daily_cap_usd: 2,
+    },
+    { id: "sch_responsive_page_paused", title: "Status page check", cadence: "interval", spec: "240", zone: "Europe/Paris", action: "check-page", url: "https://example.com/status", instruction: "Report any incident shown as open." },
+    { id: "sch_responsive_page_merge", title: "Docs check on each merge", cadence: "on-merge", action: "check-page", url: "https://example.com/docs", instruction: "Find pages that no longer match the merged change.", daily_cap_usd: 1 },
   ];
   for (const { id, ...fields } of schedules) {
     const r = await writeSchedule(store, "add", id, fields, OWNER, now);
@@ -308,6 +315,8 @@ async function seedSchedules(store) {
   }
   const paused = await writeSchedule(store, "pause", "sch_responsive_review", {}, OWNER, now);
   if (!paused.ok) throw new Error(`fixture schedule pause failed: ${paused.problem}`);
+  const pagePaused = await writeSchedule(store, "pause", "sch_responsive_page_paused", {}, OWNER, now);
+  if (!pagePaused.ok) throw new Error(`fixture schedule pause failed: ${pagePaused.problem}`);
 }
 
 /** How many items the standing approval approved in the last 7 days: more than the two its Rules page row names before "+N more". */

@@ -101,14 +101,28 @@ describe("GET /api/v1/evals/<skill>/grid", () => {
 describe("GET /api/v1/evals/<skill>/compare", () => {
   const path = (a: string, b: string, skill = SKILL) => `/api/v1/evals/${encodeURIComponent(skill)}/compare?a=${a}&b=${b}`;
 
-  it("returns the CLI compare --json fields, read by id, writing nothing", async () => {
+  it("returns the CLI compare --json fields, the runs and their replays read by id, writing nothing", async () => {
     const store = await seeded();
     const before = await tables(store);
-    const r = await get(store, CLEAN, path("old", "new"));
+    const { proxy, calls } = watched(store);
+    const r = await get(proxy, CLEAN, path("old", "new"));
     expect(r.status).toBe(200);
-    expect(r.value).toEqual(JSON.parse(JSON.stringify(compareSkillEvalRuns((await store.getSkillEvalRun("old"))!, (await store.getSkillEvalRun("new"))!))));
-    expect(r.value).toMatchObject({ a: { run_id: "old", pass_rate: null }, b: { run_id: "new", pass_rate: 0.5 }, gap: null, noise_band: null, within_noise: null });
+    const replays = { a: await store.listSkillEvalReplays("old"), b: await store.listSkillEvalReplays("new") };
+    expect(r.value).toEqual(JSON.parse(JSON.stringify(compareSkillEvalRuns((await store.getSkillEvalRun("old"))!, (await store.getSkillEvalRun("new"))!, replays))));
+    expect(r.value).toMatchObject({ a: { run_id: "old", pass_rate: null }, b: { run_id: "new", pass_rate: 0.5 }, verdict: null });
+    for (const k of ["gap", "noise_band", "within_noise"]) expect(r.value).not.toHaveProperty(k);
+    expect(calls.filter((c) => c === "listSkillEvalReplays")).toHaveLength(2);
     expect(await tables(store)).toEqual(before);
+  });
+
+  it("pairs both runs' stored replays case by case", async () => {
+    const store = await seeded();
+    for (const id of ["pa", "pb"]) await store.startSkillEvalRun({ id, suite_id: "s1", created_by: OWNER, judge_version: "j1" });
+    for (const [run_id, case_id, verdict] of [["pa", "c1", "fail"], ["pa", "c2", "pass"], ["pb", "c1", "pass"], ["pb", "c2", "pass"], ["pb", "c3", "fail"]] as const) {
+      await store.recordSkillEvalReplay({ run_id, case_id, replay: 1, verdict, detail: {} });
+    }
+    const r = await get(store, CLEAN, path("pa", "pb"));
+    expect(r.value).toMatchObject({ comparable: true, paired: 2, wins: 1, losses: 0, ties: 1, p_value: 1, mean_difference: 0.5, verdict: "within noise" });
   });
 
   it("is a 404 for an unknown run or one of another skill, and a 400 without both runs", async () => {

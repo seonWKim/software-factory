@@ -1,4 +1,5 @@
-// The Schedules page: GET /api/v1/schedules (useSchedules), GET /api/v1/schedules/runs?schedule=<id> (useScheduleRuns)
+// The Schedules page: GET /api/v1/schedules (useSchedules), GET /api/v1/schedules/runs?schedule=<id> (useScheduleRuns),
+// GET /api/v1/schedules/suggestions?schedule=<id> (useScheduleSuggestions)
 // and the writes under /api/v1/schedules (postSchedule: add, edit, pause, resume, run and delete), as src/ui/schedules-api.ts
 // answers them (design 08-schedules, 09-dashboard-schedules).
 
@@ -9,24 +10,39 @@ import { API, type ScheduleVerb } from "./routes.js";
 export const CADENCE_KINDS = ["interval", "daily", "weekly", "cron"] as const;
 export type CadenceKind = (typeof CADENCE_KINDS)[number];
 /** The kinds the New and Edit form offer: `schedule add` and `edit` write only these (design 08-schedules). */
-export const ACTION_KINDS = ["build", "agent", "feedback"] as const;
+export const ACTION_KINDS = ["build", "agent", "feedback", "check_page"] as const;
 /** Every stored kind: setup adds an `improve` schedule (the daily improve run), which no form can pick. */
 export type ActionKind = (typeof ACTION_KINDS)[number] | "improve";
 /** Whether the form can write a kind; the Edit form shows any other as a disabled choice and never sends it. */
 export const isWritableKind = (k: ActionKind): k is (typeof ACTION_KINDS)[number] => (ACTION_KINDS as readonly string[]).includes(k);
 
-/** One stored schedule. `next_due_at` null: paused. */
+/** One stored schedule. `next_due_at` null: paused, except a Check a page one, which has a `paused` flag and, on each merge, no next run. */
 export interface ScheduleRow {
   id: string;
   title: string;
-  cadence: { kind: CadenceKind; spec: string };
+  /** Null for a Check a page schedule that runs on each merge. */
+  cadence: { kind: CadenceKind; spec: string } | null;
   zone: string;
   next_due_at: string | null;
   running_since: string | null;
   skip_when_busy: boolean;
-  /** What a due occurrence does: `settings.body` for build, `settings.prompt` for agent and feedback; improve has none. */
+  /** What a due occurrence does: `settings.body` for build, `settings.prompt` for agent and feedback, `settings.instruction` and `settings.url` for check_page; improve has none. */
   action: { kind: ActionKind; settings: Record<string, unknown> } | null;
   token_cap: number | null;
+  /** `merge` for a Check a page schedule that runs on each merge, else null. */
+  trigger: "merge" | null;
+  /** A Check a page schedule's pause flag; a plain schedule is paused by a null `next_due_at`. */
+  paused: boolean;
+  run_cap_usd: number | null;
+  daily_cap_usd: number | null;
+}
+
+/** One suggestion a Check a page schedule's runs found. */
+export interface ScheduleSuggestionRow {
+  id: string;
+  text: string;
+  state: "pending" | "accepted" | "dismissed" | "snoozed";
+  created_at: string;
 }
 
 /** One claimed occurrence of a schedule. */
@@ -51,6 +67,11 @@ export interface ScheduleFields {
   body?: string;
   skip_when_busy?: boolean;
   token_cap?: number;
+  /** check-page: what to look for, the page, and the USD caps of one run and of a day (null clears one). */
+  instruction?: string;
+  url?: string;
+  run_cap_usd?: number | null;
+  daily_cap_usd?: number | null;
   /** Add only: first due now, not at the cadence's next slot. */
   run_now?: boolean;
 }
@@ -61,8 +82,20 @@ export const useSchedules = () => useApi<{ schedules: ScheduleRow[] }>(API.sched
 /** One schedule's runs, oldest first, polled. */
 export const useScheduleRuns = (id: string) => useApi<{ runs: ScheduleRunRow[] }>(API.scheduleRuns(id));
 
-/** The text of a schedule's action: a build's body, an agent's or feedback's prompt. */
-export const actionText = (s: Pick<ScheduleRow, "action">): string => String(s.action?.settings.body ?? s.action?.settings.prompt ?? "");
+/** One schedule's suggestions, oldest first, polled. */
+export const useScheduleSuggestions = (id: string) => useApi<{ suggestions: ScheduleSuggestionRow[] }>(API.scheduleSuggestions(id));
+
+/** Whether a schedule is a Check a page one. */
+export const isCheckPage = (s: Pick<ScheduleRow, "action">): boolean => s.action?.kind === "check_page";
+
+/** The text of a schedule's action: a build's body, an agent's or feedback's prompt, a Check a page one's instruction. */
+export const actionText = (s: Pick<ScheduleRow, "action">): string => String(s.action?.settings.body ?? s.action?.settings.prompt ?? s.action?.settings.instruction ?? "");
+
+/** A Check a page schedule's page URL; empty for any other. */
+export const pageUrl = (s: Pick<ScheduleRow, "action">): string => String(s.action?.settings.url ?? "");
+
+/** Whether a schedule is paused: a Check a page one by its flag, any other by having no next run. */
+export const isPaused = (s: ScheduleRow): boolean => (isCheckPage(s) ? s.paused : s.next_due_at === null);
 
 /** POST one schedule write; a refusal (not the owner, the core's reason) comes back as `{ ok: false, error }`. */
 export async function postSchedule(token: string, verb: ScheduleVerb, id: string, fields: ScheduleFields = {}): Promise<{ ok: true } | { ok: false; error: string }> {

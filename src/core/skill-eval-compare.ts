@@ -1,10 +1,11 @@
 // Grid and compare over stored skill-eval runs (design 06-measurement), pure: `factory eval results <skill> --by
 // version,model`, `factory eval compare` and GET /api/v1/evals/<skill>/grid and /compare all use these, so the
-// grouping and the noise rule live once. The per-version read and the version diff (GET /api/v1/evals/<skill>/versions
+// grouping and the paired compare live once. The per-version read and the version diff (GET /api/v1/evals/<skill>/versions
 // and /diff) link runs to skill versions by folder hash here too. Nothing here reads or writes the store. Main.ts passes them to the CLI
 // through the command call (CommandCall.skillEvalReads); the routes import them.
 
 import type { SkillEvalRun } from "../interfaces/skill-eval-store.js";
+import { caseRates, pairedInterval, signTestP, type StatVerdict } from "./skill-eval-stats.js";
 
 /** One run as the grid and compare show it: which run, on what, and its figures (null where none was recorded). */
 export interface SkillEvalRunSummary {
@@ -22,10 +23,15 @@ export interface SkillEvalRunSummary {
   errored: number | null;
 }
 
+/** Run b against run a on their paired cases: better, worse or within noise. */
+export type SkillEvalVerdict = "better" | "worse" | "within noise";
+
 /**
- * Two runs side by side: b − a, the noise band and whether the gap is inside it. Not comparable (with the reason, and
- * the three null) when they ran on different suite or judge versions, or one has none recorded; the three are also
- * null without two pass rates.
+ * Two runs side by side, paired case by case: each case's pass rate in a and in b (passes ÷ its replays), the cases
+ * where b is higher (wins), lower (losses) or equal (ties), the exact sign-test p over the non-tied cases, the mean
+ * case difference (b − a) with its paired 95% interval, and the verdict. Cases in only one run are left out. Not
+ * comparable (with the reason, and every figure null) when they ran on different suite or judge versions, or one has
+ * none recorded; with no paired case the mean, the interval and the verdict are null.
  */
 export interface SkillEvalComparison {
   a: SkillEvalRunSummary;
@@ -33,9 +39,22 @@ export interface SkillEvalComparison {
   comparable: boolean;
   /** Why the runs are not comparable; null when they are. */
   reason: string | null;
-  gap: number | null;
-  noise_band: number | null;
-  within_noise: boolean | null;
+  /** Cases with replays in both runs. */
+  paired: number | null;
+  wins: number | null;
+  losses: number | null;
+  ties: number | null;
+  p_value: number | null;
+  mean_difference: number | null;
+  /** The paired 95% interval of mean_difference; null with fewer than two paired cases. */
+  interval: { low: number; high: number } | null;
+  verdict: SkillEvalVerdict | null;
+}
+
+/** The stored replay verdicts of the two runs compared, as listSkillEvalReplays reads them. */
+export interface ComparedReplays {
+  a: readonly StatVerdict[];
+  b: readonly StatVerdict[];
 }
 
 const summary = (r: SkillEvalRun): SkillEvalRunSummary => ({
@@ -63,16 +82,6 @@ export function skillEvalGrid(runs: readonly SkillEvalRun[]): SkillEvalRunSummar
   return rows;
 }
 
-/** A pass rate over its replays, or null when either is missing or there were none. */
-type Measured = Pick<SkillEvalRun, "pass_rate" | "replays">;
-const measured = (r: Measured): r is { pass_rate: number; replays: number } => r.pass_rate !== null && r.replays !== null && r.replays > 0;
-
-/** The noise rule's band: 2 × sqrt(sd_a² + sd_b²), with sd = sqrt(p × (1 − p) ÷ replays). */
-export function noiseBand(a: { pass_rate: number; replays: number }, b: { pass_rate: number; replays: number }): number {
-  const variance = (r: { pass_rate: number; replays: number }) => (r.pass_rate * (1 - r.pass_rate)) / r.replays;
-  return 2 * Math.sqrt(variance(a) + variance(b));
-}
-
 type Versioned = Pick<SkillEvalRun, "suite_id" | "suite_version" | "judge_version">;
 
 /** Why two runs cannot be set side by side, or null when they can: the same suite and suite version, the same judge version. */
@@ -83,18 +92,32 @@ export function notComparableReason(a: Versioned, b: Versioned): string | null {
   return null;
 }
 
+/** Better when p < 0.05 and the interval is above zero, worse when p < 0.05 and it is below zero, else within noise. */
+export function pairedVerdict(p: number, interval: { low: number; high: number } | null): SkillEvalVerdict {
+  if (p < 0.05 && interval !== null && interval.low > 0) return "better";
+  if (p < 0.05 && interval !== null && interval.high < 0) return "worse";
+  return "within noise";
+}
+
 /**
- * Compares run b against run a: within noise when |b − a| is no more than the noise band. Runs notComparableReason
- * names get no gap, noise band or within-noise figure.
+ * Compares run b against run a on the cases both ran (see SkillEvalComparison). Runs notComparableReason names get
+ * no figures. Reads nothing: the caller passes both runs' stored replays.
  */
-export function compareSkillEvalRuns(a: SkillEvalRun, b: SkillEvalRun): SkillEvalComparison {
+export function compareSkillEvalRuns(a: SkillEvalRun, b: SkillEvalRun, replays: ComparedReplays): SkillEvalComparison {
+  const head = { a: summary(a), b: summary(b) };
   const reason = notComparableReason(a, b);
-  const none = { gap: null, noise_band: null, within_noise: null };
-  if (reason !== null) return { a: summary(a), b: summary(b), comparable: false, reason, ...none };
-  if (!measured(a) || !measured(b)) return { a: summary(a), b: summary(b), comparable: true, reason: null, ...none };
-  const gap = b.pass_rate - a.pass_rate;
-  const noise_band = noiseBand(a, b);
-  return { a: summary(a), b: summary(b), comparable: true, reason: null, gap, noise_band, within_noise: Math.abs(gap) <= noise_band };
+  if (reason !== null) {
+    return { ...head, comparable: false, reason, paired: null, wins: null, losses: null, ties: null, p_value: null, mean_difference: null, interval: null, verdict: null };
+  }
+  const ra = caseRates(replays.a), rb = caseRates(replays.b);
+  const diffs = [...ra].filter(([id]) => rb.has(id)).map(([id, rate]) => rb.get(id)! - rate);
+  const wins = diffs.filter((d) => d > 0).length, losses = diffs.filter((d) => d < 0).length;
+  const p_value = signTestP(wins, losses);
+  const { mean, interval } = pairedInterval(diffs);
+  return {
+    ...head, comparable: true, reason: null, paired: diffs.length, wins, losses, ties: diffs.length - wins - losses, p_value,
+    mean_difference: mean, interval, verdict: diffs.length === 0 ? null : pairedVerdict(p_value, interval),
+  };
 }
 
 /** One skill version as the per-version read takes it (an `ext_skill_versions` row; the text is not needed). */

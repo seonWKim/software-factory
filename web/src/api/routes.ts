@@ -67,6 +67,8 @@ export const API = {
   schedules: "/api/v1/schedules",
   /** One schedule's run rows. */
   scheduleRuns: (id: string) => `/api/v1/schedules/runs?schedule=${encodeURIComponent(id)}`,
+  /** One Check a page schedule's suggestions. */
+  scheduleSuggestions: (id: string) => `/api/v1/schedules/suggestions?schedule=${encodeURIComponent(id)}`,
   /** One of the Schedules page's writes (owner only). */
   scheduleWrite: (verb: ScheduleVerb) => `/api/v1/schedules/${verb}`,
   taskBuild: "/api/v1/tasks/build",

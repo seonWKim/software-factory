@@ -1,5 +1,6 @@
-// The skill-eval engine: one run of a suite replays each case, runs the case's checks (design 06-measurement, check and
-// pass rules: checks.ts), records one verdict per case and sets the run's final status. Deterministic checks run
+// The skill-eval engine: one run of a suite replays each case N times (design 06-measurement, repeats), runs the case's
+// checks on each replay (check and pass rules: checks.ts), records one verdict per replay with its number (1 to N) and
+// sets the run's final status. Deterministic checks run
 // first, with no model call; a failed must-have one fails the case and no judge is called. Then the judge answers the
 // yes/no checks, scores the rubric criteria 1 to 5 and answers each pairwise check twice with the order swapped. The
 // replay and the judges are injected: skillEvalReplay over replayInSandbox (the replay golden uses too) and the skill
@@ -9,8 +10,8 @@
 // servers the case names. Its transcript, answer, usage and wall time are stored with its verdict; a flagged transcript
 // or answer is stored null.
 //
-// Safe to run twice: the run is started by its id, a case with a stored verdict is not replayed again, and the final
-// status is set once. The store and result types are structural (the SkillEvalStore and AgentRunner shapes used
+// Safe to run twice: the run is started by its id, a (case, replay number) with a stored verdict is not replayed again
+// (a verdict stored with no number counts as replay 1), and the final status is set once. The store and result types are structural (the SkillEvalStore and AgentRunner shapes used
 // here), so this component imports no legacy module (tests/architecture/dependency-direction.test.ts).
 
 import { frontMatterTools, skillFolderPath } from "../capabilities/capabilities.js";
@@ -31,8 +32,8 @@ export type CheckAnswer = YesNoAnswer;
 export interface SkillEvalEngineStore {
   startSkillEvalRun(r: { id: string; suite_id: string; created_by: string; skill_version?: string | null }): Promise<{ status: string }>;
   listSkillEvalCases(suite_id: string): Promise<readonly EngineCase[]>;
-  listSkillEvalReplays(run_id: string): Promise<readonly { case_id: string; verdict: string }[]>;
-  recordSkillEvalReplay(r: { run_id: string; case_id: string; verdict: string; detail: unknown } & Partial<ReplayRecord>): Promise<unknown>;
+  listSkillEvalReplays(run_id: string): Promise<readonly { case_id: string; verdict: string; replay?: number | null }[]>;
+  recordSkillEvalReplay(r: { run_id: string; case_id: string; verdict: string; detail: unknown; replay: number } & Partial<ReplayRecord>): Promise<unknown>;
   finishSkillEvalRun(id: string, status: RunStatus): Promise<boolean>;
 }
 
@@ -108,12 +109,15 @@ export interface SkillEvalRunInput {
    * version's on a re-run (src/skill-evals.ts). It links the run to that `ext_skill_versions` row (design 06-measurement).
    */
   skill_version: string;
+  /** Replays per case (`eval run --replays N`, checked by the caller); absent: 1. */
+  replays?: number;
 }
 
 export interface SkillEvalOutcome {
   run_id: string;
   /** Null when the run had already finished before this call: nothing was replayed. */
   status: RunStatus | null;
+  /** One per stored replay: N per case once the run finished. */
   verdicts: { case_id: string; verdict: CaseVerdict }[];
 }
 
@@ -242,20 +246,28 @@ export async function judgeCase(d: Omit<SkillEvalEngineDeps, "store">, run_id: s
   return { verdict, detail: { answers, score: r.judged ? caseScore(r.results) : null, threshold: checks.threshold, ...withheld }, ...stored };
 }
 
+/** A (case, replay number) key; a replay stored with no number is replay 1. */
+const replayKey = (case_id: string, replay: number | null | undefined) => JSON.stringify([case_id, replay ?? 1]);
+
 /**
- * Runs one skill eval: starts the run with its skill version, replays and judges each case not yet recorded, records
- * one verdict per case, and sets the run's final status (runStatus). A run that is already finished is left as it is.
+ * Runs one skill eval: starts the run with its skill version, replays and judges each case `r.replays` times (each
+ * round over every case before the next), skipping a (case, replay number) already recorded, records one verdict per
+ * replay with its number, and sets the run's final status (runStatus). A run that is already finished is left as it is.
  */
 export async function runSkillEval(d: SkillEvalEngineDeps, r: SkillEvalRunInput, signal: AbortSignal): Promise<SkillEvalOutcome> {
   const run = await d.store.startSkillEvalRun({ id: r.id, suite_id: r.suite_id, created_by: r.created_by, skill_version: r.skill_version });
-  const stored = async () => (await d.store.listSkillEvalReplays(r.id)).map((x) => ({ case_id: x.case_id, verdict: x.verdict as CaseVerdict }));
+  const listed = () => d.store.listSkillEvalReplays(r.id);
+  const stored = async () => (await listed()).map((x) => ({ case_id: x.case_id, verdict: x.verdict as CaseVerdict }));
   if (run.status !== "running") return { run_id: r.id, status: null, verdicts: await stored() };
-  const done = new Set((await stored()).map((x) => x.case_id));
-  for (const c of await d.store.listSkillEvalCases(r.suite_id)) {
-    if (done.has(c.id)) continue;
-    if (signal.aborted) return { run_id: r.id, status: null, verdicts: await stored() };
-    const { verdict, detail, record } = await judgeCase(d, r.id, c, signal);
-    await d.store.recordSkillEvalReplay({ run_id: r.id, case_id: c.id, verdict, detail, ...record });
+  const done = new Set((await listed()).map((x) => replayKey(x.case_id, x.replay)));
+  const cases = await d.store.listSkillEvalCases(r.suite_id);
+  for (let replay = 1; replay <= (r.replays ?? 1); replay++) {
+    for (const c of cases) {
+      if (done.has(replayKey(c.id, replay))) continue;
+      if (signal.aborted) return { run_id: r.id, status: null, verdicts: await stored() };
+      const { verdict, detail, record } = await judgeCase(d, r.id, c, signal);
+      await d.store.recordSkillEvalReplay({ run_id: r.id, case_id: c.id, replay, verdict, detail, ...record });
+    }
   }
   const verdicts = await stored();
   const status = runStatus(verdicts.map((v) => v.verdict));

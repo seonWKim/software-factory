@@ -3,8 +3,9 @@
 //   FactoryStore.listSkillEvalRuns), null where a figure was not recorded.
 // - GET /api/v1/evals/<skill>/grid: one row per skill version and model class from its newest run
 //   (`factory eval results <skill> --by version,model --json`, skillEvalGrid).
-// - GET /api/v1/evals/<skill>/compare?a=<run-a>&b=<run-b>: the two runs, the gap, the noise band and within_noise
-//   (`factory eval compare <run-a> <run-b> --json`, compareSkillEvalRuns); 404 when a run is unknown or of another skill.
+// - GET /api/v1/evals/<skill>/compare?a=<run-a>&b=<run-b>: the two runs paired case by case from their stored replays:
+//   paired, wins, losses, ties, p_value, mean_difference, interval and verdict (`factory eval compare <run-a> <run-b>
+//   --json`, compareSkillEvalRuns); 404 when a run is unknown or of another skill.
 // - GET /api/v1/evals/<skill>/suite: { suite, cases }, the skill's suite (its first, by creation: the one `eval run` runs,
 //   null when it has none) and its cases (`factory eval case list <skill>`).
 // - GET /api/v1/evals: { skills }, the distinct skill_ref of every suite, sorted (the Skills tab links the rows it names).
@@ -38,7 +39,7 @@ export const EVALS_LIST_PATH = "/api/v1/evals";
 /** /api/v1/evals/<skill>/<read>, with the URL-encoded skill_ref and the read as its groups. */
 export const EVALS_PATH = /^\/api\/v1\/evals\/([^/]+)\/(runs|grid|compare|suite)$/;
 
-type EvalsDeps = { store: Pick<FactoryStore, "listSkillEvalRuns" | "getSkillEvalRun" | "listSkillEvalSuites" | "listSkillEvalCases">; scanner: EgressScanner };
+type EvalsDeps = { store: Pick<FactoryStore, "listSkillEvalRuns" | "getSkillEvalRun" | "listSkillEvalReplays" | "listSkillEvalSuites" | "listSkillEvalCases">; scanner: EgressScanner };
 /** src/core/skill-eval-compare.ts's grid and compare, the same functions the CLI is given. */
 export interface SkillEvalReads {
   grid: typeof skillEvalGrid;
@@ -69,7 +70,8 @@ export async function readSkillEvals(d: EvalsDeps, reads: SkillEvalReads, url: U
   const [ra, rb, suites] = await Promise.all([d.store.getSkillEvalRun(a), d.store.getSkillEvalRun(b), d.store.listSkillEvalSuites()]);
   const ofSkill = new Set(suites.filter((s) => s.skill_ref === skill).map((s) => s.id));
   if (!ra || !rb || !ofSkill.has(ra.suite_id) || !ofSkill.has(rb.suite_id)) return apiError(404, "No such eval run for this skill.");
-  return { status: 200, value: await withheld(w, reads.compare(ra, rb)) };
+  const [va, vb] = await Promise.all([d.store.listSkillEvalReplays(a), d.store.listSkillEvalReplays(b)]);
+  return { status: 200, value: await withheld(w, reads.compare(ra, rb, { a: va, b: vb })) };
 }
 
 /** The skill_ref of a path's URL-encoded part, or the 400 (not URL-encoded) or 404 (empty) answer. */

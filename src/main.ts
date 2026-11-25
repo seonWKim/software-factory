@@ -12,6 +12,7 @@ import { createPlugin } from "./plugins.js";
 import { importSkillEvalCases } from "./runtime/skill-evals/import.js";
 import { cliName, parseSentence, runSentence } from "./core/local-cli.js";
 import { compareSkillEvalRuns, skillEvalGrid } from "./core/skill-eval-compare.js";
+import { runStats } from "./core/skill-eval-stats.js";
 import { skillEvalAuthoring, skillEvalRun, skillEvalTry } from "./skill-evals.js";
 import { SUPERVISED_ENV } from "./supervisor.js";
 
@@ -63,7 +64,7 @@ async function main(argv: readonly string[]): Promise<number> {
   // The supervisor sets the code root (its runtime copy) for its child; the cwd stays the main checkout.
   const load = () => loadConfig(process.cwd(), { codeRoot: process.env[CODE_ROOT_ENV], configFile });
   // The root wiring a command needs reaches its handler here, through the call (the handler imports no root module).
-  const skillEvalReads = { grid: skillEvalGrid, compare: compareSkillEvalRuns };
+  const skillEvalReads = { grid: skillEvalGrid, compare: compareSkillEvalRuns, stats: runStats };
   // `eval import`: the selected (or --source) SkillEvalSource and the configured egress scanner (design 06-measurement).
   const importCases: typeof skillEvalAuthoring.importCases = async (store, r) => {
     const loaded = await load();

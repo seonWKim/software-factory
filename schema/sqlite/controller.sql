@@ -429,13 +429,19 @@ CREATE TABLE controller_skill_eval_cases (
     created_at  TEXT NOT NULL
   , seed TEXT, mcp TEXT);
 
-CREATE TABLE controller_skill_eval_replays (
-    run_id       TEXT NOT NULL,
-    case_id      TEXT NOT NULL,
-    verdict      TEXT NOT NULL,
-    detail       TEXT NOT NULL,
-    recorded_at  TEXT NOT NULL, transcript TEXT, answer TEXT, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, wall_ms INTEGER,
-    PRIMARY KEY (run_id, case_id)
+CREATE TABLE "controller_skill_eval_replays" (
+    run_id        TEXT NOT NULL,
+    case_id       TEXT NOT NULL,
+    verdict       TEXT NOT NULL,
+    detail        TEXT NOT NULL,
+    recorded_at   TEXT NOT NULL,
+    transcript    TEXT,
+    answer        TEXT,
+    input_tokens  INTEGER,
+    output_tokens INTEGER,
+    cost_usd      REAL,
+    wall_ms       INTEGER,
+    replay        INTEGER
   );
 
 CREATE TABLE controller_skill_eval_runs (
@@ -629,6 +635,8 @@ CREATE INDEX controller_signals_source_at ON controller_signals (source, at);
 CREATE INDEX controller_skill_drafts_project ON controller_skill_drafts (project_key, skill_ref);
 
 CREATE INDEX controller_skill_eval_cases_suite ON controller_skill_eval_cases (suite_id);
+
+CREATE UNIQUE INDEX controller_skill_eval_replays_key ON controller_skill_eval_replays (run_id, case_id, COALESCE(replay, 0));
 
 CREATE INDEX controller_skill_eval_runs_suite ON controller_skill_eval_runs (suite_id);
 
