@@ -9,8 +9,7 @@
 // and /suite (a skill's eval runs, grid, compare, suite and cases; evals-api.ts, a path pattern), /versions and /diff
 // (a skill's versions and the diff of two; plugins-api.ts, a path pattern),
 // /api/v1/items/:id/changes (the item page's Changes tab; changes.ts) and /api/v1/schedules and
-// /api/v1/schedules/runs and /api/v1/schedules/suggestions (`?schedule=<id>`; schedules-api.ts) and /api/v1/routines and /api/v1/routines/suggestions
-// (`?routine=<id>`; routines-api.ts); every other
+// /api/v1/schedules/runs and /api/v1/schedules/suggestions (`?schedule=<id>`; schedules-api.ts); every other
 // path is api.ts's. They are served here beside api.ts so it stays within its size budget. A new read route adds one
 // entry to READ_ROUTES, not a line in server.ts.
 
@@ -32,7 +31,6 @@ import { SCREENSHOT_PATH, readScreenshot } from "./item-screenshots.js";
 import { EVALS_LIST_PATH, EVALS_PATH, readEvalSuites, readSkillEvals, skillOf } from "./evals-api.js";
 import { changesPathId, readItemChanges } from "./changes.js";
 import { SCHEDULES_PATH, SCHEDULE_RUNS_PATH, SCHEDULE_SUGGESTIONS_PATH, readScheduleRuns, readScheduleSuggestions, readSchedules } from "./schedules-api.js";
-import { ROUTINES_PATH, ROUTINE_SUGGESTIONS_PATH, readRoutineSuggestions, readRoutines } from "./routines-api.js";
 import type { ServerDeps, UiRequest } from "./server.js";
 
 /** One GET (or HEAD) route under /api/v1: its path (or a pattern over it) and its read. */
@@ -69,8 +67,6 @@ const READ_ROUTES: readonly ReadRoute[] = [
   { path: SCHEDULES_PATH, run: (d) => readSchedules(d) },
   { path: SCHEDULE_RUNS_PATH, run: (d, u) => readScheduleRuns(d, u.searchParams.get("schedule")) },
   { path: SCHEDULE_SUGGESTIONS_PATH, run: (d, u) => readScheduleSuggestions(d, u.searchParams.get("schedule")) },
-  { path: ROUTINES_PATH, run: (d) => readRoutines(d) },
-  { path: ROUTINE_SUGGESTIONS_PATH, run: (d, u) => readRoutineSuggestions(d, u.searchParams.get("routine")) },
 ];
 
 /** Answers one GET (or HEAD) under /api/v1 on its parsed URL. */
