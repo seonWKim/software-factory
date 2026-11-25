@@ -51,6 +51,8 @@ export interface ScheduleFields {
   body?: string;
   skip_when_busy?: boolean;
   token_cap?: number;
+  /** Add only: first due now, not at the cadence's next slot. */
+  run_now?: boolean;
 }
 
 /** Every schedule, polled like the other reads. */
