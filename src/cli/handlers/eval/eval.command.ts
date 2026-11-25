@@ -10,14 +10,16 @@ import { parseArgs as parseFlags } from "node:util";
 import { type CommandContext, type FactoryStore, type SkillEvalReads, type SkillEvalRunOptions, type SkillEvalRunRow, type SkillEvalRunStats, type SkillEvalRunSummary, defineCommand } from "../../command.js";
 import { stopOnSignals } from "../../support.js";
 
-const USAGE = `  eval run <skill> [--model <class>] [--judge-model <class>] [--replays <n>]
+const USAGE = `  eval run <skill> [--model <class>] [--judge-model <class>] [--replays <n>] [--baseline]
                runs the skill's eval suite once (each case replayed n times, each replay judged; model calls)
                and stores the run with its skill version, model class, judge model class, replays (cases × n),
                pass rate and errored replays, then prints them with pass@1 (passes over replays), pass^k (share
                of cases that pass all k = n replays) and the 95% Wilson interval of pass@1; exit 0 when the run
                passed. --model: cheap, standard or strong (default standard); --judge-model: only the judge
                class of --model; --replays: a whole number from 1 to 10 (default 1), any other value is a usage
-               error. Refuses, running nothing, when no suite exists for <skill> or an option is refused
+               error; --baseline: replays the suite with no skill text and no skill folder, stored with skill
+               version baseline:<folder hash> beside the skill's runs (self-improve does not read it as measured).
+               Refuses, running nothing, when no suite exists for <skill> or an option is refused
   eval results <skill> [--by version,model] [--json]
                lists the skill's stored runs, newest first, each with pass@1, pass^k and the 95% Wilson
                interval over its replays (--json: one JSON array, the same fields as
@@ -173,14 +175,15 @@ async function importCommand(argv: readonly string[], ctx: CommandContext, autho
 const summaryLine = (r: SkillEvalRunSummary) =>
   `skill version ${orDash(r.skill_version)}  model ${orDash(r.model_class)}  pass rate ${rate(r.pass_rate)}  replays ${orDash(r.replays)}  (run ${r.run_id}, ${r.started_at})`;
 
-/** The words and flags after the subcommand: positionals, value flags and --json; null on an unknown or valueless flag. */
-function parseArgs(args: readonly string[], valued: readonly string[]): { words: string[]; values: Map<string, string>; json: boolean } | null {
+/** The words and flags after the subcommand: positionals, value flags, --json and `--baseline` (run only); null on an unknown or valueless flag. */
+function parseArgs(args: readonly string[], valued: readonly string[], sub: string): { words: string[]; values: Map<string, string>; json: boolean; baseline: boolean } | null {
   const words: string[] = [];
   const values = new Map<string, string>();
-  let json = false;
+  let json = false, baseline = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === "--json") json = true;
+    else if (a === "--baseline" && sub === "run") baseline = true;
     else if (valued.includes(a)) {
       const v = args[++i];
       if (v === undefined || v.startsWith("-") || values.has(a)) return null;
@@ -188,15 +191,15 @@ function parseArgs(args: readonly string[], valued: readonly string[]): { words:
     } else if (a.startsWith("-")) return null;
     else words.push(a);
   }
-  return { words, values, json };
+  return { words, values, json, baseline };
 }
 
 /** --replays: a whole number from 1 to 10 (MAX_REPLAYS in src/skill-evals.ts, whose run check refuses the same). */
 const REPLAYS = /^(?:[1-9]|10)$/;
 
-/** --model, --judge-model and --replays as the run function takes them; null on a --replays that is not 1 to 10. */
-function runOptions(values: Map<string, string>): SkillEvalRunOptions | null {
-  const o: SkillEvalRunOptions = {};
+/** --model, --judge-model, --replays and --baseline (only when set) as the run function takes them; null on a --replays that is not 1 to 10. */
+function runOptions(values: Map<string, string>, baseline: boolean): SkillEvalRunOptions | null {
+  const o: SkillEvalRunOptions = baseline ? { baseline: true } : {};
   const model = values.get("--model"), judge = values.get("--judge-model"), replays = values.get("--replays");
   if (model !== undefined) o.model_class = model;
   if (judge !== undefined) o.judge_model_class = judge;
@@ -230,10 +233,10 @@ export default defineCommand({
       return code ?? 1;
     }
     const [sub, ...rest] = argv;
-    const parsed = sub !== undefined && Object.hasOwn(VALUED, sub) ? parseArgs(rest, VALUED[sub]!) : null;
+    const parsed = sub !== undefined && Object.hasOwn(VALUED, sub) ? parseArgs(rest, VALUED[sub]!, sub) : null;
     const usage = () => (console.error(`usage:\n${USAGE}`), 1);
     if (!parsed || parsed.words.length !== (sub === "compare" ? 2 : 1) || (sub === "run" && parsed.json)) return usage();
-    const { words, values, json } = parsed;
+    const { words, values, json, baseline } = parsed;
     const reads = ctx.skillEvalReads;
     if (sub === "compare") {
       if (!reads) return (console.error("eval compare is not available here: run it as `factory eval compare <run-a> <run-b>`"), 1);
@@ -262,7 +265,7 @@ export default defineCommand({
       else for (const l of lines) console.log(l);
       return 0;
     }
-    const options = runOptions(values);
+    const options = runOptions(values, baseline);
     if (!options) return usage();
     const runSkillEval = ctx.runSkillEval;
     if (!runSkillEval) {

@@ -194,6 +194,21 @@ describe("factory eval run options", () => {
     expect(Object.keys(plain.mock.calls[0]![2]).sort()).toEqual(["created_by", "signal", "skill"]);
   });
 
+  it("--baseline is a flag with no value passed as baseline: true; without it the run gets no baseline key", async () => {
+    const { store } = await newStore();
+    await store.createSkillEvalSuite({ id: "s1", skill_ref: SKILL, title: "t", created_by: OWNER });
+    const run = vi.fn(fakeRun("r1", "passed"));
+    await evalCommand(store, ["run", SKILL, "--baseline", "--replays", "2"], run);
+    expect(run.mock.calls[0]![2]).toMatchObject({ skill: SKILL, baseline: true, replays: 2 });
+    const plain = vi.fn(fakeRun("r2", "passed"));
+    await evalCommand(store, ["run", SKILL, "--replays", "2"], plain);
+    expect(plain.mock.calls[0]![2]).not.toHaveProperty("baseline");
+    const results = vi.fn(fakeRun("r3", "passed"));
+    expect((await evalCommand(store, ["results", SKILL, "--baseline"], results)).code).toBe(1); // run only
+    expect((await evalCommand(store, ["run", "--baseline"], results)).code).toBe(1); // no skill: --baseline takes no value
+    expect(results).not.toHaveBeenCalled();
+  });
+
   it("prints the run's refusal of an option and exits 1; a --replays that is no whole number or a valueless flag is a usage error", async () => {
     const { store } = await newStore();
     await store.createSkillEvalSuite({ id: "s1", skill_ref: SKILL, title: "t", created_by: OWNER });

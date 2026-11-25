@@ -1220,7 +1220,8 @@ function driverOf(store: unknown): SqlDriver {
 }
 
 // The skill hand-off (design 07-self-improvement): with the ledger on, each skill draft stored `proposed` and each
-// verdict the store accepts on it also go to the ledger, after the store holds them. A fake ledger records the calls
+// verdict the store accepts on it also go to the ledger, after the store holds them. No draft carries an owner label
+// yet, so an improve run stores a gaining draft `tried` (untrusted) and hands nothing; `propose` sets it proposed. A fake ledger records the calls
 // and can be told to throw; the model, the scratch run and the skill files are fakes: no CLI, no model.
 describe("the skill hand-off (src/core/skill-improve.ts)", () => {
   const SKILL = "skills/a";
@@ -1267,10 +1268,16 @@ describe("the skill hand-off (src/core/skill-improve.ts)", () => {
     return { store, deps, files, id, vd: { store, wiring, signal: deps.signal } };
   }
 
+  /** The drafted skill's draft set proposed, as an owner label would let it be stored (none exists yet). */
+  async function propose(s: Awaited<ReturnType<typeof dropped>>) {
+    expect(await s.store.setSkillDraftState(s.id, "tried", "proposed")).toBe(true);
+  }
+
   /** Each draft row and the verdicts' results, run once with `ledger` (absent: the plugin off). */
   async function judged(ledger?: SkillLedger) {
     const s = await dropped();
     const drafted = await improveSkills({ ...s.deps, ...(ledger ? { ledger } : {}) }, "local:p");
+    await propose(s);
     const proposed = await s.store.getSkillDraft(s.id);
     const held = await holdSkillDraft(s.store, s.id, ledger);
     const promoted = await promoteSkillDraft(s.vd, s.id, OWNER, ledger);
@@ -1278,18 +1285,13 @@ describe("the skill hand-off (src/core/skill-improve.ts)", () => {
     return { drafted, proposed, held, promoted, again, file: s.files.get("/repo/skills/a") };
   }
 
-  it("with the ledger on, a proposed draft is handed off once, after it is stored, and a later improve run hands nothing", async () => {
+  it("with the ledger on, a gaining draft with no owner label is stored tried untrusted and is not handed off", async () => {
     const s = await dropped();
     const l = fakeLedger();
-    let storedFirst = false;
-    const ledger: SkillLedger = { log: l.log, tacit: { ...l.tacit, changeProposal: async (p) => { storedFirst = (await s.store.getSkillDraft(p.id))?.state === "proposed"; await l.tacit.changeProposal!(p); } } };
-    await improveSkills({ ...s.deps, ledger }, "local:p");
-    await improveSkills({ ...s.deps, ledger }, "local:p");
-
-    expect(storedFirst).toBe(true);
-    expect(l.proposals).toEqual([{
-      id: s.id, target: "skills/a/SKILL.md", title: expect.stringContaining(SKILL), rationale: expect.stringContaining("cites the source"), change: "NEW SKILL TEXT",
-    }]);
+    expect(await improveSkills({ ...s.deps, ledger: l }, "local:p")).toEqual([expect.objectContaining({ draft: expect.objectContaining({ state: "tried", reason: "untrusted" }) })]);
+    await improveSkills({ ...s.deps, ledger: l }, "local:p");
+    expect((await s.store.getSkillDraft(s.id))?.state).toBe("tried");
+    expect(l.proposals).toEqual([]);
     expect(l.verdicts).toEqual([]);
   });
 
@@ -1304,6 +1306,7 @@ describe("the skill hand-off (src/core/skill-improve.ts)", () => {
     const s = await dropped();
     const l = fakeLedger();
     await improveSkills({ ...s.deps, ledger: l }, "local:p");
+    await propose(s);
     expect(await holdSkillDraft(s.store, s.id, l)).toEqual({ draft: expect.objectContaining({ state: "held" }) });
     expect(await holdSkillDraft(s.store, s.id, l)).toEqual({ refused: expect.any(String) });
     expect(await promoteSkillDraft(s.vd, s.id, OWNER, l)).toEqual({ draft: expect.objectContaining({ state: "promoted" }) });
@@ -1315,6 +1318,7 @@ describe("the skill hand-off (src/core/skill-improve.ts)", () => {
     const r = await dropped();
     const lr = fakeLedger();
     await improveSkills({ ...r.deps, ledger: lr }, "local:p");
+    await propose(r);
     await rejectSkillDraft(r.store, r.id, lr);
     expect(lr.verdicts.map((v) => v.decision)).toEqual(["reject"]);
   });
@@ -1357,9 +1361,9 @@ describe("the skill hand-off (src/core/skill-improve.ts)", () => {
     const without = await judged();
     const l = fakeLedger({ fail: true });
     expect(await judged({ tacit: l.tacit, log: l.log })).toEqual(without);
-    expect(l.proposals).toHaveLength(1);
+    expect(l.proposals).toEqual([]);
     expect(l.verdicts.map((v) => v.decision)).toEqual(["hold", "promote"]);
-    expect(l.warns.map((w) => w.fields?.record)).toEqual(["proposal", "hold", "promote"]);
+    expect(l.warns.map((w) => w.fields?.record)).toEqual(["hold", "promote"]);
     expect(l.warns.every((w) => w.fields?.error === "ledger locked")).toBe(true);
   });
 });

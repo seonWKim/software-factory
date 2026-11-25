@@ -1,13 +1,13 @@
 // Skill improvement (design 07-self-improvement, src/core/skill-improve.ts): the drop and stall trigger, one draft per
-// skill version, the draft prompt's content, the scratch measurement, the proposed-or-tried rule, the verdicts and the
-// two limits. The store is the real SQLite store; the model, the replay and the skill files are fakes: no test calls a
+// skill version, the draft prompt's content, the scratch measurement, the proposed-or-tried rule (no owner label: tried
+// untrusted), the verdicts and the two limits. The store is the real SQLite store; the model, the replay and the skill files are fakes: no test calls a
 // model or a remote service.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  type SkillImproveWiring, holdSkillDraft, improveSkills, promoteSkillDraft, rejectSkillDraft, scratchVersion, skillDraftId, skillTrigger,
+  type SkillImproveWiring, baselineVersion, holdSkillDraft, improveSkills, ownerLabelled, promoteSkillDraft, rejectSkillDraft, scratchVersion, skillDraftId, skillTrigger,
 } from "../src/core/skill-improve.js";
 import { SKILL_IMPROVE_DEFAULTS, type SkillImproveConfig } from "../src/core/skill-improve-config.js";
 import type { UserId } from "../src/core/types.js";
@@ -134,6 +134,12 @@ describe("the trigger (skillTrigger)", () => {
     expect(skillTrigger([scratch, ...history(0.8, 0.8)], c)).toBeNull();
     expect(skillTrigger([fakeRun(null), ...history(0.8, 0.5)], c)).toBe("drop");
   });
+
+  it("leaves out baseline runs (eval run --baseline), as it leaves out scratch runs", () => {
+    const baseline = { ...fakeRun(0.1), skill_version: baselineVersion("v1") };
+    expect(skillTrigger([baseline, ...history(0.8, 0.8)], c)).toBeNull();
+    expect(skillTrigger([baseline], c)).toBeNull();
+  });
 });
 
 describe("drafting (improveSkills)", () => {
@@ -143,7 +149,7 @@ describe("drafting (improveSkills)", () => {
     await run(store, clock, { id: "b-1", ref: B, version: "v:SKILL B", rate: 0.95 }); // at target: no draft
 
     const first = await improveSkills(deps, PROJECT);
-    expect(first).toEqual([{ skill_ref: A, trigger: "drop", draft: { id: skillDraftId(PROJECT, A, "v:SKILL A"), state: "proposed" } }]);
+    expect(first).toEqual([{ skill_ref: A, trigger: "drop", draft: { id: skillDraftId(PROJECT, A, "v:SKILL A"), state: "tried", reason: "untrusted" } }]);
     expect(llm.calls).toHaveLength(1);
 
     expect(await improveSkills(deps, PROJECT)).toEqual([{ skill_ref: A, trigger: "drop", draft: { skipped: "drafted" } }]);
@@ -180,18 +186,20 @@ describe("drafting (improveSkills)", () => {
     expect(files).toEqual(before);
   });
 
-  it("a draft that beats the current version's latest run by more than skill_improve_noise is proposed; detail holds scores, never a transcript", async () => {
+  it("a draft that beats the current version's latest run by more than skill_improve_noise, with no owner label, is stored tried untrusted; detail holds scores, never a transcript", async () => {
     const { store, clock, deps } = await setup({ scratchRate: 0.6 });
     await dropped(store, clock, A, "SKILL A");
-    await improveSkills(deps, PROJECT);
+    const [r] = await improveSkills(deps, PROJECT);
 
+    expect(ownerLabelled(skillDraftId(PROJECT, A, "v:SKILL A"))).toBe(false); // no label source yet
+    expect(r!.draft).toMatchObject({ state: "tried", reason: "untrusted" });
     const [draft] = await store.listSkillDrafts(PROJECT);
-    expect(draft).toMatchObject({ state: "proposed", tokens: 100 });
+    expect(draft).toMatchObject({ state: "tried", tokens: 100 });
     expect(draft!.detail).toMatchObject({
       skill_version: "v:SKILL A", model_class: "standard", failed_checks: ["cites the source", "names the file"], draft: "NEW SKILL TEXT",
       baseline_run: { id: `${A}-2`, pass_rate: 0.5 }, scratch_run: { pass_rate: 0.6 },
     });
-    expect(Object.keys(draft!.detail as object).sort()).toEqual(["baseline_run", "draft", "failed_checks", "gain", "model_class", "scratch_run", "skill_version"]);
+    expect(Object.keys(draft!.detail as object).sort()).toEqual(["baseline_run", "draft", "failed_checks", "gain", "model_class", "reason", "scratch_run", "skill_version"]);
     expect(JSON.stringify(draft!.detail)).not.toContain("SECRET REASON");
   });
 
@@ -236,7 +244,7 @@ describe("the limits", () => {
     await dropped(store, clock, B, "SKILL B");
 
     const results = await improveSkills(deps, PROJECT);
-    expect(results.map((r) => r.draft)).toEqual([expect.objectContaining({ state: "proposed" }), { skipped: "day_cap" }]);
+    expect(results.map((r) => r.draft)).toEqual([expect.objectContaining({ state: "tried", reason: "untrusted" }), { skipped: "day_cap" }]);
     expect(llm.calls).toHaveLength(1);
     await improveSkills(deps, PROJECT); // the same day: no second question
     const alerts = await store.listAlerts({ limit: 10 });
@@ -244,7 +252,7 @@ describe("the limits", () => {
     expect(alerts[0]!.detail).toMatch(/skill_drafts_per_day is 1.*skill_drafts_per_day 1 → 2/);
 
     clock.set("2026-11-25T10:00:00.000Z"); // the next UTC day: a new slot, so B is drafted and nothing is asked
-    expect((await improveSkills(deps, PROJECT)).map((r) => r.draft)).toEqual([{ skipped: "drafted" }, expect.objectContaining({ state: "proposed" })]);
+    expect((await improveSkills(deps, PROJECT)).map((r) => r.draft)).toEqual([{ skipped: "drafted" }, expect.objectContaining({ state: "tried", reason: "untrusted" })]);
     expect(await store.listAlerts({ limit: 10 })).toHaveLength(1);
   });
 
@@ -272,11 +280,13 @@ describe("the limits", () => {
 });
 
 describe("the verdicts", () => {
+  /** A drafted skill's draft set proposed, as an owner label would let it be stored (none exists yet: it is stored tried untrusted). */
   async function proposed(o: Parameters<typeof fakeWiring>[2] = {}) {
     const s = await setup(o);
     await dropped(s.store, s.clock, A, "SKILL A");
     await improveSkills(s.deps, PROJECT);
     const id = skillDraftId(PROJECT, A, "v:SKILL A");
+    expect(await s.store.setSkillDraftState(id, "tried", "proposed")).toBe(true);
     return { ...s, id, vd: { store: s.store, wiring: s.wiring, signal: signal() } };
   }
 
@@ -364,18 +374,19 @@ describe("the improve run", () => {
     const { store, run, project } = await improveRun(true, { config: { skill_drafts_per_day: 1 } });
     expect(run.outcome).toMatchObject({
       status: "succeeded",
-      data: { skill_drafts: [{ skill_ref: A, trigger: "drop", state: "proposed" }, { skill_ref: B, trigger: "drop", skipped: "day_cap" }] },
+      data: { skill_drafts: [{ skill_ref: A, trigger: "drop", state: "tried" }, { skill_ref: B, trigger: "drop", skipped: "day_cap" }] },
     });
-    expect((await store.listSkillDrafts(project)).map((d) => [d.skill_ref, d.state])).toEqual([[A, "proposed"]]);
+    expect((await store.listSkillDrafts(project)).map((d) => [d.skill_ref, d.state])).toEqual([[A, "tried"]]);
     expect(await store.listAlerts({ limit: 10 })).toEqual([expect.objectContaining({ pattern: "skill_draft_limit" })]);
   });
 
-  it("passes the worker's tacit ledger: each proposed draft is handed to it once", async () => {
+  it("with the worker's tacit ledger on, a draft with no owner label is stored tried untrusted and is not handed to it", async () => {
     const proposals: string[] = [];
     const tacit: TacitHandOff = { enabled: true, changeProposal: async (p) => void proposals.push(p.target), verdictRecord: async () => {} };
-    const { run } = await improveRun(true, {}, tacit);
-    expect(run.outcome).toMatchObject({ status: "succeeded", data: { skill_drafts: [{ skill_ref: A, state: "proposed" }, { skill_ref: B, state: "proposed" }] } });
-    expect(proposals).toEqual([`${A}/SKILL.md`, `${B}/SKILL.md`]);
+    const { run, store, project } = await improveRun(true, {}, tacit);
+    expect(run.outcome).toMatchObject({ status: "succeeded", data: { skill_drafts: [{ skill_ref: A, state: "tried" }, { skill_ref: B, state: "tried" }] } });
+    expect((await store.listSkillDrafts(project)).map((d) => (d.detail as { reason?: string }).reason)).toEqual(["untrusted", "untrusted"]);
+    expect(proposals).toEqual([]);
   });
 
   it("past the token budget the draft is held, one question is asked, and the run still succeeds", async () => {

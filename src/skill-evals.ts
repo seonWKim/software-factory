@@ -5,7 +5,9 @@
 // run through runSkillEval (each case --replays times), then records the run's figures through the store. The run's
 // options (--model, --judge-model, --replays 1 to 10) are checked here before anything is read or written. A run replays the
 // skill's current version (its folder as it is now) by default; `version` names a stored version of the imported skill
-// by its folder hash (design 06-measurement), and the run replays that version's text and stores its hash.
+// by its folder hash (design 06-measurement), and the run replays that version's text and stores its hash. `baseline`
+// (`eval run --baseline`, design 07-self-improvement) replays the suite with no skill: an empty system prompt, no skill
+// folder or SKILL.md in the sandbox and no tools from front matter, stored as `baseline:<folder hash>`.
 //
 // Each replay runs in a clean sandbox (design 06-measurement, clean replays): the `sandbox` plugin's name (a replay with
 // tools is refused under `noop`), the skill's folder, the approved pack MCP servers a case names, and the Clock's time
@@ -22,7 +24,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { codeVersion } from "./config-values.js";
 import { type ToolGrants, capabilitiesConfig, skillImproveConfig, toolGrantsConfig } from "./core/config.js";
-import type { SkillImproveWiring } from "./core/skill-improve.js";
+import { type SkillImproveWiring, baselineVersion } from "./core/skill-improve.js";
 import type { UserId } from "./core/types.js";
 import { type Loaded, localProject } from "./load-config.js";
 import { Plugins } from "./plugin-set.js";
@@ -72,6 +74,8 @@ export interface SkillEvalRequest {
   replays?: number | undefined;
   /** A previous version's folder hash (an `ext_skill_versions` row of the skill) to re-run (absent: the current version). */
   version?: string | undefined;
+  /** --baseline: replay with no skill text and no skill folder, stored as `baseline:<folder hash>` (absent: the skill's run). */
+  baseline?: boolean | undefined;
 }
 
 /** The stored run with its figures, or why nothing was run (and no run written). */
@@ -139,14 +143,14 @@ export function judgeVersion(judge: string, pairwise: string): string {
 
 /**
  * The previous answer of a case for a run on `skill_version`: the stored answer for that case from the newest run of
- * `skill` on another (known) skill version that holds one, its replay numbered 1 when it has one (else its replay
+ * `skill` on another (known) skill version that holds one, a baseline run (`baseline:`) left out, its replay numbered 1 when it has one (else its replay
  * stored with no number). Reads the runs once and each run's replays at most once.
  */
 export function previousAnswers(store: Pick<SkillEvalStore, "listSkillEvalRuns" | "listSkillEvalReplays">, skill: string, skill_version: string): (case_id: string) => Promise<string | null> {
   let runs: Promise<SkillEvalRun[]> | null = null;
   const replays = new Map<string, ReturnType<typeof store.listSkillEvalReplays>>();
   return async (case_id) => {
-    runs ??= store.listSkillEvalRuns(skill).then((rs) => rs.filter((r) => r.skill_version !== null && r.skill_version !== skill_version));
+    runs ??= store.listSkillEvalRuns(skill).then((rs) => rs.filter((r) => r.skill_version !== null && r.skill_version !== skill_version && !r.skill_version.startsWith("baseline:")));
     for (const run of await runs) {
       if (!replays.has(run.id)) replays.set(run.id, store.listSkillEvalReplays(run.id));
       const ofCase = (await replays.get(run.id)!).filter((x) => x.case_id === case_id);
@@ -226,17 +230,18 @@ function passportedRunner(runner: AgentRunner, t: ReplayTools): Pick<AgentRunner
  * `broker_tools`, and each replay run holds a run passport narrowed to its granted tools. A named tool the broker does
  * not serve read-only still errors the case `tool_not_served`. A replay run holds no `worker_runs` lease, so a real
  * broker answers its tool call `lease_lost` until the follow-up "replay lease rule" (a broker lease rule for replay
- * runs, filed as its own issue) lands.
+ * runs, filed as its own issue) lands. With `baseline` the replay gets no skill: `system_prompt` is empty, no skill
+ * folder is copied and no tool is named; the case's MCP servers apply as for the skill's run.
  */
-async function engineOf(d: SkillEvalWiring, skill: string, system_prompt: string, model_class: ModelClass, skill_version: string): Promise<Engine> {
-  const named = frontMatterTools(system_prompt).length > 0 && d.sandbox_plugin !== "noop";
+async function engineOf(d: SkillEvalWiring, skill: string, system_prompt: string, model_class: ModelClass, skill_version: string, baseline = false): Promise<Engine> {
+  const named = !baseline && frontMatterTools(system_prompt).length > 0 && d.sandbox_plugin !== "noop";
   const [p, system, pairwise] = await Promise.all([d.plugins({ tools: named }), d.judgePrompt(), d.pairwisePrompt?.() ?? null]);
   const folder = skillFolderPath(skill, d.root);
   const mcpServers = d.mcpServers;
   const t = named ? p.tools : undefined;
   const replay = skillEvalReplay({ sandbox: p.sandbox, runner: t ? passportedRunner(p.runner, t) : p.runner }, {
     repo: d.repo, role: REPLAY_ROLE, system_prompt, env_allowlist: {}, deny_paths: d.deny_paths, model_class, timeout_ms: d.timeout_ms,
-    skill: { folder, name: basename(folder) }, root: d.root, ...(d.sandbox_plugin !== undefined ? { sandbox_plugin: d.sandbox_plugin } : {}),
+    ...(baseline ? {} : { skill: { folder, name: basename(folder) } }), root: d.root, ...(d.sandbox_plugin !== undefined ? { sandbox_plugin: d.sandbox_plugin } : {}),
     ...(t ? { broker_tools: t.broker.allTools().filter((x) => x.read_only).map((x) => ({ name: x.name, read_only: true })) } : {}),
     ...(mcpServers ? { mcpServers: (names: readonly string[]) => mcpServers(names, p.runner.runs_mcp_servers === true) } : {}),
     ...(p.now ? { now: p.now } : {}),
@@ -258,6 +263,17 @@ async function engineParts(d: SkillEvalWiring, skill: string, model_class: Model
   const [skill_text, skill_version] = await Promise.all([readFile(join(folder, "SKILL.md"), "utf8").catch(() => null), skillVersion(folder).catch(() => null)]);
   if (skill_text === null || skill_version === null) return { refused: `cannot read ${skill}/SKILL.md: nothing run` };
   return { engine: await engineOf(d, skill, skill_text, model_class, skill_version), skill_version };
+}
+
+/**
+ * The engine's parts for a baseline run of `skill` (no skill text, no skill folder) on `model_class`, stored as
+ * `baseline:<folder hash>` with the folder's version now; refused when the folder cannot be read.
+ */
+async function baselineParts(d: SkillEvalWiring, skill: string, model_class: ModelClass): Promise<{ engine: Engine; skill_version: string } | { refused: string }> {
+  const hash = await skillVersion(skillFolderPath(skill, d.root)).catch(() => null);
+  if (hash === null) return { refused: `cannot read the folder of ${skill}: nothing run` };
+  const skill_version = baselineVersion(hash);
+  return { engine: await engineOf(d, skill, "", model_class, skill_version, true), skill_version };
 }
 
 /**
@@ -290,7 +306,8 @@ async function runAndRecord(
 /**
  * Runs one skill eval of `r.skill`'s suite (its first, by creation) on its current version, or on `r.version`, then
  * records the run's figures. Refuses, naming the skill and writing no run, when no suite exists for it, its folder's
- * SKILL.md cannot be read, `r.version` is no version of it, and on an option runClass refuses.
+ * SKILL.md cannot be read, `r.version` is no version of it, `r.baseline` is given with `r.version`, and on an option
+ * runClass refuses. With `r.baseline` it runs the suite with no skill (baselineParts).
  */
 export async function runSkillEvalFor(d: SkillEvalWiring, r: SkillEvalRequest): Promise<SkillEvalResult> {
   const chosen = runClass(r);
@@ -298,7 +315,9 @@ export async function runSkillEvalFor(d: SkillEvalWiring, r: SkillEvalRequest): 
   const { model_class } = chosen;
   const suite = (await d.store.listSkillEvalSuites()).find((s) => s.skill_ref === r.skill);
   if (!suite) return { refused: `no skill eval suite for ${r.skill}: nothing run` };
-  const parts = r.version === undefined ? await engineParts(d, r.skill, model_class) : await versionParts(d, r.skill, r.version, model_class);
+  if (r.baseline === true && r.version !== undefined) return { refused: `a baseline run replays no skill version: nothing run` };
+  const parts = r.baseline === true ? await baselineParts(d, r.skill, model_class)
+    : r.version === undefined ? await engineParts(d, r.skill, model_class) : await versionParts(d, r.skill, r.version, model_class);
   if ("refused" in parts) return parts;
   const run = await runAndRecord(d, parts.engine, {
     id: d.newId(), suite_id: suite.id, created_by: r.created_by, skill_version: parts.skill_version, model_class, ...(r.replays !== undefined ? { replays: r.replays } : {}),
