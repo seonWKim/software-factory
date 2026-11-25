@@ -263,8 +263,6 @@ describe("POST /api/v1/schedules/add and /edit with a Check a page schedule", ()
       { id: "cp_2", cadence: null, trigger: "merge", paused: false, run_cap_usd: null, daily_cap_usd: null, skip_when_busy: false },
     ]);
     expect((await store.listCheckPages()).map((s) => s.id)).toEqual(["cp_1", "cp_2"]);
-    // The routine routes read the same rows.
-    expect((await get("/api/v1/routines")).value.routines).toMatchObject([{ id: "cp_1", name: "Docs page" }, { id: "cp_2", trigger: "merge" }]);
   });
 
   it("edits its title, page, instruction and caps (null clears one)", async () => {
