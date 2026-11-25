@@ -13,6 +13,7 @@
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { overBudget } from "./budget.js";
 import { type Cadence, type CadenceKind, cadenceProblem, nextDue } from "./schedule-cadence.js";
+import { grantsLine, grantsOfWords, storedGrants } from "./schedule-grants.js";
 import type { RoutineTrigger } from "./routines.js";
 import type { Actor, Timestamp, UserId, WorkItem } from "./types.js";
 
@@ -358,6 +359,8 @@ export interface ScheduleFields {
   /** Add only: first due now (`--run-now on`), not at the cadence's next slot. */
   run_now?: boolean;
   token_cap?: number;
+  /** Feedback only: the `--grant` words (browser=<url>, notes, repo=<path>[#<branch>], shell=<database>, or none), src/core/schedule-grants.ts. */
+  grants?: string[];
 }
 
 /** The writes, each the owner's only. */
@@ -401,6 +404,16 @@ function firstSlot(c: Cadence | null, zone: string, now: Date, created_at: Times
   return next === null ? null : (next.toISOString() as Timestamp);
 }
 
+/** `action` with the `--grant` words stored as its grants (none given: as it is), or why they cannot be: feedback only. */
+function withGrants(action: ScheduleActionSpec, words: readonly string[] | undefined): ScheduleActionSpec | string {
+  if (words === undefined) return action;
+  if (action.kind !== "feedback") return "only a feedback schedule takes --grant";
+  const grants = grantsOfWords(words);
+  if ("problem" in grants) return grants.problem;
+  const { grants: _old, ...settings } = action.settings;
+  return { kind: action.kind, settings: grants.length === 0 ? settings : { ...settings, grants } };
+}
+
 /** Stores a new schedule from its fields; refused when one is missing or bad, or its ID stored. `on-merge` (check-page only): no spec, zone UTC, no next due time. */
 export async function createSchedule(store: ScheduleAdminStore, id: string, f: ScheduleFields, created_by: UserId, now: Date): Promise<ScheduleResult> {
   const merge = f.cadence?.trim() === ON_MERGE;
@@ -409,6 +422,8 @@ export async function createSchedule(store: ScheduleAdminStore, id: string, f: S
   if (missing.length > 0) return refused(`missing ${missing.join(", ")}`);
   const action = scheduleActionOf(f.action!.trim(), f.body, f);
   if ("problem" in action) return refused(action.problem);
+  const granted = withGrants(action, f.grants);
+  if (typeof granted === "string") return refused(granted);
   if (merge && action.kind !== "check_page") return refused(ON_MERGE_ONLY);
   if (merge && f.spec !== undefined) return refused(`${ON_MERGE} takes no --spec: it runs on each merge`);
   if (merge && f.run_now) return refused(`an ${ON_MERGE} schedule runs on each merge: it takes no --run-now`);
@@ -418,7 +433,7 @@ export async function createSchedule(store: ScheduleAdminStore, id: string, f: S
   if (problem) return refused(problem);
   const exists = `schedule ${id} is already stored`;
   if (await findSchedule(store, id)) return refused(exists);
-  const input = { id, title: f.title!.trim(), zone, created_by, action, missed_rule: f.missed ?? "catch_up", token_cap: f.token_cap ?? null, run_cap_usd: f.run_cap_usd ?? null, daily_cap_usd: f.daily_cap_usd ?? null };
+  const input = { id, title: f.title!.trim(), zone, created_by, action: granted, missed_rule: f.missed ?? "catch_up", token_cap: f.token_cap ?? null, run_cap_usd: f.run_cap_usd ?? null, daily_cap_usd: f.daily_cap_usd ?? null };
   const r: ScheduleResult = cadence
     ? await addSchedule(store, { ...input, cadence, run_now: f.run_now ?? false }, now)
     : { ok: true, schedule: await store.addSchedule({ ...input, cadence: null, trigger: "merge", token_period: "lifetime", created_at: now.toISOString() as Timestamp, next_due_at: null }) };
@@ -503,6 +518,13 @@ export async function editSchedule(store: ScheduleAdminStore, id: string, f: Sch
       if ("problem" in action) return action.problem;
       patch.action = page ? action : { kind: action.kind, settings: { ...old, ...action.settings } };
     }
+    if (f.grants !== undefined) {
+      const current = patch.action ?? s.action;
+      if (!current) return "the schedule has no action: give --action too";
+      const action = withGrants(current, f.grants);
+      if (typeof action === "string") return action;
+      patch.action = action;
+    }
     if (f.run_cap_usd !== undefined || f.daily_cap_usd !== undefined) {
       const problem = page ? capProblem(f) : ONLY_PAGE;
       if (problem) return problem;
@@ -525,7 +547,7 @@ export function writeSchedule(store: ScheduleAdminStore, w: ScheduleWrite, id: s
 
 export type ScheduleCommand = { verb: "list" } | { verb: "runs"; id: string } | { verb: ScheduleWrite; id: string; fields: ScheduleFields };
 
-const FLAGS: Readonly<Record<string, keyof ScheduleFields>> = {
+const FLAGS: Readonly<Record<string, Exclude<keyof ScheduleFields, "grants">>> = {
   "--title": "title", "--cadence": "cadence", "--spec": "spec", "--zone": "zone", "--action": "action", "--body": "body", "--missed": "missed", "--run-now": "run_now", "--token-cap": "token_cap",
   "--instruction": "instruction", "--url": "url", "--run-cap": "run_cap_usd", "--daily-cap": "daily_cap_usd",
 };
@@ -548,6 +570,10 @@ export function parseScheduleArgs(args: readonly string[]): ScheduleCommand | st
     const [flag, v] = [rest[i]!, rest[i + 1]];
     const key = FLAGS[flag];
     const unexpected = flag === "--id" ? verb === "edit" || id !== undefined : key === undefined || key in fields || (key === "run_now" && verb === "edit");
+    if (flag === "--grant" && v !== undefined) {
+      (fields.grants ??= []).push(v);
+      continue;
+    }
     if (v === undefined || unexpected) return `schedule ${verb}: unexpected ${JSON.stringify(flag)}`;
     if (flag === "--id") id = v;
     else if (key === "missed") {
@@ -569,17 +595,22 @@ export function parseScheduleArgs(args: readonly string[]): ScheduleCommand | st
   return { verb, id, fields };
 }
 
-/** One schedule as `schedule list` prints it: its next run is `paused`, `on each merge` (an on-merge one) or a time. */
+/** One schedule as `schedule list` prints it: its next run is `paused`, `on each merge` (an on-merge one) or a time; a feedback schedule's grants last, in plain words. */
 export const scheduleLine = (s: Schedule): string => [
   s.id, s.title, s.paused ? "paused" : s.trigger === "merge" ? "on each merge" : s.next_due_at ?? "paused", s.running_since === null ? "idle" : "running", s.action?.kind ?? "no action",
-  `missed ${s.missed_rule === "skip" ? "skip" : "catch-up"}`, `token cap ${tokenCap(s)}`,
+  `missed ${s.missed_rule === "skip" ? "skip" : "catch-up"}`, `token cap ${tokenCap(s)}`, ...(s.action?.kind === "feedback" ? [grantsLine(s.action.settings, s.id)].filter((l) => l !== null) : []),
 ].join("\t");
 
 const runLine = (r: ScheduleRun): string =>
   [r.occurrence_at, r.outcome, r.recorded_at, `${r.tokens ?? 0} tokens`, r.cost_usd === undefined ? "no cost" : `$${r.cost_usd}`].join("\t");
 
-/** Runs one `factory schedule` command as `user`; a write first asks `isOwner` (which may make `user` the owner). */
-export async function runScheduleCommand(store: ScheduleAdminStore, c: ScheduleCommand, user: UserId, isOwner: () => Promise<boolean>): Promise<{ code: number; lines: string[] }> {
+/**
+ * Runs one `factory schedule` command as `user`; a write first asks `isOwner` (which may make `user` the owner). An add or
+ * edit that stores a notes grant then makes the schedule's notes folder (`makeNotesFolder`, given the schedule ID).
+ */
+export async function runScheduleCommand(
+  store: ScheduleAdminStore, c: ScheduleCommand, user: UserId, isOwner: () => Promise<boolean>, makeNotesFolder?: (schedule_id: string) => Promise<void>,
+): Promise<{ code: number; lines: string[] }> {
   const fail = (line: string) => ({ code: 1, lines: [line] });
   if (c.verb === "list") {
     const all = await store.listSchedules({ check_pages: true });
@@ -593,6 +624,8 @@ export async function runScheduleCommand(store: ScheduleAdminStore, c: ScheduleC
   if (!(await isOwner())) return fail(`schedule ${c.verb} refused: only the owner manages schedules; you are ${user}`);
   const r = await writeSchedule(store, c.verb, c.id, c.fields, user, new Date(store.scheduleNow()));
   if (!r.ok) return fail(`schedule ${c.verb} ${c.id} refused: ${r.problem}`);
+  const notes = r.schedule.action?.kind === "feedback" && storedGrants(r.schedule.action.settings).some((g) => g.kind === "notes");
+  if (notes && makeNotesFolder) await makeNotesFolder(r.schedule.id);
   const done = { add: "added", edit: "edited", pause: "paused", resume: "resumed", run: "set to run on the next tick:", delete: "deleted (its past runs stay)" }[c.verb];
   return { code: 0, lines: [`${done} ${scheduleLine(r.schedule)}`] };
 }

@@ -109,6 +109,17 @@ export function grantWords(g: ScheduleGrant, schedule_id: string): string {
   return `shell: only ${g.command} ${g.db}`;
 }
 
+/** A schedule's grants in plain words for `schedule list` (`grants: …; …`), or null when it has none. */
+export function grantsLine(settings: Readonly<Record<string, unknown>> | undefined, schedule_id: string): string | null {
+  if (settings?.grants === undefined) return null;
+  try {
+    const grants = storedGrants(settings);
+    return grants.length === 0 ? null : `grants: ${grants.map((g) => grantWords(g, schedule_id)).join("; ")}`;
+  } catch (e) {
+    return `grants: refused (${e instanceof Error ? e.message : String(e)})`;
+  }
+}
+
 /** What a feedback run gets once its grants are handed out. */
 export interface GrantedRun {
   /** The read-only tools, then each granted one. */

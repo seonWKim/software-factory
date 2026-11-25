@@ -5,10 +5,12 @@
 // owner's words and the schedule's text are egress-scanned before the model call and the model's text before it is
 // returned; a finding names its rule only. The words are untrusted data in the prompt, and never choose the ID.
 
+import { resolve } from "node:path";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { LLMProvider, LLMRequest } from "../interfaces/llm-provider.js";
 import { fence } from "./resolve.js";
 import { CADENCE_KINDS, type CadenceKind, cadenceProblem } from "./schedule-cadence.js";
+import { nodeGrantDeps, notesFolder } from "./schedule-grants.js";
 import {
   SCHEDULE_ACTION_KINDS, type Schedule, type ScheduleAdminStore, type ScheduleCommand, type ScheduleFields, createSchedule, editSchedule, parseScheduleArgs,
   runScheduleCommand, scheduleActionOf, scheduleLine,
@@ -203,6 +205,8 @@ export interface DraftTerminal {
   scanner?: Pick<EgressScanner, "scan">;
   /** A y/N question on the terminal, which prints `shown` (the proposal) before it asks; absent when stdin is no terminal. */
   ask?: (shown: readonly string[], question: string) => Promise<boolean>;
+  /** The factory repo: `schedule add` and `edit` make a notes grant's folder `.factory/notes/<id>/` under it. Absent: none is made. */
+  repo_path?: string;
 }
 
 interface DraftCliDeps extends Omit<DraftDeps, "llm" | "scanner">, DraftTerminal {
@@ -214,7 +218,9 @@ const isDraftCommand = (c: ScheduleWords): c is DraftCommand => c.verb === "draf
 
 /** Runs any `factory schedule …` command as `user`: draft and improve here, the others through schedule.ts. */
 export function runScheduleWords(d: DraftCliDeps, c: ScheduleWords, user: UserId, isOwner: () => Promise<boolean>): Promise<{ code: number; lines: string[] }> {
-  return isDraftCommand(c) ? runDraftCommand(d, c, user, isOwner) : runScheduleCommand(d.store, c, user, isOwner);
+  const repo = d.repo_path;
+  const makeNotes = repo === undefined ? undefined : (id: string) => nodeGrantDeps.mkdir(resolve(repo, notesFolder(id)));
+  return isDraftCommand(c) ? runDraftCommand(d, c, user, isOwner) : runScheduleCommand(d.store, c, user, isOwner, makeNotes);
 }
 
 /** Runs draft or improve as `user`: the owner check first, then the model, then the ask, then the one write. */

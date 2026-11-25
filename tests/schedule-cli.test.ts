@@ -2,6 +2,9 @@
 // change or refusing it with the reason and storing nothing. Pause clears the next due time, so no slot fires; resume
 // sets the first slot after now; run sets now, so the next tick fires once. Writes are the owner's only.
 
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { type CliAction, type LocalCliDeps, parseLocalCliArgs, runLocalCli } from "../src/core/local-cli.js";
 import { machineZone } from "../src/core/schedule-draft.js";
@@ -595,5 +598,45 @@ describe("factory schedule delete on a Check a page schedule", () => {
     expect(await store.listCheckPages()).toEqual([]);
     expect(await store.listRoutineSuggestions("cp_1")).toEqual([]);
     expect(await store.getRoutine("cp_1")).toBeNull();
+  });
+});
+
+describe("feedback schedule grants", () => {
+  const FEEDBACK = [...ADD.slice(0, -1), "feedback", "--body", "Review the pages"];
+
+  it("add stores each --grant, makes the notes folder, and list shows each grant in plain words", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "grants-"));
+    const { store, cli } = await setup({ repo_path: repo });
+    const add = await cli([...FEEDBACK, "--grant", "browser=http://localhost:5173/", "--grant", "notes", "--grant", "repo=/src/other#dev", "--grant", "shell=/data/app.db"]);
+    expect(add.code).toBe(0);
+    expect((await stat(join(repo, ".factory", "notes", "sch_fb"))).isDirectory()).toBe(true);
+    expect((await stored(store))!.action!.settings.grants).toEqual([
+      { kind: "browser", url: "http://localhost:5173/" }, { kind: "notes" }, { kind: "repo", path: "/src/other", base_ref: "dev" },
+      { kind: "shell", command: "sqlite3 -readonly", db: "/data/app.db" },
+    ]);
+    const line = (await cli(["list"])).lines.find((l) => l.startsWith("sch_fb\t"))!;
+    expect(line).toContain("browser: Browse may read only http://localhost:5173/");
+    expect(line).toContain("notes: may write only in .factory/notes/sch_fb/");
+    expect(line).toContain("repo: its agent runs in /src/other (dev) and no other");
+    expect(line).toContain("shell: only sqlite3 -readonly /data/app.db");
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  it("edit replaces the grants, --grant none clears them, and the prompt stays", async () => {
+    const { store, cli } = await setup();
+    expect((await cli([...FEEDBACK, "--grant", "notes"])).code).toBe(0);
+    expect((await cli(["edit", "sch_fb", "--grant", "browser=http://127.0.0.1:8080/"])).code).toBe(0);
+    expect((await stored(store))!.action!.settings).toEqual({ prompt: "Review the pages", grants: [{ kind: "browser", url: "http://127.0.0.1:8080/" }] });
+    expect((await cli(["edit", "sch_fb", "--grant", "none"])).code).toBe(0);
+    expect((await stored(store))!.action!.settings).toEqual({ prompt: "Review the pages" });
+    expect((await cli(["list"])).lines.find((l) => l.startsWith("sch_fb\t"))).not.toContain("grants:");
+  });
+
+  it("refuses a grant on any other action, a URL off the sandbox and a repo in the state folder, storing nothing", async () => {
+    const { store, cli } = await setup();
+    expect((await cli([...ADD, "--grant", "notes"])).lines[0]).toContain("only a feedback schedule takes --grant");
+    expect((await cli([...FEEDBACK, "--grant", "browser=https://example.com/"])).lines[0]).toContain("sandbox URL");
+    expect((await cli([...FEEDBACK, "--grant", "repo=/home/me/app/.factory/x"])).lines[0]).toContain("state folder");
+    expect(await stored(store)).toBeUndefined();
   });
 });

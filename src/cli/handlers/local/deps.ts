@@ -36,6 +36,7 @@ export async function buildLocalCliDeps(
     ui: loaded.file.ui ?? {},
     answers: { split: splitAnswers, detail: answersDetail },
     ...drafting,
+    repo_path: loaded.config.repo.path, // where `schedule add`/`edit` make a notes grant's folder
     caps: async (project: string) => storedProjectCaps(store, { file: {}, layers: loaded.config.settings }, `${owner}/${name}`, (await resolveProject())?.key ?? null, project),
   };
 }
