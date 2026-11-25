@@ -376,8 +376,8 @@ describe("item page: In short, decisions and the approve confirm (issue #526)", 
     const confirm = await approve();
     expect(screen.queryByRole("region", { name: "In short" })).toBeNull();
     expect(confirm.querySelector("[data-confirm-answers]")).toBeNull();
-    expect(confirm.textContent).toContain("You approve a tier raise to the tier the floor check needs.");
-    expect(confirm.textContent).toContain("Next: The item's tier is raised and the implement run starts again.");
+    expect(confirm.textContent).toContain("You approve a risk level raise to the risk level the floor check needs.");
+    expect(confirm.textContent).toContain("Next: The item's risk level is raised and the implement run starts again.");
     await send({ command: "approve" });
   });
 

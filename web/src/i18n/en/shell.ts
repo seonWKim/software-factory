@@ -58,7 +58,7 @@ export const shell = {
   "topbar.refresh": "Refresh",
   "topbar.more": "More",
   "topbar.modeAuto": "Auto",
-  "topbar.modeAutoTier": "Auto · merges ≤ tier {tier}",
+  "topbar.modeAutoTier": "Auto · merges ≤ risk level {tier}",
   "topbar.modeManual": "Manual",
   "topbar.modeLink": "Mode: {mode}. Change it in Settings",
   "theme.label": "Theme",

@@ -155,7 +155,7 @@ function ModeControl({ view }: { view: SettingsView }) {
 /** The Mode section's anchor: the top bar's mode chip links to `settings#mode`. */
 export const MODE_ANCHOR = "mode";
 
-/** The mode and, next to it, the auto-merge tier (design 09): what decides whether the factory merges on its own. */
+/** The mode and, next to it, the auto-merge risk level (design 09): what decides whether the factory merges on its own. */
 function ModeSection({ view }: { view: SettingsView }) {
   const tier = view.keys.find((k) => k.key === "auto_merge_max_tier");
   // Opened from the mode chip (`#mode`): the section scrolls into view once drawn.
@@ -187,7 +187,7 @@ function ModeSection({ view }: { view: SettingsView }) {
               </ul>
             }
           >
-            <Editor row={tier} label={t("settings.tier")} value={tier.value} token={view.csrf_token} />
+            <Editor row={tier} label={t("settings.tierLabel")} value={tier.value} token={view.csrf_token} />
           </Field>
         )}
       </div>
@@ -195,7 +195,7 @@ function ModeSection({ view }: { view: SettingsView }) {
   );
 }
 
-/** The General tab: Mode and the auto-merge tier, then Notices, then Appearance (the theme). */
+/** The General tab: Mode and the auto-merge risk level, then Notices, then Appearance (the theme). */
 export function GeneralTab({ view }: { view: SettingsView }) {
   return (
     <div>
