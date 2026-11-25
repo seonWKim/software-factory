@@ -1,9 +1,10 @@
 // The feedback action (design 08-schedules): each fired occurrence runs one read-only agent (Read, Glob, Grep) on
-// the schedule's `prompt`, asking for tasks that each cite evidence in the code. It files at most FEEDBACK_MAX_TASKS
+// the schedule's `prompt` (with the schedule's grants, if the owner gave any: a browser on its sandbox URL, a notes
+// folder, a named repo, a read-only sqlite3; the routed action hands them out through ScheduleGrantBroker), asking for tasks that each cite evidence in the code. It files at most FEEDBACK_MAX_TASKS
 // (3, the owner's value; a lower `max_tasks` setting lowers it) evidence-backed tasks as local work items, in the
 // agent's order, and records the rest on the run: over the cap, without evidence or a title, or withheld by the leak scanner.
 // The items' source IDs come from the schedule, the slot and the task's place, so a second run files none twice
-// and never more than the cap for one occurrence. No browser tool: a feedback run reads code only.
+// and never more than the cap for one occurrence. Without a browser grant there is no Browse tool.
 
 import type { ScheduleActionRoute } from "../ports.js";
 
@@ -55,12 +56,13 @@ export function feedbackCap(settings: Readonly<Record<string, unknown>>): number
   return typeof n === "number" && Number.isSafeInteger(n) && n >= 1 ? Math.min(n, FEEDBACK_MAX_TASKS) : FEEDBACK_MAX_TASKS;
 }
 
-function prompt(ask: string, cap: number): string {
+function prompt(ask: string, cap: number, granted: readonly string[]): string {
   return [
     ask, "",
     `Answer with tasks, at most ${cap} of them, most important first. Each task needs a title, a body and evidence: one or more`,
     "entries, each a repo-relative path you read, the line if you know it, and a short quote of the code it is about.",
-    "A task without evidence is not filed. You can only read code: Read, Glob and Grep.",
+    "A task without evidence is not filed. You can read code: Read, Glob and Grep.",
+    ...(granted.length === 0 ? ["You can only read code."] : ["The owner also granted, and nothing else:", ...granted.map((g) => `- ${g}`)]),
   ].join("\n");
 }
 
@@ -70,7 +72,7 @@ export const feedbackAction: ScheduleActionRoute = async (schedule, occurrence_a
   const ask = str(schedule.settings.prompt);
   if (ask === "") throw new Error(`schedule ${schedule.id} has no prompt`);
   const cap = feedbackCap(schedule.settings);
-  const answer = await ports.ask({ prompt: prompt(ask, cap), output_schema: FEEDBACK_SCHEMA });
+  const answer = await ports.ask({ prompt: prompt(ask, cap, ports.granted), output_schema: FEEDBACK_SCHEMA });
   if (answer.status !== "completed") {
     await ports.record({ output: `feedback run ${answer.status}${answer.error ? `: ${answer.error}` : ""}`, tokens: answer.tokens, cost_usd: answer.cost_usd });
     throw new Error(`feedback run ${answer.status}`);
