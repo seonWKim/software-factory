@@ -133,6 +133,19 @@ describe("the command table", () => {
     expect(parseLocalCliArgs(...Object.values(chatCliArgv(old, null)) as [string, string[]])).toMatchObject({ error: expect.stringContaining("unexpected \"--skip-when-busy\"") });
   });
 
+  it("schedule usage shows --missed on add and edit, --run-now on add only, and no --skip-when-busy", () => {
+    const usage = (verb: string): string => cliUsageOf(COMMAND_TABLE.find((c) => c.name === `schedule ${verb}`)!);
+    expect(usage("add")).toContain("[--missed catch-up|skip] [--run-now on|off]");
+    expect(usage("edit")).toContain("[--missed catch-up|skip]");
+    expect(usage("edit")).not.toContain("--run-now");
+    const schedules = COMMAND_TABLE.filter((c) => c.group === "schedule");
+    for (const c of schedules) expect(`${cliUsageOf(c)} ${c.prints}`, c.name).not.toMatch(/skip-when-busy|skip when busy/);
+    expect(COMMAND_TABLE.find((c) => c.name === "schedule list")!.prints).toContain("missed rule");
+    const setUp = readFileSync("SET_UP.md", "utf8");
+    expect(setUp).not.toContain("--skip-when-busy");
+    for (const c of schedules.filter((s) => ["schedule add", "schedule edit"].includes(s.name))) expect(setUp).toContain(cliUsageOf(c));
+  });
+
   it("schedule draft and improve follow delete, the owner's, with no chat form, and SET_UP.md's CLI list has both", () => {
     const names = ["delete", "draft", "improve"].map((v) => `schedule ${v}`);
     const at = names.map((n) => COMMAND_TABLE.findIndex((c) => c.name === n));

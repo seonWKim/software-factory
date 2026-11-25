@@ -220,21 +220,22 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
 
 /** `factory schedule …` (design 08-schedules): list, add, edit, pause, resume, run, runs, delete, draft and improve, in that order; the writes are the owner's only. */
 function scheduleCommands(): TableCommand[] {
-  const optional = "[--body <text>] [--missed catch-up|skip] [--token-cap <n>] [--url <url>] [--instruction <text>] [--run-cap <usd|none>] [--daily-cap <usd|none>]";
+  const optional = "[--body <text>] [--token-cap <n>] [--missed catch-up|skip]";
+  const page = "[--url <url>] [--instruction <text>] [--run-cap <usd|none>] [--daily-cap <usd|none>]";
   const one = (name: string, args: string, chat: string, chat_args: ChatArgs, does: string, prints: string): TableCommand => ({
     name: `schedule ${name}`, args, who: "owner", group: "schedule", does, prints, chat: `schedule ${chat}`, chat_args, item: false, edge: false,
   });
   return [
     one("list", "", "list", "none", "List the schedules", "one line per schedule, Check a page ones too: ID, title, next due time, `paused` or `on each merge`, running or idle, action kind, missed rule, token cap"),
     one(
-      "add", `--id <id> --title <t> --cadence <interval|daily|weekly|cron|on-merge> [--spec <spec>] [--zone <IANA>] --action <build|agent|feedback|check-page> ${optional}`, "add <flags>", "any",
+      "add", `--id <id> --title <t> --cadence <interval|daily|weekly|cron|on-merge> [--spec <spec>] [--zone <IANA>] --action <build|agent|feedback|check-page> ${optional} [--run-now on|off] ${page}`, "add <flags>", "any",
       "Store a new schedule, first due at its cadence's next slot after now; refused for an ID already stored, a bad cadence, zone or action, " +
         "and an agent or feedback action without `--body` (its prompt; a build's item body); a daily schedule's token cap counts the runs of each UTC day, any other's all its runs. " +
         "A check-page action needs an http(s) `--url` and `--instruction` (or `--body`), and takes USD caps; only it takes `--cadence on-merge`, with no `--spec` (zone UTC)",
       "the stored schedule's line",
     ),
     one(
-      "edit", `<id> [--title <t>] [--cadence <interval|daily|weekly|cron>] [--spec <spec>] [--zone <IANA>] [--action <build|agent|feedback>] ${optional}`, "edit <id> <flags>", "any",
+      "edit", `<id> [--title <t>] [--cadence <interval|daily|weekly|cron>] [--spec <spec>] [--zone <IANA>] [--action <build|agent|feedback>] ${optional} ${page}`, "edit <id> <flags>", "any",
       "Change only the flags given; a new cadence or zone sets an unpaused schedule's next due time to its first slot after now, " +
         "and a paused one stays paused; refused with no flag, or a bad cadence, zone, action, token cap or USD cap; a check-page schedule's cadence, zone or trigger does not change, " +
         "and no action changes to or from check-page",
