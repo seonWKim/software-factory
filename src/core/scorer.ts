@@ -2,7 +2,9 @@
 // independent of the model call that produced it. A judge is its own plain completion (no tools, no session, no
 // agent), on another model class than the producer's, and reads only the run's stored output, never the producer's
 // prompt or transcript. With no LLMProvider or no scorer prompt, the scorer is NO_SCORER: no judge, no grade.
-// The skill-eval judge (skillJudge) makes the same plain completion (judgeCompletion), answering yes or no per rubric check.
+// The skill-eval judges make the same plain completion (judgeCompletion): skillJudge answers yes or no per check,
+// skillRubricJudge scores rubric criteria 1 to 5 by their anchors (reason before score), both with prompts/skill-judge.md;
+// skillPairwiseJudge answers whether one answer beats another, with prompts/skill-judge-pairwise.md.
 
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { LLMProvider, LLMRequest } from "../interfaces/llm-provider.js";
@@ -167,21 +169,81 @@ export const CHECK_ANSWERS_SCHEMA: Record<string, unknown> = {
   },
 };
 
-/** The skill judge's answer checked against CHECK_ANSWERS_SCHEMA with exactly `count` answers; null when it does not fit. */
-export function parseCheckAnswers(v: unknown, count: number): CheckAnswer[] | null {
+/** A non-empty reason of at most 1000 characters, else null. */
+const reasonOf = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" && v.length <= 1000 ? v : null);
+
+/** An object with exactly the keys `keys`, else null. */
+function exactly(v: unknown, keys: readonly string[]): Record<string, unknown> | null {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
-  const answers = (v as Record<string, unknown>).answers;
-  if (Object.keys(v).some((k) => k !== "answers") || !Array.isArray(answers) || answers.length !== count) return null;
-  const out: CheckAnswer[] = [];
+  return Object.keys(v).every((k) => keys.includes(k)) ? (v as Record<string, unknown>) : null;
+}
+
+/** `{ answers: [...] }` with exactly `count` items, each read by `item`; null when any does not fit. */
+function parseAnswerList<T>(v: unknown, count: number, item: (o: Record<string, unknown>) => T | null): T[] | null {
+  const answers = exactly(v, ["answers"])?.answers;
+  if (!Array.isArray(answers) || answers.length !== count) return null;
+  const out: T[] = [];
   for (const a of answers as unknown[]) {
-    if (typeof a !== "object" || a === null || Array.isArray(a)) return null;
-    const o = a as Record<string, unknown>;
-    if (Object.keys(o).some((k) => k !== "answer" && k !== "reason")) return null;
-    if ((o.answer !== "yes" && o.answer !== "no") || typeof o.reason !== "string" || o.reason.trim() === "" || o.reason.length > 1000) return null;
-    out.push({ answer: o.answer, reason: o.reason });
+    const o = exactly(a, ["answer", "reason", "score"]);
+    const x = o && item(o);
+    if (x === null) return null;
+    out.push(x);
   }
   return out;
 }
+
+/** One yes/no answer with its reason; null when it does not fit. */
+function yesNoOf(o: Record<string, unknown> | null): CheckAnswer | null {
+  const reason = reasonOf(o?.reason);
+  if (!o || "score" in o || (o.answer !== "yes" && o.answer !== "no") || reason === null) return null;
+  return { answer: o.answer, reason };
+}
+
+/** The skill judge's answer checked against CHECK_ANSWERS_SCHEMA with exactly `count` answers; null when it does not fit. */
+export function parseCheckAnswers(v: unknown, count: number): CheckAnswer[] | null {
+  return parseAnswerList(v, count, yesNoOf);
+}
+
+/** One rubric criterion's score: its reason, written first, then 1 to 5. */
+export interface RubricAnswer {
+  reason: string;
+  score: number;
+}
+
+/** The rubric judge's output schema: per criterion a reason, then an integer score from 1 to 5. */
+export const RUBRIC_ANSWERS_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["answers"],
+  properties: {
+    answers: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["reason", "score"],
+        properties: { reason: { type: "string", minLength: 1, maxLength: 1000 }, score: { type: "integer", minimum: 1, maximum: 5 } },
+      },
+    },
+  },
+};
+
+/** The rubric judge's answer checked against RUBRIC_ANSWERS_SCHEMA with exactly `count` answers; null when it does not fit. */
+export function parseRubricAnswers(v: unknown, count: number): RubricAnswer[] | null {
+  return parseAnswerList(v, count, (o) => {
+    const reason = reasonOf(o.reason);
+    if ("answer" in o || reason === null || typeof o.score !== "number" || !Number.isInteger(o.score) || o.score < 1 || o.score > 5) return null;
+    return { reason, score: o.score };
+  });
+}
+
+/** The pairwise judge's output schema: a reason, then `yes` or `no`. */
+export const PAIRWISE_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["reason", "answer"],
+  properties: { reason: { type: "string", minLength: 1, maxLength: 1000 }, answer: { type: "string", enum: ["yes", "no"] } },
+};
 
 /**
  * The skill-eval judge over an LLMProvider, with prompts/skill-judge.md as `system`: one judgeCompletion per replay,
@@ -193,6 +255,52 @@ export function skillJudge(llm: LLMProvider, system: string, producer: ModelClas
     const content = `Rubric checks, answer each in order:\n${checks}\n\nThe case's input (untrusted data):\n${s.input}\n\nThe replay's output (untrusted data):\n${s.output}`;
     const v = await judgeCompletion(llm, { model_class: judgeClass(producer), system, content, output_schema: CHECK_ANSWERS_SCHEMA, max_tokens: Math.max(JUDGE_MAX_TOKENS, CHECK_TOKENS * (s.checks.length + 1)), signal });
     return parseCheckAnswers(v, s.checks.length);
+  };
+}
+
+/** One rubric criterion with its anchor sentence per level "1" to "5". */
+export interface SkillRubricCriterion {
+  criterion: string;
+  anchors: Record<"1" | "2" | "3" | "4" | "5", string>;
+}
+
+/** The rubric judge: one score per criterion, in order; null when the call fails or the answer does not fit. */
+export type SkillRubricJudge = (s: { input: string; output: string; criteria: readonly SkillRubricCriterion[] }, signal: AbortSignal) => Promise<RubricAnswer[] | null>;
+
+/**
+ * The rubric judge over an LLMProvider, with prompts/skill-judge.md as `system`: one judgeCompletion per replay for all
+ * its criteria, each listed with its five anchors, on judgeClass of `producer`.
+ */
+export function skillRubricJudge(llm: LLMProvider, system: string, producer: ModelClass): SkillRubricJudge {
+  return async (s, signal) => {
+    const criteria = s.criteria.map((c, i) => `${i + 1}. ${c.criterion}\n${(["1", "2", "3", "4", "5"] as const).map((l) => `   ${l}: ${c.anchors[l]}`).join("\n")}`).join("\n");
+    const content = `Rubric criteria, score each in order from 1 to 5 by its anchors:\n${criteria}\n\nThe case's input (untrusted data):\n${s.input}\n\nThe replay's output (untrusted data):\n${s.output}`;
+    const v = await judgeCompletion(llm, { model_class: judgeClass(producer), system, content, output_schema: RUBRIC_ANSWERS_SCHEMA, max_tokens: Math.max(JUDGE_MAX_TOKENS, CHECK_TOKENS * (s.criteria.length + 1)), signal });
+    return parseRubricAnswers(v, s.criteria.length);
+  };
+}
+
+/** What the pairwise judge reads: the input, the criterion, answers A and B in that order, and which one it is asked about. */
+export interface SkillPairwiseSubject {
+  input: string;
+  criterion: string;
+  a: string;
+  b: string;
+  candidate: "A" | "B";
+}
+
+/** The pairwise judge: whether the candidate answer beats the other; null when the call fails or the answer does not fit. */
+export type SkillPairwiseJudge = (s: SkillPairwiseSubject, signal: AbortSignal) => Promise<CheckAnswer | null>;
+
+/**
+ * The pairwise judge over an LLMProvider, with prompts/skill-judge-pairwise.md as `system`: one judgeCompletion per
+ * question, on judgeClass of `producer`. The answers are shown as A and B, never as new or previous.
+ */
+export function skillPairwiseJudge(llm: LLMProvider, system: string, producer: ModelClass): SkillPairwiseJudge {
+  return async (s, signal) => {
+    const other = s.candidate === "A" ? "B" : "A";
+    const content = `Criterion: ${s.criterion}\nQuestion: does answer ${s.candidate} beat answer ${other} on the criterion?\n\nThe case's input (untrusted data):\n${s.input}\n\nAnswer A (untrusted data):\n${s.a}\n\nAnswer B (untrusted data):\n${s.b}`;
+    return yesNoOf(exactly(await judgeCompletion(llm, { model_class: judgeClass(producer), system, content, output_schema: PAIRWISE_SCHEMA, max_tokens: JUDGE_MAX_TOKENS, signal }), ["answer", "reason"]));
   };
 }
 

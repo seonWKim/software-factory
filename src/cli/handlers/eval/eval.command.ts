@@ -32,10 +32,15 @@ const USAGE = `  eval run <skill> [--model <class>] [--judge-model <class>] [--r
                deletes the suite and its cases (its runs stay in the store, unlisted)
   eval case list|add|edit|delete|try
                case list <skill>; case add <skill> (--file <json> | --input <text> --check <text> ...) where the
-               json is {"input": ..., "expected": [check texts]}; case edit <case-id> takes the same, a field
-               not given keeps its value; case delete <case-id>; case try <case-id> [--model cheap|standard|strong]
-               replays and judges one case (default standard), prints each check as yes or no with its reason,
-               then "verdict: pass|fail|errored" (exit 0 on pass), and stores no run and no replay
+               json is {"input": ..., "expected": [checks]} or {"expected": {"checks": [...], "threshold": n}};
+               a check is a text (a must-have yes/no the judge answers) or an object with a kind: contains,
+               does-not-contain, regex, max length, valid JSON, JSON schema subset (run first, no model call),
+               rubric (a criterion with anchors "1" to "5", scored 1 to 5) or pairwise (a criterion, judged
+               against the previous version's answer), each with an optional weight (0 or more) and must;
+               case edit <case-id> takes the same, a field not given keeps its value; case delete <case-id>;
+               case try <case-id> [--model cheap|standard|strong] replays and checks one case (default
+               standard), prints each check as yes or no with its reason, the score and threshold, then
+               "verdict: pass|fail|errored" (exit 0 on pass), and stores no run and no replay
   eval import <skill> [--source <plugin>]
                copies the skill's cases from the eval source (--source, else plugins.eval_source; default none)
                into its suite as import:<source>:<skill>:<source case id>; ids already stored are kept as they
@@ -112,7 +117,8 @@ async function caseCommand(argv: readonly string[], ctx: CommandContext, authori
       console.error(r.refused);
       return 1;
     }
-    for (const c of r.value.checks) console.log(`${c.answer}  ${c.check}  ${c.reason}`);
+    for (const c of r.value.checks) console.log(`${c.answer}  ${c.check}${c.score !== undefined ? ` (${c.score}/5)` : ""}  ${c.reason}`);
+    if (r.value.threshold !== undefined) console.log(`score: ${r.value.score == null ? "-" : r.value.score.toFixed(2)} (threshold ${r.value.threshold})`);
     if (r.value.error) console.log(`error: ${r.value.error}`);
     console.log(`verdict: ${r.value.verdict}`);
     return r.value.verdict === "pass" ? 0 : 1;

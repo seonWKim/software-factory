@@ -1,10 +1,13 @@
 // Authoring skill-eval suites and cases (design 06-measurement): the rules the `factory eval suite` and `eval case`
-// commands share. One suite per skill; a case's `expected` must be rubric check texts (rubricChecks, the engine's
-// rule), or nothing is written; a suite is deleted only while none of its runs is running, and its runs stay in the
+// commands share. One suite per skill; a case's `expected` must be checks the engine reads (checks.ts
+// parseCaseChecks: check texts, or check objects of a known kind with a weight of 0 or more and, for a rubric, an anchor
+// for each level 1 to 5), or nothing is written; a suite is deleted only while none of its runs is running, and its runs stay in the
 // store. `tryCase` replays and judges one case through the engine's judgeCase and stores nothing. The store type is
 // structural (the SkillEvalStore calls used here), so this component imports no legacy module.
 
-import { type CaseVerdict, type SkillEvalEngineDeps, judgeCase, rubricChecks } from "./engine.js";
+import type { CheckResult } from "./checks.js";
+import { parseCaseChecks } from "./checks.js";
+import { type CaseVerdict, type SkillEvalEngineDeps, judgeCase } from "./engine.js";
 import type { ImportedCases, SkillEvalImportRequest, SkillEvalImportStore } from "./import.js";
 
 export interface AuthoredSuite { id: string; skill_ref: string; title: string }
@@ -28,17 +31,16 @@ export type Authored<T> = { value: T } | { refused: string };
 /** A case's fields as given; a field left out keeps its value on an edit. */
 export interface CaseFields { input?: unknown; expected?: unknown }
 
-const NOT_RUBRIC = 'expected must be a list of rubric check texts, or {"checks": [...]}: nothing written';
-
 /** The suite of `skill` (its first, by creation: the one `eval run` runs). */
 async function suiteOf(store: Pick<SkillEvalAuthoringStore, "listSkillEvalSuites">, skill: string): Promise<AuthoredSuite | null> {
   return (await store.listSkillEvalSuites()).find((s) => s.skill_ref === skill) ?? null;
 }
 
-/** Whether `f` is a whole case: an input and an expected value that is a rubric. Names the problem, else null. */
+/** Whether `f` is a whole case: an input and an expected value holding checks. Names the problem, else null. */
 export function validateCase(f: CaseFields): string | null {
   if (f.input === undefined) return "a case needs an input: nothing written";
-  return f.expected !== undefined && rubricChecks(f.expected) !== null ? null : NOT_RUBRIC;
+  const r = parseCaseChecks(f.expected);
+  return "refused" in r ? `${r.refused}: nothing written` : null;
 }
 
 export async function addSkillEvalSuite(d: { store: SkillEvalAuthoringStore; newId(): string }, r: { skill: string; title?: string; created_by: string }): Promise<Authored<AuthoredSuite>> {
@@ -84,19 +86,22 @@ export async function editSkillEvalCase(store: SkillEvalAuthoringStore, id: stri
 
 export interface TriedCase {
   verdict: CaseVerdict;
-  /** One line per check; empty when the case errored. */
-  checks: { check: string; answer: "yes" | "no"; reason: string }[];
+  /** One line per check run (its kind, weight, must, value and rubric score as the detail stores them); empty when the case errored. */
+  checks: (Pick<CheckResult, "check" | "answer" | "reason"> & Partial<CheckResult>)[];
+  /** The case score (checks.ts caseScore) and the threshold it must reach; score null when unjudged, both absent when errored. */
+  score?: number | null;
+  threshold?: number;
   /** Why it errored (`no_rubric`, `replay_failed`, `judge_failed`, or a refusal: `noop_tools_refused`, `tool_not_served`, `mcp_not_served`), else null. */
   error: string | null;
 }
 
-/** Replays and judges one case through the engine's judgeCase (judge reasons pass the egress scan); writes nothing. */
+/** Replays and checks one case through the engine's judgeCase (judge reasons pass the egress scan); writes nothing. */
 export async function tryCase(d: Omit<SkillEvalEngineDeps, "store"> & { store: Pick<SkillEvalAuthoringStore, "getSkillEvalCase"> }, id: string, signal: AbortSignal): Promise<Authored<TriedCase>> {
   const c = await d.store.getSkillEvalCase(id);
   if (!c) return { refused: `no skill eval case ${id}` };
   const { verdict, detail } = await judgeCase(d, `try_${id}`, c, signal);
-  const { answers, error } = detail as { answers?: TriedCase["checks"]; error?: string };
-  return { value: { verdict, checks: answers ?? [], error: error ?? null } };
+  const { answers, error, score, threshold } = detail as { answers?: TriedCase["checks"]; error?: string; score?: number | null; threshold?: number };
+  return { value: { verdict, checks: answers ?? [], ...(threshold !== undefined ? { score: score ?? null, threshold } : {}), error: error ?? null } };
 }
 
 /** The authoring calls the CLI makes, with ids already bound (src/skill-evals.ts skillEvalAuthoring). */

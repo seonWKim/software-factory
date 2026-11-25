@@ -1,5 +1,6 @@
 // The skill-eval engine (src/runtime/skill-evals/): the replay shared with golden (replayInSandbox), the judge's
-// plain completion shared with LlmJudge (judgeCompletion), the all-yes pass rule, and the skill version per run.
+// plain completion shared with LlmJudge (judgeCompletion), the pass rule for check texts (every must-have yes, threshold
+// 1), the judge version over both judge prompts, and the skill version per run.
 // Every runner, sandbox and LLM provider here is a fake: no test calls a model.
 
 import { createHash } from "node:crypto";
@@ -20,7 +21,7 @@ import reviewRole from "../src/worker/roles/review.role.js";
 import { FakeRunner, FakeSandbox } from "./helpers/fakes/runner.js";
 import { cleanScanner, config, prompts } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
-import { type SkillEvalWiring, brokerGuard, improveWiring, runFigures, runSkillEvalFor, scratchRunFor, skillImproveWiring } from "../src/skill-evals.js";
+import { type SkillEvalWiring, brokerGuard, improveWiring, judgeVersion, runFigures, runSkillEvalFor, scratchRunFor, skillImproveWiring } from "../src/skill-evals.js";
 import { startIdentity } from "../src/identity/index.js";
 import { FakeNoteBroker } from "./helpers/fakes/broker.js";
 import { SKILL_IMPROVE_DEFAULTS } from "../src/core/skill-improve-config.js";
@@ -35,6 +36,7 @@ vi.mock("../src/runtime/skill-evals/replay.js", async (load) => {
 
 const OWNER = "local:owner" as UserId;
 const JUDGE_PROMPT = readFileSync(join(import.meta.dirname, "..", "prompts", "skill-judge.md"), "utf8");
+const PAIRWISE_PROMPT = readFileSync(join(import.meta.dirname, "..", "prompts", "skill-judge-pairwise.md"), "utf8");
 const REPO = { path: config.repo.path, base_branch: config.repo.base_branch };
 const REPLAY_OPTS = {
   repo: REPO, role: "implement", system_prompt: "SKILL", env_allowlist: {}, deny_paths: [".env"], model_class: "standard" as const, timeout_ms: 1000,
@@ -185,12 +187,15 @@ describe("runSkillEval", () => {
     expect(outcome.status).toBe("failed");
     expect(outcome.verdicts).toEqual(expect.arrayContaining([{ case_id: "c1", verdict: "pass" }, { case_id: "c2", verdict: "fail" }]));
     const replays = await store.listSkillEvalReplays("r1");
+    const yn = { kind: "yes/no", weight: 1, must: true };
     expect(replays.find((r) => r.case_id === "c2")!.detail).toEqual({
       answers: [
-        { check: "a", answer: "yes", reason: "check 1 yes" },
-        { check: "b", answer: "no", reason: "check 2 no" },
-        { check: "c", answer: "yes", reason: "check 3 yes" },
+        { check: "a", answer: "yes", reason: "check 1 yes", ...yn, value: 1 },
+        { check: "b", answer: "no", reason: "check 2 no", ...yn, value: 0 },
+        { check: "c", answer: "yes", reason: "check 3 yes", ...yn, value: 1 },
       ],
+      score: 2 / 3,
+      threshold: 1,
     });
     expect(await store.finishSkillEvalRun("r1", "passed")).toBe(false); // the final status is already set
   });
@@ -266,7 +271,7 @@ describe("the eval wiring (runSkillEvalFor)", () => {
     const runner = new FakeRunner({ implement: (spec) => ({ output: `did ${spec.prompt}` }) });
     const plugins = vi.fn(async () => ({ sandbox, runner, llm, scanner: cleanScanner }));
     const d: SkillEvalWiring = {
-      store, root: tmp, judgePrompt: async () => JUDGE_PROMPT, plugins, repo: REPO, deny_paths: [".env"], timeout_ms: 1000, newId: () => "run1", sandbox_plugin: "local",
+      store, root: tmp, judgePrompt: async () => JUDGE_PROMPT, pairwisePrompt: async () => PAIRWISE_PROMPT, plugins, repo: REPO, deny_paths: [".env"], timeout_ms: 1000, newId: () => "run1", sandbox_plugin: "local",
     };
     return { d, folder, runner, plugins };
   }
@@ -287,15 +292,34 @@ describe("the eval wiring (runSkillEvalFor)", () => {
     expect((await store.listSkillEvalRuns("skills/tests-first")).map((x) => x.id)).toEqual(["run1"]);
   });
 
-  it("stores the suite's version, the judge prompt's SHA-256 and the factory version at the run's start (absent: dev)", async () => {
+  it("stores the suite's version, the SHA-256 over both judge prompts and the factory version at the run's start (absent: dev)", async () => {
     const store = await suiteWith({ c1: { input: "good", expected: ["a"] } });
     const { d } = await wiring(store, new FakeLLM(() => yesNo("yes")));
     const [suite] = await store.db.all("SELECT version FROM controller_skill_eval_suites WHERE id = 's1'");
-    const judge_version = createHash("sha256").update(JUDGE_PROMPT).digest("hex");
+    const judge_version = judgeVersion(JUDGE_PROMPT, PAIRWISE_PROMPT);
     const r = await runSkillEvalFor({ ...d, factory_version: "rev-abc" }, { skill: "skills/tests-first", created_by: OWNER, signal: signal() });
     expect(r).toEqual({ run: expect.objectContaining({ suite_version: Number(suite!.version), judge_version, factory_version: "rev-abc" }) });
     const dev = await runSkillEvalFor({ ...d, newId: () => "run2" }, { skill: "skills/tests-first", created_by: OWNER, signal: signal() });
     expect(dev).toEqual({ run: expect.objectContaining({ id: "run2", judge_version, factory_version: "dev" }) });
+  });
+
+  it("gives a new judge version when either judge prompt changes, and keeps a stored run's version and verdicts", async () => {
+    const base = judgeVersion(JUDGE_PROMPT, PAIRWISE_PROMPT);
+    expect(judgeVersion(`${JUDGE_PROMPT}.`, PAIRWISE_PROMPT)).not.toBe(base);
+    expect(judgeVersion(JUDGE_PROMPT, `${PAIRWISE_PROMPT}.`)).not.toBe(base);
+    expect(judgeVersion("ab", "c")).not.toBe(judgeVersion("a", "bc"));
+    expect(base).not.toBe(createHash("sha256").update(JUDGE_PROMPT).digest("hex"));
+
+    const store = await suiteWith({ c1: { input: "good", expected: ["a"] } });
+    const old = createHash("sha256").update(JUDGE_PROMPT).digest("hex");
+    await store.startSkillEvalRun({ id: "old", suite_id: "s1", created_by: OWNER, skill_version: "v0", judge_version: old });
+    await store.recordSkillEvalReplay({ run_id: "old", case_id: "c1", verdict: "pass", detail: { answers: [{ check: "a", answer: "yes", reason: "r" }] } });
+    await store.finishSkillEvalRun("old", "passed");
+    const { d } = await wiring(store, new FakeLLM(() => yesNo("no")));
+    await runSkillEvalFor(d, { skill: "skills/tests-first", created_by: OWNER, signal: signal() });
+    expect(await store.getSkillEvalRun("old")).toMatchObject({ judge_version: old, status: "passed" });
+    expect(await store.listSkillEvalReplays("old")).toEqual([expect.objectContaining({ verdict: "pass", detail: { answers: [{ check: "a", answer: "yes", reason: "r" }] } })]);
+    expect(await store.getSkillEvalRun("run1")).toMatchObject({ judge_version: base, status: "failed" });
   });
 
   it("refuses, naming the skill, when no suite exists for it, and writes no run nor builds a plugin", async () => {
