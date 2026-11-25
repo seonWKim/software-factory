@@ -252,7 +252,7 @@ describe("item page: DecisionCard", () => {
   });
 
   it("an out_of_scope resolve failure shows Allow and resolve, whose dialog lists the files; Cancel sends nothing, Confirm sends /resolve +paths with its notes", async () => {
-    const reply = { ...FACTORY_MSG, kind: "run_failed", body: "Reply `/resolve +paths a/b.ts` to allow them, with notes on the lines below." };
+    const reply = { ...FACTORY_MSG, kind: "run_failed", body: "Reply `/resolve +paths a/b.ts` to allow them and resolve again. Changed files outside the conflicts and allowed_paths: a/b.ts" };
     body = detail({
       item: item({ stage: "RUNNING", blocked_reason: "merge_conflict", why: { code: "human", reason_code: "merge_conflict", params: {}, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null } }),
       commands: [{ ...cmd("resolve"), paths: ["a/b.ts"], out_of_scope: true }, cmd("revise"), cmd("reject")], spec: null, thread: [reply],
