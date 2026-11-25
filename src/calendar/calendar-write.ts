@@ -52,8 +52,8 @@ export type SyncResult =
   | { readonly state: "synced"; readonly provider: string }
   | { readonly state: "failed"; readonly error: string };
 
-export const NO_WRITABLE_CALENDAR = "Sync is unavailable: no connected calendar takes writes. The event is saved here only.";
-export const READ_ONLY_CALENDAR = "Sync is unavailable: the calendar is connected read-only; reconnect it with write access. The event is saved here only.";
+const NO_WRITABLE_CALENDAR = "Sync is unavailable: no connected calendar takes writes. The event is saved here only.";
+const READ_ONLY_CALENDAR = "Sync is unavailable: the calendar is connected read-only; reconnect it with write access. The event is saved here only.";
 /** A stored error is cut to this many characters. */
 const ERROR_MAX = 1000;
 
