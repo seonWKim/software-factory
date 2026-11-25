@@ -323,6 +323,69 @@ describe("factory eval compare", () => {
   });
 });
 
+describe("factory eval case split and case from-run", () => {
+  /** A suite with case c1 (seed and MCP servers set) and run r1, in which c1 failed once and c2 passed. */
+  async function withFailedRun() {
+    const { store } = await newStore();
+    await store.createSkillEvalSuite({ id: "s1", skill_ref: SKILL, title: "t", created_by: OWNER });
+    await store.addSkillEvalCase({ id: "c1", suite_id: "s1", input: { prompt: "in" }, expected: ["a"], seed: "seeds/one", mcp: ["files"], split: "held-out" });
+    await store.addSkillEvalCase({ id: "c2", suite_id: "s1", input: "other", expected: ["b"] });
+    await store.startSkillEvalRun({ id: "r1", suite_id: "s1", created_by: OWNER, skill_version: "v1" });
+    await store.recordSkillEvalReplay({ run_id: "r1", case_id: "c1", replay: 1, verdict: "pass", detail: {} });
+    await store.recordSkillEvalReplay({ run_id: "r1", case_id: "c1", replay: 2, verdict: "fail", detail: {} });
+    await store.recordSkillEvalReplay({ run_id: "r1", case_id: "c2", replay: 1, verdict: "pass", detail: {} });
+    await store.finishSkillEvalRun("r1", "failed");
+    return store;
+  }
+  const suiteVersion = async (store: FactoryStore & { db: { all(q: string): Promise<Record<string, unknown>[]> } }) =>
+    (await store.db.all("SELECT version FROM controller_skill_eval_suites WHERE id = 's1'"))[0]!.version;
+
+  it("case split sets one case's split and bumps no suite version; case list shows each case's split", async () => {
+    const store = await withFailedRun();
+    const v = await suiteVersion(store);
+    const r = await evalCommand(store, ["case", "split", "c2", "held-out"]);
+    expect(r.code).toBe(0);
+    expect(await store.getSkillEvalCase("c2")).toMatchObject({ split: "held-out" });
+    expect((await evalCommand(store, ["case", "split", "c2", "dev"])).code).toBe(0);
+    expect(await store.getSkillEvalCase("c2")).toMatchObject({ split: "dev" });
+    expect(await suiteVersion(store)).toBe(v);
+    expect((await evalCommand(store, ["case", "list", SKILL])).out).toEqual([expect.stringMatching(/^c1 {2}held-out /), expect.stringMatching(/^c2 {2}dev /)]);
+  });
+
+  it("case split refuses an unknown case and a value other than dev or held-out, changing nothing", async () => {
+    const store = await withFailedRun();
+    const before = await store.db.all("SELECT * FROM controller_skill_eval_cases ORDER BY id");
+    const unknown = await evalCommand(store, ["case", "split", "nope", "dev"]);
+    expect(unknown.code).toBe(1);
+    expect(unknown.err.join("\n")).toContain("nope");
+    expect((await evalCommand(store, ["case", "split", "c2", "test"])).code).toBe(1);
+    expect((await evalCommand(store, ["case", "split", "c2"])).code).toBe(1);
+    expect(await store.db.all("SELECT * FROM controller_skill_eval_cases ORDER BY id")).toEqual(before);
+  });
+
+  it("case from-run adds one new dev case with a new id, copying the failed case's input, expected, seed and MCP servers", async () => {
+    const store = await withFailedRun();
+    const r = await evalCommand(store, ["case", "from-run", "r1", "c1"]);
+    expect(r.code).toBe(0);
+    const added = (await store.listSkillEvalCases("s1")).filter((c) => c.id !== "c1" && c.id !== "c2");
+    expect(added).toEqual([expect.objectContaining({ suite_id: "s1", input: { prompt: "in" }, expected: ["a"], seed: "seeds/one", mcp: ["files"], split: "dev" })]);
+    expect(r.out.join("\n")).toContain(added[0]!.id);
+    expect(await store.getSkillEvalCase("c1")).toMatchObject({ split: "held-out" });
+  });
+
+  it("case from-run is refused, writing nothing, unless the case has a failed replay in the run", async () => {
+    const store = await withFailedRun();
+    const before = await store.db.all("SELECT * FROM controller_skill_eval_cases ORDER BY id");
+    for (const args of [["r1", "c2"], ["r-none", "c1"], ["r1", "c-none"]]) {
+      const r = await evalCommand(store, ["case", "from-run", ...args]);
+      expect(r.code, args.join(" ")).toBe(1);
+      expect(r.err.join("\n")).toContain("nothing written");
+    }
+    expect((await evalCommand(store, ["case", "from-run", "r1"])).code).toBe(1);
+    expect(await store.db.all("SELECT * FROM controller_skill_eval_cases ORDER BY id")).toEqual(before);
+  });
+});
+
 describe("factory eval usage", () => {
   it("lists the suite and case commands on a bad argument", async () => {
     const { store } = await newStore();
@@ -330,6 +393,6 @@ describe("factory eval usage", () => {
     expect(r.code).toBe(1);
     const text = r.err.join("\n");
     expect(text).toContain("eval suite list|add|rename|delete");
-    expect(text).toContain("eval case list|add|edit|delete|try");
+    expect(text).toContain("eval case list|add|edit|delete|try|split|from-run");
   });
 });
