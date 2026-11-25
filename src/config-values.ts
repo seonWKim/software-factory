@@ -14,6 +14,7 @@ import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import { type ChildRestart, type SupervisorStatus } from "./interfaces/updater.js";
 import type { UiCommands } from "./ui/commands.js";
 import type { FileConfig } from "./load-config.js";
+import maxRestart from "./controller/settings/max-restart.setting.js"; import retryBase from "./controller/settings/retry-base-ms.setting.js"; import retryMax from "./controller/settings/retry-max-ms.setting.js";
 
 /** SF_WORKER_INDEX_BASE as set by the supervisor: unset, empty or not a non-negative integer means 0. */
 export function workerIndexBase(value: string | undefined): number {
@@ -175,15 +176,13 @@ export function argvConfig(key: string, value: unknown, fallback: readonly strin
   return [...(value as string[])];
 }
 
-export const RETRY_DEFAULTS = { max_restart: 3, retry_base_ms: 60_000, retry_max_ms: 1_800_000 } as const;
-
-/** The retry keys (design §5 Restarts) with their defaults (`auth_pause_ms`: `retry_max_ms`). Positive integers,
+/** The retry keys (design §5 Restarts) with their setting files' defaults (`auth_pause_ms`: `retry_max_ms`). Positive integers,
  * base ≤ max, or startup fails. */
 export function retryConfig(file: Pick<FileConfig, "max_restart" | "retry_base_ms" | "retry_max_ms" | "auth_pause_ms">) {
-  const retry_max_ms = file.retry_max_ms ?? RETRY_DEFAULTS.retry_max_ms;
+  const retry_max_ms = file.retry_max_ms ?? retryMax.default!;
   const r = {
-    max_restart: file.max_restart ?? RETRY_DEFAULTS.max_restart,
-    retry_base_ms: file.retry_base_ms ?? RETRY_DEFAULTS.retry_base_ms,
+    max_restart: file.max_restart ?? maxRestart.default!,
+    retry_base_ms: file.retry_base_ms ?? retryBase.default!,
     retry_max_ms,
     auth_pause_ms: file.auth_pause_ms === undefined ? retry_max_ms : file.auth_pause_ms, // an explicit null fails below
   };

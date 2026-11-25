@@ -82,7 +82,7 @@ export interface AgentRunSpec {
   first_output_ms?: number;
   /**
    * The gate Stop check's time limit (design §4 Pre-push gates): the live `agent_stop_check_ms`, read for each run.
-   * Used only with `gate_hooks`. Absent: the runner's fallback (STOP_CHECK_MS, the setting's default).
+   * Used only with `gate_hooks`. Absent: the `agent_stop_check_ms` setting file's default.
    */
   stop_check_ms?: number;
   /** JSON Schema the final answer must match. */
