@@ -1,3 +1,4 @@
+import { isObj } from "./outputs.js";
 import { isCovered } from "./policy.js";
 
 // Tests that pin a change (design 04-triage, 2026-11-25): the base test files holding a string the spec quotes.
@@ -8,7 +9,6 @@ export const MIN_PIN_CHARS = 4;
 // Every quoted string, short ones too, so a short one's closing quote never opens the next; the length is checked after.
 const QUOTED = /"([^"\n]*)"/g;
 
-const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 
 /** The distinct double-quoted strings of four or more characters in an answer's problem, done criteria and desired output, in order. */

@@ -293,7 +293,8 @@ export const REVIEW_CONFIRM_SCHEMA = closed({ confirmed: { type: "boolean" }, re
 
 type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
 
-const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+/** A plain object (not null, not an array): the shape check every agent answer parser starts from. */
+export const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isStrs = (v: unknown): v is string[] => Array.isArray(v) && v.every(isStr);
 const isTier = (v: unknown): v is Tier => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 5;
