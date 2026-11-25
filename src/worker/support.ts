@@ -585,10 +585,15 @@ export function addUsage(sum: RunUsage, u: AgentRunResult["usage"]): void {
  */
 export function scopeReply(outside: readonly string[]): string[] {
   const reply = retryPathsReply(outside);
-  if (!reply) {
-    return [
-      `No single \`/retry +paths\` reply can allow these files (it takes at most ${MAX_COMMAND_PATHS} repo-relative paths with no glob or space). Reply \`/revise <feedback>\` to get a new spec with the paths it needs.`,
-    ];
-  }
+  if (!reply) return [`${noSingleReply("/retry")} Reply \`/revise <feedback>\` to get a new spec with the paths it needs.`];
   return ["To allow these files and run the implementer again, reply:", "", "```", reply, "```"];
 }
+
+/** A resolve run's `out_of_scope` detail (2026-11-26): the `/resolve +paths` reply for `outside` (or the hand fix) first, so the 500-character cap never cuts it, then the files. */
+export function resolveScopeDetail(outside: readonly string[]): string {
+  const reply = retryPathsReply(outside, "/resolve");
+  return `${reply ? `Reply \`${reply}\` to allow them and resolve again.` : `${noSingleReply("/resolve")} Resolve the conflict by hand.`} Changed files outside the conflicts and allowed_paths: ${outside.join(", ")}`;
+}
+/** Why no single `<command> +paths` reply allows a scope check's files: more than MAX_COMMAND_PATHS, or a name the parser would refuse. */
+const noSingleReply = (command: string): string =>
+  `No single \`${command} +paths\` reply can allow these files (it takes at most ${MAX_COMMAND_PATHS} repo-relative paths with no glob or space).`;

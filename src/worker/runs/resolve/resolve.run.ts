@@ -7,7 +7,7 @@ import { type ConflictFile, RESOLVE_TESTS_FAILED, lastResolveFailure, renderReso
 import type { Run, WorkItem } from "../../../core/types.js";
 import { type Sandbox, type SandboxHandle, reconcileOf } from "../../../interfaces/sandbox.js";
 import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
-import { NO_HOOKS, RunFailure, failingTestNames, gitIdentity, specQuery, tail } from "../../support.js";
+import { NO_HOOKS, RunFailure, failingTestNames, gitIdentity, resolveScopeDetail, specQuery, tail } from "../../support.js";
 import { cachedInstall } from "../../install-cache.js";
 import { conflictAsk } from "../implement/conflict-ask.js";
 import type { Worker } from "../../runner.js";
@@ -162,7 +162,7 @@ async function mergeAndResolve(
       const changed = await w.git(handle, ["diff", "--name-only", "-z", "--no-renames", before, tree]);
       const outside = resolveScopeViolations(changed, conflicts, item.allowed_paths);
       if (outside.length > 0) {
-        throw new RunFailure("out_of_scope", `changed files outside the conflicts and allowed_paths: ${outside.join(", ")}`.slice(0, 500));
+        throw new RunFailure("out_of_scope", resolveScopeDetail(outside).slice(0, 500));
       }
     }
     if (conflicts.length > 0) {
