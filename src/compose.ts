@@ -42,10 +42,7 @@ import { CODE_VERSION_ENV, SUPERVISOR_STATUS_FILE, WORKER_INDEX_BASE_ENV } from 
 import { ProfileStore, startIdentity, type IdentityRuntime } from "./identity/index.js";
 import { controllerServiceAuth, outboundServiceAuth } from "./impl/auth/audited-auth.js";
 import { OwnerAuth } from "./core/authorize.js";
-import { PassportToolBroker } from "./impl/broker/passport-broker.js";
-import { packToolBrokers } from "./impl/broker/pack-tools.js";
 import { storeSql } from "./impl/store/sql/store-sql.js";
-import { RunPassports } from "./worker/passports/run-passports.js";
 import type { RepoRef } from "./impl/github/github-client.js";
 // The GitHub forge's descriptor: the one GitHub module a config with no GitHub plugin loads (descriptors only).
 import { type RepoLookup, resolveProject } from "./impl/github/forge.plugin.js";
@@ -67,7 +64,7 @@ import { LearnedRules, joinGuidance } from "./core/learned-rules.js";
 import { checkToolchainEnv, codeVersion, readRestarts, uiCommandsActor, uiUserId, workerIndexBase } from "./config-values.js";
 import { type Loaded, loadConfig, localProject, resolvedConfig } from "./load-config.js";
 import { reviewReplay } from "./golden-replay.js";
-import { skillImproveWiring } from "./skill-evals.js";
+import { brokerGuard, skillImproveWiring } from "./skill-evals.js";
 import { holdSkillDraft, promoteSkillDraft, rejectSkillDraft, withHandOff } from "./core/skill-improve.js";
 import { Cleaner, type CleanupStore, agentTempRoots, cleanupConfig, hostProcesses } from "./cleanup/index.js";
 import { RUN_FOLDER } from "./setup-paths.js";
@@ -237,9 +234,7 @@ export async function build(
   // Local items take the local broker and sandbox, by their source type, never the selected forge's (design 05-sources).
   const unguardedLocal = await p.localRoute({ broker, sandbox }, brokerDeps);
   // G2 with run passports and pack tool approvals (#592): every broker the worker pool or an agent's granted tools reach checks both.
-  const packTools = packToolBrokers(loaded.pack_tools, tool_grants, { db: storeSql(store), store, secrets, autoApproveReadOnly: loaded.config.packs_auto_approve_read_only === true });
-  const passports = new RunPassports(identity.passports);
-  const guard = (b: ToolBroker): ToolBroker => new PassportToolBroker(packTools(b), { checker: identity.passports, passportOf: (run) => passports.passportOf(run) });
+  const { guard, passports } = brokerGuard(loaded, { store, secrets, identity: identity.passports, tool_grants });
   const local = { ...unguardedLocal, broker: guard(unguardedLocal.broker) };
   const guarded = guard(broker);
   const runner = await p.runner(sandbox, secrets, { broker: guarded, scanner });
@@ -338,7 +333,7 @@ export async function build(
     cpus: availableParallelism(),
     models: { table: loaded.model_by, names: loaded.models },
     reviewReplay: reviewReplay({ sandbox, runner, scanner, clock, models: { table: loaded.model_by } }), // the improve run's golden replay (design 07)
-    skillImprove: skillImproveWiring(store, loaded, { sandbox, runner, llm, scanner }), tacit: tacitHandOff, // skill drafts, undefined without capabilities.skill_folders, and their hand-off to the owner's ledger (design 07)
+    skillImprove: skillImproveWiring(store, loaded, { sandbox, runner, llm, scanner, tools: { broker: guarded, passports, project: project.key } }), tacit: tacitHandOff, // skill drafts, undefined without capabilities.skill_folders, and their hand-off to the owner's ledger (design 07)
     awake, capability, guidance: joinGuidance([new PackGuidance(loaded.packs), new LearnedRules(tacit)]), // packs' rules, then promoted rules (design 07)
     settings, learned,
     engines,

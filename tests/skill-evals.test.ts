@@ -20,7 +20,9 @@ import reviewRole from "../src/worker/roles/review.role.js";
 import { FakeRunner, FakeSandbox } from "./helpers/fakes/runner.js";
 import { cleanScanner, config, prompts } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
-import { type SkillEvalWiring, improveWiring, runFigures, runSkillEvalFor, scratchRunFor, skillImproveWiring } from "../src/skill-evals.js";
+import { type SkillEvalWiring, brokerGuard, improveWiring, runFigures, runSkillEvalFor, scratchRunFor, skillImproveWiring } from "../src/skill-evals.js";
+import { startIdentity } from "../src/identity/index.js";
+import { FakeNoteBroker } from "./helpers/fakes/broker.js";
 import { SKILL_IMPROVE_DEFAULTS } from "../src/core/skill-improve-config.js";
 import type { Loaded } from "../src/load-config.js";
 import { REGISTRY, withPlugin } from "../src/plugins.js";
@@ -393,5 +395,91 @@ describe("the eval wiring (runSkillEvalFor)", () => {
 
     expect(folder).toBe(join(tmp, "skills", "tests-first"));
     expect(await store.listSkillEvalReplays(run!.id)).toEqual([expect.objectContaining({ case_id: "c1", wall_ms: 250 })]);
+  });
+
+  describe("a skill whose tools: front matter names broker tools", () => {
+    /** The wiring with SKILL.md `text`, its plugins carrying `broker` behind the shared G2 guard over a started Identity. */
+    async function toolWiring(text: string, o: { sandbox_plugin?: string } = {}) {
+      const { store } = await newStore();
+      await store.createSkillEvalSuite({ id: "s1", skill_ref: "skills/tests-first", title: "Tests first", created_by: OWNER });
+      await store.addSkillEvalCase({ id: "c1", suite_id: "s1", input: "read it", expected: ["a"] });
+      const folder = join(tmp, "skills", "tests-first");
+      await mkdir(folder, { recursive: true });
+      await writeFile(join(folder, "SKILL.md"), text);
+      const identity = await startIdentity({ db: store.db, stateDir: tmp });
+      const broker = new FakeNoteBroker({ k: "the note" });
+      const loaded = { pack_tools: [], config: { packs_auto_approve_read_only: false } } as unknown as Loaded;
+      const { guard, passports } = brokerGuard(loaded, { store, secrets: { get: async () => null } as never, identity: identity.passports, tool_grants: undefined });
+      const guarded = guard(broker);
+      const begin = vi.spyOn(passports, "begin");
+      const results: unknown[] = [];
+      const sandbox = new FakeSandbox();
+      const runner = new FakeRunner({
+        implement: async (spec) => {
+          results.push(await guarded.call({ run_id: spec.run_id, work_item_id: spec.work_item_id, lease_token: spec.lease_token } as never, "test.read_note", { key: "k" }));
+          return { output: "done" };
+        },
+      });
+      const close = vi.fn(async () => identity.stop());
+      const plugins = vi.fn(async () => ({ sandbox, runner, llm: new FakeLLM(() => yesNo("yes")), scanner: cleanScanner, tools: { broker: guarded, passports, project: "local:p" }, close }));
+      const d: SkillEvalWiring = {
+        store, root: tmp, judgePrompt: async () => JUDGE_PROMPT, plugins, repo: REPO, deny_paths: [".env"], timeout_ms: 1000, newId: () => "run1", sandbox_plugin: o.sandbox_plugin ?? "local",
+      };
+      const run = async () => {
+        await runSkillEvalFor(d, { skill: "skills/tests-first", created_by: OWNER, signal: signal() });
+        return store.listSkillEvalReplays("run1");
+      };
+      return { run, runner, sandbox, plugins, passports, begin, results, broker, close, identity };
+    }
+
+    it("replays with exactly the named read-only tools as tool_grants, and the runner calls them through the guarded broker under the run's own passport", async () => {
+      const w = await toolWiring("---\nname: tests-first\ntools: test.read_note\n---\nRead the note.");
+      const replays = await w.run();
+
+      expect(replays).toEqual([expect.objectContaining({ case_id: "c1", verdict: "pass" })]);
+      expect(w.plugins).toHaveBeenCalledWith({ tools: true });
+      expect(w.runner.specs[0]!.tool_grants).toEqual(["test.read_note"]);
+      expect(w.results).toEqual([{ ok: true, content: { key: "k", note: "the note" } }]);
+      expect(w.broker.ran).toEqual([{ name: "test.read_note", args: { key: "k" } }]);
+      const runId = w.runner.specs[0]!.run_id;
+      expect(w.begin).toHaveBeenCalledWith(expect.objectContaining({ run: runId, kind: "skill_eval", grants: ["test.read_note"], project: "local:p" }));
+      const issued = await w.begin.mock.results[0]!.value;
+      expect(issued.passport.chain.at(-1)).toMatchObject({ tools: ["test.read_note"], audience: ["tool-broker"], runs: [runId], actions: ["use_tool"] });
+      expect(w.passports.passportOf(runId)).toBeNull(); // dropped after the run
+      expect(w.close).toHaveBeenCalledTimes(1);
+    });
+
+    it("the guard refuses a call from a replay run that holds no passport", async () => {
+      const w = await toolWiring("---\ntools: test.read_note\n---\nRead the note.");
+      vi.spyOn(w.passports, "begin").mockResolvedValue(undefined as never);
+      await w.run();
+      expect(w.results).toEqual([expect.objectContaining({ ok: false, error_code: "passport_missing" })]);
+      expect(w.broker.ran).toEqual([]);
+      await w.identity.stop();
+    });
+
+    it("a skill with no tools: front matter asks for no broker, replays with no tools and no grants, and mints no passport", async () => {
+      const w = await toolWiring("---\nname: tests-first\n---\nWrite the test first.");
+      await w.run();
+      expect(w.plugins).toHaveBeenCalledWith({ tools: false });
+      expect(w.runner.specs[0]).toMatchObject({ tools: [], tool_grants: [] });
+      expect(w.begin).not.toHaveBeenCalled();
+      await w.identity.stop();
+    });
+
+    it("a named tool the broker does not serve read-only errors the case tool_not_served, with no sandbox", async () => {
+      const w = await toolWiring("---\ntools: test.write_note\n---\nWrite the note.");
+      expect(await w.run()).toEqual([expect.objectContaining({ verdict: "errored", detail: { error: "tool_not_served" } })]);
+      expect(w.sandbox.created).toEqual([]);
+      expect(w.begin).not.toHaveBeenCalled();
+    });
+
+    it("under the noop sandbox a replay with tools is refused noop_tools_refused before any sandbox, and no broker is asked for", async () => {
+      const w = await toolWiring("---\ntools: test.read_note\n---\nRead the note.", { sandbox_plugin: "noop" });
+      expect(await w.run()).toEqual([expect.objectContaining({ verdict: "errored", detail: { error: "noop_tools_refused" } })]);
+      expect(w.plugins).toHaveBeenCalledWith({ tools: false });
+      expect(w.sandbox.created).toEqual([]);
+      await w.identity.stop();
+    });
   });
 });
