@@ -129,10 +129,11 @@ export async function writeClaimDecision(
 }
 
 /**
- * claimRun's kind rank (design §5 Coordination, 2026-11-18): a restart the owner asked for, then merge check, then resolve, to move changes to merge; then
- * review and triage; then the branch writers, implement last; improve after all.
+ * claimRun's kind rank (design §5 Coordination, 2026-11-25): a restart the owner asked for, then merge check, then resolve, to move changes to merge; then
+ * review, the short control runs that gate a person, a merge or the next phase (screenshot, judge), and triage; then the branch writers, implement last;
+ * improve and routine after all.
  */
-const CLAIM_ORDER: readonly RunKind[] = ["restart", "merge-check", "resolve", "review", "triage", "update", "implement"];
+const CLAIM_ORDER: readonly RunKind[] = ["restart", "merge-check", "resolve", "review", "screenshot", "judge", "triage", "update", "implement"];
 /** claimRun's order over `worker_runs r` (design §5 Coordination, 2026-11-22): Run next first, the latest first; then CLAIM_ORDER; then created_at, then insertion order. */
 export function claimOrderSql(seq: string): { sql: string; params: string[] } {
   const rank = CLAIM_ORDER.map((_, i) => `WHEN ? THEN ${i}`).join(" ");

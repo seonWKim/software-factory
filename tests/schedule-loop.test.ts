@@ -117,6 +117,17 @@ describe("runDueSchedules", () => {
     await store.close();
   });
 
+  it("a merge-trigger Check a page row (no cadence, no next_due_at) is never listed due, even far in the future", async () => {
+    const { clock, driver, store } = await setup();
+    await addSchedule(store, DAILY, clock.now());
+    await driver.run(`INSERT INTO controller_schedules (id, title, cadence_kind, cadence_spec, trigger_kind, zone, created_by, created_at, next_due_at, action_kind, instruction)
+      VALUES ('rt_merge', 'Check on merge', NULL, NULL, 'merge', 'Asia/Seoul', ?, '2026-11-20T00:00:00.000Z', NULL, 'check_page', 'Look for broken links')`, [ME]);
+    clock.advance(12 * HOUR);
+    expect((await store.listDueSchedules(clock.now().toISOString() as Timestamp)).map((s) => s.id)).toEqual(["sch_daily"]);
+    expect((await store.listDueSchedules("2099-01-01T00:00:00.000Z" as Timestamp)).map((s) => s.id)).toEqual(["sch_daily"]);
+    await store.close();
+  });
+
   it("listSchedules leaves out Check a page rows, so the Schedules page, API and CLI do not show them yet", async () => {
     const { clock, driver, store } = await setup();
     await addSchedule(store, DAILY, clock.now());
