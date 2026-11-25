@@ -79,8 +79,10 @@ export function WorkState({ id, title, open: taskOpen }: { id: string; title: st
       </Button>
       {open && (
         <Dialog title={it.title ?? title} confirmLabel={t("tasks.stateClose")} onConfirm={() => setOpen(false)} onClose={() => setOpen(false)}>
-          <Link href={itemPath(id)} className={LINK_CLASS}>{t("tasks.stateFull")}</Link>
-          <ItemDecision id={id} commands={it.commands ?? []} replies={[]} />
+          <div className="flex flex-col gap-6">
+            <p><Link href={itemPath(id)} className={LINK_CLASS}>{t("tasks.stateFull")}</Link></p>
+            <ItemDecision id={id} commands={it.commands ?? []} replies={[]} />
+          </div>
         </Dialog>
       )}
     </>
