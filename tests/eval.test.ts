@@ -245,32 +245,42 @@ describe("factory eval results --by version,model", () => {
 });
 
 describe("factory eval compare", () => {
-  async function two(a: number | null, b: number | null) {
+  /** Runs ra and rb on suite s1, each case's replays given as its verdicts in `a` and `b`. */
+  async function two(a: Record<string, string[]>, b: Record<string, string[]>) {
     const { store, clock } = await newStore();
     await store.createSkillEvalSuite({ id: "s1", skill_ref: SKILL, title: "t", created_by: OWNER });
-    await storedRun(store, "ra", { version: "v1", model: "standard", pass_rate: a, replays: a === null ? 0 : 4 });
-    clock.advance(1000);
-    await storedRun(store, "rb", { version: "v2", model: "standard", pass_rate: b, replays: b === null ? 0 : 4 });
+    for (const [id, cases] of [["ra", a], ["rb", b]] as const) {
+      const verdicts = Object.values(cases).flat();
+      await storedRun(store, id, { version: id === "ra" ? "v1" : "v2", model: "standard", pass_rate: verdicts.length === 0 ? null : verdicts.filter((v) => v === "pass").length / verdicts.length, replays: verdicts.length });
+      for (const [case_id, vs] of Object.entries(cases)) for (const [i, verdict] of vs.entries()) await store.recordSkillEvalReplay({ run_id: id, case_id, replay: i + 1, verdict, detail: {} });
+      clock.advance(1000);
+    }
     return store;
   }
+  const six = (verdict: string) => Object.fromEntries(["c1", "c2", "c3", "c4", "c5", "c6"].map((c) => [c, [verdict, verdict]]));
 
-  it("--json prints both pass rates, the gap, the noise band and whether it is within noise", async () => {
-    const store = await two(0.5, 0.75);
+  it("--json pairs the runs' stored replays: wins, losses, ties, p, the interval and the verdict, and no noise band", async () => {
+    const store = await two({ ...six("fail"), "only-a": ["pass"] }, { ...six("pass"), "only-b": ["fail"] });
     const r = await evalCommand(store, ["compare", "ra", "rb", "--json"]);
     expect(r.code).toBe(0);
     const c = JSON.parse(r.out.join("\n")) as Record<string, unknown>;
-    expect(c).toEqual(JSON.parse(JSON.stringify(compareSkillEvalRuns((await store.getSkillEvalRun("ra"))!, (await store.getSkillEvalRun("rb"))!))));
-    expect(c).toMatchObject({ a: { run_id: "ra", pass_rate: 0.5 }, b: { run_id: "rb", pass_rate: 0.75 }, within_noise: true });
-    expect(c.gap).toBeCloseTo(0.25, 12);
+    const replays = { a: await store.listSkillEvalReplays("ra"), b: await store.listSkillEvalReplays("rb") };
+    expect(c).toEqual(JSON.parse(JSON.stringify(compareSkillEvalRuns((await store.getSkillEvalRun("ra"))!, (await store.getSkillEvalRun("rb"))!, replays))));
+    expect(c).toMatchObject({ a: { run_id: "ra" }, b: { run_id: "rb" }, paired: 6, wins: 6, losses: 0, ties: 0, mean_difference: 1, interval: { low: 1, high: 1 }, verdict: "better" });
+    expect(c.p_value).toBeCloseTo(2 / 64, 12);
+    for (const k of ["gap", "noise_band", "within_noise"]) expect(c).not.toHaveProperty(k);
   });
 
-  it("prints the gap and the band as lines; a null pass rate gives no comparison", async () => {
-    const r = await evalCommand(await two(0.5, 0.75), ["compare", "ra", "rb"]);
-    expect(r.out.join("\n")).toMatch(/gap \+0\.25, noise band 0\.\d\d: within noise/);
-    const none = await evalCommand(await two(null, 0.75), ["compare", "ra", "rb"]);
+  it("prints wins, losses, ties, p, the interval and the verdict as lines; no case in both runs gives no comparison", async () => {
+    const r = await evalCommand(await two({ c1: ["pass", "fail"], c2: ["pass"], c3: ["fail"] }, { c1: ["pass", "pass"], c2: ["fail"], c3: ["fail"] }), ["compare", "ra", "rb"]);
+    const out = r.out.join("\n");
+    expect(out).toContain("paired cases 3: wins 1, losses 1, ties 1");
+    expect(out).toMatch(/sign test p 1\.000, mean difference -0\.17, 95% interval -\d\.\d\d to \+\d\.\d\d: within noise/);
+    expect(out).not.toContain("noise band");
+    const none = await evalCommand(await two({ c1: ["pass"] }, { c2: ["pass"] }), ["compare", "ra", "rb"]);
     expect(none.code).toBe(0);
     expect(none.out.join("\n")).toContain("no comparison");
-    expect(JSON.parse((await evalCommand(await two(null, 0.75), ["compare", "ra", "rb", "--json"])).out.join("\n"))).toMatchObject({ gap: null, noise_band: null, within_noise: null });
+    expect(JSON.parse((await evalCommand(await two({}, { c1: ["pass"] }), ["compare", "ra", "rb", "--json"])).out.join("\n"))).toMatchObject({ paired: 0, mean_difference: null, interval: null, verdict: null });
   });
 
   it("prints not comparable, with the reason and no gap, when the runs' judge versions differ", async () => {
@@ -281,14 +291,14 @@ describe("factory eval compare", () => {
     const r = await evalCommand(store, ["compare", "ra", "rb"]);
     expect(r.code).toBe(0);
     expect(r.out.join("\n")).toContain("not comparable: the judge versions differ");
-    expect(r.out.join("\n")).not.toContain("gap");
+    expect(r.out.join("\n")).not.toContain("paired cases");
     expect(JSON.parse((await evalCommand(store, ["compare", "ra", "rb", "--json"])).out.join("\n"))).toMatchObject({
-      comparable: false, reason: "the judge versions differ", gap: null, noise_band: null, within_noise: null,
+      comparable: false, reason: "the judge versions differ", paired: null, wins: null, p_value: null, interval: null, verdict: null,
     });
   });
 
   it("exits 1 naming an unknown run, and on a missing run id; it writes nothing", async () => {
-    const store = await two(0.5, 0.75);
+    const store = await two({ c1: ["pass"] }, { c1: ["fail"] });
     const before = await store.db.all("SELECT * FROM controller_skill_eval_runs");
     const r = await evalCommand(store, ["compare", "ra", "nope"]);
     expect(r.code).toBe(1);

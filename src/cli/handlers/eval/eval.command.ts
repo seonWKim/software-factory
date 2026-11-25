@@ -24,10 +24,12 @@ const USAGE = `  eval run <skill> [--model <class>] [--judge-model <class>] [--r
                GET /api/v1/evals/<skill>/runs); --by version,model: one row per skill version and model
                class from its newest run, runs with no figures left out (GET /api/v1/evals/<skill>/grid)
   eval compare <run-a> <run-b> [--json]
-               both runs' pass rates, the gap (b − a), the noise band 2 × sqrt(sd_a² + sd_b²) with
-               sd = sqrt(p × (1 − p) ÷ replays), and whether the gap is within it; no comparison without two
-               pass rates, or when the runs' suite or judge versions differ or one has none recorded
-               (not comparable, with the reason) (--json: the same fields as GET /api/v1/evals/<skill>/compare?a=<run-a>&b=<run-b>)
+               pairs the runs' cases (each case's passes ÷ its replays; cases in only one run left out):
+               wins (b higher), losses and ties, the exact two-sided sign-test p over the non-tied cases,
+               the mean difference (b − a) with its paired 95% t interval, and the verdict: better or worse
+               when p < 0.05 and the interval excludes zero that way, else within noise; not comparable,
+               with the reason, when the runs' suite or judge versions differ or one has none recorded
+               (--json: the same fields as GET /api/v1/evals/<skill>/compare?a=<run-a>&b=<run-b>)
   eval suite list|add|rename|delete
                suite list prints each suite's skill and title; suite add <skill> [--title <title>] makes the
                skill's one suite (title defaults to the skill); suite rename <skill> <title>; suite delete
@@ -281,12 +283,16 @@ export default defineCommand({
   },
 });
 
-/** `eval compare <run-a> <run-b>`: both runs read by id; exit 1 when either is unknown. Reads only. */
+/** `eval compare <run-a> <run-b>`: both runs and their replays read by id; exit 1 when either is unknown. Reads only. */
 async function compare(ctx: Pick<CommandContext, "withStore">, reads: SkillEvalReads, a: string, b: string, json: boolean): Promise<number> {
-  const [ra, rb] = await ctx.withStore((store) => Promise.all([store.getSkillEvalRun(a), store.getSkillEvalRun(b)]));
-  const missing = [ra ? null : a, rb ? null : b].filter((x) => x !== null);
-  if (!ra || !rb) return (console.error(`no eval run ${missing.join(", ")}: nothing compared`), 1);
-  const c = reads.compare(ra, rb);
+  const read = await ctx.withStore(async (store) => {
+    const [ra, rb] = await Promise.all([store.getSkillEvalRun(a), store.getSkillEvalRun(b)]);
+    if (!ra || !rb) return { missing: [ra ? null : a, rb ? null : b].filter((x) => x !== null) };
+    const [va, vb] = await Promise.all([store.listSkillEvalReplays(a), store.listSkillEvalReplays(b)]);
+    return { c: reads.compare(ra, rb, { a: va, b: vb }) };
+  });
+  if (!("c" in read)) return (console.error(`no eval run ${read.missing.join(", ")}: nothing compared`), 1);
+  const { c } = read;
   if (json) {
     console.log(JSON.stringify(c, null, 2));
     return 0;
@@ -294,7 +300,12 @@ async function compare(ctx: Pick<CommandContext, "withStore">, reads: SkillEvalR
   console.log(`a  ${summaryLine(c.a)}`);
   console.log(`b  ${summaryLine(c.b)}`);
   if (!c.comparable) console.log(`not comparable: ${c.reason}`);
-  else if (c.gap === null || c.noise_band === null) console.log("no comparison: both runs need a pass rate");
-  else console.log(`gap ${c.gap >= 0 ? "+" : ""}${c.gap.toFixed(2)}, noise band ${c.noise_band.toFixed(2)}: ${c.within_noise ? "within noise" : "beyond noise"}`);
+  else if (c.verdict === null || c.mean_difference === null) console.log("no comparison: no case has replays in both runs");
+  else {
+    const signed = (x: number) => `${x >= 0 ? "+" : ""}${x.toFixed(2)}`;
+    console.log(`paired cases ${c.paired}: wins ${c.wins}, losses ${c.losses}, ties ${c.ties}`);
+    const interval = c.interval === null ? "no 95% interval (fewer than two paired cases)" : `95% interval ${signed(c.interval.low)} to ${signed(c.interval.high)}`;
+    console.log(`sign test p ${c.p_value!.toFixed(3)}, mean difference ${signed(c.mean_difference)}, ${interval}: ${c.verdict}`);
+  }
   return 0;
 }
