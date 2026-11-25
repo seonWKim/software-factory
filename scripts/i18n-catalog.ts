@@ -17,15 +17,17 @@ export interface Area {
   name: string;
 }
 
-/** The area files in web/src/i18n/en/, sorted by file name, each with its exported object's name. */
+/** The area files in web/src/i18n/en/, sorted by file name without `.ts`, each with its exported object's name. */
 export function readAreas(dir: string = AREA_DIR): Area[] {
   return readdirSync(dir)
     .filter((n) => n.endsWith(".ts"))
+    .map((n) => n.slice(0, -".ts".length))
     .sort()
-    .map((n) => {
+    .map((base) => {
+      const n = `${base}.ts`;
       const name = EXPORT.exec(readFileSync(join(dir, n), "utf8"))?.[1];
       if (name === undefined) throw new Error(`web/src/i18n/en/${n} exports no "export const <name> = {"`);
-      return { file: n.slice(0, -".ts".length), name };
+      return { file: base, name };
     });
 }
 

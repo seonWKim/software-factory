@@ -1,5 +1,5 @@
 // The dashboard's sentence for each reason code of an item's wait (ui/why.ts ReasonCode), for `factory status`. The web
-// app words a code from its own catalog (web/src/i18n/en/work.ts, `why.reason.<code>`); a feature may not import that
+// app words a code from its own catalog (web/src/i18n/en/work-why.ts, `why.reason.<code>`); a feature may not import that
 // file, so this table is the CLI's copy of it. `{name}` is filled from the row's values (`why.params`).
 
 export const REASON_WORDS: Record<string, string> = {
