@@ -109,7 +109,7 @@ describe("ScheduleGrantBroker.handOut", () => {
     expect(run.tools.map((t) => t.name)).toEqual(["Read", "Glob", "Grep"]);
     expect(await broker.call(ctxCall, SQLITE_TOOL, { sql: "select 1" })).toEqual({ ok: true, content: "1|ok\n" });
     expect(ran).toEqual([{ file: "sqlite3", args: ["-readonly", "/data/app.db", "select 1"] }]);
-    for (const sql of [".shell rm -rf /", "select writefile('/x', 'y')", "attach '/other.db' as o", "select load_extension('x')", "-version", "  -A x", "-unsafe-testing"]) {
+    for (const sql of [".shell rm -rf /", "select writefile('/x', 'y')", "attach '/other.db' as o", "select load_extension('x')", "vacuum into '/any/dir/out.db'", "VACUUM main INTO '/x.db'", "-version", "  -A x", "-unsafe-testing"]) {
       expect(await broker.call(ctxCall, SQLITE_TOOL, { sql })).toMatchObject({ ok: false, error_code: "refused" });
     }
     expect(await new ScheduleGrantBroker("s1", [], d).call(ctxCall, SQLITE_TOOL, { sql: "select 1" })).toMatchObject({ ok: false, error_code: "not_granted" });

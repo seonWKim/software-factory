@@ -150,8 +150,8 @@ export interface GrantBrokerDeps {
   exec(file: string, args: readonly string[], signal?: AbortSignal): Promise<string>;
 }
 
-/** SQL the read-only shell refuses: CLI dot commands, and the CLI's functions that read or write files or load code. */
-const UNSAFE_SQL = /(^|\n)\s*\.|\b(load_extension|writefile|readfile|edit|fts3_tokenizer)\s*\(|\battach\b/i;
+/** SQL the read-only shell refuses: CLI dot commands, ATTACH, VACUUM (VACUUM INTO writes a file even under -readonly), and the CLI's functions that read or write files or load code. */
+const UNSAFE_SQL = /(^|\n)\s*\.|\b(load_extension|writefile|readfile|edit|fts3_tokenizer)\s*\(|\b(attach|vacuum)\b/i;
 
 const SQLITE_DESCRIPTOR: ToolDescriptor = {
   name: SQLITE_TOOL,
@@ -189,7 +189,7 @@ export class ScheduleGrantBroker implements ToolBroker {
     const sql = (args as { sql?: unknown } | null)?.sql;
     if (typeof sql !== "string" || sql.trim() === "") return { ok: false, error_code: "bad_args", message: "sql must be a query" };
     // sqlite3 reads any argument that starts with `-` as an option, even after the database: refused, not run.
-    if (UNSAFE_SQL.test(sql) || sql.trim().startsWith("-")) return { ok: false, error_code: "refused", message: `${SCHEDULE_SHELL_COMMAND} runs plain SQL only: no dot commands, options, ATTACH or file functions` };
+    if (UNSAFE_SQL.test(sql) || sql.trim().startsWith("-")) return { ok: false, error_code: "refused", message: `${SCHEDULE_SHELL_COMMAND} runs plain SQL only: no dot commands, options, ATTACH, VACUUM or file functions` };
     try {
       return { ok: true, content: await this.deps.exec("sqlite3", ["-readonly", shell.db, sql]) };
     } catch (e) {
