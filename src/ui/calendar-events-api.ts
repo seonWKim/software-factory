@@ -81,6 +81,6 @@ export async function readCalendarEvents(d: UiDeps, from: string | null, to: str
   })));
   const days = calendarDays(events, from!, to!).map((day) => ({ ...day, synced: synced(sources, stored.ranges, day.date) }));
   const pending = stored.pending.some((p) => p.from === from && p.to === to);
-  const copy = (await d.settings?.calendar?.copyTarget()) ?? null;
+  const copy = (await d.settings?.calendar?.copyTarget?.()) ?? null;
   return { status: 200, value: { from, to, time_zone: processTimeZone(), days, calendar: sources, sync_pending: pending, copy } };
 }
