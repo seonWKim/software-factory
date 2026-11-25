@@ -62,6 +62,8 @@ async function setup() {
   await writeFile(join(folder, "SKILL.md"), V2);
   const h2 = await skillVersion(folder);
   await store.recordSkillVersion({ ref_id: "sr_review", folder_hash: h2, text: V2, source: "claude" });
+  // Both gates passed (design 07-self-improvement): v2 is the gate's current version.
+  await store.db.run("UPDATE controller_skill_version_gates SET state = 'passed' WHERE ref_id = 'sr_review'");
   const runner = new FakeRunner({ implement: (spec) => ({ output: `${spec.system_prompt}\n${spec.prompt}` }) });
   let n = 0;
   const d: SkillEvalWiring = {
@@ -116,6 +118,24 @@ describe("GET /api/v1/evals/<skill>/versions", () => {
     const { versions } = res.value as { versions: Record<string, unknown>[] };
     expect(versions.find((v) => v.version === 2)).toMatchObject({ folder_hash: h2, current: true, run_id: r2.id, pass_rate: 1 });
     expect(versions.find((v) => v.version === 1)).toMatchObject({ folder_hash: h1, current: false, run_id: r1.id, pass_rate: 0.5 });
+  });
+
+  it("marks the version the gate makes current: a pending, held or rejected newest version is not; an approved one is", async () => {
+    const { store, skill, run, h1 } = await setup();
+    await run(h1);
+    await run();
+    const marks = async () => ((await get(store, versionsPath(skill))).value as { versions: { version: number; gate: string | null; current: boolean }[] }).versions.map((v) => [v.version, v.gate, v.current]);
+    for (const state of ["pending", "held", "rejected"]) {
+      await store.db.run("UPDATE controller_skill_version_gates SET state = ? WHERE ref_id = 'sr_review' AND version = 2", [state]);
+      expect(await marks(), state).toEqual([[2, state, false], [1, "passed", true]]);
+    }
+    await store.db.run("UPDATE controller_skill_version_gates SET state = 'held' WHERE ref_id = 'sr_review' AND version = 2");
+    expect(await store.settleSkillVersionGate("sr_review", 2, "passed", OWNER)).toBe(true);
+    expect(await marks()).toEqual([[2, "passed", true], [1, "passed", false]]);
+    // A version recorded before the gate has no gate row and is current when nothing newer passed.
+    await store.db.run("DELETE FROM controller_skill_version_gates WHERE ref_id = 'sr_review' AND version = 1");
+    await store.db.run("UPDATE controller_skill_version_gates SET state = 'rejected' WHERE ref_id = 'sr_review' AND version = 2");
+    expect(await marks()).toEqual([[2, "rejected", false], [1, null, true]]);
   });
 
   it("gives each version's latest pass rate and its change since the previous version, newest version first", async () => {
@@ -199,6 +219,15 @@ describe("the pure reads", () => {
     const run = (id: string, skill_version: string | null, pass_rate: number | null) => ({ id, started_at: "2026-11-25T00:00:00.000Z" as Timestamp, skill_version, pass_rate });
     const rows = skillVersionRows([v(1, "h1"), v(2, "h2")], [run("r2", "h2", 0.5)]);
     expect(rows.map((r) => [r.version, r.current, r.pass_rate, r.change])).toEqual([[2, true, 0.5, null], [1, false, null, null]]);
+  });
+
+  it("skillVersionRows marks the newest version whose gate passed or that has no gate, and no version when none is", () => {
+    const v = (version: number, gate: "pending" | "held" | "passed" | "rejected" | null) => ({ version, folder_hash: `h${version}`, created_at: "2026-11-25T00:00:00.000Z", gate });
+    const current = (vs: ReturnType<typeof v>[]) => skillVersionRows(vs, []).filter((r) => r.current).map((r) => r.version);
+    expect(current([v(1, null), v(2, "passed"), v(3, "held")])).toEqual([2]);
+    expect(current([v(1, "passed"), v(2, "rejected"), v(3, "pending")])).toEqual([1]);
+    expect(current([v(1, null), v(2, "held")])).toEqual([1]);
+    expect(current([v(1, "held"), v(2, "pending")])).toEqual([]);
   });
 });
 

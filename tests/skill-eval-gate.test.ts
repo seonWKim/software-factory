@@ -16,6 +16,8 @@ import { storeSql } from "../src/impl/store/sql/store-sql.js";
 import { importItem, skillRefId } from "../src/import/import-plugins.js";
 import type { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { gateWiring } from "../src/skill-evals.js";
+import { settleHeldSkillVersion } from "../src/core/commands.js";
+import { alarmCommand } from "../src/ui/alarms.js";
 import { cleanScanner } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
@@ -121,6 +123,31 @@ describe("skill version gate: the current version", () => {
     expect((await store.currentSkillVersion(REF))?.version).toBe(2);
     expect((await store.currentSkillVersion(REF, 2))?.version).toBe(1);
     expect(await store.currentSkillVersion("sr_none")).toBeNull();
+  });
+});
+
+describe("skill version gate: the owner's settle of a held version", () => {
+  it("a bare /approve passes the newest held version of any skill, so it is current; /reject keeps the earlier one current", async () => {
+    const { store, clock } = await setup();
+    await oldVersion(store, 1, "h1");
+    for (const hash of ["h2", "h3"]) {
+      clock.advance(1000);
+      const v = (await store.recordSkillVersion({ ref_id: REF, folder_hash: hash, text: hash, source: "claude" }))!;
+      await store.db.run("UPDATE controller_skill_version_gates SET state = 'held' WHERE ref_id = ? AND version = ?", [REF, v.version]);
+    }
+    expect(await settleHeldSkillVersion(store, "reject", OWNER)).toMatchObject({ gate: { ref_id: REF, version: 3 }, settled: true });
+    expect((await store.currentSkillVersion(REF))?.version).toBe(1);
+    expect(await settleHeldSkillVersion(store, "approve", OWNER)).toMatchObject({ gate: { ref_id: REF, version: 2 }, settled: true });
+    expect((await store.currentSkillVersion(REF))?.version).toBe(2);
+    expect(await store.getSkillVersionGate(REF, 3)).toMatchObject({ state: "rejected" });
+    // Nothing held: null, and the caller keeps its item-ID refusal.
+    expect(await settleHeldSkillVersion(store, "approve", OWNER)).toBeNull();
+  });
+
+  it("the held version's owner question names the bare approve and reject", () => {
+    const step = alarmCommand({ id: "a1", pattern: "skill_version_gate", pattern_key: `skill_version_gate:${REF}:2`, error_code: "pass_rate_drop", count: 2, detail: "", created_at: "t" as Timestamp });
+    expect(step).toContain("factory approve");
+    expect(step).toContain("factory reject");
   });
 });
 

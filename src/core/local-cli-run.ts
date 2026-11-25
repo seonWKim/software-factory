@@ -11,7 +11,7 @@ import { ProjectRefused, projectRefusal, taskLine } from "./tasks.js";
 import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask, localItemOf, withDependsOn } from "./task-build.js";
 import { type DraftTerminal, runScheduleWords } from "./schedule-draft.js";
 import { ANONYMOUS_USER, CLI_KEY_PREFIX, type CliIdentity, DEFAULT_CLI_NAME } from "./local-cli-identity.js";
-import type { CliAction as ParsedAction } from "./local-cli-parse.js";
+import { type CliAction as ParsedAction, parseLocalCliArgs } from "./local-cli-parse.js";
 /** Every action runLocalCli runs: the parser's, and a bare `approve` or `reject`, which settles the newest held skill version (parseLocalCliArgs in local-cli.ts). */
 export type CliAction = ParsedAction | { action: "settle"; command: "approve" | "reject" };
 /** `task create`'s last line: what happens to the new item next. */ export const CREATE_NEXT_STEP = "triage queued; you'll be asked to approve the spec";
@@ -229,9 +229,9 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       return { code: 0, lines: [`stored \`${cli} confirm ${a.proposal}\` as ${user} (command ${command.seq}); the controller applies ${n} on its next poll`] };
     }
     case "settle": {
-      // No held version: the parser's refusal of a bare item command, as before (design 07-self-improvement).
+      // No held version: the parser's refusal of a bare item command, word for word, as before (design 07-self-improvement).
       const r = await settleHeldSkillVersion(d.store, a.command, user);
-      if (r === null) return fail(`${a.command} needs a work item ID`);
+      if (r === null) { const p = parseLocalCliArgs(a.command, []); return { code: 1, lines: "error" in p ? p.error.split("\n") : [] }; }
       const v = `version ${r.gate.version} of skill ${r.gate.ref_id}`;
       if (!r.settled) return { code: 0, lines: [`${v} was settled already`] };
       await claim();
