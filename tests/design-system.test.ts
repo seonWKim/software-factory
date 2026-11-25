@@ -96,6 +96,11 @@ describe("design tokens", () => {
     expect(page.test('className="max-w-md max-w-xl max-w-[75ch]"')).toBe(false);
   });
 
+  it("About prose is capped at 75ch in TEXT", () => {
+    const about = readFileSync(join(WEB_SRC, "views", "item-about.tsx"), "utf8");
+    expect(about).toMatch(/const TEXT = "[^"]*\bmax-w-\[75ch\]/);
+  });
+
   it("every h2 in the views is in Card's title type and every h3 in the one sub-group type", () => {
     const card = readFileSync(join(WEB_SRC, "components", "ui", "card.tsx"), "utf8");
     expect(card).toMatch(/SUB_TITLE = "text-xs font-medium text-text-2"/);
