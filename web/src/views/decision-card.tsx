@@ -175,7 +175,7 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
   };
 
   return (
-    <section aria-label={t("decide.title")} data-decide data-decision-card className={cn("mt-6 space-y-3 rounded-card border border-pill-warn-fg bg-pill-warn-bg text-text-1", CARD_PAD)}>
+    <section aria-label={t("decide.title")} data-decide data-decision-card className={cn("space-y-3 rounded-card border border-pill-warn-fg bg-pill-warn-bg text-text-1", CARD_PAD)}>
       <div data-decision-question>
         <h2 className={cn("mb-1", CARD_TITLE)}>{t("decide.title")}</h2>
         {question}
