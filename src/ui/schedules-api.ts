@@ -13,7 +13,7 @@
 // model call; the model is the Data page's Ask model (settings.ask.llm, compose.ts buildUiParts), and none is a 503, a refusal of the core (src/core/schedule-draft.ts) a 409 with its reason; else 200 with
 // the proposal (a draft's ID and add fields, or improve's old and new text). Neither stores anything.
 
-import { type Schedule, type ScheduleFields, type ScheduleWrite, findSchedule, type writeSchedule } from "../core/schedule.js";
+import type { Schedule, ScheduleFields, ScheduleWrite, writeSchedule } from "../core/schedule.js";
 import type { draftSchedule, improveSchedule } from "../core/schedule-draft.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { UserId } from "../core/types.js";
@@ -33,10 +33,13 @@ export async function readSchedules(d: Pick<UiDeps, "store">): Promise<ApiResult
   return { status: 200, value: { schedules: (await d.store.listSchedules()).map(withSkip) } };
 }
 
+/** Whether a schedule, a Check a page one too, has the ID (a store read, so this file imports no core code). */
+const isStored = async (d: Pick<UiDeps, "store">, id: string): Promise<boolean> => (await d.store.listSchedules({ check_pages: true })).some((s) => s.id === id);
+
 /** The 400 or 404 of a read of one schedule's rows, or null for a known ID. */
 async function oneSchedule(d: Pick<UiDeps, "store">, id: string | null): Promise<ApiResult | null> {
   if (id === null || id.trim() === "") return apiError(400, "Give the schedule's ID as ?schedule=<id>.");
-  return (await findSchedule(d.store, id)) === null ? apiError(404, `No schedule ${id}.`) : null;
+  return !(await isStored(d, id)) ? apiError(404, `No schedule ${id}.`) : null;
 }
 
 /** GET /api/v1/schedules/runs?schedule=<id>: its run rows, oldest first. */
@@ -102,7 +105,7 @@ export async function postSchedule(d: Pick<UiDeps, "store" | "clock">, w: Schedu
   if (typeof b === "string") return apiError(400, b);
   const own = await c.owner("manages schedules");
   if ("error" in own) return apiError(403, own.error);
-  if (w === "delete" && (await findSchedule(d.store, b.id)) === null) return apiError(404, `no schedule ${b.id}`);
+  if (w === "delete" && !(await isStored(d, b.id))) return apiError(404, `no schedule ${b.id}`);
   const r = await c.write(d.store, w, b.id, b.fields, own.user, d.clock.now());
   if (!r.ok) return apiError(409, r.problem);
   c.log.info(`schedule ${w}`, { id: b.id, actor: own.user });

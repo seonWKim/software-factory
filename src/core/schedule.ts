@@ -333,9 +333,8 @@ async function fileCheckpoint(store: CheckpointStore, project: string, s: Schedu
 // `next_due_at` it read: a claim or another write since then makes it change nothing. Pause clears `next_due_at`, so
 // a paused schedule is never listed due and its slots never fire; resume sets the first slot after now; run sets now,
 // so the next tick claims it once. Delete removes the schedule, its suggestions and its held checkpoints; its past
-// runs stay. A Check a page schedule (action `check-page`, a routine's row) takes its page (`url`), its instruction
-// and USD caps, and the `on-merge` cadence (no spec, zone UTC); its pause and resume set `paused`, as a routine's do,
-// and its cadence or trigger does not change through edit.
+// runs stay. A Check a page schedule (`check-page`, a routine's row) takes a `url`, instruction, USD caps and the
+// `on-merge` cadence; its pause and resume set `paused`, and edit changes no cadence or trigger of it.
 
 /** The store methods managing schedules reads and writes through. */
 export type ScheduleAdminStore = Pick<ScheduleStore, "listSchedules" | "listScheduleRuns" | "addSchedule" | "updateSchedule" | "deleteSchedule" | "scheduleNow">;
@@ -352,13 +351,8 @@ export interface ScheduleFields {
   action?: string;
   /** build: the item's body; agent and feedback: the prompt; check-page: its instruction. */
   body?: string;
-  /** check-page: the instruction the run is given (`--instruction`, or `--body`, not both). */
-  instruction?: string;
-  /** check-page: the one http(s) page its run may read. */
-  url?: string;
-  /** check-page: the most one run may cost in USD, or the most its runs may cost in a UTC day; null clears it. */
-  run_cap_usd?: number | null;
-  daily_cap_usd?: number | null;
+  /** check-page: its instruction (`--instruction`, or `--body`, not both), its http(s) page, and the USD caps of one run and of a UTC day's runs (null clears one). */
+  instruction?: string; url?: string; run_cap_usd?: number | null; daily_cap_usd?: number | null;
   /** The missed-time rule (`--missed catch-up|skip`; HTTP `skip_when_busy` true is skip). */
   missed?: MissedRule;
   /** Add only: first due now (`--run-now on`), not at the cadence's next slot. */
@@ -369,21 +363,14 @@ export interface ScheduleFields {
 /** The writes, each the owner's only. */
 export type ScheduleWrite = "add" | "edit" | "pause" | "resume" | "run" | "delete";
 
-/** The refusal of a Check a page field on another schedule. */
 const ONLY_PAGE = "only a check-page schedule takes --url, --instruction, --run-cap and --daily-cap";
-/** The refusal of the on-merge cadence on another action. */
 const ON_MERGE_ONLY = `${ON_MERGE} goes only with --action check-page`;
 const PAGE_FIELDS = ["instruction", "url", "run_cap_usd", "daily_cap_usd"] as const;
-
 /** Why a USD cap cannot be stored, or null: it is a positive amount, or none. */
 const capProblem = (f: Pick<ScheduleFields, "run_cap_usd" | "daily_cap_usd">): string | null =>
   [f.run_cap_usd, f.daily_cap_usd].some((v) => v != null && !(Number.isFinite(v) && v > 0)) ? "a cap is a positive dollar amount, or none" : null;
 
-/**
- * The action a kind word and its text make (the CLI and the HTTP routes): build `body`, agent and feedback `prompt`,
- * which they need; check-page (`page`) an http(s) `url` and an `instruction` (or `body`, not both). The Check a page
- * fields on any other action are refused.
- */
+/** The action a word and its text make (CLI, HTTP): build `body`; agent, feedback `prompt` (needed); check-page an http(s) `url` and an `instruction` (or `body`), whose fields any other refuses. */
 export function scheduleActionOf(word: string, body: string | undefined, page: Pick<ScheduleFields, (typeof PAGE_FIELDS)[number]> = {}): ScheduleActionSpec | { problem: string } {
   if (word === "improve") return { problem: `the improve action is added by setup only (improver.daily_trigger off), not by schedule add or edit: one of ${WRITE_WORDS}` };
   const kind = Object.hasOwn(SCHEDULE_WRITE_WORDS, word) ? SCHEDULE_WRITE_WORDS[word]! : undefined;
@@ -414,10 +401,7 @@ function firstSlot(c: Cadence | null, zone: string, now: Date, created_at: Times
   return next === null ? null : (next.toISOString() as Timestamp);
 }
 
-/**
- * Stores a new schedule from its fields; refused when one is missing or bad, or the ID is already stored. An
- * `on-merge` cadence (check-page only) takes no spec, defaults its zone to UTC and has no next due time.
- */
+/** Stores a new schedule from its fields; refused when one is missing or bad, or its ID stored. `on-merge` (check-page only): no spec, zone UTC, no next due time. */
 export async function createSchedule(store: ScheduleAdminStore, id: string, f: ScheduleFields, created_by: UserId, now: Date): Promise<ScheduleResult> {
   const merge = f.cadence?.trim() === ON_MERGE;
   const needs = merge ? (["title", "action"] as const) : (["title", "cadence", "spec", "zone", "action"] as const);
@@ -434,10 +418,7 @@ export async function createSchedule(store: ScheduleAdminStore, id: string, f: S
   if (problem) return refused(problem);
   const exists = `schedule ${id} is already stored`;
   if (await findSchedule(store, id)) return refused(exists);
-  const input = {
-    id, title: f.title!.trim(), zone, created_by, action, missed_rule: f.missed ?? "catch_up", token_cap: f.token_cap ?? null,
-    run_cap_usd: f.run_cap_usd ?? null, daily_cap_usd: f.daily_cap_usd ?? null,
-  };
+  const input = { id, title: f.title!.trim(), zone, created_by, action, missed_rule: f.missed ?? "catch_up", token_cap: f.token_cap ?? null, run_cap_usd: f.run_cap_usd ?? null, daily_cap_usd: f.daily_cap_usd ?? null };
   const r: ScheduleResult = cadence
     ? await addSchedule(store, { ...input, cadence, run_now: f.run_now ?? false }, now)
     : { ok: true, schedule: await store.addSchedule({ ...input, cadence: null, trigger: "merge", token_period: "lifetime", created_at: now.toISOString() as Timestamp, next_due_at: null }) };
@@ -457,10 +438,7 @@ async function decide(store: ScheduleAdminStore, id: string, patchOf: (s: Schedu
 
 /** Clears `next_due_at`, so no slot comes due (a Check a page schedule: sets `paused`); refused when already paused. */
 export const pauseSchedule = (store: ScheduleAdminStore, id: string, _now: Date): Promise<ScheduleResult> =>
-  decide(store, id, (s) => {
-    if (isPage(s)) return s.paused ? "already paused" : { paused: true };
-    return s.next_due_at === null ? "already paused" : { next_due_at: null };
-  });
+  decide(store, id, (s) => ((isPage(s) ? s.paused : s.next_due_at === null) ? "already paused" : isPage(s) ? { paused: true } : { next_due_at: null }));
 
 /** Sets `next_due_at` to the first slot after `now` (a Check a page schedule also clears `paused`); refused when not paused, or the cadence never falls due. */
 export const resumeSchedule = (store: ScheduleAdminStore, id: string, now: Date): Promise<ScheduleResult> =>
@@ -483,16 +461,11 @@ export async function deleteSchedule(store: ScheduleAdminStore, id: string, _now
 
 /** Sets `next_due_at` to `now`, so the next tick claims it once (a running schedule's as `refused`); refused when paused, or on-merge. */
 export const runSchedule = (store: ScheduleAdminStore, id: string, now: Date): Promise<ScheduleResult> =>
-  decide(store, id, (s) => {
-    if (s.paused || s.next_due_at === null) return s.trigger !== null && !s.paused ? `an ${ON_MERGE} schedule runs on each merge: it has no next run to set` : "paused";
-    return { next_due_at: now.toISOString() as Timestamp };
-  });
+  decide(store, id, (s) =>
+    s.paused || s.next_due_at === null ? (s.trigger !== null && !s.paused ? `an ${ON_MERGE} schedule runs on each merge: it has no next run to set` : "paused") : { next_due_at: now.toISOString() as Timestamp });
 
-/**
- * Changes only the fields given; refused with no field, or a bad cadence, zone, action, token cap or USD cap. A changed
- * cadence or zone on an unpaused schedule sets `next_due_at` to its first slot after `now`; a paused one stays paused.
- * A Check a page schedule's cadence, zone or trigger does not change, and no action changes to or from check-page.
- */
+/** Changes only the fields given; refused with none, or a bad one. A new cadence or zone on an unpaused schedule sets `next_due_at` to its first slot after `now`. */
+// A Check a page schedule's cadence, zone or trigger does not change, and no action changes to or from check-page.
 export async function editSchedule(store: ScheduleAdminStore, id: string, f: ScheduleFields, now: Date): Promise<ScheduleResult> {
   if (Object.values(f).every((v) => v === undefined)) return refused("nothing to change: give at least one field");
   if (f.run_now !== undefined) return refused("run now is set only when a schedule is added: use schedule run");
@@ -519,33 +492,25 @@ export async function editSchedule(store: ScheduleAdminStore, id: string, f: Sch
         patch.next_due_at = next;
       }
     }
-    if (page && [f.action, f.body, f.instruction, f.url].some((v) => v !== undefined)) {
-      if (f.instruction !== undefined && f.body !== undefined) return "give the instruction as --instruction or --body, not both";
-      const old = s.action!.settings;
-      const action = scheduleActionOf("check-page", undefined, { instruction: f.instruction ?? f.body ?? String(old.instruction ?? ""), url: f.url ?? String(old.url ?? "") });
-      if ("problem" in action) return action.problem;
-      patch.action = action;
-    } else if (!page && [f.action, f.body, f.instruction, f.url].some((v) => v !== undefined)) {
-      const kind = f.action ?? s.action?.kind;
+    if ([f.action, f.body, f.instruction, f.url].some((v) => v !== undefined)) {
+      const kind = page ? "check-page" : (f.action ?? s.action?.kind);
       if (kind === undefined) return "the schedule has no action: give --action too";
-      const old = s.action?.kind === kind ? s.action.settings : {};
-      const action = scheduleActionOf(kind, f.body ?? String(old.body ?? old.prompt ?? ""), f);
+      if (page && f.instruction !== undefined && f.body !== undefined) return "give the instruction as --instruction or --body, not both";
+      const old = page || s.action?.kind === kind ? s.action!.settings : {};
+      const action = page
+        ? scheduleActionOf(kind, undefined, { instruction: f.instruction ?? f.body ?? String(old.instruction ?? ""), url: f.url ?? String(old.url ?? "") })
+        : scheduleActionOf(kind, f.body ?? String(old.body ?? old.prompt ?? ""), f);
       if ("problem" in action) return action.problem;
-      patch.action = { kind: action.kind, settings: { ...old, ...action.settings } };
+      patch.action = page ? action : { kind: action.kind, settings: { ...old, ...action.settings } };
     }
     if (f.run_cap_usd !== undefined || f.daily_cap_usd !== undefined) {
       const problem = page ? capProblem(f) : ONLY_PAGE;
       if (problem) return problem;
-      if (f.run_cap_usd !== undefined) patch.run_cap_usd = f.run_cap_usd;
-      if (f.daily_cap_usd !== undefined) patch.daily_cap_usd = f.daily_cap_usd;
+      Object.assign(patch, f.run_cap_usd === undefined ? {} : { run_cap_usd: f.run_cap_usd }, f.daily_cap_usd === undefined ? {} : { daily_cap_usd: f.daily_cap_usd });
     }
     if (f.missed !== undefined) patch.missed_rule = f.missed;
-    if (f.token_cap !== undefined) {
-      const problem = actionProblem(null, f.token_cap);
-      if (problem) return problem;
-      patch.token_cap = f.token_cap;
-    }
-    return patch;
+    if (f.token_cap !== undefined) patch.token_cap = f.token_cap;
+    return actionProblem(null, f.token_cap) ?? patch;
   });
 }
 
