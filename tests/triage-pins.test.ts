@@ -65,6 +65,11 @@ describe("quoted strings of a triage answer", () => {
     expect(quotedStrings(answer)).toEqual(["Old label", "New label", "Desired text"]);
   });
 
+  it("pairs quotes in order when a short quoted string comes before a longer one", () => {
+    const answer = { problem: `The tab "Run" becomes "Runs history" and "Fails on scope".` };
+    expect(quotedStrings(answer)).toEqual(["Runs history", "Fails on scope"]);
+  });
+
   it("reads none from an answer that is not an object", () => {
     expect(quotedStrings("text")).toEqual([]);
     expect(quotedStrings(null)).toEqual([]);

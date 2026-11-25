@@ -5,7 +5,8 @@ import { isCovered } from "./policy.js";
 /** A double-quoted string of at least this many characters names text a base test may assert. */
 export const MIN_PIN_CHARS = 4;
 
-const QUOTED = new RegExp(`"([^"\\n]{${MIN_PIN_CHARS},})"`, "g");
+// Every quoted string, short ones too, so a short one's closing quote never opens the next; the length is checked after.
+const QUOTED = /"([^"\n]*)"/g;
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
