@@ -88,7 +88,7 @@ function conflictPending(it: WorkItem): boolean {
 /**
  * The comment command event of an app gate command on `item`, keyed `key`: the note is the approve's or retry's
  * note, the resolve's notes, the reject's reason or the revise's feedback. Never on a PR: a revise here is the
- * issue's `/revise`. Only a `/retry` or `/resolve` reads `+paths` (APP_PATHS).
+ * issue's `/revise`. Only a `/retry` or `/resolve` reads `+paths` (APP_PATHS, design 09-dashboard-item-commands).
  */
 function appGateEvent(kind: Exclude<CommandEvent["kind"], "budget_continue">, item: WorkItem, key: string, r: AppCommandRequest, note: string): CommandEvent {
   const who = { provider: "local" as const, subject: r.actor };
@@ -101,13 +101,7 @@ function appGateEvent(kind: Exclude<CommandEvent["kind"], "budget_continue">, it
     case "resolve_requested": return { kind, ...at, requester: who, notes: note, pr: null };
   }
 }
-
-/**
- * The app requests whose first line `+paths` widens allowed_paths as a comment's does (design 09-dashboard-item-commands,
- * 2026-11-26): `/retry` and `/resolve`. A dashboard `/approve` reads none (it is applied in core requestTransition).
- */
 const APP_PATHS: readonly CommandEvent["kind"][] = ["retry_requested", "resolve_requested"];
-
 /** Gate commands from any source (approve, reject, revise, retry, resolve, budget), help, plain comments, links and PR feedback. */
 export class CommandsUnit {
   constructor(private readonly c: Ctx) {}

@@ -7,7 +7,8 @@ import {
 } from "../src/core/commands.js";
 import { autoApprovedFooter, utcMinute } from "../src/core/spec-comment.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { itemCommands } from "../src/ui/commands.js";
+import { itemCommands, resolveScopePaths } from "../src/ui/commands.js";
+import { resolveScopeDetail } from "../src/worker/support.js";
 import { COMMAND_TABLE, cliHelpLine, cliUsageOf } from "../src/core/command-table.js";
 import type { SourceRef, UserId, WorkItem, WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import { runLocalCli } from "../src/core/local-cli.js";
@@ -87,6 +88,33 @@ describe("+paths (issue #280)", () => {
     expect((await itemCommands(it_, runs, { allow: true }, async (v) => (v === "web/b.tsx" ? "[withheld]" : v))).find((r) => r.name === "retry")?.paths).toBeUndefined();
     const plain = await itemCommands({ ...it_, blocked_reason: "spec_pending", stage: "READY" } as WorkItem, runs, { allow: true }, async (v) => v);
     expect(plain.some((r) => r.paths !== undefined)).toBe(false);
+  });
+
+  it("the `/resolve +paths` reply of an out_of_scope resolve failure reads back the paths, with the CLI's parser (2026-11-26)", () => {
+    expect(resolveScopePaths(resolveScopeDetail(["a/b.ts"]))).toEqual(["a/b.ts"]);
+    expect(resolveScopePaths(resolveScopeDetail(["tests/a.test.ts", "src/x.ts", "src/x.ts"]))).toEqual(["tests/a.test.ts", "src/x.ts"]);
+    // No single reply, no reply at all, a path the CLI refuses, or another command's reply: none.
+    expect(resolveScopePaths(resolveScopeDetail(Array.from({ length: 11 }, (_, i) => `src/f${i}.ts`)))).toEqual([]);
+    expect(resolveScopePaths("the resolve run timed out")).toEqual([]);
+    expect(resolveScopePaths("Reply `/resolve +paths ../x.ts` to allow them and resolve again.")).toEqual([]);
+    expect(resolveScopePaths("Reply `/retry +paths a/b.ts` to allow them and run again.")).toEqual([]);
+  });
+
+  it("the item API puts an out_of_scope resolve failure's reply paths on resolve only, marked out_of_scope (2026-11-26)", async () => {
+    const it_ = {
+      stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", change_ref: "42", allowed_paths: ["src/a.ts"],
+      source: { type: "github_issue", id: "o/r#1", link: "x" },
+    } as unknown as WorkItem;
+    const failed = (error_code: string, outside: string[]) => ({ kind: "resolve", status: "failed", outcome: { status: "failed", error_code, detail: resolveScopeDetail(outside), infra: false } });
+    const rows = await itemCommands(it_, [failed("out_of_scope", ["a/b.ts", "src/a.ts"])] as never[], { allow: true }, async (v) => v);
+    expect(rows.find((r) => r.name === "resolve")).toMatchObject({ paths: ["a/b.ts"], out_of_scope: true });
+    for (const r of rows.filter((r) => r.name !== "resolve")) expect(r.paths, r.name).toBeUndefined();
+    // The newest resolve run decides: one that failed another way, or succeeded, names none.
+    const later = await itemCommands(it_, [failed("out_of_scope", ["a/b.ts"]), failed("tests_failed", ["a/b.ts"])] as never[], { allow: true }, async (v) => v);
+    expect(later.some((r) => r.paths !== undefined || r.out_of_scope !== undefined)).toBe(false);
+    // Not waiting on the merge conflict any more: none.
+    const moved = await itemCommands({ ...it_, blocked_reason: "merge_pending" } as WorkItem, [failed("out_of_scope", ["a/b.ts"])] as never[], { allow: true }, async (v) => v);
+    expect(moved.some((r) => r.paths !== undefined)).toBe(false);
   });
 
   it("splits +paths and its paths off the first line; the lines below are the note", () => {
