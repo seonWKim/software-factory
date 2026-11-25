@@ -73,7 +73,6 @@ Read this index, then only the topics you touch. Add a line here only for a new 
 - [08-retention.md](design/08-retention.md): daily retention pass.
 - [08-cleanup.md](design/08-cleanup.md): closed items' leftovers.
 - [08-schedules.md](design/08-schedules.md): schedules and runs.
-- [08-routines.md](design/08-routines.md): routines.
 
 ## 9. Status page
 - [09-status-page.md](design/09-status-page.md): read-only status page.
@@ -90,7 +89,6 @@ Read this index, then only the topics you touch. Add a line here only for a new 
 - [09-dashboard-tasks-quick-add.md](design/09-dashboard-tasks-quick-add.md): Quick add.
 - [09-dashboard-tasks-calendar.md](design/09-dashboard-tasks-calendar.md): Calendar page.
 - [09-dashboard-schedules.md](design/09-dashboard-schedules.md): Schedules page.
-- [09-dashboard-routines.md](design/09-dashboard-routines.md): Routines.
 - [09-dashboard-tasks-projects.md](design/09-dashboard-tasks-projects.md): Projects.
 - [09-dashboard-rules.md](design/09-dashboard-rules.md): Rules page.
 - [09-dashboard-rules-waiting.md](design/09-dashboard-rules-waiting.md): waiting rows.
