@@ -408,6 +408,16 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
     expect(f.broker.names()).not.toContain("forge.open_change");
   });
 
+  it("a check that cannot find the JDK fails at once as infra (toolchain_missing): no fix step, no attempt spent", async () => {
+    const JDK = failsWhile("tests", "src/a.txt", "ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH.");
+    const f = await setup({ checks: [JDK] });
+    const item = await f.approveAndImplement();
+    const [run] = await f.implementRuns(item.id);
+    expect(run!.outcome).toMatchObject({ status: "failed", error_code: "toolchain_missing", infra: true });
+    expect(run!.outcome?.status === "failed" && run!.outcome.detail).toContain("JAVA_HOME is not set");
+    expect(f.fixSteps).toHaveLength(0);
+  });
+
   it("checks_failed counts as a task failure toward max_attempts; the PR-check reason checks_failed is not used", async () => {
     const f = await setup({
       max_attempts: 2,
