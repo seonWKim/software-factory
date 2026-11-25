@@ -35,6 +35,16 @@ export interface CalendarEvent extends EventRow {
   details: EventDetails | null;
   /** Only on an owner's local event (source `local`): its repeat; a repeating one is read as each occurrence. */
   repeats?: LocalRepeat;
+  /** Only on a local event: the connected calendar that holds its copy, or null. */
+  copied_to?: string | null;
+  /** Only on a local event: its copy's last write error, kept on the event and never retried; null after a success. */
+  sync_error?: string | null;
+}
+
+/** The connected calendar a new local event can be copied to, and whether its sign-in takes writes. */
+export interface CopyTarget {
+  label: string;
+  writable: boolean;
 }
 
 /** One day of `/api/v1/calendar/events`: its events (all-day first, then timed by time) and whether every source's last sync covered it. */
@@ -54,6 +64,8 @@ export interface CalendarEvents {
   calendar: CalendarSync[];
   /** A sync request for exactly `from` through `to` waits for the controller. */
   sync_pending: boolean;
+  /** The calendar a new event's switch copies to; null (or absent) when no connected calendar takes copies. */
+  copy?: CopyTarget | null;
 }
 
 /** The stored calendar events of the days `from` through `to`, polled like the other reads; never a calendar source call. */
@@ -85,15 +97,22 @@ export interface LocalEventInput {
 }
 
 const LOCAL_EVENTS = "/api/v1/calendar/local-events";
-type Answer = { ok: true } | { ok: false; error: string };
+
+/** What a local write's copy did: not asked, no calendar takes it (`reason`), done, or failed (`error`, kept on the event). */
+export type CopyResult =
+  | { state: "off" }
+  | { state: "unavailable"; reason: string }
+  | { state: "synced"; provider: string }
+  | { state: "failed"; error: string };
+type Answer = { ok: true; sync: CopyResult } | { ok: false; error: string };
 
 async function postLocal(path: string, token: string, body: unknown): Promise<Answer> {
-  const r = await postJson<{ error?: string }>(path, token, body);
-  return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+  const r = await postJson<{ error?: string; sync?: CopyResult }>(path, token, body);
+  return r.ok ? { ok: true, sync: r.value.sync ?? { state: "off" } } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
-/** POST /api/v1/calendar/local-events: adds the event under the caller-made `le_` id, so a retry stores one. */
-export const postLocalEventAdd = (token: string, id: string, fields: LocalEventInput) => postLocal(LOCAL_EVENTS, token, { id, ...fields });
+/** POST /api/v1/calendar/local-events: adds the event under the caller-made `le_` id, so a retry stores one; `sync` copies it too. */
+export const postLocalEventAdd = (token: string, id: string, fields: LocalEventInput, sync = false) => postLocal(LOCAL_EVENTS, token, { id, ...fields, ...(sync ? { sync } : {}) });
 
 /** POST /api/v1/calendar/local-events/edit: changes the fields named; a repeating event changes as a whole series. */
 export const postLocalEventEdit = (token: string, id: string, fields: Partial<LocalEventInput>) => postLocal(`${LOCAL_EVENTS}/edit`, token, { id, ...fields });
@@ -135,10 +154,12 @@ export type CalendarConnectResult =
 
 /**
  * POST /api/v1/calendar/connect: the plugin alone (the default sign-in), or with `own` (the advanced "use my own
- * client" option) and the values the last answer asked for (none on that option's first try).
+ * client" option) and the values the last answer asked for (none on that option's first try). `write`: with write
+ * access, so the owner's local events can be copied there.
  */
-export async function postCalendarConnect(token: string, plugin: string, own?: { values?: Record<string, string> }): Promise<CalendarConnectResult> {
-  const body = own === undefined ? { plugin } : { plugin, own_client: true, ...(own.values === undefined ? {} : { values: own.values }) };
+export async function postCalendarConnect(token: string, plugin: string, own?: { values?: Record<string, string> }, write = false): Promise<CalendarConnectResult> {
+  const plain = own === undefined ? { plugin } : { plugin, own_client: true, ...(own.values === undefined ? {} : { values: own.values }) };
+  const body = write ? { ...plain, write } : plain;
   const r = await postJson<{ state?: string; needs?: string[]; consent_url?: string; events?: number | null; error?: string }>(API.calendarConnect, token, body);
   if (!r.ok) return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
   const v = r.value;

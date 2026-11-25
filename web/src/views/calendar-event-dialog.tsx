@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { API, type CalendarEvent, LOCAL_REPEATS, type LocalEventInput, type LocalRepeat, type Session, postLocalEventAdd, postLocalEventEdit, useApi } from "../api.js";
+import { API, type CalendarEvent, type CalendarEvents, type CopyResult, type CopyTarget, LOCAL_REPEATS, type LocalEventInput, type LocalRepeat, type Session, postLocalEventAdd, postLocalEventEdit, useApi } from "../api.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
@@ -13,6 +13,13 @@ import { t } from "../i18n/index.js";
 // refusal (empty title, end not after start) shows in the dialog's error line before anything is posted; so does the
 // server's. Editing a repeating event locks its date, time and all-day: only the title and the repeat save, for the
 // whole series (owner answer 1).
+//
+// A copy in a connected calendar (design 02-tasks-calendar, copy to a connected calendar): a new event's dialog ends
+// with the Switch "Also add to <calendar>", the calendar the read's `copy` names; on with write access, off and
+// read-only with the note to reconnect with write access otherwise; none with no such calendar. The dialog reads
+// `copy` once from the one-day read of its date, so the Calendar page passes nothing new. An edit or a delete of a
+// copied event changes its copy too (the server's). A copy that did not happen keeps the dialog open on its reason,
+// the event already saved; an edited event shows its copy's last error.
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const DAY_MS = 86_400_000;
@@ -76,6 +83,15 @@ interface Props {
   onSaved: () => Promise<unknown> | void;
 }
 
+/** The note above the dialog's button: a repeating event's series note, and an edited event's last copy error. */
+function consequence(locked: boolean, event: CalendarEvent | null, copy: CopyTarget | null): string | undefined {
+  const notes = [
+    ...(locked ? [t("calendarEvent.seriesNote")] : []),
+    ...(event?.sync_error ? [t("calendarCopy.error", { calendar: copy?.label ?? event.copied_to ?? "", error: event.sync_error })] : []),
+  ];
+  return notes.length > 0 ? notes.join(" ") : undefined;
+}
+
 /** The dialog's start values: a new event's day at 09:00 to 10:00, else the edited event's own date and times in `zone`. */
 function initial(target: EventDialogTarget, zone: string) {
   if (target.kind === "new") return { title: "", date: target.date, start: DEFAULT_START, end: DEFAULT_END, span: 0, endDate: target.date, allDay: false, repeats: "none" as LocalRepeat };
@@ -87,9 +103,22 @@ function initial(target: EventDialogTarget, zone: string) {
   return { title: e.title, date: a.date, start: a.time, end: b.time, span, endDate: lastDay < a.date ? a.date : lastDay, allDay: e.all_day, repeats: e.repeats ?? "none" };
 }
 
+/** Why a new event's copy did not happen, for the dialog's error line; null when it did, or was not asked. */
+function copyProblem(r: CopyResult, copy: CopyTarget | null): string | null {
+  const calendar = copy?.label ?? "";
+  if (r.state === "unavailable") return t("calendarCopy.unavailable", { reason: r.reason });
+  if (r.state === "failed") return t("calendarCopy.failed", { calendar, error: r.error });
+  return null;
+}
+
 export function EventDialog({ target, zone, onClose, onSaved }: Props) {
   const token = useApi<Session>(API.session, false).data?.csrf_token;
   const start = useRef(initial(target, zone)).current;
+  const day = target.kind === "new" ? target.date : start.date;
+  const copy = useApi<CalendarEvents>(API.calendarEvents(day, day), false).data?.copy ?? null;
+  // On with write access, off with read-only; the owner's own choice once they flip it.
+  const [syncChoice, setSync] = useState<boolean | null>(null);
+  const sync = copy?.writable === true && (syncChoice ?? true);
   const id = useRef(target.kind === "edit" ? target.event.id : newId()).current;
   const [title, setTitle] = useState(start.title);
   const [date, setDate] = useState(start.date);
@@ -101,6 +130,7 @@ export function EventDialog({ target, zone, onClose, onSaved }: Props) {
   const [repeats, setRepeats] = useState<LocalRepeat>(start.repeats);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   const sending = useRef(false);
   const editing = target.kind === "edit";
   // A repeating event's date, time and all-day are fixed: only its title and repeat change, for the whole series.
@@ -121,6 +151,7 @@ export function EventDialog({ target, zone, onClose, onSaved }: Props) {
   };
 
   const save = async () => {
+    if (saved) return onClose();
     if (sending.current || !token) return;
     const f = locked ? { title: title.trim(), repeats } : fields();
     if (typeof f === "string") return setError(f);
@@ -129,10 +160,14 @@ export function EventDialog({ target, zone, onClose, onSaved }: Props) {
     setSaving(true);
     setError(null);
     try {
-      const r = editing ? await postLocalEventEdit(token, id, f) : await postLocalEventAdd(token, id, f as LocalEventInput);
+      const r = editing ? await postLocalEventEdit(token, id, f) : await postLocalEventAdd(token, id, f as LocalEventInput, sync);
       if (!r.ok) return setError(r.error);
       await onSaved();
-      onClose();
+      // Saved here; a copy that did not happen keeps the dialog open on why, and its button then closes it.
+      const problem = copyProblem(r.sync, copy);
+      if (problem === null) return onClose();
+      setSaved(true);
+      setError(problem);
     } finally {
       sending.current = false;
       setSaving(false);
@@ -147,7 +182,7 @@ export function EventDialog({ target, zone, onClose, onSaved }: Props) {
       error={error}
       onConfirm={() => void save()}
       onClose={onClose}
-      consequence={locked ? t("calendarEvent.seriesNote") : undefined}
+      consequence={consequence(locked, editing ? target.event : null, copy)}
     >
       <Field label={t("calendarEvent.title")} htmlFor="event-title">
         <Input id="event-title" type="text" value={title} onChange={(e) => setTitle(e.target.value)} />
@@ -182,6 +217,11 @@ export function EventDialog({ target, zone, onClose, onSaved }: Props) {
           {LOCAL_REPEATS.map((r) => <option key={r} value={r}>{REPEAT_LABEL[r]}</option>)}
         </Select>
       </Field>
+      {!editing && copy !== null && (
+        <Field label={t("calendarCopy.switch", { calendar: copy.label })} help={copy.writable ? undefined : t("calendarCopy.readOnly", { calendar: copy.label })}>
+          <Switch aria-label={t("calendarCopy.switch", { calendar: copy.label })} checked={sync} readOnly={!copy.writable} disabled={saved} onCheckedChange={setSync} />
+        </Field>
+      )}
     </Dialog>
   );
 }
