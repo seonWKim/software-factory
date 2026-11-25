@@ -11,6 +11,9 @@
 // - GET /api/v1/evals: { skills, held }, the distinct skill_ref of every suite, sorted (the Skills tab links the rows it
 //   names), and every held skill version (newest first): its ref and version, the suite's skill_ref (null when its gate
 //   run names none), the pass rates compared, the cases that fell and its open alarm's alert_id (null: none open).
+// - GET /api/v1/evals/<skill>/calibration: the owner's labels on the judge (design 06-measurement, judge labels):
+//   labels (count), agreement (right ÷ all; null with none), calibrated, run (the newest finished run's id, null with
+//   none) and checks (each judged check of that run: case_id, replay, check, answer, label right|wrong|null).
 // <skill> is the suite's skill_ref, URL-encoded (it holds a slash). The reads start no run and write nothing.
 // - POST /api/v1/evals/write: one op, through the CLI's rules for `eval suite`, `eval case` and `eval import`
 //   (src/runtime/skill-evals/authoring.ts and import.ts), after the request guards (write-routes.ts) and the owner
@@ -23,16 +26,20 @@
 //     { "op": "version.settle", "ref", "version", "decision": "approve" | "reject" }: one held skill version settled by
 //     the store method of a bare `factory approve` / `factory reject` (settleSkillVersionGate, as settleHeldSkillVersion
 //     in src/core/skill-eval-gate.ts), its alarm dismissed; a version that is not held is a 409 in plain words.
+//     { "op": "label.set", "run", "case", "replay", "check", "label": "right" | "wrong" }: the owner's label on one judged
+//     check (recordSkillEvalLabel, owner_id the page's factory user); a run, case, replay or check the judge did not
+//     answer is a 409 in plain words; a second label on the same check keeps the first.
 // - POST /api/v1/evals/<skill>/runs: Run now, one run through UiEvals.run (evals-run-api.ts).
 // Every string in an answer leaves through the Withholder. The grid, compare and eval source functions come from the
 // route tables (read-routes.ts and write-routes.ts, the root), as main.ts passes the CLI its, so this feature has no
 // runtime import of core or runtime.
 
+import type { judgeAgreement, judgeCalibrated } from "../core/skill-eval-calibration.js";
 import type { compareSkillEvalRuns, skillEvalGrid } from "../core/skill-eval-compare.js";
 import type { UserId } from "../core/types.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
-import type { SkillVersionGate } from "../interfaces/skill-eval-store.js";
+import type { SkillEvalLabel, SkillEvalReplay, SkillVersionGate } from "../interfaces/skill-eval-store.js";
 import type { EvalSourceSwitch, liveEvalSource } from "../runtime/live-eval-source.js";
 import type { Authored, SkillEvalAuthoring, TriedCase } from "../runtime/skill-evals/authoring.js";
 import { type ApiResult, apiError } from "./api.js";
@@ -43,16 +50,18 @@ import { Withholder } from "./withhold.js";
 export const EVALS_LIST_PATH = "/api/v1/evals";
 
 /** /api/v1/evals/<skill>/<read>, with the URL-encoded skill_ref and the read as its groups. */
-export const EVALS_PATH = /^\/api\/v1\/evals\/([^/]+)\/(runs|grid|compare|suite)$/;
+export const EVALS_PATH = /^\/api\/v1\/evals\/([^/]+)\/(runs|grid|compare|suite|calibration)$/;
 
 type EvalsDeps = {
-  store: Pick<FactoryStore, "listSkillEvalRuns" | "getSkillEvalRun" | "listSkillEvalReplays" | "listSkillEvalSuites" | "listSkillEvalCases" | "listHeldSkillVersionGates" | "listAlerts">;
+  store: Pick<FactoryStore, "listSkillEvalRuns" | "getSkillEvalRun" | "listSkillEvalReplays" | "listSkillEvalSuites" | "listSkillEvalCases" | "listHeldSkillVersionGates" | "listAlerts" | "listSkillEvalLabels">;
   scanner: EgressScanner;
 };
-/** src/core/skill-eval-compare.ts's grid and compare, the same functions the CLI is given. */
+/** src/core/skill-eval-compare.ts's grid and compare, the same functions the CLI is given, and skill-eval-calibration.ts's agreement. */
 export interface SkillEvalReads {
   grid: typeof skillEvalGrid;
   compare: typeof compareSkillEvalRuns;
+  agreement: typeof judgeAgreement;
+  calibrated: typeof judgeCalibrated;
 }
 
 /** `value` with every string in it (nested too) through the Withholder. */
@@ -74,6 +83,7 @@ export async function readSkillEvals(d: EvalsDeps, reads: SkillEvalReads, url: U
   if (read === "runs") return { status: 200, value: { runs: await withheld(w, await d.store.listSkillEvalRuns(skill)) } };
   if (read === "suite") return { status: 200, value: await withheld(w, await suiteOf(d, skill)) };
   if (read === "grid") return { status: 200, value: { rows: await withheld(w, reads.grid(await d.store.listSkillEvalRuns(skill))) } };
+  if (read === "calibration") return { status: 200, value: await withheld(w, await calibrationOf(d, reads, skill)) };
   const a = url.searchParams.get("a"), b = url.searchParams.get("b");
   if (!a || !b) return apiError(400, "Name both runs: ?a=<run-a>&b=<run-b>.");
   const [ra, rb, suites] = await Promise.all([d.store.getSkillEvalRun(a), d.store.getSkillEvalRun(b), d.store.listSkillEvalSuites()]);
@@ -176,6 +186,58 @@ async function heldVersions(d: EvalsDeps): Promise<HeldVersion[]> {
   }));
 }
 
+/** The check kinds the judge answers (src/runtime/skill-evals/checks.ts); the others are deterministic, with no model call. */
+const JUDGED_KINDS: readonly unknown[] = ["yes/no", "rubric", "pairwise"];
+
+/** One check the judge answered in a replay, as its detail stores it. */
+interface JudgedCheck {
+  case_id: string;
+  replay: number;
+  check: string;
+  answer: string;
+}
+
+/** The checks the judge answered in one replay (`detail.answers`), in order; replay 0 for one stored with no number. */
+function judgedChecks(r: Pick<SkillEvalReplay, "case_id" | "replay" | "detail">): JudgedCheck[] {
+  const answers = (r.detail as { answers?: unknown } | null)?.answers;
+  if (!Array.isArray(answers)) return [];
+  return (answers as { check?: unknown; answer?: unknown; kind?: unknown }[])
+    .filter((a) => JUDGED_KINDS.includes(a.kind) && typeof a.check === "string" && typeof a.answer === "string")
+    .map((a) => ({ case_id: r.case_id, replay: r.replay ?? 0, check: a.check as string, answer: a.answer as string }));
+}
+
+/** A label's key: run, case, replay and check. */
+const labelKey = (l: Pick<SkillEvalLabel, "run_id" | "case_id" | "replay" | "check">): string => JSON.stringify([l.run_id, l.case_id, l.replay, l.check]);
+
+/** The skill's judge agreement from its labels, and the judged checks of its newest finished run with each one's label. */
+async function calibrationOf(d: EvalsDeps, reads: SkillEvalReads, skill: string) {
+  const [labels, runs] = await Promise.all([d.store.listSkillEvalLabels(skill), d.store.listSkillEvalRuns(skill)]);
+  const run = runs.find((r) => r.status !== "running") ?? null;
+  const verdicts = new Map(labels.map((l) => [labelKey(l), l.verdict]));
+  const checks = run === null ? [] : (await d.store.listSkillEvalReplays(run.id)).flatMap(judgedChecks)
+    .map((c) => ({ ...c, label: verdicts.get(labelKey({ run_id: run.id, ...c })) ?? null }));
+  return { labels: labels.length, agreement: reads.agreement(labels), calibrated: reads.calibrated(labels), run: run?.id ?? null, checks };
+}
+
+/**
+ * The owner's label on one judged check (op `label.set`): refused in plain words, writing nothing, when the run, a
+ * replay of the case in it, that replay number or the judge's answer to the check is missing. The store keeps the
+ * first label on a check, which is returned.
+ */
+async function setLabel(
+  store: Pick<FactoryStore, "getSkillEvalRun" | "listSkillEvalReplays" | "recordSkillEvalLabel">,
+  l: Omit<SkillEvalLabel, "created_at">,
+): Promise<Authored<Body>> {
+  if ((await store.getSkillEvalRun(l.run_id)) === null) return { refused: `There is no eval run ${l.run_id}, so nothing was labelled.` };
+  const ofCase = (await store.listSkillEvalReplays(l.run_id)).filter((r) => r.case_id === l.case_id);
+  if (ofCase.length === 0) return { refused: `Case ${l.case_id} has no replay in that run, so nothing was labelled.` };
+  const replay = ofCase.find((r) => (r.replay ?? 0) === l.replay);
+  if (!replay) return { refused: `That run has no replay ${l.replay} of the case, so nothing was labelled.` };
+  if (!judgedChecks(replay).some((c) => c.check === l.check)) return { refused: "The judge did not answer that check in this replay, so nothing was labelled." };
+  const stored = await store.recordSkillEvalLabel(l);
+  return { value: { run: stored.run_id, case: stored.case_id, replay: stored.replay, check: stored.check, label: stored.verdict } };
+}
+
 /** The skill's suite (its first, by creation) and its cases; a null suite and no cases when it has none. */
 async function suiteOf(d: EvalsDeps, skill: string): Promise<{ suite: unknown; cases: unknown[] }> {
   const suite = (await d.store.listSkillEvalSuites()).find((s) => s.skill_ref === skill) ?? null;
@@ -203,14 +265,21 @@ export interface UiEvals {
 /** The UI's dependencies with the evals write route. Absent `evals`: a POST to it is a 405. */
 export type EvalsWriteDeps = PauseDeps & { evals?: UiEvals };
 
-const OPS = ["suite.add", "suite.rename", "suite.delete", "case.add", "case.edit", "case.delete", "case.try", "import", "version.settle"] as const;
+const OPS = ["suite.add", "suite.rename", "suite.delete", "case.add", "case.edit", "case.delete", "case.try", "import", "version.settle", "label.set"] as const;
 type Op = (typeof OPS)[number];
 type Body = Record<string, unknown>;
 
 const text = (b: Body, key: string): string | null => (typeof b[key] === "string" && (b[key] as string).trim() !== "" ? (b[key] as string) : null);
 
-/** What the op needs and the body lacks, or null: `skill` for suite ops, add and import; `ref`, `version` and `decision` for a settle; `case` for the others. */
+/** What the op needs and the body lacks, or null: `skill` for suite ops, add and import; `ref`, `version` and `decision` for a settle; `run`, `case`, `replay`, `check` and `label` for a label; `case` for the others. */
 function missing(op: Op, b: Body): string | null {
+  if (op === "label.set") {
+    if (text(b, "run") === null) return "run must be a non-empty string (a run id)";
+    if (text(b, "case") === null) return "case must be a non-empty string (a case id)";
+    if (typeof b.replay !== "number" || !Number.isInteger(b.replay) || b.replay < 0) return "replay must be a whole number from 0";
+    if (text(b, "check") === null) return "check must be a non-empty string";
+    return b.label === "right" || b.label === "wrong" ? null : "label must be right or wrong";
+  }
   if (op === "version.settle") {
     if (text(b, "ref") === null) return "ref must be a non-empty string (a skill ref id)";
     if (typeof b.version !== "number" || !Number.isInteger(b.version) || b.version < 1) return "version must be a whole number from 1";
@@ -285,5 +354,7 @@ async function runOp(store: FactoryStore, e: UiEvals, op: Op, b: Body, user: str
       const r = await settleSkillVersion(store, { ref_id: text(b, "ref")!, version: b.version as number, command: decision, by: user as UserId });
       return "refused" in r ? r : { value: { ref: r.gate.ref_id, version: r.gate.version, decision, state: r.gate.state } };
     }
+    case "label.set":
+      return setLabel(store, { run_id: text(b, "run")!, case_id: id, replay: b.replay as number, check: b.check as string, verdict: b.label as "right" | "wrong", owner_id: user as UserId });
   }
 }
