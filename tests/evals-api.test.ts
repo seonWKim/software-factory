@@ -134,14 +134,14 @@ describe("GET /api/v1/evals/<skill>/compare", () => {
 });
 
 describe("GET /api/v1/evals", () => {
-  it("lists the distinct skill_refs of every suite, sorted, and writes nothing", async () => {
+  it("lists the distinct skill_refs of every suite, sorted, and no held version when none is held, and writes nothing", async () => {
     const store = await seeded();
     await store.createSkillEvalSuite({ id: "s3", skill_ref: SKILL, title: "again", created_by: OWNER });
     const { proxy, calls } = watched(store);
     const r = await get(proxy, CLEAN, "/api/v1/evals");
     expect(r.status).toBe(200);
-    expect(r.value).toEqual({ skills: ["skills/other", SKILL] });
-    expect(calls).toEqual(["listSkillEvalSuites"]);
+    expect(r.value).toEqual({ skills: ["skills/other", SKILL], held: [] });
+    expect(calls).toEqual(["listSkillEvalSuites", "listHeldSkillVersionGates"]);
   });
 
   it("withholds a flagged ref", async () => {

@@ -162,7 +162,7 @@ export function alarmCommand(a: Alert): string {
   if (a.pattern === "red_main") return `Fix the base branch at ${redMainSha(a)} (a fix item is filed for it); queued changes are checked again once it moves`;
   if (a.pattern === "dead_letter") return `bus_${deadLetterTopic(a).replace(/\./g, "_")}_dead_letters (replay once the cause is fixed)`;
   if (a.pattern === "skill_draft_limit") return `${a.error_code} in factory.config.json`;
-  if (a.pattern === "skill_version_gate") return "factory approve (the newest held version becomes current) or factory reject (the version current before it stays current); factory eval compare shows the held version's gate run against the current version's run";
+  if (a.pattern === "skill_version_gate") return "Use this version or Keep the current version on the alarm or the skill's Evals page, or factory approve (the newest held version becomes current) or factory reject (the version current before it stays current); factory eval compare shows the held version's gate run against the current version's run";
   return "factory doctor";
 }
 

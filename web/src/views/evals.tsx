@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useRef, useState } from "react";
-import { useApi } from "../api/client.js";
+import { postJson, useApi } from "../api/client.js";
 import { type EvalRun, type EvalRunSummary, type SkillVersionRow, postEvalRun, useEvalGrid, useEvalRuns, useSkillDiff, useSkillVersions } from "../api/evals.js";
 import type { Session } from "../api/overview.js";
 import { API } from "../api/routes.js";
@@ -20,6 +20,7 @@ import { ROW_TITLE, ListRow } from "../components/ui/list-row.js";
 import { EmptyState, PageHeader } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Select } from "../components/ui/select.js";
+import { Textarea } from "../components/ui/textarea.js";
 import { t } from "../i18n/index.js";
 import { localDateTime, localShortDate } from "../lib/format.js";
 
@@ -28,7 +29,9 @@ import { localDateTime, localShortDate } from "../lib/format.js";
 // ModalPanel: two version Selects, the unified DiffView of their SKILL.md texts and each case's result), the Grid Card
 // (the case results: the newest run per version and model class) and the Trend Card. Plain words only: folder hashes
 // and run IDs show only inside a version row's Details. Run now opens a Dialog that starts one run
-// (POST /api/v1/evals/<skill>/runs); the server's refusal (403 owner check, 409 refused run) shows in it.
+// (POST /api/v1/evals/<skill>/runs); the server's refusal (403 owner check, 409 refused run) shows in it. A version the
+// gate holds is a Card above Versions: its pass rates, the cases that got worse, "Keep the current version" (a Dialog
+// with an optional reason, not stored) and "Use this version"; the held-version alarm in Needs you uses the same actions.
 
 /** The skill's name from its skill_ref (`skills/review/SKILL.md` → "review"): the last part, not the file's name. */
 export function skillName(ref: string): string {
@@ -233,6 +236,125 @@ function CompareVersions({ skill, versions }: { skill: string; versions: readonl
   );
 }
 
+/** One case whose pass rate fell in a held version's gate run (GET /api/v1/evals, src/ui/evals-api.ts HeldVersion). */
+export interface HeldCase {
+  case_id: string;
+  input: string | null;
+}
+
+/** A skill version the new-version gate holds (design 07-self-improvement), as GET /api/v1/evals lists it. */
+export interface HeldVersion {
+  ref_id: string;
+  version: number;
+  skill: string | null;
+  pass_rate: number | null;
+  before: number | null;
+  current_version: number | null;
+  fell: HeldCase[];
+  alert_id: string | null;
+}
+
+/** The held skill versions, newest first, polled so the alarm and the Evals page clear once one is settled. */
+export const useHeldVersions = () => useApi<{ skills: string[]; held?: HeldVersion[] }>("/api/v1/evals");
+
+/** Settles one held version through POST /api/v1/evals/write, the store method of a bare `factory approve` / `factory reject`. */
+async function postSettle(token: string, h: HeldVersion, decision: "approve" | "reject"): Promise<string | null> {
+  const r = await postJson<{ error?: string }>("/api/v1/evals/write", token, { op: "version.settle", ref: h.ref_id, version: h.version, decision });
+  return r.ok ? null : (r.value.error ?? t("evals.heldFailed"));
+}
+
+/** A held version's pass rate against the current version's, in plain words. */
+export const heldRates = (h: HeldVersion): string =>
+  h.before === null || h.current_version === null
+    ? t("evals.heldRate", { rate: rateText(h.pass_rate) })
+    : t("evals.heldRates", { rate: rateText(h.pass_rate), before: percent(h.before), current: h.current_version });
+
+/** The cases that got worse in a held version, one line each (the case's input when it is text, else its number). */
+export function HeldCases({ held }: { held: HeldVersion }) {
+  if (held.fell.length === 0) return <p className="text-sm text-pretty text-text-2">{t("evals.heldNoneWorse")}</p>;
+  return (
+    <ul data-held-cases aria-label={t("evals.heldWorse")} className="min-w-0 space-y-0.5 text-sm">
+      {held.fell.map((c, i) => (
+        <li key={c.case_id} data-case={c.case_id} title={c.input ?? undefined} className="truncate">{c.input ?? t("evals.heldCase", { id: i + 1 })}</li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * "Use this version" (approve) and "Keep the current version" (reject, after a Dialog with an optional reason that is
+ * not stored) for one held version. Both post the settle, then reload every read, so the alarm leaves Needs you and the
+ * versions list marks the right version current. The buttons never change the row's height: the reason is asked in
+ * the Dialog and a refusal shows in it, or (for Use this version) on its own line under the buttons.
+ */
+export function HeldVersionActions({ held, skill, size = "md" }: { held: HeldVersion; skill: string; size?: "sm" | "md" }) {
+  const client = useQueryClient();
+  const token = useApi<Session>(API.session, false).data?.csrf_token ?? null;
+  const keepButton = useRef<HTMLButtonElement>(null);
+  const [keeping, setKeeping] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<{ on: "use" | "keep"; text: string } | null>(null);
+  const settle = async (decision: "approve" | "reject") => {
+    if (token === null) return;
+    const on = decision === "approve" ? "use" : "keep";
+    setBusy(true);
+    setError(null);
+    try {
+      const refused = await postSettle(token, held, decision);
+      if (refused !== null) return setError({ on, text: refused });
+      await client.invalidateQueries();
+      setKeeping(false);
+    } catch {
+      setError({ on, text: t("evals.heldFailed") });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <ButtonRow data-held-actions>
+        <Button ref={keepButton} size={size} disabled={busy || token === null} onClick={() => { setError(null); setKeeping(true); }}>{t("evals.heldKeep")}</Button>
+        <Button variant="primary" size={size} disabled={busy || token === null} onClick={() => void settle("approve")}>{t("evals.heldUse")}</Button>
+      </ButtonRow>
+      {error?.on === "use" && <p data-row-error role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">{error.text}</p>}
+      {keeping && (
+        <Dialog
+          title={t("evals.heldKeepTitle", { skill: skillName(skill) })}
+          consequence={t("evals.heldKeepConsequence", { n: held.version })}
+          confirmLabel={t("evals.heldKeep")}
+          confirmDisabled={busy || token === null}
+          error={error?.on === "keep" ? error.text : null}
+          onConfirm={() => void settle("reject")}
+          onClose={() => { setKeeping(false); setReason(""); }}
+          returnFocusTo={keepButton}
+        >
+          <Field label={t("evals.heldReason")} htmlFor="evals-held-reason" help={t("evals.heldReasonHelp")}>
+            <Textarea id="evals-held-reason" rows={3} value={reason} className="w-full" onChange={(e) => setReason(e.target.value)} />
+          </Field>
+        </Dialog>
+      )}
+    </>
+  );
+}
+
+/** The held versions of this skill, each a Card at the top of the page: its rates, the cases that got worse, both actions. */
+function HeldVersions({ skill }: { skill: string }) {
+  const held = (useHeldVersions().data?.held ?? []).filter((h) => h.skill === skill);
+  return held.map((h) => (
+    <Card key={`${h.ref_id}:${h.version}`} title={t("evals.heldTitle", { n: h.version })}>
+      <div data-held-version={h.version} className="flex flex-col gap-3">
+        <p className="text-sm text-pretty">{heldRates(h)}</p>
+        <div className="space-y-1">
+          <p className="text-sm font-medium">{t("evals.heldWorse")}</p>
+          <HeldCases held={h} />
+        </div>
+        <HeldVersionActions held={h} skill={skill} />
+      </div>
+    </Card>
+  ));
+}
+
 /** Run now: model class, its judge class (follows the model) and replay count; the run is stored before it closes. */
 function RunNowDialog({ skill, onClose, returnFocusTo }: { skill: string; onClose: () => void; returnFocusTo: RefObject<HTMLButtonElement | null> }) {
   const client = useQueryClient();
@@ -297,7 +419,7 @@ function RunNow({ skill }: { skill: string }) {
   );
 }
 
-/** The evals page of one skill (`skill` is its skill_ref): Run now in the header, then Versions, Compare, Grid, Trend. */
+/** The evals page of one skill (`skill` is its skill_ref): Run now in the header, then any held version, Versions, Compare, Grid, Trend. */
 export function EvalsPage({ skill }: { skill: string }) {
   const runs = useEvalRuns(skill);
   const grid = useEvalGrid(skill);
@@ -310,7 +432,10 @@ export function EvalsPage({ skill }: { skill: string }) {
     <>
       {header}
       <div className="flex flex-col gap-6">
-        <Versions versions={versions} />
+        <div>
+          <HeldVersions skill={skill} />
+          <Versions versions={versions} />
+        </div>
         <CompareVersions skill={skill} versions={versions.data?.versions ?? []} />
         <Grid rows={grid.data.rows} runs={runs.data.runs} />
         <Trend runs={runs.data.runs} />
