@@ -4,6 +4,11 @@ import { describe, expect, it } from "vitest";
 
 // Architecture §1: core talks only to interfaces. Core and interfaces may import each other and nothing
 // else: no implementations, no vendor packages, no node: I/O. Implementations are picked in src/compose.ts.
+// One exception: core may read a setting file (`src/<owner>/settings/<key>.setting.ts`, a pure descriptor), the
+// one place a setting's default is written.
+
+/** A setting file, by its path relative to src/. */
+const SETTING_FILE = /^[a-z]+\/settings\/[a-z0-9-]+\.setting\.ts$/;
 
 const SRC = join(import.meta.dirname, "..", "src");
 
@@ -24,7 +29,8 @@ describe("layer boundaries", () => {
       const violations: string[] = [];
       for (const file of files(join(SRC, layer))) {
         for (const spec of imports(file)) {
-          const ok = spec.startsWith(".") && /^(core|interfaces)\//.test(relative(SRC, join(file, "..", spec)));
+          const target = relative(SRC, join(file, "..", spec));
+          const ok = spec.startsWith(".") && (/^(core|interfaces)\//.test(target) || (layer === "core" && SETTING_FILE.test(target.replace(/\.js$/, ".ts"))));
           if (!ok) violations.push(`${relative(SRC, file)} → ${spec}`);
         }
       }

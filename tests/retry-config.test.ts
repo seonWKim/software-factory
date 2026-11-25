@@ -1,12 +1,15 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { RETRY_DEFAULTS, retryConfig } from "../src/config-values.js";
+import { retryConfig } from "../src/config-values.js";
+import maxRestart from "../src/controller/settings/max-restart.setting.js";
+import retryBase from "../src/controller/settings/retry-base-ms.setting.js";
+import retryMax from "../src/controller/settings/retry-max-ms.setting.js";
 import { loadConfig } from "../src/load-config.js";
 
 describe("retry config keys", () => {
   it("defaults: max_restart 3, retry_base_ms 60000, retry_max_ms 1800000", () => {
     expect(retryConfig({})).toEqual({ max_restart: 3, retry_base_ms: 60_000, retry_max_ms: 1_800_000, auth_pause_ms: 1_800_000 });
-    expect(RETRY_DEFAULTS).toEqual({ max_restart: 3, retry_base_ms: 60_000, retry_max_ms: 1_800_000 });
+    expect(retryConfig({})).toMatchObject({ max_restart: maxRestart.default, retry_base_ms: retryBase.default, retry_max_ms: retryMax.default });
   });
 
   it("rejects non-positive or non-integer values, and a base above the cap", () => {

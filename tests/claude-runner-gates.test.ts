@@ -12,10 +12,10 @@ import type { RunKind } from "../src/core/types.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { ClaudeCodeRunner, buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";
 import {
-  GATE_HOOKS_DIR, HOOK_SCRIPT, HOOK_SPEC, PATH_REFUSAL, STOP_CHECK_MS, STOP_HOOK_SLACK_MS, editCovered, gateAnswerer, hookScript, runDeadline, specFile,
+  GATE_HOOKS_DIR, HOOK_SCRIPT, HOOK_SPEC, PATH_REFUSAL, STOP_HOOK_SLACK_MS, editCovered, gateAnswerer, hookScript, runDeadline, specFile,
 } from "../src/impl/runner/gate-hooks.js";
 import { type AgentRunResult, type AgentRunSpec, type GateHooks, STOP_CHECK_TIMED_OUT, type StopSelection } from "../src/interfaces/agent-runner.js";
-import { SETTABLE_DEFAULTS } from "../src/core/settings.js";
+import agentStopCheck from "../src/worker/settings/agent-stop-check-ms.setting.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 import { PackCheckRunner } from "../src/runtime/hooks/pack-checks.js";
@@ -251,7 +251,7 @@ async function drive(f: ReturnType<typeof setup>, mode: Mode): Promise<Pick<Agen
   if (mode === "hooks") return f.runner.run(f.spec);
   const dir = join(f.configDir, GATE_HOOKS_DIR, f.spec.run_id);
   mkdirSync(dir, { recursive: true });
-  const answers = await gateAnswerer({ dir, spec: { ...f.spec, gate_hooks: f.spec.gate_hooks! }, sandbox: f.sandbox, scanner, after }, f.spec.signal);
+  const answers = await gateAnswerer({ dir, spec: { ...f.spec, gate_hooks: f.spec.gate_hooks!, stop_check_ms: f.spec.stop_check_ms ?? agentStopCheck.default! }, sandbox: f.sandbox, scanner, after }, f.spec.signal);
   const ask = async (req: unknown) => {
     const a = await answers.answer(req);
     if (a) await answers.sent(a);
@@ -532,13 +532,12 @@ describe("gate hooks: the Stop check's time limit", () => {
       const settings = await hookSettings(f);
       timeouts.push(settings.Stop![0]!.hooks[0]!.timeout);
     }
-    const limit = Math.ceil((STOP_CHECK_MS + STOP_HOOK_SLACK_MS) / 1000);
+    const limit = Math.ceil((agentStopCheck.default! + STOP_HOOK_SLACK_MS) / 1000);
     expect(timeouts).toEqual([limit, limit, Math.ceil((4_000 + STOP_HOOK_SLACK_MS) / 1000)]);
   });
 
   it.runIf(canListen)("a spec with no stop_check_ms gets 40 minutes, the agent_stop_check_ms default", async () => {
-    expect(STOP_CHECK_MS).toBe(2_400_000);
-    expect(STOP_CHECK_MS).toBe(SETTABLE_DEFAULTS.agent_stop_check_ms);
+    expect(agentStopCheck.default).toBe(2_400_000);
     const settings = await hookSettings(setup("implement", GATES));
     expect(settings.Stop![0]!.hooks[0]!.timeout).toBe(2_400 + STOP_HOOK_SLACK_MS / 1000);
   });

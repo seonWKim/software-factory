@@ -4,7 +4,7 @@
 // Write) and on Stop; the script forwards the event over a local socket to this module in the runner's process,
 // which answers with the worker's own rules (isCovered, runCommits, diffStat and sizeDetail, runChecks) and the
 // egress scanner. Advisory only: a hook that crashes, times out or cannot reach the host allows, and the worker's
-// gates still decide. A Stop check that runs out its own limit (the spec's stop_check_ms, else STOP_CHECK_MS) also allows, and the runner then fails
+// gates still decide. A Stop check that runs out its own limit (the spec's stop_check_ms) also allows, and the runner then fails
 // the run with `stop_check_timed_out`. With `selection` the Stop check narrows the test command as the check before
 // push does (selectedChecks), and its selection lines go back on the result. The on_tool_call pack checks (issue #494) are the exception: they fail closed, so with any
 // enabled a PreToolUse that cannot get an answer refuses the edit. No secret value is written to the folder.
@@ -38,13 +38,6 @@ export const PATH_REFUSAL =
 const PRE_TOOL_TIMEOUT_S = 30;
 /** The most the on_tool_call pack checks of one edit may take together, under PRE_TOOL_TIMEOUT_S; past it the edit is refused. */
 export const ON_TOOL_CALL_BUDGET_MS = 25_000;
-/**
- * The time limit of one Stop check (design §4) when the spec gives none (`stop_check_ms`, the live
- * `agent_stop_check_ms`; this is its default): its git calls and the whole check list together. Its own limit, not
- * the run's `timeout_ms`; past it the check is aborted (the sandbox kills its process group), the stop is allowed,
- * and the run fails with `stop_check_timed_out` naming the check.
- */
-export const STOP_CHECK_MS = 2_400_000;
 /** What Claude Code waits for the Stop hook beyond its limit, so the host's own limit always ends it first. */
 export const STOP_HOOK_SLACK_MS = 30_000;
 /** A request line longer than this is refused and the connection closed (the script sends no file content). */
@@ -126,7 +119,12 @@ function shellQuote(s: string): string {
 export interface GateHooksOptions {
   /** The run's hook folder: `<harness config dir>/gate-hooks/<run id>`. Made fresh, removed by `close`. */
   dir: string;
-  spec: AgentRunSpec & { gate_hooks: GateHooks };
+  /**
+   * `stop_check_ms` is the time limit of one Stop check (design §4): its git calls and the whole check list together.
+   * Its own limit, not the run's `timeout_ms`; past it the check is aborted (the sandbox kills its process group), the
+   * stop is allowed, and the run fails with `stop_check_timed_out` naming the check.
+   */
+  spec: AgentRunSpec & { gate_hooks: GateHooks; stop_check_ms: number };
   sandbox: Sandbox;
   /** The egress scanner a failing check's output tail goes through. Absent: every tail is withheld. */
   scanner?: EgressScanner;
@@ -159,8 +157,6 @@ export function runDeadline(ms: number, held: () => boolean, after: After): { si
   return { signal: ctl.signal, stop: () => cancel() };
 }
 
-/** One Stop check's limit: the spec's `stop_check_ms`, else STOP_CHECK_MS. */
-const stopCheckMs = (spec: Pick<AgentRunSpec, "stop_check_ms">): number => spec.stop_check_ms ?? STOP_CHECK_MS;
 
 /** A Stop check that ran out its limit: the check it was running, and the limit. */
 export interface StopTimeout {
@@ -223,7 +219,7 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
   const workdir = o.spec.sandbox.workdir;
   const workdirs = [workdir, await realpath(workdir).catch(() => workdir)];
   const counts = { pre_tool_use: 0, stop: 0 };
-  const limitMs = stopCheckMs(o.spec);
+  const limitMs = o.spec.stop_check_ms;
   let stopsOpen = 0;
   let timedOut: StopTimeout | null = null;
   const selections: string[] = [];
@@ -289,7 +285,7 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
     ].join("\n"));
   };
 
-  // The Stop check under its own limit (stopCheckMs): past it the check is aborted, which kills its process group,
+  // The Stop check under its own limit (`stop_check_ms`): past it the check is aborted, which kills its process group,
   // the stop is allowed and the timeout is kept for the runner. After one, no later stop runs a check.
   const stop = async (): Promise<Answer | null> => {
     if (timedOut || g.stop_blocks_used + counts.stop >= g.stop_checks) return null;
@@ -360,7 +356,7 @@ export async function startGateHooks(o: GateHooksOptions): Promise<RunningGateHo
     throw err;
   }
   const command = (event: string) => [process.execPath, script, event].map(shellQuote).join(" ");
-  const stopMs = stopCheckMs(o.spec) + STOP_HOOK_SLACK_MS;
+  const stopMs = o.spec.stop_check_ms + STOP_HOOK_SLACK_MS;
   const g = o.spec.gate_hooks;
   const deadline = runDeadline(o.spec.timeout_ms, answers.checking, o.after);
   return {

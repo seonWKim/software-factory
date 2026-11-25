@@ -6,6 +6,7 @@ import type { SettingsLayers } from "./settings.js";
 import { isUnder, normalize } from "./tools/paths.js";
 import type { RunKind, Tier, UserId, VerdictSeverity } from "./types.js";
 import type { ToolBroker } from "../interfaces/tool-broker.js";
+import agentStopCheck from "../worker/settings/agent-stop-check-ms.setting.js"; import stallMs from "../worker/settings/stall-ms.setting.js";
 
 /**
  * The `stats` key of factory.config.json (design §6 Measurement). Read only by `factory stats`; it changes
@@ -250,10 +251,7 @@ export interface LoadedConfig {
    * How long a forge 401/403 pauses implement-type claims (design §5 Restarts). Absent: `retry_max_ms`.
    */
   auth_pause_ms?: number;
-  /**
-   * Stall detection (design §5 Restarts): an agent run whose model produces no output for this long, with no
-   * tool call open, ends `stalled`. Absent: STALL_DEFAULTS.stall_ms (300000).
-   */
+  /** Stall detection (design §5 Restarts): a run with no model output this long, no tool call open, ends `stalled`. Absent: STALL_DEFAULTS.stall_ms. */
   stall_ms?: number;
   /**
    * First-output limit (design §5 Restarts, issue #215): an agent run whose model produces no output within
@@ -486,9 +484,11 @@ export function retentionConfig(raw: unknown, inbox_retention_days?: unknown, wa
 export const ALARM_DEFAULTS = { alarm_repeat_count: 3, alarm_window_minutes: 60, alarm_restart_count: 5 } as const;
 /** `agent_stop_checks` when factory.config.json gives none (design §4 Pre-push gates). */
 export const AGENT_STOP_CHECKS_DEFAULT = 3;
+/** The gate Stop check's limit when a run spec gives no `stop_check_ms` (design §4): the setting file's default. */
+export const AGENT_STOP_CHECK_MS_DEFAULT = agentStopCheck.default!;
 
-/** `stall_ms`, `first_output_ms` and `probe_interval_ms` when factory.config.json gives none (design §5 Restarts). */
-export const STALL_DEFAULTS = { stall_ms: 300_000, first_output_ms: 180_000, probe_interval_ms: 600_000 } as const;
+/** `stall_ms` (its setting file's default), `first_output_ms` and `probe_interval_ms` when factory.config.json gives none (design §5 Restarts). */
+export const STALL_DEFAULTS = { stall_ms: stallMs.default!, first_output_ms: 180_000, probe_interval_ms: 600_000 } as const;
 
 /** The coordination keys of factory.config.json (design §5, 2026-11-03). */
 export const COORDINATION_KEYS = [
