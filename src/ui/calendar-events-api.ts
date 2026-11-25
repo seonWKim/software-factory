@@ -21,9 +21,14 @@
 // connected, each repeat expanded inside the range (src/calendar/calendar-local.ts), with source `local` and their
 // `repeats`; a day's `synced` still reflects only the calendar sources. `time_zone` is this process's zone, the one
 // every local day here is counted in.
+//
+// A local event copied to a connected calendar (design 02-tasks-calendar, copy to a connected calendar) is shown once:
+// the stored copy that calendar's read brought back is left out (calendar-write.ts hideCopies). `copy` names the
+// calendar a new event's switch copies to and whether it takes writes (calendar-api.ts UiCalendar.copyTarget, from the
+// stored write access: this read never calls the provider), or null when no connected calendar can take copies.
 
 import {
-  type EventDetails, type EventPerson, type SourceSync, type SyncedRange, expandLocalEvents, processTimeZone, rangeError, readCalendar, readLocalEvents, syncWindow,
+  type EventDetails, type EventPerson, type SourceSync, type SyncedRange, expandLocalEvents, localEvents, processTimeZone, rangeError, readCalendar, readLocalEvents, syncWindow,
 } from "../calendar/index.js";
 import { calendarDays, dayBounds } from "../core/tasks.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
@@ -69,9 +74,13 @@ export async function readCalendarEvents(d: UiDeps, from: string | null, to: str
   const sources = [...connected].sort().map((source) => rows.get(source) ?? { source, synced_at: null, failed: false });
   const w = new Withholder(d.scanner);
   const local = expandLocalEvents(await readLocalEvents(db, from!, to!), from!, to!);
-  const kept = [...stored.events.filter((e) => connected.has(e.source)), ...local];
-  const events = await Promise.all(kept.map(async (e) => ({ ...e, title: (await w.plain(e.title)).text, details: await shownDetails(w, e.details) })));
+  const kept = [...(await localEvents(db).hideCopies(stored.events.filter((e) => connected.has(e.source)))), ...local];
+  const plain = async (v: string | null | undefined) => (v == null ? v : (await w.plain(v)).text);
+  const events = await Promise.all(kept.map(async (e) => ({
+    ...e, title: (await w.plain(e.title)).text, details: await shownDetails(w, e.details), ...("sync_error" in e ? { sync_error: await plain(e.sync_error as string | null) } : {}),
+  })));
   const days = calendarDays(events, from!, to!).map((day) => ({ ...day, synced: synced(sources, stored.ranges, day.date) }));
   const pending = stored.pending.some((p) => p.from === from && p.to === to);
-  return { status: 200, value: { from, to, time_zone: processTimeZone(), days, calendar: sources, sync_pending: pending } };
+  const copy = (await d.settings?.calendar?.copyTarget?.()) ?? null;
+  return { status: 200, value: { from, to, time_zone: processTimeZone(), days, calendar: sources, sync_pending: pending, copy } };
 }

@@ -22,7 +22,7 @@ CREATE TABLE calendar_local_events (
     created_by  TEXT NOT NULL,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
-  );
+  , provider TEXT, provider_event_id TEXT, sync_error TEXT);
 
 CREATE TABLE calendar_sync_requests (
     id            TEXT PRIMARY KEY,
@@ -50,6 +50,11 @@ CREATE TABLE calendar_synced_ranges (
     to_at      TEXT NOT NULL,
     synced_at  TEXT NOT NULL,
     PRIMARY KEY (source, from_at, to_at)
+  );
+
+CREATE TABLE calendar_write_access (
+    source    TEXT PRIMARY KEY,
+    writable  INTEGER NOT NULL
   );
 
 CREATE INDEX calendar_events_starts ON calendar_events (starts_at);

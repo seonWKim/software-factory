@@ -4,10 +4,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type ConnectDeps, connectSetup } from "../../src/cli/handlers/setup/guided.js";
 import type { GoogleClient } from "../../src/calendar/plugins/google-calendar/default-client.js";
-import { CONNECT_TIMEOUT_MS, challengeOf, googleCalendarConnect, onlyReadonly } from "../../src/calendar/plugins/google-calendar/google-calendar-connect.js";
+import { CONNECT_TIMEOUT_MS, WRITE_QUESTION, challengeOf, googleCalendarConnect } from "../../src/calendar/plugins/google-calendar/google-calendar-connect.js";
 import {
+  CALENDAR_EVENTS_SCOPE,
   CALENDAR_READONLY_SCOPE,
   EVENTS_API,
+  calendarScopes,
   GoogleCalendarSource,
   type HttpClient,
   TOKEN_URL,
@@ -95,6 +97,8 @@ interface Run {
   urls: string[];
   printed: string[];
   hiddenPrompts: string[];
+  /** The answer to the write question (false: read-only, the default). */
+  write: boolean;
   /** The printed lines and the hidden prompts, in the order they came. */
   said: string[];
   /** What the fake browser does with the consent URL: by default, Google's redirect with the code and the state. */
@@ -137,7 +141,7 @@ function machine(o: { secrets?: string | null; calendar?: unknown; registry?: (r
   const r: Run = {
     dir, secretsFile, configFile, google,
     clock: new FakeClock(NOW),
-    urls: [], printed: [], hiddenPrompts: [], said: [],
+    urls: [], printed: [], hiddenPrompts: [], said: [], write: false,
     browser: async (url) => void (await redirect(url, { code: CODE, state: url.searchParams.get("state")! })),
     load: () => loadConfig(dir, { registry }),
     async run(args = {}) {
@@ -147,7 +151,7 @@ function machine(o: { secrets?: string | null; calendar?: unknown; registry?: (r
         ask: {
           interactive: true,
           choose: async (_q, _o, d) => d,
-          yesNo: async () => true,
+          yesNo: async (q) => (q === WRITE_QUESTION ? r.write : true),
           text: async (_q, d) => d,
         },
         secret: async (p) => (r.hiddenPrompts.push(p), r.said.push(p), hidden.shift()!),
@@ -214,11 +218,22 @@ describe("factory setup calendar google: the consent", () => {
     expect(challengeOf("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")).toBe("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
   });
 
-  it("compares the granted scope as a set of space-separated scopes", () => {
-    expect(onlyReadonly(CALENDAR_READONLY_SCOPE)).toBe(true);
-    expect(onlyReadonly(` ${CALENDAR_READONLY_SCOPE}  ${CALENDAR_READONLY_SCOPE} `)).toBe(true);
+  it("with write access asks for the calendar.events scope only, and stores the three secrets once it is granted", async () => {
+    const r = machine();
+    r.write = true;
+    r.google.exchange = () => ({ status: 200, body: { access_token: ACCESS, refresh_token: REFRESH, expires_in: 3600, scope: CALENDAR_EVENTS_SCOPE } });
+    expect(await r.run()).toBe(0);
+    const u = new URL(r.urls[0]!);
+    expect(u.searchParams.getAll("scope")).toEqual([CALENDAR_EVENTS_SCOPE]);
+    expect(read(r.secretsFile)).toContain(`GOOGLE_REFRESH_TOKEN=${REFRESH}`);
+  });
+
+  it("compares the granted scope as a set of space-separated scopes: calendar.readonly and calendar.events only", () => {
+    expect([...calendarScopes(CALENDAR_READONLY_SCOPE)!]).toEqual([CALENDAR_READONLY_SCOPE]);
+    expect([...calendarScopes(` ${CALENDAR_READONLY_SCOPE}  ${CALENDAR_READONLY_SCOPE} `)!]).toEqual([CALENDAR_READONLY_SCOPE]);
+    expect([...calendarScopes(`${CALENDAR_EVENTS_SCOPE} ${CALENDAR_READONLY_SCOPE}`)!]).toEqual([CALENDAR_EVENTS_SCOPE, CALENDAR_READONLY_SCOPE]);
     for (const s of [`${CALENDAR_READONLY_SCOPE} https://www.googleapis.com/auth/calendar`, "https://www.googleapis.com/auth/calendar", "", undefined, 1]) {
-      expect(onlyReadonly(s), String(s)).toBe(false);
+      expect(calendarScopes(s), String(s)).toBeNull();
     }
   });
 });
@@ -302,13 +317,23 @@ describe("factory setup calendar google: refusals store nothing and exit non-zer
   };
   const snapshot = (r: Run) => ({ secrets: read(r.secretsFile), config: read(r.configFile) });
 
-  it("a granted scope other than exactly calendar.readonly", async () => {
-    for (const scope of [`${CALENDAR_READONLY_SCOPE} https://www.googleapis.com/auth/calendar`, "https://www.googleapis.com/auth/calendar", undefined]) {
-      const r = machine();
-      r.google.exchange = () => ({ status: 200, body: { access_token: ACCESS, refresh_token: REFRESH, expires_in: 3600, scope } });
-      await untouched(r, snapshot(r));
-      expect(r.printed.join("\n")).toMatch(/scope other than exactly calendar\.readonly/);
+  it("a granted scope other than calendar.readonly or calendar.events", async () => {
+    for (const write of [false, true]) {
+      for (const scope of [`${CALENDAR_READONLY_SCOPE} https://www.googleapis.com/auth/calendar`, `${CALENDAR_EVENTS_SCOPE} https://www.googleapis.com/auth/calendar`, "https://www.googleapis.com/auth/calendar", undefined]) {
+        const r = machine();
+        r.write = write;
+        r.google.exchange = () => ({ status: 200, body: { access_token: ACCESS, refresh_token: REFRESH, expires_in: 3600, scope } });
+        await untouched(r, snapshot(r));
+        expect(r.printed.join("\n")).toMatch(/scope other than exactly calendar\.readonly or calendar\.events/);
+      }
     }
+  });
+
+  it("a write connect whose answer grants calendar.readonly only", async () => {
+    const r = machine();
+    r.write = true;
+    await untouched(r, snapshot(r));
+    expect(r.printed.join("\n")).toMatch(/did not grant calendar\.events/);
   });
 
   it("a callback with a wrong state, before any token request", async () => {

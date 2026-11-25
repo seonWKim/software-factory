@@ -2392,6 +2392,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "calendar_sync_state",
       "calendar_sync_requests", "calendar_synced_ranges", // on-demand sync: src/calendar/migrations/20261121T1001-calendar-sync-requests
       "calendar_local_events", // the owner's own events: src/calendar/migrations/20261124T1003-calendar-local-events
+      "calendar_write_access", // whether each connected calendar takes writes: src/calendar/migrations/20261125T0900-calendar-local-provider
       // The sql bus's own tables (RFC 0015 M3).
       "bus_scheduler",
       "bus_topics",
