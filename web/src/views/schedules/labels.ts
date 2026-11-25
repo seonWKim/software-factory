@@ -1,4 +1,4 @@
-import type { ActionKind, CadenceKind, ScheduleRunRow } from "../../api.js";
+import type { ActionKind, CadenceKind, ScheduleRunRow, ScheduleSuggestionRow } from "../../api.js";
 import { type MessageKey } from "../../i18n/en.js";
 
 // The catalog key of each schedule word, written out so each key stays a quoted literal in the source.
@@ -21,6 +21,7 @@ export const ACTION_TEXT: Record<ActionKind, MessageKey> = {
   build: "schedules.actionKind.build",
   agent: "schedules.actionKind.agent",
   feedback: "schedules.actionKind.feedback",
+  check_page: "schedules.actionKind.checkPage",
   improve: "schedules.actionKind.improve",
 };
 
@@ -29,6 +30,7 @@ export const ACTION_ABOUT: Record<ActionKind, MessageKey> = {
   build: "schedules.actionAbout.build",
   agent: "schedules.actionAbout.agent",
   feedback: "schedules.actionAbout.feedback",
+  check_page: "schedules.actionAbout.checkPage",
   improve: "schedules.actionAbout.improve",
 };
 
@@ -47,6 +49,13 @@ export const OUTCOME_TEXT: Record<ScheduleRunRow["outcome"], MessageKey> = {
   skipped: "schedules.outcome.skipped",
   checkpoint: "schedules.outcome.checkpoint",
   rejected: "schedules.outcome.rejected",
+};
+
+export const SUGGESTION_STATE_TEXT: Record<ScheduleSuggestionRow["state"], MessageKey> = {
+  pending: "schedules.suggestions.state.pending",
+  accepted: "schedules.suggestions.state.accepted",
+  dismissed: "schedules.suggestions.state.dismissed",
+  snoozed: "schedules.suggestions.state.snoozed",
 };
 
 export const STATE_TEXT = {

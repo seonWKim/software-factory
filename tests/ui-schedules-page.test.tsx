@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ScheduleRow, ScheduleRunRow } from "../web/src/api.js";
+import type { ScheduleRow, ScheduleRunRow, ScheduleSuggestionRow } from "../web/src/api.js";
 import { PAGES } from "../web/src/pages.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
@@ -30,11 +30,16 @@ const pick = (dialog: HTMLElement, label: string, choice: string) => {
 const TOKEN = "tok_schedules";
 const schedule = (id: string, title: string, over: Partial<ScheduleRow> = {}): ScheduleRow => ({
   id, title, cadence: { kind: "daily", spec: "09:00" }, zone: "Europe/Paris", next_due_at: "2026-11-25T08:00:00.000Z", running_since: null,
-  skip_when_busy: false, action: { kind: "build", settings: { body: "Check the docs." } }, token_cap: null, ...over,
+  skip_when_busy: false, action: { kind: "build", settings: { body: "Check the docs." } }, token_cap: null, trigger: null, paused: false, run_cap_usd: null, daily_cap_usd: null, ...over,
 });
+/** A Check a page schedule, as the list route stores it. */
+const pageSchedule = (id: string, title: string, over: Partial<ScheduleRow> = {}): ScheduleRow =>
+  schedule(id, title, { action: { kind: "check_page", settings: { instruction: "Find broken links.", url: "https://example.com/docs" } }, ...over });
+const onMerge = (id: string, title: string, over: Partial<ScheduleRow> = {}) => pageSchedule(id, title, { cadence: null, trigger: "merge", next_due_at: null, zone: "UTC", ...over });
 
 let schedules: ScheduleRow[];
 let runs: Record<string, ScheduleRunRow[]>;
+let suggestions: Record<string, ScheduleSuggestionRow[]>;
 let posts: { path: string; body: Record<string, unknown>; token: string | null }[];
 /** What the next write answers, when it is not a success. */
 let refusal: string | null;
@@ -51,6 +56,7 @@ beforeEach(() => {
     ],
     sch_bbbb2222: [],
   };
+  suggestions = {};
   posts = [];
   refusal = null;
   proposals = [];
@@ -60,6 +66,7 @@ beforeEach(() => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     if (u.pathname === "/api/v1/session") return json(200, { csrf_token: TOKEN, actor: "local:owner", commands_enabled: true });
     if (u.pathname === "/api/v1/schedules" && !init?.method) return json(200, { schedules });
+    if (u.pathname === "/api/v1/schedules/suggestions") return json(200, { suggestions: suggestions[u.searchParams.get("schedule")!] ?? [] });
     if (u.pathname === "/api/v1/schedules/runs") return json(200, { runs: runs[u.searchParams.get("schedule")!] ?? [] });
     if (init?.method === "POST" && (u.pathname === "/api/v1/schedules/draft" || u.pathname === "/api/v1/schedules/improve")) {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
@@ -223,6 +230,22 @@ describe("Schedules page", () => {
     expect((await row("Daily design check")).querySelectorAll("td")[0]!.contains(await summary("Daily design check"))).toBe(true);
     // Does says what a persona schedule does, not "Reviews feedback".
     expect((await row("Daily design check")).textContent).toContain("Gives feedback as tasks");
+  });
+
+  it("a long title is cut to the column's width, whole in its tooltip, so it never widens the table past a tablet's edge", async () => {
+    const long = "Weekly check of the public pricing page for broken links, stale prices and out-of-date plan names";
+    schedules.push(schedule("sch_long", long));
+    show();
+    const title = [...(await row(long)).querySelectorAll<HTMLElement>("td span")].find((el) => el.textContent === long && !el.hasAttribute("data-summary"))!;
+    expect(title.title).toBe(long);
+    expect(title.className.split(/\s+/)).toEqual(expect.arrayContaining(["w-0", "min-w-full", "truncate"]));
+  });
+
+  it("a long Repeats wraps between words on a narrow table instead of pushing the Switch and the menu past a tablet's edge", async () => {
+    schedules.push(schedule("sch_two_days", "Pricing check", { cadence: { kind: "weekly", spec: "mon,thu 09:00" } }));
+    show();
+    const cell = [...(await row("Pricing check")).querySelectorAll("td")].find((td) => td.textContent === "Weekly on Mon and Thu at 09:00")!;
+    expect(cell.className.split(/\s+/)).not.toContain("whitespace-nowrap");
   });
 
   it("selecting a schedule shows what it does above its runs: its whole text behind Show more, the action, repeats, zone, busy rule, token limit, last and next run", async () => {
@@ -552,5 +575,157 @@ describe("Schedules page", () => {
     const tasks = PAGES.filter((p) => p.group === "tasks").map((p) => p.path);
     expect(tasks.indexOf("schedules")).toBe(tasks.indexOf("calendar") + 1);
     expect(PAGES.find((p) => p.path === "schedules")?.label).toBe("Schedules");
+  });
+});
+
+// Check a page schedules and On each merge (design 09-dashboard-schedules).
+describe("Schedules page, Check a page", () => {
+  beforeEach(() => {
+    schedules.push(
+      onMerge("cp_merge", "Docs on merge"),
+      pageSchedule("cp_paused", "Paused page", { paused: true, cadence: { kind: "interval", spec: "60" }, run_cap_usd: 0.5, daily_cap_usd: 2 }),
+    );
+  });
+
+  it("an On each merge schedule's Repeats and Next run read On each merge, its Switch is on and its State Waiting", async () => {
+    show();
+    await ready();
+    const cells = (await row("Docs on merge")).querySelectorAll("td");
+    expect([cells[1]!.textContent, cells[2]!.textContent, cells[3]!.textContent]).toEqual(["On each merge", "On each merge", "Waiting"]);
+    expect(within(await row("Docs on merge")).getByRole("switch").getAttribute("aria-checked")).toBe("true");
+    expect(cells[4]!.textContent).toBe("Checks a page");
+  });
+
+  it("a paused page schedule reads its paused flag: Switch off, State and Next run Paused, Resume in the menu, Run now off", async () => {
+    show();
+    await ready();
+    const r = await row("Paused page");
+    expect(r.querySelectorAll("td")[2]!.textContent).toBe("Paused");
+    expect(within(r).getByRole("switch").getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(within(r).getByRole("button", { name: "More for Paused page" }));
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Run now", "Edit", "Resume", "Delete"]);
+    expect((screen.getByRole("menuitem", { name: "Run now" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.click(within(r).getByRole("switch"));
+    await waitFor(() => expect(posts).toEqual([{ path: "resume", body: { id: "cp_paused" }, token: TOKEN }]), SLOW);
+  });
+
+  it("Run now is off on an On each merge schedule, even while it is not paused", async () => {
+    show();
+    await ready();
+    fireEvent.click(within(await row("Docs on merge")).getByRole("button", { name: "More for Docs on merge" }));
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Run now", "Edit", "Pause", "Delete"]);
+    expect((screen.getByRole("menuitem", { name: "Run now" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("an On each merge schedule that is paused still reads On each merge in Next run", async () => {
+    schedules.push(onMerge("cp_pm", "Paused merge", { paused: true }));
+    show();
+    await ready();
+    const cells = (await row("Paused merge")).querySelectorAll("td");
+    expect([cells[2]!.textContent, cells[3]!.textContent]).toEqual(["On each merge", "Paused"]);
+  });
+
+  it("New schedule offers Build, Agent, Feedback and Check a page; Check a page shows its own fields and hides the others", async () => {
+    show();
+    await ready();
+    fireEvent.click(screen.getByRole("button", { name: "New schedule" }));
+    const dialog = await screen.findByRole("dialog", undefined, SLOW);
+    fireEvent.click(within(dialog).getByLabelText("Does"));
+    expect(within(dialog).getAllByRole("option").map((o) => o.textContent)).toEqual(["Builds a task", "Asks an agent", "Gives feedback as tasks", "Checks a page"]);
+    fireEvent.click(within(dialog).getByRole("option", { name: "Builds a task" }));
+    fireEvent.click(within(dialog).getByLabelText("Repeats"));
+    expect(within(dialog).getAllByRole("option").map((o) => o.textContent)).not.toContain("On each merge");
+    fireEvent.click(within(dialog).getByRole("option", { name: "Daily" }));
+    pick(dialog, "Does", "Checks a page");
+    for (const label of ["Instruction", "Page URL", "Run cap (USD)", "Daily cap (USD)"]) expect(within(dialog).getByLabelText(label)).toBeTruthy();
+    for (const label of [MISSED, "Token limit", "Text"]) expect(within(dialog).queryByLabelText(label)).toBeNull();
+    fireEvent.click(within(dialog).getByLabelText("Repeats"));
+    expect(within(dialog).getAllByRole("option").map((o) => o.textContent)).toContain("On each merge");
+    fireEvent.click(within(dialog).getByRole("option", { name: "On each merge" }));
+    pick(dialog, "Does", "Builds a task");
+    expect(within(dialog).getByLabelText("Repeats").textContent).toContain("Daily");
+    expect(within(dialog).queryByLabelText("Instruction")).toBeNull();
+  });
+
+  it("adding a Check a page schedule on each merge sends its instruction, page and caps, blank caps as null, and no spec, zone or missed rule", async () => {
+    show();
+    await ready();
+    fireEvent.click(screen.getByRole("button", { name: "New schedule" }));
+    const dialog = await screen.findByRole("dialog", undefined, SLOW);
+    fireEvent.change(within(dialog).getByLabelText("Title"), { target: { value: "Docs on merge 2" } });
+    pick(dialog, "Does", "Checks a page");
+    pick(dialog, "Repeats", "On each merge");
+    fireEvent.change(within(dialog).getByLabelText("Instruction"), { target: { value: "Find broken links." } });
+    fireEvent.change(within(dialog).getByLabelText("Page URL"), { target: { value: "https://example.com/docs" } });
+    fireEvent.change(within(dialog).getByLabelText("Daily cap (USD)"), { target: { value: "2.5" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add schedule" }));
+    await waitFor(() => expect(posts).toHaveLength(1), SLOW);
+    expect(posts[0]).toEqual({
+      path: "add", token: TOKEN,
+      body: { id: "docs-on-merge-2", title: "Docs on merge 2", action: "check-page", cadence: "on-merge", instruction: "Find broken links.", url: "https://example.com/docs", run_cap_usd: null, daily_cap_usd: 2.5 },
+    });
+  });
+
+  it("Edit of a Check a page schedule shows Repeats, When, Time zone and Does read only, and a save sends only what changed", async () => {
+    show();
+    await ready();
+    fireEvent.click(within(await row("Docs on merge")).getByRole("button", { name: "More for Docs on merge" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    const dialog = await screen.findByRole("dialog", undefined, SLOW);
+    for (const label of ["Repeats", "When", "Time zone", "Does"]) expect((within(dialog).getByLabelText(label) as HTMLElement & { disabled: boolean }).hasAttribute("disabled") || within(dialog).getByLabelText(label).getAttribute("aria-disabled") === "true").toBe(true);
+    expect(within(dialog).getByLabelText("Repeats").textContent).toContain("On each merge");
+    expect((within(dialog).getByLabelText("Instruction") as HTMLTextAreaElement).value).toBe("Find broken links.");
+    expect((within(dialog).getByLabelText("Page URL") as HTMLInputElement).value).toBe("https://example.com/docs");
+    expect(within(dialog).queryByRole("button", { name: "Improve" })).toBeNull();
+    fireEvent.change(within(dialog).getByLabelText("Run cap (USD)"), { target: { value: "1.5" } });
+    fireEvent.change(within(dialog).getByLabelText("Instruction"), { target: { value: "Check spelling." } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(posts).toHaveLength(1), SLOW);
+    expect(posts[0]).toEqual({ path: "edit", token: TOKEN, body: { id: "cp_merge", instruction: "Check spelling.", run_cap_usd: 1.5 } });
+  });
+
+  it("Edit of a plain schedule lists Build, Agent and Feedback only", async () => {
+    show();
+    await ready();
+    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "More for Nightly docs check" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    const dialog = await screen.findByRole("dialog", undefined, SLOW);
+    fireEvent.click(within(dialog).getByLabelText("Does"));
+    expect(within(dialog).getAllByRole("option").map((o) => o.textContent)).toEqual(["Builds a task", "Asks an agent", "Gives feedback as tasks"]);
+  });
+
+  it("the detail Card of a Check a page schedule lists its suggestions read only, above Runs: text clamped, state a Badge", async () => {
+    suggestions["cp_merge"] = [
+      { id: "s1", text: "Fix the broken link on the install page.", state: "pending", created_at: "2026-11-24T08:00:00.000Z" },
+      { id: "s2", text: "Rename the heading.", state: "snoozed", created_at: "2026-11-24T09:00:00.000Z" },
+    ];
+    show();
+    await ready();
+    fireEvent.click(within(await row("Docs on merge")).getByRole("button", { name: "Show what Docs on merge does and its runs" }));
+    const detail = await screen.findByRole("region", { name: "About Docs on merge" }, SLOW);
+    const list = await within(detail).findByRole("table", { name: "Suggestions" }, SLOW);
+    const runsCard = (await screen.findByText("This schedule has not run yet.", undefined, SLOW)).closest("section")!;
+    expect(detail.compareDocumentPosition(runsCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const cells = [...list.querySelectorAll("tbody tr")].map((r) => [...r.querySelectorAll("td")].map((c) => c.textContent));
+    expect(cells).toEqual([["Fix the broken link on the install page.", "Pending"], ["Rename the heading.", "Snoozed"]]);
+    expect(list.querySelector("p.line-clamp-2")).toBeTruthy();
+    expect([...list.querySelectorAll("[data-level]")].map((b) => (b as HTMLElement).dataset["level"])).toEqual(["pending", "snoozed"]);
+    expect(within(detail).queryByRole("button", { name: /accept|dismiss|snooze/i })).toBeNull();
+    const pairs = Object.fromEntries([...detail.querySelectorAll("dt")].map((dt) => [dt.textContent, dt.nextElementSibling!.textContent]));
+    expect(pairs["Repeats"]).toBe("On each merge");
+    expect(pairs["Page"]).toBe("https://example.com/docs");
+    expect(pairs["Next run"]).toBe("On each merge");
+    expect(pairs["Time zone"]).toBeUndefined();
+  });
+
+  it("a Check a page schedule with no suggestions says so; a plain schedule has no suggestions section", async () => {
+    show();
+    await ready();
+    fireEvent.click(within(await row("Docs on merge")).getByRole("button", { name: "Show what Docs on merge does and its runs" }));
+    expect(await screen.findByText("This schedule has no suggestions yet.", undefined, SLOW)).toBeTruthy();
+    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "Show what Nightly docs check does and its runs" }));
+    await screen.findByRole("region", { name: "About Nightly docs check" }, SLOW);
+    expect(document.querySelector("[data-schedule-suggestions]")).toBeNull();
   });
 });

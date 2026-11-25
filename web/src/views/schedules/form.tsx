@@ -1,7 +1,7 @@
 import { type RefObject, useId, useState } from "react";
 import {
   ACTION_KINDS, API, CADENCE_KINDS, type ActionKind, type CadenceKind, type ScheduleFields, type ScheduleImprovement, type ScheduleRow, type Session,
-  actionText, isWritableKind, postScheduleDraft, postScheduleImprove, useApi,
+  actionText, isCheckPage, isWritableKind, pageUrl, postScheduleDraft, postScheduleImprove, useApi,
 } from "../../api.js";
 import { Button } from "../../components/ui/button.js";
 import { ButtonRow } from "../../components/ui/button-row.js";
@@ -21,21 +21,40 @@ import { ACTION_TEXT, CADENCE_CHOICE, MISSED_RULES, MISSED_TEXT, type MissedRule
 
 interface Values {
   title: string;
-  cadence: CadenceKind;
+  cadence: CadenceKind | typeof ON_MERGE;
   spec: string;
   zone: string;
   action: ActionKind;
   body: string;
   missed: MissedRule;
   cap: string;
+  /** A Check a page schedule's page and USD caps, as typed (blank: no cap). */
+  url: string;
+  runCap: string;
+  dailyCap: string;
 }
+
+/** The cadence word of a Check a page schedule that runs on each merge (ON_MERGE in src/core/schedule.ts). */
+const ON_MERGE = "on-merge";
+const PAGE_KIND = "check_page";
+
+/** The word `schedule add` takes for an action kind. */
+const writeWord = (k: ActionKind) => (k === PAGE_KIND ? "check-page" : k);
+
+const capOf = (usd: number | null) => (usd === null ? "" : String(usd));
 
 const zoneName = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 const valuesOf = (s: ScheduleRow | null): Values =>
   s === null
-    ? { title: "", cadence: "daily", spec: "09:00", zone: zoneName(), action: "build", body: "", missed: "catch_up", cap: "" }
-    : { title: s.title, cadence: s.cadence.kind, spec: s.cadence.spec, zone: s.zone, action: s.action?.kind ?? "build", body: actionText(s), missed: missedOf(s.skip_when_busy), cap: s.token_cap === null ? "" : String(s.token_cap) };
+    ? { title: "", cadence: "daily", spec: "09:00", zone: zoneName(), action: "build", body: "", missed: "catch_up", cap: "", url: "", runCap: "", dailyCap: "" }
+    : {
+        title: s.title, cadence: s.cadence?.kind ?? ON_MERGE, spec: s.cadence?.spec ?? "", zone: s.zone, action: s.action?.kind ?? "build", body: actionText(s), missed: missedOf(s.skip_when_busy),
+        cap: s.token_cap === null ? "" : String(s.token_cap), url: pageUrl(s), runCap: capOf(s.run_cap_usd), dailyCap: capOf(s.daily_cap_usd),
+      };
+
+/** A cap as typed: blank sends null (no cap, or clear it). */
+const capValue = (text: string): number | null => (text.trim() === "" ? null : Number(text));
 
 /** The fields to send: every one for a new schedule, only the changed ones for an edit (a blank token limit is left out). */
 function fieldsOf(v: Values, was: ScheduleRow | null): ScheduleFields {
@@ -43,6 +62,22 @@ function fieldsOf(v: Values, was: ScheduleRow | null): ScheduleFields {
   const f: ScheduleFields = {};
   const changed = (k: keyof Values) => was === null || v[k] !== before[k];
   if (changed("title")) f.title = v.title;
+  if (v.action === PAGE_KIND) {
+    // Check a page: the instruction rides in `instruction`; an edit never sends its cadence, zone or action (the core refuses them).
+    if (was === null) {
+      f.action = writeWord(v.action);
+      f.cadence = v.cadence;
+      if (v.cadence !== ON_MERGE) {
+        f.spec = v.spec;
+        f.zone = v.zone;
+      }
+    }
+    if (changed("body")) f.instruction = v.body;
+    if (changed("url")) f.url = v.url;
+    if (changed("runCap")) f.run_cap_usd = capValue(v.runCap);
+    if (changed("dailyCap")) f.daily_cap_usd = capValue(v.dailyCap);
+    return f;
+  }
   if (changed("cadence") || changed("spec")) {
     f.cadence = v.cadence;
     f.spec = v.spec;
@@ -65,7 +100,7 @@ const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
  * Whether a daily or weekly cadence's time today has already passed on the browser's clock (for weekly, today is one
  * of its days): then its first run is tomorrow or later, so New schedule offers Run now too.
  */
-function passedToday(cadence: CadenceKind, spec: string, now: Date): boolean {
+function passedToday(cadence: string, spec: string, now: Date): boolean {
   const m = cadence === "daily" ? /^()(\d{2}):(\d{2})$/.exec(spec.trim()) : cadence === "weekly" ? /^([a-z,]+)\s+(\d{2}):(\d{2})$/i.exec(spec.trim()) : null;
   if (m === null) return false;
   if (cadence === "weekly" && !m[1]!.toLowerCase().split(",").includes(WEEKDAYS[now.getDay()]!)) return false;
@@ -107,8 +142,11 @@ export function ScheduleDialog({ schedule, busy, error, returnFocusTo, onSave, o
   const [runNow, setRunNow] = useState(false);
   // Run now too: New schedule only, while today's time has passed; a hidden switch sends nothing.
   const offerRunNow = schedule === null && passedToday(v.cadence, v.spec, new Date());
+  const page = v.action === PAGE_KIND;
+  // Edit of a Check a page schedule: its repeats, time zone and action stay as stored (the core refuses a change).
+  const locked = schedule !== null && isCheckPage(schedule);
   const set = <K extends keyof Values>(k: K, x: Values[K]) => {
-    setV((old) => ({ ...old, [k]: x }));
+    setV((old) => ({ ...old, [k]: x, ...(k === "action" && x !== PAGE_KIND && old.cadence === ON_MERGE ? { cadence: "daily", spec: "09:00" } : {}) }));
     setMarked((m) => (m.has(k) ? new Set([...m].filter((j) => j !== k)) : m));
   };
   const draft = async () => {
@@ -169,7 +207,7 @@ export function ScheduleDialog({ schedule, busy, error, returnFocusTo, onSave, o
           </ButtonRow>
         </Field>
       )}
-      {schedule !== null && (
+      {schedule !== null && !locked && (
         <Field label={t("schedules.form.improveLabel")} help={t("schedules.form.improveHelp")}>
           <ButtonRow>
             <Button variant="secondary" disabled={pending !== null || token === null} onClick={() => void improve()}>
@@ -195,22 +233,40 @@ export function ScheduleDialog({ schedule, busy, error, returnFocusTo, onSave, o
         <Input id={id("title")} {...changedProps(marked, "title")} value={v.title} onChange={(e) => set("title", e.target.value)} />
       </Field>
       <Field label={t("schedules.form.cadence")} htmlFor={id("cadence")}>
-        <div {...markedBox(marked, "cadence")}><Select id={id("cadence")} value={v.cadence} onChange={(e) => set("cadence", e.target.value as CadenceKind)}>
+        <div {...markedBox(marked, "cadence")}><Select id={id("cadence")} value={v.cadence} disabled={locked} onChange={(e) => set("cadence", e.target.value as Values["cadence"])}>
           {CADENCE_KINDS.map((k) => <option key={k} value={k}>{t(CADENCE_CHOICE[k])}</option>)}
+          {page && <option value={ON_MERGE}>{t("schedules.onMerge")}</option>}
         </Select></div>
       </Field>
-      <Field label={t("schedules.form.spec")} htmlFor={id("spec")} help={t(SPEC_HELP[v.cadence])}>
-        <Input id={id("spec")} {...changedProps(marked, "spec")} value={v.spec} onChange={(e) => set("spec", e.target.value)} />
+      <Field label={t("schedules.form.spec")} htmlFor={id("spec")} help={v.cadence === ON_MERGE ? undefined : t(SPEC_HELP[v.cadence])}>
+        <Input id={id("spec")} {...changedProps(marked, "spec")} disabled={locked || v.cadence === ON_MERGE} value={v.spec} onChange={(e) => set("spec", e.target.value)} />
       </Field>
       <Field label={t("schedules.form.zone")} htmlFor={id("zone")} help={t("schedules.form.zoneHelp")}>
-        <Input id={id("zone")} {...changedProps(marked, "zone")} value={v.zone} onChange={(e) => set("zone", e.target.value)} />
+        <Input id={id("zone")} {...changedProps(marked, "zone")} disabled={locked || v.cadence === ON_MERGE} value={v.zone} onChange={(e) => set("zone", e.target.value)} />
       </Field>
-      <Field label={t("schedules.form.action")} htmlFor={id("action")}>
-        <div {...markedBox(marked, "action")}><Select id={id("action")} value={v.action} onChange={(e) => set("action", e.target.value as ActionKind)}>
-          {ACTION_KINDS.map((k) => <option key={k} value={k}>{t(ACTION_TEXT[k])}</option>)}
+      <Field label={t("schedules.form.action")} htmlFor={id("action")} help={locked ? t("schedules.form.fixedHelp") : undefined}>
+        <div {...markedBox(marked, "action")}><Select id={id("action")} value={v.action} disabled={locked} onChange={(e) => set("action", e.target.value as ActionKind)}>
+          {ACTION_KINDS.filter((k) => k !== PAGE_KIND || schedule === null || locked).map((k) => <option key={k} value={k}>{t(ACTION_TEXT[k])}</option>)}
           {!isWritableKind(stored) && <option value={stored} disabled>{t(ACTION_TEXT[stored])}</option>}
         </Select></div>
       </Field>
+      {page ? (
+        <>
+          <Field label={t("schedules.form.instruction")} htmlFor={id("body")} help={t("schedules.form.instructionHelp")}>
+            <Textarea id={id("body")} {...changedProps(marked, "body")} rows={5} value={v.body} onChange={(e) => set("body", e.target.value)} />
+          </Field>
+          <Field label={t("schedules.form.url")} htmlFor={id("url")} help={t("schedules.form.urlHelp")}>
+            <Input id={id("url")}value={v.url} onChange={(e) => set("url", e.target.value)} />
+          </Field>
+          <Field label={t("schedules.form.runCap")} htmlFor={id("runCap")} help={t("schedules.form.runCapHelp")}>
+            <Input id={id("runCap")} type="number" min={0} step="any" value={v.runCap} onChange={(e) => set("runCap", e.target.value)} />
+          </Field>
+          <Field label={t("schedules.form.dailyCap")} htmlFor={id("dailyCap")} help={t("schedules.form.dailyCapHelp")}>
+            <Input id={id("dailyCap")} type="number" min={0} step="any" value={v.dailyCap} onChange={(e) => set("dailyCap", e.target.value)} />
+          </Field>
+        </>
+      ) : (
+        <>
       <Field label={t("schedules.form.body")} htmlFor={id("body")} help={t(!isWritableKind(v.action) ? "schedules.form.bodyNone" : v.action === "build" ? "schedules.form.bodyBuild" : "schedules.form.bodyPrompt")}>
         <Textarea id={id("body")} {...changedProps(marked, "body")} rows={5} value={v.body} disabled={!isWritableKind(v.action)} onChange={(e) => set("body", e.target.value)} />
       </Field>
@@ -219,14 +275,16 @@ export function ScheduleDialog({ schedule, busy, error, returnFocusTo, onSave, o
           {MISSED_RULES.map((r) => <option key={r} value={r}>{t(MISSED_TEXT[r])}</option>)}
         </Select>
       </Field>
+      <Field label={t("schedules.form.tokenCap")} htmlFor={id("cap")} help={t("schedules.form.tokenCapHelp")}>
+        <Input id={id("cap")} type="number" min={1} step={1} value={v.cap} onChange={(e) => set("cap", e.target.value)} />
+      </Field>
+        </>
+      )}
       {offerRunNow && (
         <Field label={t("schedules.form.runNow")} htmlFor={id("runNow")}>
           <Switch id={id("runNow")} checked={runNow} onCheckedChange={setRunNow} />
         </Field>
       )}
-      <Field label={t("schedules.form.tokenCap")} htmlFor={id("cap")} help={t("schedules.form.tokenCapHelp")}>
-        <Input id={id("cap")} type="number" min={1} step={1} value={v.cap} onChange={(e) => set("cap", e.target.value)} />
-      </Field>
     </Dialog>
   );
 }

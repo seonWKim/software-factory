@@ -56,8 +56,10 @@ function weeklyText(spec: string): string | null {
   return t("repeats.weeklyAt", { days: list, time: m[2]! });
 }
 
-/** What a cadence repeats on, in plain words: "Every 4 hours", "Every day at 09:00", "Weekly on Mon and Fri at 09:00". */
-export function repeatsText({ kind, spec }: Cadence): string {
+/** What a cadence repeats on, in plain words: "Every 4 hours", "Every day at 09:00", "Weekly on Mon and Fri at 09:00"; no cadence is a Check a page schedule on each merge. */
+export function repeatsText(cadence: Cadence | null): string {
+  if (cadence === null) return t("schedules.onMerge");
+  const { kind, spec } = cadence;
   const words = kind === "interval" ? everyText(spec) : kind === "daily" ? dailyText(spec) : kind === "weekly" ? weeklyText(spec) : null;
   return words ?? t(AS_WRITTEN[kind], { spec });
 }
