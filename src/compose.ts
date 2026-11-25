@@ -542,7 +542,7 @@ export function ownerRefusal(loaded: Loaded, store: FactoryStore, user: UserId, 
 }
 
 export type { CliEnvironment, CliIdentity, FactoryStore }; // for the CLI component (src/cli/command.ts)
-export { writeRoutine, type Routine, type RoutineFields, type RoutineWrite } from "./core/routines.js"; // `factory routine`
+export { writeRoutine, type Routine, type RoutineFields, type RoutineWrite } from "./core/check-page.js"; // `factory routine`
 
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. `local` and `learned` as the worker pool's (Plugins.localRoute; 08-settings). */
 export interface SessionParts {

@@ -15,14 +15,10 @@
 import type { FactoryStore, NewWorkItem } from "../interfaces/factory-store.js";
 import { cyrb53 } from "./hash.js";
 import { SYSTEM_ITEM } from "./improver.js";
-import { type Schedule, type ScheduleRun, type ScheduleStore, overCap } from "./schedule.js";
+import { ROUTINE_TRIGGERS, type RoutineTrigger, type Schedule, type ScheduleRun, type ScheduleStore, overCap } from "./schedule.js";
 import { type Cadence, cadenceProblem, nextDue } from "./schedule-cadence.js";
 import { DAY_MS, spendTotals, utcDay } from "./spend.js";
 import { type Actor, type Run, type SourceRef, type Timestamp, type UserId, type WorkItem, outcomeCost } from "./types.js";
-
-/** The triggers a routine may run on: `merge`, a change merged into the base branch since the routine's last run. */
-export const ROUTINE_TRIGGERS = ["merge"] as const;
-export type RoutineTrigger = (typeof ROUTINE_TRIGGERS)[number];
 
 /** How long a snoozed suggestion stays out of the pending list: 14 days. */
 export const SNOOZE_MS = 14 * DAY_MS;

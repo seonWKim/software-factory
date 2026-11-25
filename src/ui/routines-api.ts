@@ -4,10 +4,10 @@
 // the routine's fields (`name`, `instruction`, `url`, `schedule` {kind, spec}, `zone`, `trigger`, `run_cap_usd`,
 // `daily_cap_usd`). After the request guards (write-routes.ts, the pauses CSRF token) a body that is not an object or
 // has an unknown, missing or wrongly typed field is a 400 before any store call; then the owner check (rules-api.ts
-// ownerOf, passed in, 403); a refusal of the core (src/core/routines.ts writeRoutine) is a 409 with its reason; else
+// ownerOf, passed in, 403); a refusal of the core (src/core/check-page.ts writeRoutine) is a 409 with its reason; else
 // 200 with the routine (as it was, for a delete). Shaped as schedules-api.ts.
 
-import type { RoutineFields, RoutineWrite, writeRoutine } from "../core/routines.js";
+import type { RoutineFields, RoutineWrite, writeRoutine } from "../core/check-page.js";
 import type { UserId } from "../core/types.js";
 import type { Logger } from "../core/log.js";
 import { type ApiResult, apiError } from "./api.js";

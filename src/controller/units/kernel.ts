@@ -7,7 +7,7 @@ import { askDetail } from "../../core/owner-asks.js";
 import { type Run, type SourceRef, type SourceType, type Timestamp, type WorkItem, outcomeCost, runTokenCount } from "../../core/types.js";
 import type { Forge } from "../../interfaces/forge.js";
 import { type ControllerDeps, rateLimitWait } from "../../core/controller-deps.js";
-import { type Routine, type SuggestionDecision, carrierSource, fingerprint, lastCost, overRunCap, routineFindings, routineOfCarrier, routineOfHold, slotOfRun } from "../../core/routines.js";
+import { type Routine, type SuggestionDecision, carrierSource, fingerprint, lastCost, overRunCap, routineFindings, routineOfCarrier, routineOfHold, slotOfRun } from "../../core/check-page.js";
 import type { ActionRow, NewAction } from "../../outbound/index.js";
 import type { Draft } from "../../shared/envelope.js";
 import { CODE_ROOT, type SqlDriver, forgetOnFailure } from "../../state/index.js";
@@ -16,9 +16,9 @@ import { type SignalDescriptor, uniqueSignals } from "../signals/signal.js";
 
 /** A configured source, as the deps carry it. */
 type SourceAdapter = NonNullable<ControllerDeps["source"]>;
-/** The routines unit's constants and types (src/core/routines.ts), through the kernel, which reads and writes for it. */
-export { ROUTINE_CAP, ROUTINE_CAP_APPROVED, ROUTINE_CAP_REJECTED, SNOOZE_MS } from "../../core/routines.js";
-export type { RoutineSuggestion } from "../../core/routines.js";
+/** The routines unit's constants and types (src/core/check-page.ts), through the kernel, which reads and writes for it. */
+export { ROUTINE_CAP, ROUTINE_CAP_APPROVED, ROUTINE_CAP_REJECTED, SNOOZE_MS } from "../../core/check-page.js";
+export type { RoutineSuggestion } from "../../core/check-page.js";
 /** The core types the improve unit uses, through the kernel, so the unit adds no legacy import. */
 export type { FiledPattern, Run, SourceRef, Timestamp, WorkItem } from "../../core/types.js";
 

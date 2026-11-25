@@ -14,9 +14,10 @@ import type { FactoryStore } from "../interfaces/factory-store.js";
 import { overBudget } from "./budget.js";
 import { type Cadence, type CadenceKind, cadenceProblem, nextDue } from "./schedule-cadence.js";
 import { grantsLine, withGrantWords } from "./schedule-grants.js";
-import type { RoutineTrigger } from "./routines.js";
 import type { Actor, Timestamp, UserId, WorkItem } from "./types.js";
 
+/** The triggers a routine may run on: `merge`, a change merged into the base branch since the routine's last run. */
+export const ROUTINE_TRIGGERS = ["merge"] as const; export type RoutineTrigger = (typeof ROUTINE_TRIGGERS)[number];
 /** What a claim made of a due occurrence: fired to run, refused (still running), skipped (busy) or held at a checkpoint (over its token cap). */
 export type ClaimOutcome = "fired" | "refused" | "skipped" | "checkpoint";
 /** A run row's outcome: its claim's, or `rejected` once the owner rejected a held checkpoint. */
@@ -24,14 +25,13 @@ export type ScheduleOutcome = ClaimOutcome | "rejected";
 
 /** Queued implement runs at which a `skip` schedule skips its due occurrence (the owner's "under 15"). */
 export const SKIP_WHEN_BUSY_THRESHOLD = 15;
-
 /** What a schedule does with a due occurrence claimed late or while busy: `catch_up` fires it once, `skip` drops it. */
 export type MissedRule = "catch_up" | "skip";
 
 /**
  * What a fired occurrence does: file one work item, run one read-only agent, file the feedback agent's tasks, queue
  * the daily improve run of its slot's UTC day, or queue a routine run (Check a page, planned by planRoutine in
- * src/core/routines.ts). Stored and routed; `factory schedule add` and `edit` (and the HTTP routes) write every kind
+ * src/core/check-page.ts). Stored and routed; `factory schedule add` and `edit` (and the HTTP routes) write every kind
  * but `improve`, which setup adds; they name `check_page` `check-page` (SCHEDULE_WRITE_WORDS).
  */
 export type ScheduleActionKind = "build" | "agent" | "feedback" | "improve" | "check_page";

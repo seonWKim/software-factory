@@ -20,7 +20,7 @@ import type { RunOutputStore } from "../core/stall.js";
 import type { SessionReservation, SessionReservationStore } from "../core/session.js";
 import type { ProposalStore } from "../core/proposals.js";
 import type { StandingChangeStore } from "../core/standing.js";
-import type { ScheduleStore } from "../core/schedule.js"; import type { AttachmentStore } from "../core/attachments.js"; import type { RoutineStore } from "../core/routines.js";
+import type { ScheduleStore } from "../core/schedule.js"; import type { AttachmentStore } from "../core/attachments.js"; import type { RoutineStore } from "../core/check-page.js";
 import type { SkillEvalStore } from "./skill-eval-store.js"; import type { SkillDraftStore } from "./skill-draft-store.js";
 import type { AlertDismissalStore } from "../core/alarms.js";
 
