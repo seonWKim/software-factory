@@ -3,7 +3,7 @@ import { defaultGoogleClient } from "./default-client.js";
 import { googleCalendarConnect } from "./google-calendar-connect.js";
 import { GOOGLE_HTTP_TIMEOUT_MS, GoogleCalendarSource, calendarIds, timedFetch } from "./google-calendar-source.js";
 
-// Google Calendar, read-only (docs/plugins/calendar-source.md): on when the top-level `calendar` key lists
+// Google Calendar (docs/plugins/calendar-source.md): read-only, or with write access its sync port copies the owner's local events. On when the top-level `calendar` key lists
 // "google-calendar". Reads the primary calendar, or the calendars the top-level `calendar_ids` key lists.
 // `factory setup calendar google` and the dashboard's Calendar section connect the account through the one connect
 // hook (google-calendar-connect.ts), with the factory's default client when the secret file names none
@@ -20,7 +20,7 @@ export default definePlugin({
   kind: "calendar",
   name: "google-calendar",
   secrets: [
-    { name: GOOGLE_REFRESH_TOKEN, purpose: "OAuth refresh token granted the calendar.readonly scope: exchanged for short-lived access tokens" },
+    { name: GOOGLE_REFRESH_TOKEN, purpose: "OAuth refresh token granted the calendar.readonly scope, or calendar.events for write access: exchanged for short-lived access tokens" },
     { name: GOOGLE_CLIENT_ID, purpose: "OAuth client ID the refresh token was issued to: the factory's default client, or your own" },
     { name: GOOGLE_CLIENT_SECRET, purpose: "OAuth client secret of that client" },
   ],

@@ -26,6 +26,10 @@ import { SETTINGS_INTRO, SETTINGS_ROW, SETTINGS_ROWS } from "./settings/rows.js"
 // Beside the connect actions, a note (collapsed by default) explains the provider's unverified-app screen and the
 // 7-day expiry of a client in Testing status. A stored sync error of RECONNECT_ERROR (the sign-in expired or was
 // revoked) shows the reconnect line with the same note, open, in place of "Last error", and keeps the connect actions.
+// A connected calendar that can take the owner's local events but is read-only (`write_access: false`, design
+// 02-tasks-calendar, copy to a connected calendar) adds the secondary Button "Reconnect with write access" to its
+// actions: the same sign-in as Connect (the own-client one in a build with no default client), posted with `write: true`,
+// so the consent page asks for write access.
 
 export function CalendarSection({ token }: { token: string }) {
   const view = useApi<CalendarView>(API.calendar);
@@ -64,12 +68,12 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
   const reconnect = plugin.error === RECONNECT_ERROR;
   const refresh = () => client.invalidateQueries({ queryKey: [API.calendar] });
 
-  /** The default sign-in with no argument; the own-client option with `own` (and, from its Dialog, the typed values). */
-  const connect = async (own?: { values?: Record<string, string> }) => {
+  /** The default sign-in with no argument; the own-client option with `own` (and, from its Dialog, the typed values); `write` asks for write access. */
+  const connect = async (own?: { values?: Record<string, string> }, write = false) => {
     setBusy(true);
     setError(null);
     try {
-      const r = await postCalendarConnect(token, plugin.name, own);
+      const r = await postCalendarConnect(token, plugin.name, own, write);
       if (!r.ok) return setError(r.error);
       if (r.state === "needs_input") return setAsking({ needs: r.needs });
       setAsking(null);
@@ -137,6 +141,11 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
                 {plugin.default_client ? t("calendar.ownClient") : t("calendar.ownClientMain")}
               </Button>
             </>
+          )}
+          {plugin.connected && !reconnect && plugin.write_access === false && (
+            <Button variant="secondary" disabled={busy || signingIn} aria-label={t("calendarCopy.writeAccessLabel", { name: plugin.name })} onClick={() => void connect(plugin.default_client ? undefined : {}, true)}>
+              {t("calendarCopy.writeAccess")}
+            </Button>
           )}
           {plugin.connected && (
             <Button variant="danger" disabled={busy || signingIn} aria-label={t("calendar.disconnectLabel", { name: plugin.name })} onClick={() => (setError(null), setConfirming(true))}>

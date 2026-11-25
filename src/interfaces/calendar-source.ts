@@ -1,6 +1,7 @@
 // A calendar the factory reads (design 02-tasks, calendar): a neutral source of events, selected by name in the
 // top-level `calendar` config key (docs/plugins/calendar-source.md); none by default. The calendar component
-// (src/calendar/) stores what a source answers; the source never writes and is never asked to.
+// (src/calendar/) stores what a source answers. A source may also offer a sync port (design 02-tasks-calendar, copy to
+// a connected calendar, 2026-11-25): the owner's local event, copied when the owner asks; the read never writes.
 
 /** One event as a source reports it. Times are ISO 8601 instants; an all-day event spans its whole days. */
 export interface CalendarEvent {
@@ -45,4 +46,34 @@ export interface CalendarWindow {
 export interface CalendarSource {
   /** Every event in `window`. One call per sync; a throw is the sync's error, stored per source. */
   events(window: CalendarWindow): Promise<readonly CalendarEvent[]>;
+  /** Present on a source that can copy the owner's local events into its calendar. */
+  readonly sync?: CalendarSyncPort;
+}
+
+/** A local event as a sync port copies it: its fields, and the zone its wall-clock times and repeats are counted in. */
+export interface CalendarCopy {
+  title: string;
+  starts_at: string;
+  ends_at: string;
+  all_day: boolean;
+  /** The whole series repeats; an edit or a delete applies to all of it. */
+  repeats: "none" | "daily" | "weekly" | "monthly";
+  /** An IANA zone name: the factory process's, the one its local days are counted in. */
+  time_zone: string;
+}
+
+/**
+ * The writes a connected calendar takes for the owner's local events: one provider call per add, edit or delete. A
+ * throw is that write's error, kept on the local event; nothing retries it. Never asked while `writable` answers false.
+ */
+export interface CalendarSyncPort {
+  /** The calendar's name as the owner knows it (the dashboard's switch and note name it). */
+  readonly label: string;
+  /** Whether the connection grants writes; false for a read-only one. */
+  writable(): Promise<boolean>;
+  /** Adds the copy; answers the ID the source's own read reports for it, so the read can leave that copy out. */
+  add(copy: CalendarCopy): Promise<string>;
+  edit(id: string, copy: CalendarCopy): Promise<void>;
+  /** Deletes the copy, every occurrence of its repeat; one already gone is no error. */
+  remove(id: string): Promise<void>;
 }
