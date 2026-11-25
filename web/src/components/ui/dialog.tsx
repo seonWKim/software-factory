@@ -5,6 +5,7 @@ import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
 import { Button } from "./button.js";
 import { ButtonRow } from "./button-row.js";
+import { CARD_TITLE } from "./card.js";
 
 // A native <dialog> opened with showModal (design §9: no UI library). Mount it to open it, unmount it to close it.
 // It renders into document.body, so a table row that opens one keeps its own children. Esc and a click on the
@@ -144,7 +145,7 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
           The form and the body keep their content height and only shrink (min-h-0) to the dialog's max height: none of
           them grows from a zero basis (flex-1), which WebKit sizes as zero, collapsing the dialog to its border. */}
       <form onSubmit={submit} className="flex min-h-0 flex-col">
-        <h2 id={titleId} title={title} className="shrink-0 truncate px-6 pt-6 text-base font-semibold">
+        <h2 id={titleId} title={title} className={cn(CARD_TITLE, "shrink-0 truncate px-6 pt-6")}>
           {title}
         </h2>
         <div data-dialog-body className="flex min-h-0 flex-col gap-3 overflow-y-auto overscroll-contain px-6 py-3">
@@ -214,7 +215,7 @@ export function ModalPanel({ title, header, size = "lg", placement = "center", o
       )}
     >
       <header className="flex shrink-0 items-center gap-3 border-b border-border py-3 pr-3 pl-5">
-        <h2 id={titleId} className={cn("min-w-0 flex-1 truncate text-base font-semibold", header !== undefined && "sr-only")}>
+        <h2 id={titleId} className={cn(CARD_TITLE, "min-w-0 flex-1 truncate", header !== undefined && "sr-only")}>
           {title}
         </h2>
         {header !== undefined && <div className="min-w-0 flex-1">{header}</div>}
