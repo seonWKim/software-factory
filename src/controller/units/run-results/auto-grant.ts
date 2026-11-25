@@ -6,7 +6,7 @@
 // reached through the live settings, so no new legacy import.
 
 import type { Ctx } from "../context.js";
-import { type Decision, type Run, type WorkItem, SYSTEM, footerAfter, retry } from "../support.js";
+import { type Decision, type Run, type WipRef, type WorkItem, SYSTEM, footerAfter, keptWip, retry } from "../support.js";
 import type { needsHuman } from "./notices.js";
 
 type Stop = Parameters<typeof needsHuman>;
@@ -45,7 +45,7 @@ export async function autoGrant(c: Ctx, stopped: Stop[1], run: Stop[2], ask: Ask
   const covered = ask.named.length > 0 && ask.asked.length === 0;
   if (covered ? !switchedOn(c, stopped.project) : !ask.reply || !c.k.live.autoGrantable(stopped.project, ask.asked)) return undefined;
   const t = covered ? coveredTexts(ask.named) : testTexts(ask.asked, ask.reply!, c.k.live.testPathsOnly(ask.asked));
-  const d = retry(stopped, SYSTEM, "implement", t.note, covered ? null : c.unit("commands").widen(stopped, ask.asked), (k) => c.unit("run-results").kindLabel(k));
+  const d = retry(stopped, SYSTEM, "implement", t.note, covered ? null : c.unit("commands").widen(stopped, ask.asked), (k) => c.unit("run-results").kindLabel(k), keptWip(run));
   if (!d || "refuse" in d) return undefined;
   const body = [...t.body, "", footerAfter(stopped, d.patch)].join("\n");
   if (!(await c.k.d.scanner.scan("comment", body)).clean) return undefined;
@@ -81,7 +81,9 @@ export async function checksGrant(c: Ctx, it: WorkItem, run: Run): Promise<Decis
   if (grants.length >= MAX_AUTO_GRANTS || !switchedOn(c, it.project) || !c.k.live.testPathsOnly(files)) return undefined;
   const stopped: WorkItem = { ...it, blocked_on: "human", blocked_reason: "run_failed:implement:checks_failed" };
   const note = `${files.join(", ")} granted automatically because the checks failed only in test files that quote text this change removed (auto_grant_test_paths)`;
-  const d = retry(stopped, SYSTEM, "implement", note, c.unit("commands").widen(stopped, files), (k) => c.unit("run-results").kindLabel(k));
+  // The implementer runs again on the kept commits (`continue`, design 05-restart-asks), not only the push retry's fix step.
+  const kept = keptWip(run), wip = kept && ({ ...kept, continue: true } as WipRef);
+  const d = retry(stopped, SYSTEM, "implement", note, c.unit("commands").widen(stopped, files), (k) => c.unit("run-results").kindLabel(k), wip);
   if (!d || "refuse" in d) return undefined;
   const failed = run.outcome?.status === "failed" ? run.outcome.detail.split(" after one fix step")[0]!.trim() : "";
   const body = [

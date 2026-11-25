@@ -505,7 +505,8 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
       expect(run.outcome.detail).toContain("outside.txt");
       expect(run.outcome.detail).not.toContain("src/a.txt");
     }
-    expect(f.broker.names()).not.toContain("forge.push_branch");
+    // Only the run's wip branch is pushed (design 05-restart-asks), never the PR branch.
+    expect(f.broker.pushed()).toEqual([`factory/wip/${item.id}/${run.id}`]);
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
     expect((await gateComments(f, item.id))[0]!.marker).toBe(`<!-- factory:scope:${run.id} -->`);
   });
@@ -668,7 +669,7 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     expect((await gateComments(f, item.id)).some((c) => c.marker.startsWith("<!-- factory:scope:"))).toBe(false);
   });
 
-  it("an unrelated file outside allowed_paths still fails scope_violation and pushes nothing, conflict or not", async () => {
+  it("an unrelated file outside allowed_paths still fails scope_violation and pushes no PR branch, conflict or not", async () => {
     const f = await setup({
       implementExtra: (wd) => commitFile(wd, "README.md", "readme from the implementer\n", "implementer edits README"),
       moveMain: MAIN_EDITS_A,
@@ -681,7 +682,7 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
       expect(run.outcome.detail).toContain("README.md");
       expect(run.outcome.detail).not.toContain("src/a.txt");
     }
-    expect(f.broker.names()).not.toContain("forge.push_branch");
+    expect(f.broker.pushed()).toEqual([`factory/wip/${item.id}/${run.id}`]);
     expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
   });
 });

@@ -7,7 +7,7 @@
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import { latestSpec, overCap, overCapApproval,
   APPROVED_RUN_QUEUED, APP_REQUEST, CHECKPOINT_REFUSAL, CLOSED_REFUSAL, HOLD_PATHS, RECHECK_PATHS_REFUSAL, appliesLocally, noFilesRefusal, appliesOnPr, approveCheck, approvesHold, awaitingSpec, commandFooter, commandNote, commandPhase, commandSpec,
-  commandState, failedRunKind, floorCommand, floorTierNeeded, helpReply, parseLink, phaseLabel, refusalText, ruleOfTwoCommand, scanNote, specDecision,
+  commandState, failedRunKind, floorCommand, floorTierNeeded, floorWip, helpReply, parseLink, phaseLabel, refusalText, ruleOfTwoCommand, scanNote, specDecision,
   specNotWaiting, unknownCommandReply, withTag, CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity, specKind, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge, mergeCheckAgain, mergeCheckRetryRefusal, mergeCheckStopped, LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND,
 } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
@@ -18,7 +18,7 @@ import type { AppCommandRequest, CliCommand, FactoryStore, RedeemLinkResult } fr
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
-import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, SYSTEM, retry, footerAfter, alreadyAllowed } from "../support.js";
+import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, SYSTEM, retry, retryWip, footerAfter, alreadyAllowed } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js"; import { RUN_NEXT_COMMAND, runNext } from "./run-next.js";
@@ -562,16 +562,16 @@ export class CommandsUnit {
     if (e.kind === "spec_approved") {
       if (this.c.unit("phases").waitsOnGoal(it)) return this.c.unit("phases").approveGoal(it, actor);
       const runs = await this.c.k.reader.listRuns(it.id), noFiles = noFilesRefusal(it, runs), over = overCap(it, runs, await this.c.k.reader.listStateChanges(it.id), latestSpec(runs), this.c.k.settings(it.project)), tooLarge = over !== null && "at" in over && over.at === "too_large";
-      const a = tooLarge ? retry(it, actor, "implement", note, paths.length > 0 ? this.widen(it, paths) : null, (k) => this.c.unit("run-results").kindLabel(k)) : noFiles ? { refuse: noFiles } : await approveCheck(this.c.k.reader, it, { actor, note, paths, comment_id: e.comment_id, tag, widen: (p) => this.widen(it, p), answers: NOTE_ANSWERS });
+      const a = tooLarge ? retry(it, actor, "implement", note, paths.length > 0 ? this.widen(it, paths) : null, (k) => this.c.unit("run-results").kindLabel(k), retryWip(runs)) : noFiles ? { refuse: noFiles } : await approveCheck(this.c.k.reader, it, { actor, note, paths, comment_id: e.comment_id, tag, widen: (p) => this.widen(it, p), answers: NOTE_ANSWERS });
       return a && "split" in a ? this.c.unit("phases").approveSplit(it, a.split, actor, a.note, e.comment_id, a.tag) : overCapApproval(over, actor, note, a);
     }
     if (it.stage === "CLOSED") return e.kind === "spec_rejected" && it.merge_sha ? this.reject(e, it, actor) : { refuse: CLOSED_REFUSAL };
     if (it.blocked_reason === BUDGET_CHECKPOINT) return { refuse: CHECKPOINT_REFUSAL };
-    if (it.blocked_reason === FLOOR_TIER) return floorCommand(e.kind, it, actor, await floorTierNeeded(this.c.k.reader, it), note, this.widen(it, paths));
+    if (it.blocked_reason === FLOOR_TIER) return floorCommand(e.kind, it, actor, await floorTierNeeded(this.c.k.reader, it), note, this.widen(it, paths), floorWip(await this.c.k.reader.listRuns(it.id)));
     if (it.blocked_reason === RULE_OF_TWO) return ruleOfTwoCommand(e.kind, it, actor, note, paths, await this.c.k.reader.listStateChanges(it.id));
     if (e.kind === "spec_rejected") return this.reject(e, it, actor);
     if (e.kind === "retry_requested" && mergeCheckStopped(it, await this.c.k.reader.listStateChanges(it.id))) return { refuse: mergeCheckRetryRefusal(it.id) };
-    if (e.kind === "retry_requested") return commandPhase(it) === "phase_hold" ? this.c.unit("phases").retryPhase(it, actor, note, paths) : recheckRetry(it, note, paths, retry(it, actor, await this.retryKind(it), note, paths.length > 0 ? this.widen(it, paths) : null, (k) => this.c.unit("run-results").kindLabel(k)), (await this.c.k.reader.listStateChanges(it.id)).at(-1), this.c.k.d.clock.now(), RECHECK_PATHS_REFUSAL); // a day old: re-check the premise first
+    if (e.kind === "retry_requested") return commandPhase(it) === "phase_hold" ? this.c.unit("phases").retryPhase(it, actor, note, paths) : recheckRetry(it, note, paths, retry(it, actor, await this.retryKind(it), note, paths.length > 0 ? this.widen(it, paths) : null, (k) => this.c.unit("run-results").kindLabel(k), retryWip(await this.c.k.reader.listRuns(it.id))), (await this.c.k.reader.listStateChanges(it.id)).at(-1), this.c.k.d.clock.now(), RECHECK_PATHS_REFUSAL); // a day old: re-check the premise first
     const phase = commandPhase(it);
     // At the review loop limit, and in REVIEW after a factory branch's `bug` verdict (2026-11-23), too: a human chose to go back through triage or to close (design 04-spec-gate-commands).
     const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure" || phase === "max_loops" ||

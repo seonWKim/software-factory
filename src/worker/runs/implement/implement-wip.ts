@@ -15,6 +15,10 @@ export interface DiffBudget {
 
 /** The wip ref's next steps of a run the mid-run diff check stopped. */
 const BUDGET_NEXT_STEPS = "the run stopped mid-way: its diff went over max_diff_lines or max_diff_files";
+/** The wip ref's next steps of a run that failed after it made commits. */
+const FAILED_NEXT_STEPS = "the run failed after it made commits: continue the work item from the wip head";
+/** The wip ref's next steps of a run whose agent asked for a human. */
+export const ASKED_NEXT_STEPS = "the run stopped to ask a human: continue the work item from the wip head with the answer";
 /** The wip ref's next steps of a run stopped mid-work. */
 const STOPPED_NEXT_STEPS = "the run stopped mid-way (a usage limit, a stall or a timeout): continue the work item from the wip head";
 
@@ -100,11 +104,9 @@ export async function overBudget(
 
 /**
  * An implement run whose agent step stopped mid-work (design §5 Restarts: rate_limited, agent_stalled,
- * agent_timed_out). After the agent stopped, its git config is distrusted, the worktree's changes become one WIP
- * commit, and the commits since `start` go to the run's wip branch (no PR branch push, no PR), marked `continue`
- * so the retry runs the agent on them. When the sandbox can reattach and the runner stores sessions, the folder
- * and the agent session are kept on this host for a `--resume` there. No commits: nothing is pushed, the retry
- * starts fresh. A failed wip push keeps the original failure with no wip ref, and nothing is kept.
+ * agent_timed_out). Its work is kept as `keepContinue` keeps it, and the run fails with `failure`, naming the wip
+ * ref when there was one. No commits: nothing is pushed, the retry starts fresh. A failed wip push keeps the
+ * original failure with no wip ref, and nothing is kept.
  */
 export async function keepStopped(
   w: Worker,
@@ -112,11 +114,33 @@ export async function keepStopped(
   /** False: the session is not kept for a `--resume` (a session at the context ceiling has no room left). */
   resumable = true,
 ): Promise<RunFailure> {
+  const wip = await keepContinue(w, run, item, handle, ctx, start, dirs, `wip: stopped run ${run.id} (${failure.code})`, next_steps, resumable);
+  return decided(wip ? new RunFailure(failure.code, failure.message, failure.infra, { ...failure.extra, wip }) : failure);
+}
+
+/** The failures whose commits a keep step has already decided on (kept, none to keep, or a failed wip push): keepFailed leaves them as they are. */
+const keepDecided = new WeakSet<RunFailure>();
+function decided(f: RunFailure): RunFailure {
+  keepDecided.add(f);
+  return f;
+}
+
+/**
+ * Keeps an implement run's work for a retry that runs the agent on it (design §5 Restarts). After the agent stopped,
+ * its git config is distrusted, the worktree's changes become one WIP commit (`message`), and the commits since
+ * `start` go to the run's wip branch (no PR branch push, no PR), marked `continue`. When `resumable`, the sandbox can
+ * reattach and the runner stores sessions, the folder and the agent session are kept on this host for a `--resume`
+ * there. Null when there are no commits, or the wip push failed (then nothing is kept).
+ */
+export async function keepContinue(
+  w: Worker,
+  run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, start: string, dirs: string, message: string, next_steps: string, resumable: boolean,
+): Promise<ContinueWip | null> {
   await w.distrustAgentGit(handle, dirs);
-  await commitWorktree(w, handle, `wip: stopped run ${run.id} (${failure.code})`);
+  await commitWorktree(w, handle, message);
   const head = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
   const commits = head === start ? 0 : (await w.git(handle, ["rev-list", `${start}..HEAD`])).split("\n").filter(Boolean).length;
-  if (commits === 0) return failure;
+  if (commits === 0) return null;
   const s = w.scratch.get(run);
   const session = resumable && s?.step_session && w.d.sandbox.reattach && w.d.runner.hasSession
     ? { id: s.step_session, host: w.host, folder: handle.id, start, base_sha: handle.base_sha ?? null }
@@ -133,9 +157,28 @@ export async function keepStopped(
     continue: true,
     ...(session ? { session } : {}),
   };
-  const kept = await keepWip(w, run, item, ctx, handle, failure, wip, false);
-  if (session && kept.extra.wip && s) s.kept = { folder: handle.id, session: session.id };
-  return kept;
+  if (!(await storeWip(w, run, item, ctx, handle, wip))) return null;
+  if (session && s) s.kept = { folder: handle.id, session: session.id };
+  return wip;
+}
+
+/**
+ * Any other failure of an implement run once its folder is set up (design §5 Restarts, decided 2026-11-25): an agent
+ * failure or refusal, a spec conflict, a refused gate, a failed git step. Commits the run made since `start` are kept
+ * with `keepContinue` (not resumable), so the retry runs the agent on them instead of starting from the branch. A
+ * failure a keep step has decided on already (keepStopped, keepWip), a lost lease, or one before the folder's start is known: unchanged. A
+ * failure while keeping is logged and the original failure stands.
+ */
+export async function keepFailed(
+  w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, at: { start: string; dirs: string } | null, err: unknown,
+): Promise<unknown> {
+  if (!(err instanceof RunFailure) || err.code === "lease_lost" || keepDecided.has(err) || !at) return err;
+  const wip = await keepContinue(w, run, item, handle, ctx, at.start, at.dirs, `wip: failed run ${run.id} (${err.code})`, FAILED_NEXT_STEPS, false)
+    .catch((e: unknown) => {
+      w.d.log.warn("keeping a failed run's commits failed", { run_id: run.id, error: errorText(e) });
+      return null;
+    });
+  return wip ? new RunFailure(err.code, err.message, err.infra, { ...err.extra, wip }) : err;
 }
 
 /** The context ceiling of one agent session (design §5 Restarts): `on_context` aborts `stop` once one model call's context reaches CONTEXT_CEILING_TOKENS. */
@@ -325,18 +368,22 @@ export async function keepWip(w: Worker, run: Run, item: WorkItem, ctx: ToolCall
     ? err
     : new RunFailure("exception", err instanceof Error ? err.message.slice(0, 500) : "", true);
   if (failure.code === "lease_lost") return failure;
-  let kept = resumed;
-  if (!resumed) {
-    // Stored in the factory repo, then a keyed push intent outbound delivers (RFC 0015 M7), as the PR branch's.
-    kept = await w.storeBranch(item, ctx, handle.workdir, wip.branch, wip.head)
-      .then(async (s) => {
-        if (s.forge) await w.recordPush(item, run, { branch: wip.branch, sha: s.sha }, null);
-        return true;
-      })
-      .catch((e: unknown) => {
-        w.d.log.warn("wip push failed; the retry runs the agent again", { run_id: run.id, error_code: e instanceof RunFailure ? e.code : "exception" });
-        return false;
-      });
-  }
-  return kept ? new RunFailure(failure.code, failure.message, failure.infra, { ...failure.extra, wip }) : failure;
+  const kept = resumed || (await storeWip(w, run, item, ctx, handle, wip));
+  return decided(kept ? new RunFailure(failure.code, failure.message, failure.infra, { ...failure.extra, wip }) : failure);
+}
+
+/**
+ * Stores the wip ref's head in the factory repo, then a keyed push intent outbound delivers (RFC 0015 M7), as the
+ * PR branch's. False when that failed, only logged: the retry then runs the agent again.
+ */
+export async function storeWip(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext, handle: SandboxHandle, wip: WipRef): Promise<boolean> {
+  return w.storeBranch(item, ctx, handle.workdir, wip.branch, wip.head)
+    .then(async (s) => {
+      if (s.forge) await w.recordPush(item, run, { branch: wip.branch, sha: s.sha }, null);
+      return true;
+    })
+    .catch((e: unknown) => {
+      w.d.log.warn("wip push failed; the retry runs the agent again", { run_id: run.id, error_code: e instanceof RunFailure ? e.code : "exception" });
+      return false;
+    });
 }

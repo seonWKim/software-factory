@@ -3,6 +3,7 @@ import type { RunOutcome, WipRef } from "../src/core/types.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
 import { pipeline } from "./helpers/harness.js";
+import { alice } from "./helpers/fakes/config.js";
 
 // Design §5 Restarts, stopped runs keep their work: an implement run that stops mid-work (rate_limited,
 // agent_stalled, agent_timed_out) keeps its commits on `<branch_prefix>wip/<item id>/<run id>`, and its retry runs
@@ -199,5 +200,59 @@ describe("the retry continues the agent on the wip head", () => {
     await retry(f);
     expect(startedOn).toEqual(["base", "base"]);
     expect(implementSpecs(f)).toHaveLength(2);
+  });
+});
+
+// Design §5 Restarts (decided 2026-11-25): any implement run that ends with commits keeps them, not only a stopped one.
+describe("a run that asks for a human or fails keeps its commits for the next run", () => {
+  const ASK = { reason: "The test that pins the ledger format is outside the allowed paths.", question: "May I edit tests/tacit-ledger.test.ts?" };
+
+  it("an implement run with commits that asks for a human keeps them, and the /retry after the answer starts on them", async () => {
+    const { f, startedOn } = await harness({ output: { needs_human: ASK } });
+    const it0 = await f.submit();
+    await f.step();
+    const [asked] = await f.runs(it0, "implement");
+    expect(await f.item(it0)).toMatchObject({ blocked_on: "human", blocked_reason: "agent_needs_human" });
+    const data = (asked!.outcome as Extract<RunOutcome, { status: "succeeded" }>).data;
+    const wip = data.wip as WipRef;
+    expect(wip).toMatchObject({ branch: `factory/wip/${it0.id}/${asked!.id}`, head: WIP_HEAD, commits: 1, continue: true });
+    expect(pushedBranches(f)).toEqual([wip.branch]);
+
+    // The owner answers with `/retry +paths`, as the coordinator did; the run after it is claimed on a new clone.
+    f.sandbox.refs[`origin/${wip.branch}`] = wip.head;
+    f.sandbox.head = "base\n";
+    f.source.queue.push({ kind: "retry_requested", source: it0.source, comment_id: "7001", requester: alice, approver: alice, note: "+paths tests/tacit-ledger.test.ts" } as never);
+    await f.controller.tickIntake();
+    const retried = (await f.runs(it0, "implement"))[1]!;
+    expect(retried.input?.wip).toEqual(wip);
+    await f.step();
+    // The agent runs on the wip head, not on the base: the asked run's commits are on the branch it pushes.
+    expect(startedOn).toEqual(["base", WIP_HEAD]);
+    expect(implementSpecs(f)[1]!.prompt).toContain(`new session from the wip head \`${WIP_HEAD.slice(0, 8)}\``);
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", change_ref: "42" });
+  });
+
+  it("an implement run whose agent fails after it made commits keeps them, and its retry continues on them", async () => {
+    const { f, startedOn } = await harness({ status: "failed", error: "the agent exited 1" });
+    const { it0, failed, outcome } = await firstRun(f);
+    expect(outcome).toMatchObject({ error_code: "agent_failed", wip: { branch: `factory/wip/${it0.id}/${failed.id}`, head: WIP_HEAD, continue: true } });
+    expect(outcome.wip).not.toHaveProperty("session");
+    const queued = (await f.runs(it0, "implement"))[1]!;
+    expect(queued.input?.wip).toEqual(outcome.wip);
+    f.sandbox.refs[`origin/${outcome.wip!.branch}`] = outcome.wip!.head;
+    f.sandbox.head = "base\n";
+    await retry(f);
+    expect(startedOn).toEqual(["base", WIP_HEAD]);
+  });
+
+  it("a retry that fails before it keeps anything hands the wip ref it was given to the next retry", async () => {
+    const { f } = await harness(RATE_LIMITED);
+    const { it0, outcome } = await firstRun(f);
+    // The retry fails at its preflight, before any agent step: no commits of its own, nothing kept.
+    f.broker.responses["forge.preflight"] = [{ ok: false, error_code: "preflight_access", message: "push_access: 403" }];
+    await retry(f);
+    const [, second, third] = await f.runs(it0, "implement");
+    expect(second!.outcome).toMatchObject({ status: "failed", error_code: "preflight_access" });
+    expect(third!.input?.wip).toEqual(outcome.wip);
   });
 });
