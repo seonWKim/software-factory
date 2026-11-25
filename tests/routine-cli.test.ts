@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { ROUTINE_USAGE, type RoutineAction, parseRoutineArgs, routineLine, runRoutineCommand } from "../src/cli/handlers/routine/routine.js";
+import { ROUTINE_USAGE, type RoutineAction, parseRoutineArgs, routineLine, runRoutineCommand, scheduleEquivalent } from "../src/cli/handlers/routine/routine.js";
 import ROUTINE from "../src/cli/handlers/routine/routine.command.js";
 import { NO_NEXT_SLOT } from "../src/core/routines.js";
+import { parseScheduleArgs, runScheduleCommand } from "../src/core/schedule.js";
 import type { UserId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -140,5 +141,37 @@ describe("routine command: the owner check", () => {
     const { store, clock } = await newStore();
     expect(await cli(store, clock)(["add", "r1", ...DAILY])).toEqual({ code: 1, lines: [`Only the owner manages routines; you are ${ME}.`] });
     expect(await store.listRoutines()).toEqual([]);
+  });
+});
+
+// `factory routine` is an alias of `factory schedule` (design 08-schedules): it prints the schedule equivalent, which
+// writes the same row.
+describe("routine command: the schedule equivalent", () => {
+  it("names the factory schedule command for each form", async () => {
+    expect(scheduleEquivalent(["list"])).toBe("factory schedule list");
+    for (const w of ["pause", "resume", "delete", "run"]) expect(scheduleEquivalent([w, "r1"])).toBe(`factory schedule ${w} r1`);
+    expect(scheduleEquivalent(["add", "r1", ...DAILY, "--url", "https://example.com", "--run-cap", "0.5"])).toBe(
+      "factory schedule add --id r1 --action check-page --title Docs --instruction 'Check the docs' --cadence daily --spec 09:00 --zone UTC --url https://example.com --run-cap 0.5",
+    );
+    expect(scheduleEquivalent(["add", "t1", "--name", "It's merged", "--instruction", "x", "--trigger", "merge"])).toBe(
+      "factory schedule add --id t1 --action check-page --title 'It'\\''s merged' --instruction x --cadence on-merge",
+    );
+    expect(scheduleEquivalent(["edit", "r1", "--name", "Docs", "--daily-cap", "none"])).toBe("factory schedule edit r1 --title Docs --daily-cap none");
+    for (const args of [["edit", "r1", "--cadence", "daily", "--spec", "09:00"], ["edit", "r1", "--trigger", "merge"], ["add", "r1", ...DAILY, "--url", "none"]]) {
+      expect(scheduleEquivalent(args)).toMatch(/^no schedule equivalent: /);
+    }
+  });
+
+  it("the equivalent stores the routine the alias stores, on the same schedule row", async () => {
+    const { store, clock } = await owned();
+    const args = ["add", "r1", "--name", "Docs", "--instruction", "Check", "--url", "https://example.com", "--trigger", "merge", "--run-cap", "2"];
+    expect(await cli(store, clock)(args)).toMatchObject({ code: 0 });
+    const viaRoutine = await store.getRoutine("r1");
+    await cli(store, clock)(["delete", "r1"]);
+    const words = scheduleEquivalent(args).split(" ").slice(2);
+    const c = parseScheduleArgs(words);
+    if (typeof c === "string") throw new Error(c);
+    expect(await runScheduleCommand(store, c, ME, async () => true)).toMatchObject({ code: 0 });
+    expect(await store.getRoutine("r1")).toEqual({ ...viaRoutine, created_at: expect.any(String) });
   });
 });
