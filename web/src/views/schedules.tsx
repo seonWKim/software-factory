@@ -80,7 +80,7 @@ function ScheduleRows({ rows, selected, onSelect, onEdit, onDelete, w }: {
 }) {
   const columns: Column<ScheduleRow>[] = [
     { key: "title", header: t("schedules.col.title"), render: (s) => <TitleCell s={s} /> },
-    { key: "cadence", header: t("schedules.col.cadence"), render: (s) => repeatsText(s.cadence), className: "whitespace-nowrap" },
+    { key: "cadence", header: t("schedules.col.cadence"), render: (s) => repeatsText(s.cadence) },
     { key: "next", header: t("schedules.col.next"), render: nextText },
     { key: "status", header: t("schedules.col.status"), render: (s) => <Badge level={stateOf(s)}>{t(STATE_TEXT[stateOf(s)])}</Badge> },
     { key: "action", header: t("schedules.col.action"), render: (s) => (s.action === null ? t("schedules.actionNone") : t(ACTION_TEXT[s.action.kind])) },

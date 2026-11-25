@@ -241,6 +241,13 @@ describe("Schedules page", () => {
     expect(title.className.split(/\s+/)).toEqual(expect.arrayContaining(["w-0", "min-w-full", "truncate"]));
   });
 
+  it("a long Repeats wraps between words on a narrow table instead of pushing the Switch and the menu past a tablet's edge", async () => {
+    schedules.push(schedule("sch_two_days", "Pricing check", { cadence: { kind: "weekly", spec: "mon,thu 09:00" } }));
+    show();
+    const cell = [...(await row("Pricing check")).querySelectorAll("td")].find((td) => td.textContent === "Weekly on Mon and Thu at 09:00")!;
+    expect(cell.className.split(/\s+/)).not.toContain("whitespace-nowrap");
+  });
+
   it("selecting a schedule shows what it does above its runs: its whole text behind Show more, the action, repeats, zone, busy rule, token limit, last and next run", async () => {
     schedules[0] = schedule("sch_aaaa1111", "Nightly docs check", { token_cap: 50_000, skip_when_busy: true, action: { kind: "feedback", settings: { prompt: "Once a day, check the docs.\nYou are the docs persona." } } });
     show();
