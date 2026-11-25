@@ -119,5 +119,4 @@ export const evals = {
   "evals.heldReason": "Reason (optional)",
   "evals.heldReasonHelp": "For your own note here; it is not saved.",
   "evals.heldFailed": "The version could not be settled. Try again.",
-  "evals.heldDismiss": "Dismiss",
 } as const;
