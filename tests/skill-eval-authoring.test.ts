@@ -122,6 +122,34 @@ describe("eval case", () => {
     expect((await evalCommand(store, ["case", "edit", c!.id, "--file", file])).code).toBe(1);
     expect((await store.getSkillEvalCase(c!.id))!.expected).toEqual(["ok"]);
   });
+
+  it("refuses a check of an unknown kind, a rubric with a missing anchor and a weight below 0, writing nothing; takes well-formed check objects", async () => {
+    const { store, suite } = await withSuite();
+    const file = join(dir, "kinds.json");
+    const anchors = { "1": "none", "2": "little", "3": "some", "4": "most", "5": "all" };
+    const { "3": _missing, ...noThree } = anchors;
+    const refused = async (expected: unknown) => {
+      writeFileSync(file, JSON.stringify({ input: "x", expected }));
+      const r = await evalCommand(store, ["case", "add", SKILL, "--file", file]);
+      expect(r.code).toBe(1);
+      expect(r.err.join("\n")).toContain("nothing written");
+      return r.err.join("\n");
+    };
+    expect(await refused([{ kind: "sounds nice" }])).toContain("unknown check kind");
+    expect(await refused([{ kind: "rubric", criterion: "clear", anchors: noThree }])).toContain("no anchor for level 3");
+    expect(await refused([{ kind: "contains", value: "hi", weight: -1 }])).toContain("weight");
+    expect(await refused({ checks: ["ok"], threshold: 2 })).toContain("threshold");
+    expect(await store.listSkillEvalCases(suite.id)).toEqual([]);
+
+    const good = { checks: ["says hi", { kind: "contains", value: "hi" }, { kind: "rubric", criterion: "clear", anchors, weight: 2 }, { kind: "pairwise", criterion: "better" }], threshold: 0.5 };
+    writeFileSync(file, JSON.stringify({ input: "x", expected: good }));
+    expect((await evalCommand(store, ["case", "add", SKILL, "--file", file])).code).toBe(0);
+    const [c] = await store.listSkillEvalCases(suite.id);
+    expect(c!.expected).toEqual(good);
+    writeFileSync(file, JSON.stringify({ expected: [{ kind: "regex", pattern: "(" }] }));
+    expect((await evalCommand(store, ["case", "edit", c!.id, "--file", file])).code).toBe(1);
+    expect((await store.getSkillEvalCase(c!.id))!.expected).toEqual(good);
+  });
 });
 
 describe("eval case try", () => {
@@ -136,7 +164,7 @@ describe("eval case try", () => {
     const fn = vi.fn(call);
     const r = await evalCommand(store, ["case", "try", c!.id, "--model", "cheap"], fn);
     expect(fn).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ case_id: c!.id, model_class: "cheap" }));
-    expect(r.out).toEqual(["yes  one  because one", "no  two  because two", "verdict: fail"]);
+    expect(r.out).toEqual(["yes  one  because one", "no  two  because two", "score: 0.50 (threshold 1)", "verdict: fail"]);
     expect(r.code).toBe(1);
     expect(await rows(store, "controller_skill_eval_runs")).toEqual([]);
     expect(await rows(store, "controller_skill_eval_replays")).toEqual([]);
