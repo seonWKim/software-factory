@@ -1,27 +1,31 @@
-// The skill-eval engine: one run of a suite replays each case, has the judge answer each of the case's rubric checks
-// yes or no, records one verdict per case and sets the run's final status. The replay and the judge are injected:
-// skillEvalReplay over replayInSandbox (the replay golden uses too) and skillJudge in src/core/scorer.ts (the plain
-// completion LlmJudge uses too). Each replay runs in a clean sandbox (design 06-measurement, clean replays): the
-// checkout without its CLAUDE.md, AGENTS.md and skill folders, the skill under test in `.claude/skills/<name>/`, the
-// case's seed folder, the tools the skill's `tools:` front matter names and the MCP servers the case names. Its
-// transcript, answer, usage and wall time are stored with its verdict; a flagged transcript or answer is stored null.
+// The skill-eval engine: one run of a suite replays each case, runs the case's checks (design 06-measurement, check and
+// pass rules: checks.ts), records one verdict per case and sets the run's final status. Deterministic checks run
+// first, with no model call; a failed must-have one fails the case and no judge is called. Then the judge answers the
+// yes/no checks, scores the rubric criteria 1 to 5 and answers each pairwise check twice with the order swapped. The
+// replay and the judges are injected: skillEvalReplay over replayInSandbox (the replay golden uses too) and the skill
+// judges in src/core/scorer.ts (the plain completion LlmJudge uses too). Each replay runs in a clean sandbox (design
+// 06-measurement, clean replays): the checkout without its CLAUDE.md, AGENTS.md and skill folders, the skill under test
+// in `.claude/skills/<name>/`, the case's seed folder, the tools the skill's `tools:` front matter names and the MCP
+// servers the case names. Its transcript, answer, usage and wall time are stored with its verdict; a flagged transcript
+// or answer is stored null.
 //
 // Safe to run twice: the run is started by its id, a case with a stored verdict is not replayed again, and the final
 // status is set once. The store and result types are structural (the SkillEvalStore and AgentRunner shapes used
 // here), so this component imports no legacy module (tests/architecture/dependency-direction.test.ts).
 
 import { frontMatterTools, skillFolderPath } from "../capabilities/capabilities.js";
+import {
+  type CaseChecks, type Check, type CheckResult, type PairwiseJudgeFn, type RubricJudgeFn, type YesNoAnswer,
+  caseScore, caseVerdict, checkLabel, isDeterministic, parseCaseChecks, reaches, runDeterministic, rubricValue,
+} from "./checks.js";
 import { type ReplayMcpServer, type ReplayRequest, type ReplayRunner, type ReplaySandbox, cleanSkillSandbox, replayInSandbox } from "./replay.js";
 
-/** A case's verdict: `pass` when the judge answered yes to every check, `fail` on one no, `errored` when unjudged. */
+/** A case's verdict: `pass` when every must-have check passes and the score reaches the threshold, `errored` when unjudged. */
 export type CaseVerdict = "pass" | "fail" | "errored";
 export type RunStatus = "passed" | "failed" | "errored";
 
-/** One rubric check's answer, as the judge gives it. */
-export interface CheckAnswer {
-  answer: "yes" | "no";
-  reason: string;
-}
+/** One yes/no check's answer, as the judge gives it. */
+export type CheckAnswer = YesNoAnswer;
 
 /** The SkillEvalStore calls the engine makes. */
 export interface SkillEvalEngineStore {
@@ -76,13 +80,20 @@ export class ReplayRefused extends Error {
     super(message);
   }
 }
-/** One answer per check, in order; null when the judge could not answer. */
+/** One answer per yes/no check, in order; null when the judge could not answer. */
 export type SkillJudgeFn = (s: { input: string; output: string; checks: readonly string[] }, signal: AbortSignal) => Promise<readonly CheckAnswer[] | null>;
 
 export interface SkillEvalEngineDeps {
   store: SkillEvalEngineStore;
   replay: SkillReplay;
+  /** Answers the yes/no checks (the case's check texts). */
   judge: SkillJudgeFn;
+  /** Scores the rubric criteria; absent: a case with a rubric criterion is errored `judge_failed`. */
+  rubric?: RubricJudgeFn;
+  /** Answers a pairwise check; absent: a case with a pairwise check and a previous answer is errored `judge_failed`. */
+  pairwise?: PairwiseJudgeFn;
+  /** The previous answer of a case: the stored one from the newest run on another skill version; null or absent: none. */
+  previous?(case_id: string): Promise<string | null>;
   /** The G5 egress scan of text before the store keeps it: the rule names it matched, none when clean. */
   scan(text: string): Promise<readonly string[]>;
 }
@@ -106,18 +117,14 @@ export interface SkillEvalOutcome {
   verdicts: { case_id: string; verdict: CaseVerdict }[];
 }
 
-/** A case's rubric checks: `expected` as a list of check texts, or `{ checks: [...] }`; null when it is neither. */
-export function rubricChecks(expected: unknown): string[] | null {
-  const list = Array.isArray(expected) ? expected : typeof expected === "object" && expected !== null ? (expected as { checks?: unknown }).checks : null;
-  if (!Array.isArray(list) || list.length === 0 || !list.every((c) => typeof c === "string" && c.trim() !== "")) return null;
-  return list as string[];
+/** A case's checks and threshold from its `expected` (checks.ts parseCaseChecks); null when it holds none. */
+export function rubricChecks(expected: unknown): CaseChecks | null {
+  const r = parseCaseChecks(expected);
+  return "value" in r ? r.value : null;
 }
 
 /** A case's input as the replay's prompt: text as it is, any other value as JSON. */
 const caseInput = (input: unknown): string => (typeof input === "string" ? input : JSON.stringify(input));
-
-/** `pass` only when every answer is yes; one no fails the case. */
-const verdictOf = (answers: readonly CheckAnswer[]): CaseVerdict => (answers.every((a) => a.answer === "yes") ? "pass" : "fail");
 
 /** The run's status from its verdicts: `failed` on one failed case, else `errored` on one errored case or none at all, else `passed`. */
 function runStatus(verdicts: readonly string[]): RunStatus {
@@ -149,7 +156,72 @@ export interface JudgedCase {
   record?: ReplayRecord;
 }
 
-/** Replays and judges one case; never throws for the replay's or the judge's fault. */
+/** What the checks read: the case's input, the replay's output, the case id (for its previous answer) and its checks. */
+interface Checked extends CaseChecks {
+  input: string;
+  output: string;
+  case_id: string;
+}
+
+const LEFT_OUT = "no previous answer to compare: left out of the score";
+const base = (c: Check) => ({ check: checkLabel(c), kind: c.kind, weight: c.weight, must: c.must });
+const yesNo = (c: Check, a: CheckAnswer): CheckResult => ({ ...base(c), answer: a.answer, reason: a.reason, value: a.answer === "yes" ? 1 : 0 });
+const validScore = (n: number) => Number.isInteger(n) && n >= 1 && n <= 5;
+
+/** The judges' results for the checks at `at` (by kind), set in `out`; false when a judge could not answer. */
+async function judged(d: Omit<SkillEvalEngineDeps, "store">, s: Checked, out: CheckResult[], signal: AbortSignal): Promise<boolean> {
+  const at = (kind: Check["kind"]) => s.checks.flatMap((c, i) => (c.kind === kind ? [i] : []));
+  const asked = at("yes/no");
+  if (asked.length > 0) {
+    const a = await d.judge({ input: s.input, output: s.output, checks: asked.map((i) => checkLabel(s.checks[i]!)) }, signal).catch(() => null);
+    if (!a || a.length !== asked.length) return false;
+    asked.forEach((i, j) => (out[i] = yesNo(s.checks[i]!, a[j]!)));
+  }
+  const scored = at("rubric");
+  if (scored.length > 0) {
+    const criteria = scored.map((i) => s.checks[i] as Extract<Check, { kind: "rubric" }>).map((c) => ({ criterion: c.criterion, anchors: c.anchors }));
+    const a = d.rubric ? await d.rubric({ input: s.input, output: s.output, criteria }, signal).catch(() => null) : null;
+    if (!a || a.length !== scored.length || !a.every((x) => validScore(x.score))) return false;
+    scored.forEach((i, j) => {
+      const value = rubricValue(a[j]!.score);
+      out[i] = { ...base(s.checks[i]!), answer: reaches(value, s.threshold) ? "yes" : "no", reason: a[j]!.reason, score: a[j]!.score, value };
+    });
+  }
+  const paired = at("pairwise");
+  const previous = paired.length > 0 ? ((await d.previous?.(s.case_id).catch(() => null)) ?? null) : null;
+  for (const i of paired) {
+    const c = s.checks[i] as Extract<Check, { kind: "pairwise" }>;
+    if (previous === null) {
+      out[i] = { ...base(c), answer: "yes", reason: LEFT_OUT, value: null };
+      continue;
+    }
+    if (!d.pairwise) return false;
+    const ask = (a: string, b: string, candidate: "A" | "B") => d.pairwise!({ input: s.input, criterion: c.criterion, a, b, candidate }, signal).catch(() => null);
+    const first = await ask(s.output, previous, "A");
+    const second = first && (await ask(previous, s.output, "B"));
+    if (!first || !second) return false;
+    const win = first.answer === "yes" && second.answer === "yes";
+    out[i] = { ...base(c), answer: win ? "yes" : "no", reason: `new first: ${first.answer}, ${first.reason} New second: ${second.answer}, ${second.reason}`, value: win ? 1 : 0 };
+  }
+  return true;
+}
+
+/**
+ * Runs a case's checks on its output: the deterministic ones first, with no model call; a failed must-have one ends
+ * it there (`judged` false, no judge called). Null when a judge could not answer.
+ */
+async function checkResults(d: Omit<SkillEvalEngineDeps, "store">, s: Checked, signal: AbortSignal): Promise<{ results: CheckResult[]; judged: boolean } | null> {
+  const out: CheckResult[] = [];
+  s.checks.forEach((c, i) => {
+    if (!isDeterministic(c)) return;
+    const r = runDeterministic(c, s.output);
+    out[i] = { ...base(c), answer: r.pass ? "yes" : "no", reason: r.reason, value: r.pass ? 1 : 0 };
+  });
+  if (out.some((r) => r?.must && r.answer === "no")) return { results: out.filter((r) => r !== undefined), judged: false };
+  return (await judged(d, s, out, signal)) ? { results: out, judged: true } : null;
+}
+
+/** Replays and checks one case; never throws for the replay's or a judge's fault. */
 export async function judgeCase(d: Omit<SkillEvalEngineDeps, "store">, run_id: string, c: EngineCase, signal: AbortSignal): Promise<JudgedCase> {
   const checks = rubricChecks(c.expected);
   if (!checks) return { verdict: "errored", detail: { error: "no_rubric" } };
@@ -163,10 +235,11 @@ export async function judgeCase(d: Omit<SkillEvalEngineDeps, "store">, run_id: s
   const scanned = replayed.record ? await scannedRecord(d.scan, replayed.record) : null;
   const stored = scanned ? { record: scanned.record } : {};
   const withheld = scanned && Object.keys(scanned.withheld).length > 0 ? { withheld: scanned.withheld } : {};
-  const answers = await d.judge({ input, output: replayed.output, checks }, signal).catch(() => null);
-  if (!answers || answers.length !== checks.length) return { verdict: "errored", detail: { error: "judge_failed", ...withheld }, ...stored };
-  const kept = await Promise.all(answers.map(async (a, i) => ({ check: checks[i]!, answer: a.answer, reason: (await d.scan(a.reason)).length === 0 ? a.reason : "(withheld by the egress scan)" })));
-  return { verdict: verdictOf(answers), detail: { answers: kept, ...withheld }, ...stored };
+  const r = await checkResults(d, { ...checks, input, output: replayed.output, case_id: c.id }, signal);
+  if (!r) return { verdict: "errored", detail: { error: "judge_failed", ...withheld }, ...stored };
+  const answers = await Promise.all(r.results.map(async (x) => ({ ...x, reason: (await d.scan(x.reason)).length === 0 ? x.reason : "(withheld by the egress scan)" })));
+  const verdict = r.judged ? caseVerdict(r.results, checks.threshold) : "fail";
+  return { verdict, detail: { answers, score: r.judged ? caseScore(r.results) : null, threshold: checks.threshold, ...withheld }, ...stored };
 }
 
 /**
