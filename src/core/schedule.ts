@@ -392,7 +392,7 @@ export function scheduleActionOf(word: string, body: string | undefined, page: P
 
 const refused = (problem: string): ScheduleResult => ({ ok: false, problem });
 /** The schedule with the ID, a Check a page one too, or null. */
-export const findSchedule = async (store: Pick<ScheduleStore, "listSchedules">, id: string): Promise<Schedule | null> =>
+const findSchedule = async (store: Pick<ScheduleStore, "listSchedules">, id: string): Promise<Schedule | null> =>
   (await store.listSchedules({ check_pages: true })).find((s) => s.id === id) ?? null;
 const isPage = (s: Schedule): boolean => s.action?.kind === "check_page";
 /** The first slot of `c` in `zone` after `now`, an interval counted from the schedule's creation (as the claim counts it). */
