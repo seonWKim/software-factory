@@ -29,8 +29,12 @@
 // hook's write question is answered yes, so a plugin that can copy the owner's local events asks for that scope.
 // `ports` hands the local-event routes each listed calendar's sync port (src/calendar/calendar-write.ts), built once
 // per process from the plugin and dropped on each connect or disconnect, so a reconnect's new grant is read afresh.
+// Whether a calendar takes writes is stored state (calendar-write.ts, `calendar_write_access`): a connect from here
+// stores what it asked for once it passes, a disconnect forgets it, and each copy write stores its port's answer. The
+// reads (`copyTarget` for the calendar read, `write_access` on GET /api/v1/calendar) answer from it and never call
+// the provider; nothing stored reads as read-only, which the Settings reconnect with write access sets.
 
-import { type LocalEvents, type SyncOutcome, rangeError, readSyncStates, requestCalendarSync } from "../calendar/index.js";
+import { type LocalEvents, type SyncOutcome, localEvents, rangeError, readSyncStates, requestCalendarSync } from "../calendar/index.js";
 import type { Loaded } from "../load-config.js";
 import type { connectCalendar } from "../setup.js";
 import { errorText } from "../core/log.js";
@@ -77,6 +81,8 @@ export interface CalendarFlow {
   run(name: string, disconnect: boolean, io: CalendarIo): Promise<{ sync: SyncOutcome | null }>;
   /** The sync port of calendar plugin `name`, freshly built; null when it has none. A throw: it cannot be built. Absent: none has one. */
   port?(name: string): Promise<SyncPort | null>;
+  /** The stored write access of each calendar (LocalEvents.writeAccess). Absent: none is stored, every calendar reads as read-only. */
+  access?: LocalEvents["writeAccess"];
 }
 
 /** The local-event write's sync ports (src/calendar/calendar-write.ts), as the calendar component's index offers them. */
@@ -110,11 +116,21 @@ export class UiCalendar {
     return null;
   };
 
-  /** The calendar a new local event is copied to, and whether it takes writes; null when none can. A failure reads as read-only. */
+  /** The calendar a new local event is copied to, and whether it takes writes (stored, never asked of the provider); null when none can. */
   async copyTarget(): Promise<{ label: string; writable: boolean } | null> {
     const target = await this.ports(null).catch(() => null);
     if (target === null) return null;
-    return { label: target.port.label, writable: await target.port.writable().catch(() => false) };
+    return { label: target.port.label, writable: await this.writable(target.name) };
+  }
+
+  /** Whether listed calendar `name` takes writes, from stored state; null when it has no sync port (or is not listed). */
+  async writeAccess(name: string): Promise<boolean | null> {
+    const target = await this.ports(name).catch(() => null);
+    return target === null ? null : this.writable(name);
+  }
+
+  private async writable(name: string): Promise<boolean> {
+    return (await this.flow.access?.get(name)) ?? false;
   }
 
   attempt(name: string): Attempt | null {
@@ -150,7 +166,9 @@ export class UiCalendar {
     });
     const attempt: Attempt = { state: "signing_in", events: null, error: null };
     this.attempts.set(name, attempt);
-    const settled = run.then((out) => ({ out }), (err: unknown) => ({ err }));
+    // The connect passed only if the grant holds the scope asked for: store whether it takes writes.
+    const stored = run.then(async (out) => (await this.flow.access?.set(name, write), out));
+    const settled = stored.then((out) => ({ out }), (err: unknown) => ({ err }));
     void settled.then((r) => this.finish(name, attempt, r, consenting));
     return Promise.race([consent.then((url) => ({ url })), settled]);
   }
@@ -161,6 +179,7 @@ export class UiCalendar {
     };
     this.built.delete(name);
     await this.flow.run(name, true, { hidden: refuse, openBrowser: refuse, beforeWrite: () => undefined, ownClient: false, write: false });
+    await this.flow.access?.set(name, null);
     this.attempts.delete(name);
   }
 
@@ -206,6 +225,7 @@ export function uiCalendar(
       const source = await createPlugin(loaded.registry, "calendar", name, { ...selected.base, secrets: await selected.secrets(), clock: o.clock });
       return source.sync ?? null;
     },
+    access: localEvents(storeSql(o.store)).writeAccess,
   });
 }
 
@@ -252,6 +272,7 @@ export async function readCalendarStatus(d: PauseDeps): Promise<ApiResult> {
       synced_at: s?.synced_at ?? null,
       error: await text(s?.error ?? null),
       attempt: a === null ? null : { state: a.state, events: a.events, error: await text(a.error) },
+      ...(listed.includes(name) ? { write_access: await c.writeAccess(name) } : {}),
     });
   }
   return { status: 200, value: { plugins } };

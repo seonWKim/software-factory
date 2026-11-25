@@ -9,7 +9,8 @@
 // write, at most one sync port call, through the Calendar section's ports (calendar-api.ts UiCalendar.ports; none
 // without that section). An add copies when its body says `sync: true`; an edit or a delete of a copied event changes
 // or removes its copy, the whole series. The answer's `sync` says what the copy did (off, unavailable, synced or
-// failed with its error); a failure keeps the local change, its error is stored on the event, and nothing retries it.
+// failed with its error); a failure keeps the local change and its error is stored on the event. Nothing retries it
+// on a poll: the next save of that event (the add again, or an edit) retries the copy.
 
 import type { LocalEvent, LocalEventFields, LocalEvents } from "../calendar/index.js";
 import { type ApiResult, apiError } from "./api.js";

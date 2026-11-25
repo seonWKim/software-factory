@@ -25,7 +25,7 @@
 // A local event copied to a connected calendar (design 02-tasks-calendar, copy to a connected calendar) is shown once:
 // the stored copy that calendar's read brought back is left out (calendar-write.ts hideCopies). `copy` names the
 // calendar a new event's switch copies to and whether it takes writes (calendar-api.ts UiCalendar.copyTarget, from the
-// sign-in's grant), or null when no connected calendar can take copies.
+// stored write access: this read never calls the provider), or null when no connected calendar can take copies.
 
 import {
   type EventDetails, type EventPerson, type SourceSync, type SyncedRange, expandLocalEvents, localEvents, processTimeZone, rangeError, readCalendar, readLocalEvents, syncWindow,

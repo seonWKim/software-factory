@@ -5,4 +5,6 @@ export const calendar = {
   "calendarCopy.unavailable": "Saved here only: {reason}",
   "calendarCopy.failed": "Saved here, but the copy in {calendar} failed: {error}",
   "calendarCopy.error": "The copy in {calendar} failed: {error}. The event is kept here; save it again to retry.",
+  "calendarCopy.writeAccess": "Reconnect with write access",
+  "calendarCopy.writeAccessLabel": "Reconnect {name} with write access, so the factory's events can be added there",
 } as const;

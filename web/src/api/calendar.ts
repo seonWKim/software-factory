@@ -64,7 +64,7 @@ export interface CalendarEvents {
   calendar: CalendarSync[];
   /** A sync request for exactly `from` through `to` waits for the controller. */
   sync_pending: boolean;
-  /** The calendar a new event's switch copies to; null (or absent) when no connected calendar takes copies. */
+  /** The calendar a new event's switch copies to, and its stored write access; null (or absent) when no connected calendar takes copies. */
   copy?: CopyTarget | null;
 }
 
@@ -133,6 +133,8 @@ export interface CalendarPluginView {
   error: string | null;
   /** The sign-in this server process started, if any. */
   attempt: { state: "signing_in" | "connected" | "failed"; events: number | null; error: string | null } | null;
+  /** Connected with a sync port: whether it takes writes (stored, never asked of the provider). Null or absent: no sync port, or not connected. */
+  write_access?: boolean | null;
 }
 
 /**

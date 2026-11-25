@@ -8,7 +8,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { SqlExecutor } from "../state/index.js";
-import { type SyncPorts, type SyncResult, copyEvent, hideCopies, removeCopy } from "./calendar-write.js";
+import { type SyncPorts, type SyncResult, copyEvent, hideCopies, readWriteAccess, removeCopy, storeWriteAccess } from "./calendar-write.js";
 
 /** The source name the calendar read gives the owner's local events. */
 const LOCAL_SOURCE = "local";
@@ -155,6 +155,8 @@ export interface LocalEvents {
   uncopy(event: LocalEvent, ports: SyncPorts): Promise<SyncResult>;
   /** `events` less the copies of local events, so each shows once (calendar-write.ts hideCopies). */
   hideCopies<E extends { readonly source: string; readonly id: string }>(events: readonly E[]): Promise<E[]>;
+  /** Whether a calendar takes writes, as stored (calendar-write.ts): read with no provider call; null forgets it. */
+  readonly writeAccess: { get(source: string): Promise<boolean | null>; set(source: string, writable: boolean | null): Promise<void> };
 }
 
 /** The local events stored through `db`. */
@@ -162,7 +164,8 @@ export function localEvents(db: SqlExecutor): LocalEvents {
   return {
     check: localEventError, isId: isLocalEventId,
     get: (id) => getLocalEvent(db, id), add: (a) => addLocalEvent(db, a), edit: (id, f, nowMs) => editLocalEvent(db, id, f, nowMs), remove: (id) => deleteLocalEvent(db, id),
-    copy: (e, a) => copyEvent(db, e, { ...a, timeZone: processTimeZone() }), uncopy: (e, ports) => removeCopy(e, ports), hideCopies: (events) => hideCopies(db, events),
+    copy: (e, a) => copyEvent(db, e, { ...a, timeZone: processTimeZone() }), uncopy: (e, ports) => removeCopy(db, e, ports), hideCopies: (events) => hideCopies(db, events),
+    writeAccess: { get: (source) => readWriteAccess(db, source), set: (source, writable) => storeWriteAccess(db, source, writable) },
   };
 }
 

@@ -52,6 +52,11 @@ CREATE TABLE calendar_synced_ranges (
     PRIMARY KEY (source, from_at, to_at)
   );
 
+CREATE TABLE calendar_write_access (
+    source    TEXT PRIMARY KEY,
+    writable  INTEGER NOT NULL
+  );
+
 CREATE INDEX calendar_events_starts ON calendar_events (starts_at);
 
 CREATE INDEX calendar_local_events_starts ON calendar_local_events (starts_at);

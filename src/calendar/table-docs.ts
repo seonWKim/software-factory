@@ -7,4 +7,5 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   calendar_sync_requests: "Each Sync asked for from the dashboard or the CLI: its days, and each calendar's result once done.",
   calendar_synced_ranges: "The days each calendar's on-demand syncs read, so those days count as synced.",
   calendar_sync_state: "When each calendar was last read, when it is read next, and its last error.",
+  calendar_write_access: "Whether each connected calendar takes writes, stored when it is connected and on each copy write, so the calendar read never asks the provider.",
 };
