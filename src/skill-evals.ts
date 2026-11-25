@@ -1,6 +1,7 @@
 // Root wiring of skill evals (design 06-measurement): what `factory eval run <skill>` runs. It finds the skill's
 // suite, builds the engine's parts from the configured plugins (the replay over the sandbox and runner plugins, the
-// judge over the llm plugin with prompts/skill-judge.md, the G5 egress scan, the skill folder's version), runs one
+// judges over the llm plugin with prompts/skill-judge.md and prompts/skill-judge-pairwise.md, the previous version's
+// answers a pairwise check compares against, the G5 egress scan, the skill folder's version), runs one
 // run through runSkillEval, then records the run's figures through the store. The engine is unchanged. The run's
 // options (--model, --judge-model, --replays) are checked here before anything is read or written. A run replays the
 // skill's current version (its folder as it is now) by default; `version` names a stored version of the imported skill
@@ -26,7 +27,7 @@ import type { UserId } from "./core/types.js";
 import { type Loaded, localProject } from "./load-config.js";
 import { Plugins } from "./plugin-set.js";
 import { createPlugin } from "./plugins.js";
-import { judgeClass, skillJudge } from "./core/scorer.js";
+import { judgeClass, skillJudge, skillPairwiseJudge, skillRubricJudge } from "./core/scorer.js";
 import { MODEL_CLASSES, type ModelClass } from "./core/model-choice.js";
 import type { AgentRunner, PackMcpServer } from "./interfaces/agent-runner.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
@@ -103,8 +104,10 @@ export interface SkillEvalWiring {
   store: Pick<SkillEvalStore, "listSkillEvalSuites" | "getSkillEvalRun" | "recordSkillEvalRunFigures" | "startSkillEvalRun" | "listSkillEvalCases" | "listSkillEvalReplays" | "recordSkillEvalReplay" | "finishSkillEvalRun" | "getSkillEvalCase" | "listSkillEvalRuns" | "listSkillVersions">;
   /** Where a relative skill folder resolves. */
   root: string;
-  /** prompts/skill-judge.md, the judge's system prompt. */
+  /** prompts/skill-judge.md, the yes/no and rubric judge's system prompt. */
   judgePrompt(): Promise<string>;
+  /** prompts/skill-judge-pairwise.md, the pairwise judge's system prompt; absent: no pairwise judge (a pairwise check with a previous answer errors the case). */
+  pairwisePrompt?(): Promise<string>;
   /** `tools`: the skill names a broker tool, so the broker is wanted (wiringOf builds it only then). */
   plugins(o?: { tools: boolean }): Promise<SkillEvalPlugins>;
   repo: { path: string; base_branch: string };
@@ -122,8 +125,33 @@ export interface SkillEvalWiring {
   factory_version?: string;
 }
 
-/** The judge's version: the SHA-256 of its system prompt, so a run judged by another prompt is told apart. */
-export const judgeVersion = (prompt: string): string => createHash("sha256").update(prompt).digest("hex");
+/**
+ * The judge's version: the SHA-256 over both judge prompts (skill-judge.md, then skill-judge-pairwise.md, each with its
+ * length first), so a run judged by another prompt is told apart; either file changing gives a new version.
+ */
+export function judgeVersion(judge: string, pairwise: string): string {
+  const h = createHash("sha256");
+  for (const p of [judge, pairwise]) h.update(`${Buffer.byteLength(p)}:`).update(p);
+  return h.digest("hex");
+}
+
+/**
+ * The previous answer of a case for a run on `skill_version`: the stored answer for that case from the newest run of
+ * `skill` on another (known) skill version that holds one. Reads the runs once and each run's replays at most once.
+ */
+export function previousAnswers(store: Pick<SkillEvalStore, "listSkillEvalRuns" | "listSkillEvalReplays">, skill: string, skill_version: string): (case_id: string) => Promise<string | null> {
+  let runs: Promise<SkillEvalRun[]> | null = null;
+  const replays = new Map<string, ReturnType<typeof store.listSkillEvalReplays>>();
+  return async (case_id) => {
+    runs ??= store.listSkillEvalRuns(skill).then((rs) => rs.filter((r) => r.skill_version !== null && r.skill_version !== skill_version));
+    for (const run of await runs) {
+      if (!replays.has(run.id)) replays.set(run.id, store.listSkillEvalReplays(run.id));
+      const answer = (await replays.get(run.id)!).find((x) => x.case_id === case_id)?.answer;
+      if (typeof answer === "string") return answer;
+    }
+    return null;
+  };
+}
 
 /** The engine's store with the run's judge and factory versions added to its start (the suite version the store reads). */
 function versionedStore(store: SkillEvalWiring["store"], v: { judge_version: string; factory_version: string }): SkillEvalEngineDeps["store"] {
@@ -196,9 +224,9 @@ function passportedRunner(runner: AgentRunner, t: ReplayTools): Pick<AgentRunner
  * broker answers its tool call `lease_lost` until the follow-up "replay lease rule" (a broker lease rule for replay
  * runs, filed as its own issue) lands.
  */
-async function engineOf(d: SkillEvalWiring, skill: string, system_prompt: string, model_class: ModelClass): Promise<Engine> {
+async function engineOf(d: SkillEvalWiring, skill: string, system_prompt: string, model_class: ModelClass, skill_version: string): Promise<Engine> {
   const named = frontMatterTools(system_prompt).length > 0 && d.sandbox_plugin !== "noop";
-  const [p, system] = await Promise.all([d.plugins({ tools: named }), d.judgePrompt()]);
+  const [p, system, pairwise] = await Promise.all([d.plugins({ tools: named }), d.judgePrompt(), d.pairwisePrompt?.() ?? null]);
   const folder = skillFolderPath(skill, d.root);
   const mcpServers = d.mcpServers;
   const t = named ? p.tools : undefined;
@@ -210,7 +238,11 @@ async function engineOf(d: SkillEvalWiring, skill: string, system_prompt: string
     ...(p.now ? { now: p.now } : {}),
   });
   const scan = (text: string) => scanRules(p.scanner, text);
-  return { replay, judge: skillJudge(p.llm, system, model_class), scan, judge_version: judgeVersion(system), close: async () => p.close?.() };
+  return {
+    replay, judge: skillJudge(p.llm, system, model_class), rubric: skillRubricJudge(p.llm, system, model_class),
+    ...(pairwise !== null ? { pairwise: skillPairwiseJudge(p.llm, pairwise, model_class) } : {}),
+    previous: previousAnswers(d.store, skill, skill_version), scan, judge_version: judgeVersion(system, pairwise ?? ""), close: async () => p.close?.(),
+  };
 }
 
 /** The engine's replay, judge and scan, the judge's version a run stores, and the stop of what its plugins started. */
@@ -221,7 +253,7 @@ async function engineParts(d: SkillEvalWiring, skill: string, model_class: Model
   const folder = skillFolderPath(skill, d.root);
   const [skill_text, skill_version] = await Promise.all([readFile(join(folder, "SKILL.md"), "utf8").catch(() => null), skillVersion(folder).catch(() => null)]);
   if (skill_text === null || skill_version === null) return { refused: `cannot read ${skill}/SKILL.md: nothing run` };
-  return { engine: await engineOf(d, skill, skill_text, model_class), skill_version };
+  return { engine: await engineOf(d, skill, skill_text, model_class, skill_version), skill_version };
 }
 
 /**
@@ -234,7 +266,7 @@ async function versionParts(d: SkillEvalWiring, skill: string, hash: string, mod
   const versions = await skillVersionsOf(d.store, [now, ...(await d.store.listSkillEvalRuns(skill)).map((r) => r.skill_version)]);
   const v = versions.find((x) => x.folder_hash === hash);
   if (!v) return { refused: `${skill} has no version ${hash}: nothing run` };
-  return { engine: await engineOf(d, skill, v.text, model_class), skill_version: v.folder_hash };
+  return { engine: await engineOf(d, skill, v.text, model_class, v.folder_hash), skill_version: v.folder_hash };
 }
 
 /** Runs the suite through the engine as run `id`, records its figures and returns the stored run. */
@@ -277,7 +309,7 @@ export async function scratchRunFor(
 ): Promise<SkillEvalRun | null> {
   const suite = (await d.store.listSkillEvalSuites()).find((s) => s.skill_ref === r.skill_ref);
   if (!suite) return null;
-  return runAndRecord(d, await engineOf(d, r.skill_ref, r.system_prompt, r.model_class), { id: r.run_id, suite_id: suite.id, created_by: r.created_by, skill_version: r.skill_version, model_class: r.model_class }, signal);
+  return runAndRecord(d, await engineOf(d, r.skill_ref, r.system_prompt, r.model_class, r.skill_version), { id: r.run_id, suite_id: suite.id, created_by: r.created_by, skill_version: r.skill_version, model_class: r.model_class }, signal);
 }
 
 /** The improve run's skill improvement over `d` (SkillImproveWiring): `folders` are capabilities.skill_folders, absolute. */
@@ -396,6 +428,7 @@ function wiringOf(store: FactoryStore, loaded: Loaded): SkillEvalWiring {
   return {
     store, root: loaded.root, plugins, sandbox_plugin: loaded.plugins.sandbox,
     ...(db ? { mcpServers: (names: readonly string[], runs: boolean) => approvedMcpServers(db, loaded, names, runs) } : {}), judgePrompt: () => readFile(join(loaded.codeRoot, "prompts", "skill-judge.md"), "utf8"),
+    pairwisePrompt: () => readFile(join(loaded.codeRoot, "prompts", "skill-judge-pairwise.md"), "utf8"),
     repo: loaded.config.repo, deny_paths: loaded.config.deny_paths, timeout_ms: loaded.config.run_timeout_ms, newId: () => randomUUID(),
     ...(() => { const v = codeVersion(process.env[CODE_VERSION_ENV]).code_version; return v ? { factory_version: v } : {}; })(),
   };
