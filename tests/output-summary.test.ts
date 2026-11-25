@@ -30,6 +30,18 @@ describe("output summary", () => {
     expect(toolchainMissing("Error: Cannot find module './missing-file.js'")).toBeNull();
     expect(toolchainMissing("AssertionError: expected 1 to be 2")).toBeNull();
   });
+
+  it("a missing JDK or Gradle is a toolchain failure; a code error with no tool message is not", () => {
+    expect(toolchainMissing("> Task :compileJava\nERROR: JAVA_HOME is not set and no 'java' command could be found")).toContain("JAVA_HOME is not set");
+    expect(toolchainMissing("sh: gradlew: command not found")).toContain("gradlew: command not found");
+    expect(toolchainMissing("bash: gradle: command not found")).toContain("gradle: command not found");
+    expect(toolchainMissing("sh: 1: ./gradlew: Permission denied")).toContain("./gradlew: Permission denied");
+    expect(toolchainMissing("gradlew: Permission denied")).toContain("gradlew: Permission denied");
+    expect(toolchainMissing("zsh: command not found: gradle")).toContain("gradle");
+    expect(toolchainMissing("sh: javac: not found")).toContain("javac");
+    expect(toolchainMissing("Error: Cannot find module './missing-file.js'")).toBeNull();
+    expect(toolchainMissing("error: file Main.java: not found in sources")).toBeNull();
+  });
 });
 
 // A file vitest fails before its tests run is a failed suite; failing_tests lists it next to failed tests (design 10-event-driven).

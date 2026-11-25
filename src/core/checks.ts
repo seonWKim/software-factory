@@ -23,7 +23,7 @@ export const CHECKS_FAILED_RUN = "checks_failed";
 
 /**
  * The run failure code of an implement run whose check could not start its tools: a module under node_modules
- * or a tool binary is missing (issue #229). An infrastructure failure: the code cannot fix the host's install,
+ * or a tool binary is missing (issue #229), or the JDK or Gradle is missing. An infrastructure failure: the code cannot fix the host's install,
  * so the fix step is skipped and the retry does not spend a task attempt.
  */
 export const TOOLCHAIN_MISSING = "toolchain_missing";
@@ -42,6 +42,12 @@ const SETUP_LINES = [
   /(?:ENOENT|No such file)[^\n]*node_modules\/\.bin\//,
   /(?:command not found|not found): (?:tsc|vitest|npx|node)\b/,
   /\b(?:tsc|vitest): (?:command )?not found/,
+  // JDK and Gradle: no JDK configured, a build tool binary missing, or a Gradle wrapper that cannot run. The
+  // name starts the line or follows a space, `/` or `:`, so `Main.java: not found` is not read as one.
+  /JAVA_HOME is not set/,
+  /(?:command not found|not found): (?:\S*\/)?(?:gradlew?|javac?)\b/,
+  /(?:^|[\s/:])(?:gradlew?|javac?): (?:command )?not found/,
+  /(?:^|[\s/:])gradlew: Permission denied/,
 ];
 
 /** The first line of `text` that shows the check's tools are missing (see TOOLCHAIN_MISSING); null otherwise. */
