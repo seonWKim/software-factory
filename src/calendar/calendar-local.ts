@@ -3,10 +3,12 @@
 // that table only; an edit or a delete of a repeating event applies to the whole series (owner answer 1). The read
 // expands each repeat inside the range asked (expandLocalEvents, pure): an occurrence keeps the first start's local
 // time of day and its length, in this process's time zone, as core/tasks.ts does for a day. Time comes from the
-// caller's injected Clock, as `nowMs`.
+// caller's injected Clock, as `nowMs`. A copy of an event in a connected calendar is calendar-write.ts's: the event
+// keeps the copy's calendar and ID and the last copy error, and the read says whether it is copied and that error.
 
 import { randomUUID } from "node:crypto";
 import type { SqlExecutor } from "../state/index.js";
+import { type SyncPorts, type SyncResult, copyEvent, hideCopies, removeCopy } from "./calendar-write.js";
 
 /** The source name the calendar read gives the owner's local events. */
 const LOCAL_SOURCE = "local";
@@ -29,12 +31,19 @@ export interface LocalEventFields {
   readonly repeats: Repeat;
 }
 
-/** One stored local event. `created_by` is the identity that added it, never a display name. */
+/**
+ * One stored local event. `created_by` is the identity that added it, never a display name. `provider` and
+ * `provider_event_id`: the connected calendar that holds its copy and the copy's ID there (null: no copy);
+ * `sync_error`: the last copy write's error, null after a success (calendar-write.ts).
+ */
 export interface LocalEvent extends LocalEventFields {
   readonly id: string;
   readonly created_by: string;
   readonly created_at: string;
   readonly updated_at: string;
+  readonly provider: string | null;
+  readonly provider_event_id: string | null;
+  readonly sync_error: string | null;
 }
 
 /** One occurrence as the calendar read places it: the stored event's fields at that occurrence's instants. */
@@ -47,6 +56,10 @@ export interface LocalOccurrence {
   readonly all_day: boolean;
   readonly repeats: Repeat;
   readonly details: null;
+  /** The connected calendar that holds its copy, or null. */
+  readonly copied_to: string | null;
+  /** The last copy write's error, kept on the event; null after a success. */
+  readonly sync_error: string | null;
 }
 
 /** This process's time zone, the one every local day of the calendar read is counted in. */
@@ -81,8 +94,11 @@ const isLocalEventId = (id: unknown): id is string => typeof id === "string" && 
 
 const iso = (v: string) => new Date(Date.parse(v)).toISOString();
 
+const textOrNull = (v: unknown): string | null => (v == null ? null : String(v));
+
 function row(r: Record<string, unknown>): LocalEvent {
   return {
+    provider: textOrNull(r.provider), provider_event_id: textOrNull(r.provider_event_id), sync_error: textOrNull(r.sync_error),
     id: String(r.id), title: String(r.title), starts_at: String(r.starts_at), ends_at: String(r.ends_at), all_day: Number(r.all_day) === 1,
     repeats: String(r.repeats) as Repeat, created_by: String(r.created_by), created_at: String(r.created_at), updated_at: String(r.updated_at),
   };
@@ -133,6 +149,12 @@ export interface LocalEvents {
   add(a: { id: string | null; fields: LocalEventFields; by: string; nowMs: number }): Promise<LocalEvent>;
   edit(id: string, fields: LocalEventFields, nowMs: number): Promise<LocalEvent | null>;
   remove(id: string): Promise<boolean>;
+  /** After an add or edit of `event`: its copy in a connected calendar, at most one port call (calendar-write.ts copyEvent). */
+  copy(event: LocalEvent, a: { want: boolean; ports: SyncPorts }): Promise<SyncResult>;
+  /** After a delete of `event`: its copy removed, if it has one (calendar-write.ts removeCopy). */
+  uncopy(event: LocalEvent, ports: SyncPorts): Promise<SyncResult>;
+  /** `events` less the copies of local events, so each shows once (calendar-write.ts hideCopies). */
+  hideCopies<E extends { readonly source: string; readonly id: string }>(events: readonly E[]): Promise<E[]>;
 }
 
 /** The local events stored through `db`. */
@@ -140,6 +162,7 @@ export function localEvents(db: SqlExecutor): LocalEvents {
   return {
     check: localEventError, isId: isLocalEventId,
     get: (id) => getLocalEvent(db, id), add: (a) => addLocalEvent(db, a), edit: (id, f, nowMs) => editLocalEvent(db, id, f, nowMs), remove: (id) => deleteLocalEvent(db, id),
+    copy: (e, a) => copyEvent(db, e, { ...a, timeZone: processTimeZone() }), uncopy: (e, ports) => removeCopy(e, ports), hideCopies: (events) => hideCopies(db, events),
   };
 }
 
@@ -192,7 +215,10 @@ export function expandLocalEvents(events: readonly LocalEvent[], from: string, t
     const endOf = (s: Date) => (e.all_day ? new Date(s.getFullYear(), s.getMonth(), s.getDate() + lengthDays) : new Date(s.getTime() + lengthMs));
     const push = (s: Date, end: Date) => {
       if (s.getTime() < b.to && end.getTime() > b.from) {
-        out.push({ source: LOCAL_SOURCE, id: e.id, title: e.title, starts_at: s.toISOString(), ends_at: end.toISOString(), all_day: e.all_day, repeats: e.repeats, details: null });
+        out.push({
+          source: LOCAL_SOURCE, id: e.id, title: e.title, starts_at: s.toISOString(), ends_at: end.toISOString(), all_day: e.all_day, repeats: e.repeats, details: null,
+          copied_to: e.provider_event_id === null ? null : e.provider, sync_error: e.sync_error,
+        });
       }
     };
     if (e.repeats === "none") {
