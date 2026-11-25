@@ -52,7 +52,7 @@ export function PendingProposals({
               </li>
             ))}
           </ul>
-          <ButtonRow className="mt-3">
+          <ButtonRow data-proposal-actions className="mt-3">
             <Button variant="secondary" disabled={!enabled || busy} onClick={() => void send(CANCEL, "", p.id)}>
               {t("common.cancel")}
             </Button>

@@ -105,7 +105,7 @@ describe("design tokens", () => {
     const card = readFileSync(join(WEB_SRC, "components", "ui", "card.tsx"), "utf8");
     expect(card).toMatch(/SUB_TITLE = "text-xs font-medium text-text-2"/);
     expect(card).toMatch(/<Heading[^>]*className=\{Heading === "h2" \? CARD_TITLE : SUB_TITLE\}/);
-    const bad = files(join(WEB_SRC, "views"))
+    const bad = [...files(join(WEB_SRC, "views")), ...files(join(WEB_SRC, "components", "ui"))]
       .filter((f) => f.endsWith(".tsx"))
       .flatMap((f) => [...readFileSync(f, "utf8").matchAll(/<(h2|h3)\b[^>]*>/g)].filter((m) => !m[0].includes(m[1] === "h2" ? "CARD_TITLE" : "SUB_TITLE")).map((m) => `${f}: ${m[0]}`));
     expect(bad).toEqual([]);
@@ -383,23 +383,29 @@ const INNER_SPACING: readonly { file: string; snippet: string; reason: string }[
   { file: "spend.tsx", snippet: "data-spend-notes", reason: "notes under a table, inside a Card" },
   { file: "rules.tsx", snippet: "mt-3 space-y-6", reason: "the opened Disclosure's body" },
   { file: "decision-card.tsx", snippet: "mb-3 block w-full", reason: "note field above the buttons, inside the decision card" },
-  { file: "item-about.tsx", snippet: "mt-3", reason: "parts of the spec, inside the About Card" },
-  { file: "plugins.tsx", snippet: '"mb-4"', reason: "Import and Add above the table, inside a Card" },
+  { file: "item-about.tsx", snippet: "data-about-part", reason: "a labelled part of the spec, inside the About Card" },
+  { file: "item-about.tsx", snippet: "data-about-checks", reason: "checks under the request, inside the About Card" },
+  { file: "item-about.tsx", snippet: "data-about-spec", reason: "spec disclosure under the request and checks, inside the About Card" },
+  { file: "plugins.tsx", snippet: "data-tab-head", reason: "Import and Add above the table, inside a Card" },
   { file: "plugins-evals.tsx", snippet: "mb-4 flex flex-wrap", reason: "suite row above the cases table, inside a Card" },
   { file: "plugins-evals.tsx", snippet: "evals.cannotWrite", reason: "note under the cases table, inside a Card" },
   { file: "item-decisions.tsx", snippet: "data-decisions", reason: "list above the buttons, inside a block" },
-  { file: "workers.tsx", snippet: "mt-3", reason: "legend, table and note inside one Card" },
-  { file: "transcript.tsx", snippet: "mt-3", reason: "inside a message and under the list" },
+  { file: "workers.tsx", snippet: "workers.legend", reason: "legend under the graph, inside one Card" },
+  { file: "workers.tsx", snippet: "data-timeline-scroll", reason: "timeline table under the legend, inside one Card" },
+  { file: "workers.tsx", snippet: "data-alone", reason: "note under the graph, inside one Card" },
+  { file: "transcript.tsx", snippet: "data-run-outcome", reason: "outcome box under the run's header, inside a Card" },
+  { file: "transcript.tsx", snippet: "data-load-more", reason: "load-more button under the steps list, inside a Card" },
   { file: "schedules/detail.tsx", snippet: "data-schedule-suggestions", reason: "suggestions under their field" },
   { file: "item-commands.tsx", snippet: "data-queued-feedback", reason: "feedback under the command row" },
   { file: "data.tsx", snippet: "data-ask-answer", reason: "answer under the question box, inside a Card" },
   { file: "task-work.tsx", snippet: "tasks.heldUntil", reason: "note above a table, inside a Card" },
-  { file: "command-box.tsx", snippet: "mt-3", reason: "proposals and buttons under the box's input" },
+  { file: "command-box.tsx", snippet: "command.proposals", reason: "proposals under the box's input" },
+  { file: "command-box.tsx", snippet: "data-proposal-actions", reason: "buttons under the proposals list" },
 ];
 
 describe("page blocks are stacked by the page's gap-6 column", () => {
   const views = join(WEB_SRC, "views");
-  const MARGIN = /(?<![\w-])m[tb]-(?:[3-9]|\d\d)(?![\w-])/;
+  const MARGIN = /(?<![\w-])m[tb]-(?:(?:[3-9]|\d\d)(?![\w-])|\[)/;
   const flagged = (rel: string, text: string) =>
     text
       .split("\n")
@@ -408,7 +414,7 @@ describe("page blocks are stacked by the page's gap-6 column", () => {
       .filter(({ line }) => !INNER_SPACING.some((a) => a.file === rel && line.includes(a.snippet)))
       .map(({ at, line }) => `${at}: ${line.trim()}`);
 
-  it("no page block carries mt-N or mb-N (N >= 3) of its own", () => {
+  it("no page block carries mt-N or mb-N (N >= 3, or an arbitrary [value]) of its own", () => {
     const found = files(views)
       .filter((f) => f.endsWith(".tsx"))
       .flatMap((f) => flagged(f.slice(views.length + 1), readFileSync(f, "utf8")));
@@ -423,5 +429,10 @@ describe("page blocks are stacked by the page's gap-6 column", () => {
     expect(flagged("pages.tsx", '<div className="mb-3 flex">')).toHaveLength(1);
     expect(flagged("pages.tsx", '<div className="mt-1 scroll-mt-4 first:mt-0">')).toEqual([]);
     expect(flagged("spend.tsx", '<div data-spend-notes className="mt-3">')).toEqual([]);
+    expect(flagged("item-about.tsx", '<div className="mt-3">')).toHaveLength(1);
+    expect(flagged("item-about.tsx", '<div data-about-part className="mt-3 min-w-0">')).toEqual([]);
+    expect(flagged("pages.tsx", '<div className="mt-[10px]">')).toHaveLength(1);
+    expect(flagged("pages.tsx", '<div className="mb-[2rem] flex">')).toHaveLength(1);
+    expect(flagged("pages.tsx", '<div className="mt-2">')).toEqual([]);
   });
 });

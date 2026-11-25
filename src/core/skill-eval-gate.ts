@@ -133,8 +133,11 @@ async function heldQuestion(
   const cases = q.fell.length > 0 ? q.fell.join(", ") : "none by itself";
   const text = `${q.skill_ref} version ${q.version} is held: its pass rate ${q.pass_rate} on ${q.model_class} fell from ${q.before} (version ${q.current}). Cases that fell: ${cases}.`;
   const detail = (await d.scanner.scan("ui", text)).clean ? text : null;
-  await d.store.recordAlert({ pattern: "skill_version_gate", pattern_key: `skill_version_gate:${q.ref_id}:${q.version}`, error_code: "pass_rate_drop", count: q.version, detail }, DAY_MS);
+  await d.store.recordAlert({ pattern: "skill_version_gate", pattern_key: heldAlertKey(q.ref_id, q.version), error_code: "pass_rate_drop", count: q.version, detail }, DAY_MS);
 }
+
+/** The pattern key of a held version's owner question: one per skill ref and version. */
+export const heldAlertKey = (ref_id: string, version: number): string => `skill_version_gate:${ref_id}:${version}`;
 
 /** What a bare `/approve` or `/reject` (no item) did to the newest held skill version (design 07-self-improvement); a shared command, re-exported by commands.ts. */
 export type SkillVersionSettle = { gate: SkillVersionGate; settled: boolean };
