@@ -18,7 +18,7 @@ import { type Actor, RECURRING_FAILURE, type Run, type RunKind, type StateChange
 import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js"; import { doneChecksDetail } from "../../../core/checks.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
 import type { ActionRow } from "../../../outbound/index.js";
-import { AUTO, DELIVERY_FAILED, type Decision, SYSTEM, UNCHANGED_HEAD, MAX_FEEDBACK_CHARS, FLOOR_TIER, CONFLICT_PENDING, quote, footerAfter, fenced, iso, updatingForChecks } from "../support.js";
+import { AUTO, DELIVERY_FAILED, type Decision, SYSTEM, UNCHANGED_HEAD, MAX_FEEDBACK_CHARS, FLOOR_TIER, CONFLICT_PENDING, quote, footerAfter, fenced, iso, keptWip, updatingForChecks } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 import { deliveredMeanwhile, deliveryGaveUp, prDelivered, prPending, pushApplied, pushDelivered, pushPending, pushWait } from "./delivery.js";
@@ -36,7 +36,7 @@ export {
   commandFooter, commandState, conflictCounts, conflictCountsLine, doneChecksDetail, failingTests, failureClass, failureLine, fenced, firstErrorLine,
   footerAfter, isCovered, iso, nextAutoResolveAttempt, parseAutoResolveKey, prNumber, preflightCheck, quote, repeatsFastInfraFailure,
   repeatsLastFailure, retryDelayMs, retryKey, retryNotBefore, retryPathsReply, runKey, runKindLabel, sameStep, itemSizeCaps, stallStreak, stripAnsi, suggestedSplit,
-  takenOver, withholdReplyLines,
+  takenOver, withholdReplyLines, keptWip,
 };
 
 /** blocked_reason of an adopted PR whose review found bugs: the factory never changes a person's branch. */

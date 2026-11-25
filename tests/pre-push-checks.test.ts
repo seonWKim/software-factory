@@ -454,7 +454,7 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
     expect(prompt).toContain("Its output is withheld");
   });
 
-  it("after a fix commit the scope gate runs again: a fix outside allowed_paths fails with scope_violation and pushes nothing", async () => {
+  it("after a fix commit the scope gate runs again: a fix outside allowed_paths fails with scope_violation, pushes no PR branch and keeps its commits for an agent retry", async () => {
     const f = await setup({
       implement: (wd) => commitFile(wd, "src/type-error.txt", "x\n", "add a fault"),
       fix: (wd) => {
@@ -464,9 +464,9 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
     });
     const item = await f.approveAndImplement();
     const run = (await f.implementRuns(item.id))[0]!;
-    expect(run.outcome).toMatchObject({ status: "failed", error_code: "scope_violation" });
-    expect(run.outcome).not.toHaveProperty("wip");
-    expect(f.broker.pushes()).toEqual([]);
+    // Design 05-restart-asks: the commits go to the run's wip branch, marked `continue`; the PR branch is untouched.
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: "scope_violation", wip: { branch: `factory/wip/${item.id}/${run.id}`, continue: true } });
+    expect(f.broker.pushes()).toEqual([`factory/wip/${item.id}/${run.id}`]);
     expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
   });
@@ -558,13 +558,13 @@ describe("implement run: the factory lowers shrunk ratchet counts before push", 
     expect(git(f.origin, "log", "--format=%s", wip)).not.toContain(LOWER);
   });
 
-  it("the lowering commit goes through the gates again: a floor on the lists blocks the push", async () => {
+  it("the lowering commit goes through the gates again: a floor on the lists blocks the push and keeps the head on the wip branch", async () => {
     const f = await setup({ checks: [RATCHET], base: { [LIST]: listed(3) }, floors: [{ prefix: "tests/architecture/known-violations/", tier: 4 }] });
     const item = await f.approveAndImplement();
     const run = (await f.implementRuns(item.id))[0]!;
-    expect(run.outcome).toMatchObject({ status: "succeeded", data: { floor_block: true, required_tier: 4, floor_paths: [{ path: LIST }] } });
+    expect(run.outcome).toMatchObject({ status: "succeeded", data: { floor_block: true, required_tier: 4, floor_paths: [{ path: LIST }], wip: { branch: `factory/wip/${item.id}/${run.id}` } } });
     expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
-    expect(f.broker.pushes()).toEqual([]);
+    expect(f.broker.pushes()).toEqual([`factory/wip/${item.id}/${run.id}`]);
   });
 
   it("no commit when the checks lowered nothing", async () => {

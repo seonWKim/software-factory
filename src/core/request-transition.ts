@@ -22,7 +22,7 @@ import { SCHEDULE_CHECKPOINT, SCHEDULE_CHECKPOINT_APPROVED } from "./schedule.js
 import { PHASES_OPEN, SPLIT_FILING } from "./split.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "./standing.js";
 import { type SpecDecision, type TriagePhase, optionChange } from "./outputs.js";
-import { type Actor, RECURRING_FAILURE, type Run, type RunInput, type RunKind, type SpecKind, type StateChange, type StateChangeDetail, type Tier, type Timestamp, type WorkItem, type WorkItemPatch } from "./types.js";
+import { type Actor, RECURRING_FAILURE, type Run, type RunInput, type RunKind, type SpecKind, type StateChange, type StateChangeDetail, type Tier, type Timestamp, type WipRef, type WorkItem, type WorkItemPatch } from "./types.js";
 
 /** A transition as a check decides it: the store's input without the item and its version. */
 export type Transition = Omit<TransitionInput, "id" | "expected_version">;
@@ -200,7 +200,7 @@ export async function approveCheck<A extends GateAnswer>(r: ItemReads, it: WorkI
   if (it.blocked_reason === SCHEDULE_CHECKPOINT) {
     return { patch: { stage: "CLOSED", close_reason: "completed", blocked_on: "none", blocked_reason: null }, actor: a.actor, reason: SCHEDULE_CHECKPOINT_APPROVED, ...(a.note ? { detail: { note: a.note } } : {}) };
   }
-  if (it.blocked_reason === FLOOR_TIER) return floorCommand("spec_approved", it, a.actor, await floorTierNeeded(r, it), a.note, a.widen(a.paths));
+  if (it.blocked_reason === FLOOR_TIER) return floorCommand("spec_approved", it, a.actor, await floorTierNeeded(r, it), a.note, a.widen(a.paths), floorWip(await r.listRuns(it.id)));
   if (it.blocked_reason === RULE_OF_TWO) return ruleOfTwoCommand("spec_approved", it, a.actor, a.note, a.paths, await r.listStateChanges(it.id));
   if (splitFiling(it) || splitOpen(it) || splitFilingFailed(it)) {
     // The same `/approve` delivered again (a second poll, another replica, or the one whose filing was given up):
@@ -258,16 +258,22 @@ export function optionPathsRefusal(uncovered: readonly UncoveredOption[]): strin
   return `the answer to ${which} needs ${paths.map((p) => `\`${p}\``).join(", ")} outside the allowed paths, so nothing was queued and nothing widened; reply \`${reply}\` with the same answers to allow ${paths.length === 1 ? "it" : "them"}, or pick another answer`;
 }
 
+/** Where the floor-blocked implement run (the item's newest one) kept its synced head (design 05-restart-asks), for `/approve`'s run. */
+export function floorWip(runs: readonly Pick<Run, "kind" | "outcome">[]): WipRef | undefined {
+  const o = runs.filter((r) => r.kind === "implement" && r.outcome).at(-1)?.outcome;
+  return o?.status === "succeeded" && o.data.floor_block === true ? (o.data.wip as WipRef | undefined) : undefined;
+}
+
 /** The gate commands a block takes: approve, reject, revise, retry (the comment command events). */
 type GateKind = "spec_approved" | "spec_rejected" | "revise_requested" | "retry_requested";
 
 /**
  * A command on a floor_tier block (design §4). `/approve` raises the tier to the one the floor needs (never lowers
  * it; a `+paths` under a higher floor raises it further, issue #280), clears the block and enqueues implement under a
- * new key (restart_count + 1), so it is not a no-op. `/reject` closes the item. `/retry` is refused: a floor block is
- * not a failed run.
+ * new key (restart_count + 1), so it is not a no-op, handed `wip` (where the blocked run kept its commits, design §5
+ * Restarts) so it starts from them. `/reject` closes the item. `/retry` is refused: a floor block is not a failed run.
  */
-export function floorCommand(kind: GateKind, it: WorkItem, actor: Actor, need: number | null, note: string | null, w: Widened): Checked {
+export function floorCommand(kind: GateKind, it: WorkItem, actor: Actor, need: number | null, note: string | null, w: Widened, wip?: WipRef): Checked {
   if (kind === "retry_requested") return { refuse: `the item is ${phaseLabel("floor_tier")}, which is not a failed run; reply \`/approve\` to raise its tier` };
   if (kind === "revise_requested") {
     return { refuse: `the item is ${phaseLabel("floor_tier")}, not waiting on a spec; reply \`/approve\` to raise its tier or \`/reject <reason>\` to close` };
@@ -280,7 +286,7 @@ export function floorCommand(kind: GateKind, it: WorkItem, actor: Actor, need: n
     actor,
     reason: "floor_tier_approved",
     detail: { previous_tier: it.tier, tier: next.tier, ...(note ? { note } : {}), ...w.detail },
-    enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
+    enqueue: { kind: "implement", idempotency_key: runKey(next, "implement"), ...(wip ? { input: { wip } } : {}) },
   };
 }
 

@@ -10,7 +10,7 @@ import {
   type FailureClass, type StateChangeDetail, SYSTEM, footerAfter, fenced, CHECKS_ENV, CHECKS_ENV_LIMIT, PROVIDER_SETUP, RECURRING_FAILURE,
   REPEATED_FAILURE, SESSION_RELEASED, STALL_STREAK_HOLD, doneChecksDetail, failingTests, failureClass, failureLine, firstErrorLine,
   repeatsFastInfraFailure, repeatsLastFailure, retryDelayMs, retryKey, retryNotBefore, runKindLabel, sameStep, itemSizeCaps, stallStreak, stripAnsi,
-  suggestedSplit, takenOver,
+  suggestedSplit, takenOver, keptWip,
 } from "./run-results.unit.js";
 
 /** error_code of an implement run whose diff is over max_diff_lines or max_diff_files (design §4). */
@@ -174,9 +174,9 @@ export async function retryOrBlock(c: Ctx, it: WorkItem, run: Run, cls: FailureC
     reset: run.outcome?.status === "failed" ? run.outcome.reset_at : null, retry_max_ms,
   });
   // The run kept its commits on a wip branch: after a failed push or PR the retry pushes them with no agent run;
-  // after a stop mid-work (rate limit, stall, timeout) the wip ref is marked `continue` by the worker, and the
-  // retry runs the agent on it (design §5 Restarts).
-  const wip = run.kind === "implement" && run.outcome?.status === "failed" ? run.outcome.wip : undefined;
+  // after a stop mid-work (rate limit, stall, timeout, an agent failure) the wip ref is marked `continue` by the worker, and the
+  // retry runs the agent on it. A run that failed before keeping its own hands on the wip ref it was given (design §5 Restarts).
+  const wip = keptWip(run);
   // A retried review keeps the CI results read when it was queued (issue #223); a retried judge its phase (design 04-split-specs).
   const input = wip ? { wip } : run.kind === "review" || run.kind === "judge" ? run.input : null;
   return {
