@@ -15,6 +15,9 @@ import { standing } from "./en/standing.js";
 import { system } from "./en/system.js";
 import { tasks } from "./en/tasks.js";
 import { work } from "./en/work.js";
+import { workDecisions } from "./en/work-decisions.js";
+import { workHistory } from "./en/work-history.js";
+import { workWhy } from "./en/work-why.js";
 import { workers } from "./en/workers.js";
 
 export const en = {
@@ -32,6 +35,9 @@ export const en = {
   ...system,
   ...tasks,
   ...work,
+  ...workDecisions,
+  ...workHistory,
+  ...workWhy,
   ...workers,
 } as const;
 
