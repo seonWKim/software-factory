@@ -203,6 +203,10 @@ export function renderSpec(
   }
   if (spec.files_to_change.length > 0) out.push("", "Expected to change:", ...spec.files_to_change.map(code));
   out.push("");
+  // Base tests holding a string the spec quotes (design 04-triage, 2026-11-25): allowed, so the change can update them.
+  if (spec.pinned_tests?.length) {
+    out.push("### Tests that pin this", "These base test files hold a string the spec quotes, so they are allowed to change:", ...spec.pinned_tests.map(code), "");
+  }
   out.push("### Risk", `Tier ${tier}: ${spec.tier_reason}`, "");
   if (spec.phases?.length) out.push(...splitSection(spec, spec.phases), "");
   if (o.missing?.length) out.push(...missingSection(o.missing), "");

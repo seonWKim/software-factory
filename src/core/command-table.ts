@@ -229,7 +229,7 @@ function scheduleCommands(): TableCommand[] {
     one(
       "add", `--id <id> --title <t> --cadence <interval|daily|weekly|cron> --spec <spec> --zone <IANA> --action <build|agent|feedback> ${optional}`, "add <flags>", "any",
       "Store a new schedule, first due at its cadence's next slot after now; refused for an ID already stored, a bad cadence, zone or action, " +
-        "and an agent or feedback action without `--body` (its prompt; a build's item body)",
+        "and an agent or feedback action without `--body` (its prompt; a build's item body); a daily schedule's token cap counts the runs of each UTC day, any other's all its runs",
       "the stored schedule's line",
     ),
     one(
