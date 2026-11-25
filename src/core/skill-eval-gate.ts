@@ -133,8 +133,14 @@ async function heldQuestion(
   const cases = q.fell.length > 0 ? q.fell.join(", ") : "none by itself";
   const text = `${q.skill_ref} version ${q.version} is held: its pass rate ${q.pass_rate} on ${q.model_class} fell from ${q.before} (version ${q.current}). Cases that fell: ${cases}.`;
   const detail = (await d.scanner.scan("ui", text)).clean ? text : null;
-  await d.store.recordAlert({ pattern: "skill_version_gate", pattern_key: `skill_version_gate:${q.ref_id}:${q.version}`, error_code: "pass_rate_drop", count: q.version, detail }, DAY_MS);
+  await d.store.recordAlert({ pattern: "skill_version_gate", pattern_key: heldAlertKey(q.ref_id, q.version), error_code: "pass_rate_drop", count: q.version, detail }, DAY_MS);
 }
+
+/** The pattern key of a held version's owner question: one per skill ref and version. */
+export const heldAlertKey = (ref_id: string, version: number): string => `skill_version_gate:${ref_id}:${version}`;
+
+/** The gate state each owner answer settles a held version to: approve passes it, reject rejects it. */
+const SETTLED: Readonly<Record<"approve" | "reject", "passed" | "rejected">> = { approve: "passed", reject: "rejected" };
 
 /** What a bare `/approve` or `/reject` (no item) did to the newest held skill version (design 07-self-improvement); a shared command, re-exported by commands.ts. */
 export type SkillVersionSettle = { gate: SkillVersionGate; settled: boolean };
@@ -150,5 +156,28 @@ export async function settleHeldSkillVersion(
 ): Promise<SkillVersionSettle | null> {
   const [gate] = await store.listHeldSkillVersionGates(1);
   if (!gate) return null;
-  return { gate, settled: await store.settleSkillVersionGate(gate.ref_id, gate.version, command === "approve" ? "passed" : "rejected", by) };
+  return { gate, settled: await store.settleSkillVersionGate(gate.ref_id, gate.version, SETTLED[command], by) };
+}
+
+/** Most alerts read to find a held version's open question: as many as the alarms view reads. */
+const ALERTS_READ = 100;
+
+/**
+ * The dashboard's settle of one named held version (POST /api/v1/evals/write, op `version.settle`): the store's
+ * conditional update the bare `/approve` and `/reject` use, on that ref and version. A version that is not held is
+ * refused in plain words and nothing is written. Once settled, its owner question (the alarm) is dismissed by `by`,
+ * so it leaves Needs you; the gate never asks again about a settled version.
+ */
+export async function settleSkillVersion(
+  store: Pick<FactoryStore, "getSkillVersionGate" | "settleSkillVersionGate" | "listAlerts" | "dismissAlert">,
+  s: { ref_id: string; version: number; command: "approve" | "reject"; by: UserId },
+): Promise<{ gate: SkillVersionGate } | { refused: string }> {
+  const notHeld = `Version ${s.version} of this skill is not waiting for a decision, so nothing was changed.`;
+  const gate = await store.getSkillVersionGate(s.ref_id, s.version);
+  if (gate?.state !== "held") return { refused: notHeld };
+  if (!(await store.settleSkillVersionGate(s.ref_id, s.version, SETTLED[s.command], s.by))) return { refused: notHeld };
+  const key = heldAlertKey(s.ref_id, s.version);
+  const alert = (await store.listAlerts({ limit: ALERTS_READ })).find((a) => a.pattern_key === key);
+  if (alert) await store.dismissAlert(alert.id, s.by);
+  return { gate: (await store.getSkillVersionGate(s.ref_id, s.version)) ?? gate };
 }
