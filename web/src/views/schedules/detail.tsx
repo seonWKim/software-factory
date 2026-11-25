@@ -1,5 +1,6 @@
 import { type ScheduleRow, type ScheduleSuggestionRow, actionText, isCheckPage, isPaused, pageUrl, useScheduleRuns, useScheduleSuggestions } from "../../api.js";
 import { Badge } from "../../components/ui/badge.js";
+import { SUB_TITLE } from "../../components/ui/card.js";
 import { Clamp } from "../../components/ui/clamp.js";
 import { type Column, DataTable } from "../../components/ui/data-table.js";
 import { ErrorNote, Loading } from "../../components/ui/parts.js";
@@ -98,7 +99,7 @@ function Suggestions({ id }: { id: string }) {
   ];
   return (
     <div data-schedule-suggestions className="mt-4 space-y-2">
-      <h3 className="text-sm font-medium">{t("schedules.suggestions.label")}</h3>
+      <h3 className={SUB_TITLE}>{t("schedules.suggestions.label")}</h3>
       {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={2} label="schedules.suggestions.label" onRetry={() => void q.refetch()} /> : (
         <DataTable columns={columns} rows={q.data.suggestions} rowKey={(r) => r.id} label={t("schedules.suggestions.label")} empty={t("schedules.suggestions.empty")} />
       )}
