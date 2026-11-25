@@ -9,6 +9,8 @@ import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TI
 import { usdBudget } from "./spend.js"; import { fewOrdinaryPaths, testPathsOnly } from "./auto-grant.js";
 import type { RunId, RunKind, Tier, Timestamp } from "./types.js";
 import type { SettingOverride } from "../interfaces/factory-store.js";
+import maxRestart from "../controller/settings/max-restart.setting.js"; import retryBase from "../controller/settings/retry-base-ms.setting.js"; import retryMax from "../controller/settings/retry-max-ms.setting.js";
+import lease from "../worker/settings/lease-ms.setting.js"; import runTimeout from "../worker/settings/run-timeout-ms.setting.js"; import { AGENT_STOP_CHECK_MS_DEFAULT } from "./config.js";
 
 // Per-project settings in layers (design 2026-11-01, "Settings resolve in layers"). Pure: the parse and
 // gate checks run once at config load; settingsFor resolves one project's effective values on each read.
@@ -349,23 +351,20 @@ export interface SettableValues {
   worker_kinds: RunKind[]; agent_stop_check_ms: number; // the run kinds a worker claims (design 05-interactive-sessions); the gate Stop check's limit (04-pre-push-gates)
 }
 
-/** The built-in default of each settable key, in the form factory.config.json writes it. */
+/** The built-in default of each settable key, in the form factory.config.json writes it (a key with a setting file read there reads it from that file). */
 export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.freeze({
   max_attempts: BUILT_IN_SETTINGS.max_attempts,
   max_loops: 3,
-  max_restart: 3,
-  retry_base_ms: 60_000,
-  retry_max_ms: 1_800_000,
+  max_restart: maxRestart.default, retry_base_ms: retryBase.default, retry_max_ms: retryMax.default,
   max_diff_lines: BUILT_IN_SETTINGS.max_diff_lines,
   max_diff_files: BUILT_IN_SETTINGS.max_diff_files,
-  run_timeout_ms: 2_700_000,
+  run_timeout_ms: runTimeout.default, lease_ms: lease.default,
   first_output_ms: STALL_DEFAULTS.first_output_ms,
   models: { cheap: "haiku", standard: "sonnet", strong: "opus" },
   model_by: DEFAULT_MODEL_BY,
   poll_interval_ms: 30_000,
   tick_ms: 2_000,
   heartbeat_ms: 60_000,
-  lease_ms: 300_000,
   workers: 1,
   phases_auto_approve: false,
   hold_policy: DEFAULT_COORDINATION.hold_policy, auto_grant_test_paths: true, test_globs: ["tests/**", "**/*.test.*"],
@@ -379,7 +378,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   auth_pause_ms: 1_800_000, // shown as the default; with no override and no file value it follows the effective retry_max_ms
   max_coordination_cost: DEFAULT_COORDINATION.max_cost, hotspot_weight: DEFAULT_COORDINATION.hotspot_weight, mechanical_weight: DEFAULT_COORDINATION.mechanical_weight, tool_grants: {},
   intake_label: null, // no built-in default: the config file must say, and its value applies
-  worker_kinds: [...WORKER_KINDS], agent_stop_check_ms: 2_400_000,
+  worker_kinds: [...WORKER_KINDS], agent_stop_check_ms: AGENT_STOP_CHECK_MS_DEFAULT,
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";

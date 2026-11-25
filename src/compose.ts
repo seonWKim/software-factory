@@ -590,5 +590,5 @@ export {
   CHECK_COMMANDS_PLACEHOLDER, cliConfig, CONFIG_FILE, type FileConfig, fillPrompt, FORGE_PLACEHOLDER, loadConfig, type Loaded, localProject, resolvedConfig, selectsGitHub, SPLIT_PLACEHOLDERS, type StoreConfig, TOOLCHAIN_PLACEHOLDER, UI_CHECK_PLACEHOLDER, withForgeDefault,
 } from "./load-config.js";
 export {
-  agentStopChecks, alarmConfig, argvConfig, checkCommandsConfig, checkToolchainEnv, codeVersion, DEFAULT_UI_PORT, hookNames, isLoopback, MERGE_QUEUE_DEPTH_MAX, mergeQueueDepth, readRestarts, RETRY_DEFAULTS, retryConfig, stallConfig, STATS_MIN_SAMPLE_DEFAULT, statsConfig, testCommand, toolchainConfig, uiCommandsActor, uiPort, uiUserId, workerIndexBase,
+  agentStopChecks, alarmConfig, argvConfig, checkCommandsConfig, checkToolchainEnv, codeVersion, DEFAULT_UI_PORT, hookNames, isLoopback, MERGE_QUEUE_DEPTH_MAX, mergeQueueDepth, readRestarts, retryConfig, stallConfig, STATS_MIN_SAMPLE_DEFAULT, statsConfig, testCommand, toolchainConfig, uiCommandsActor, uiPort, uiUserId, workerIndexBase,
 } from "./config-values.js";

@@ -1,6 +1,6 @@
 // Design 04-pre-push-gates: the gate Stop check's time limit, read live for each agent run the worker starts.
-// Settable at runtime (`factory settings set`); STOP_CHECK_MS in src/impl/runner/gate-hooks.ts is the same value as
-// the runner's fallback when a spec gives none.
+// Settable at runtime (`factory settings set`). This default is the one copy: the runner's fallback when a spec gives
+// none reads it (AGENT_STOP_CHECK_MS_DEFAULT in src/core/config.ts).
 
 import { defineSetting } from "../../shared/setting.js";
 

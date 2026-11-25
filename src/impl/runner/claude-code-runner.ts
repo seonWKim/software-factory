@@ -1,6 +1,6 @@
 import { access, constants, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { readOnlyOverlaps } from "../../core/config.js";
+import { AGENT_STOP_CHECK_MS_DEFAULT, STALL_DEFAULTS, readOnlyOverlaps } from "../../core/config.js";
 import { FORBIDDEN_ENV, guardPolicy } from "../../core/tools/index.js";
 import { toolchainEnvKeyRefusal } from "../../core/tools/policy.js";
 import { type AgentRunResult, type AgentRunSpec, type AgentRunner, SESSION_ROLES, toolsNotExposedMessage } from "../../interfaces/agent-runner.js";
@@ -292,11 +292,11 @@ export class ClaudeCodeRunner implements AgentRunner {
     if (!g || !GATE_HOOK_ROLES.includes(spec.role)) return this.runClaude(spec, bridge);
     // Advisory: a host that cannot start (no folder, no socket) runs the step without hooks; the worker's gates decide.
     // Each Stop check runs under the spec's stop_check_ms: the live `agent_stop_check_ms` the worker read when this
-    // run started, so a changed setting reaches the next run with no restart. A spec without it gets STOP_CHECK_MS,
-    // the setting's default (design §4 Pre-push gates).
+    // run started, so a changed setting reaches the next run with no restart. A spec without it gets the setting's
+    // default (design §4 Pre-push gates).
     const hooks = await startGateHooks({
       dir: join(this.opts.claudeConfigDir, GATE_HOOKS_DIR, spec.run_id),
-      spec: { ...spec, gate_hooks: g },
+      spec: { ...spec, gate_hooks: g, stop_check_ms: spec.stop_check_ms ?? AGENT_STOP_CHECK_MS_DEFAULT },
       sandbox: this.opts.sandbox,
       after,
       ...(this.opts.tools ? { scanner: this.opts.tools.scanner } : {}),
@@ -327,7 +327,7 @@ export class ClaudeCodeRunner implements AgentRunner {
       path: process.env.PATH ?? "/usr/bin:/bin",
     });
     const model = this.opts.models[spec.model_class];
-    const stallMs = spec.stall_ms ?? DEFAULT_STALL_MS;
+    const stallMs = spec.stall_ms ?? STALL_DEFAULTS.stall_ms;
     const firstOutputMs = spec.first_output_ms ?? DEFAULT_FIRST_OUTPUT_MS;
     const watch = new StallWatch(stallMs, firstOutputMs, hooks ? () => hooks.checking() : undefined, spec.on_output);
     let result: Awaited<ReturnType<Sandbox["exec"]>>, soFar = ""; const context = contextFeed(spec.on_context); // soFar: the live transcript (spec.live); context: each call's context (spec.on_context)
@@ -447,9 +447,6 @@ function parseJsonResult(stdout: string): ClaudeJsonResult | null {
 
 /** The longest part of the CLI's rate-limit text a rate_limited result keeps as its error. */
 const RATE_LIMIT_DETAIL_CHARS = 500;
-
-/** The silence limit when the spec gives none (design §5 Restarts; `stall_ms` in factory.config.json). */
-export const DEFAULT_STALL_MS = 300_000;
 
 /** The first-output limit when the spec gives none (design §5 Restarts; `first_output_ms`, issue #215). */
 export const DEFAULT_FIRST_OUTPUT_MS = 180_000;
