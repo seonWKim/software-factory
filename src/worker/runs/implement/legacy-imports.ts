@@ -7,7 +7,7 @@ export type { ModelClass } from "../../../core/model-choice.js";
 export { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "../../../core/diff-gate.js";
 export { NumstatError, diffGates, scopeGate } from "../../../core/pre-push.js";
 export { BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, type DoneCheckResult, TOOLCHAIN_MISSING, PrePushSelection, checkCommands, checkedLines, checkedLinesText, commandText, doneCheckRound, failingTestFiles, manualLines, toolchainMissing, withTestFiles } from "../../../core/checks.js";
-export { IMPLEMENT_SCHEMA, NEEDS_HUMAN_MAX_CHARS, NEEDS_HUMAN_MAX_PATHS, type NeedsHuman, SPEC_CONFLICT, findingLine, parseImplement, parseReview, sizeCaps } from "../../../core/outputs.js";
+export { IMPLEMENT_SCHEMA, NEEDS_HUMAN_MAX_CHARS, NEEDS_HUMAN_MAX_PATHS, type NeedsHuman, SPEC_CONFLICT, findingLine, parseImplement, parseReview, removedPins, sizeCaps } from "../../../core/outputs.js";
 export { CHECKS_ENV, CHECKS_ENV_LIMIT, PREFLIGHT_FAILED, branchFor, isCovered, wipBranchFor } from "../../../core/policy.js";
 export { mergeAppendedConflicts } from "../../../core/mechanical.js";
 export { type ConflictFile, renderResolvePrompt } from "../../../core/resolve.js";

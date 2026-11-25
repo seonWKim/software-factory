@@ -1,7 +1,7 @@
 // The implement run's pre-push checks and gates (design §4): the check rounds and their fix step, the base rerun,
 // the agent's gate hooks, and the scope, size and floor gates. Split out of implement.run.ts so parallel items
 // that change different parts of the run do not share one file.
-import { AGENT_STOP_CHECKS_DEFAULT, settingValues, type FloorHit, NumstatError, diffGates, scopeGate, BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, type DoneCheckResult, TOOLCHAIN_MISSING, PrePushSelection, checkCommands, checkedLinesText, commandText, doneCheckRound, failingTestFiles, toolchainMissing, withTestFiles, IMPLEMENT_SCHEMA, parseImplement, sizeCaps, CHECKS_ENV, CHECKS_ENV_LIMIT, type Run, type WorkItem, type GateHooks, type PackRefusal, type StopSelection, type SandboxHandle } from "./legacy-imports.js";
+import { AGENT_STOP_CHECKS_DEFAULT, settingValues, type FloorHit, NumstatError, diffGates, scopeGate, BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, type DoneCheckResult, TOOLCHAIN_MISSING, PrePushSelection, checkCommands, checkedLinesText, commandText, doneCheckRound, failingTestFiles, toolchainMissing, withTestFiles, IMPLEMENT_SCHEMA, parseImplement, removedPins, isCovered, sizeCaps, CHECKS_ENV, CHECKS_ENV_LIMIT, type Run, type WorkItem, type GateHooks, type PackRefusal, type StopSelection, type SandboxHandle } from "./legacy-imports.js";
 import { type FixContext, NO_HOOKS, RunFailure, failingTestNames, gitIdentity, renderWorkItem, scopeReply, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { outputLines } from "./conflict-ask.js";
@@ -36,7 +36,7 @@ export async function checksBeforePush(w: Worker, run: Run, item: WorkItem, hand
   if (!second.failed) return { results: second.results, fixed: true, done: done.results(second) };
   const onBase = second.failed.missing ? null : await failsOnBase(w, run, handle, signal, s.baseSha, second.failed);
   if (onBase) return checksEnv(w, run, item, second.failed, onBase);
-  return checksFailed(w, run, item, first.failed, second.failed, done.results(second));
+  return checksFailed(w, run, item, first.failed, second.failed, done.results(second), await grantTests(w, handle, s.baseSha, item, second.failed));
 }
 
 /**
@@ -128,8 +128,31 @@ const failedText = (r: CheckResult) => (r.missing ? `${r.how} (\`${commandText(r
 export const RATCHET_LISTS = "tests/architecture/known-violations/";
 const SHRINK_ENV = { env: { SF_RATCHET_SHRINK: "1" } };
 
+/** A failing test file the controller may grant on `checks_failed`, with the quoted strings of it that the branch diff removed. */
+type GrantTest = { file: string; quotes: string[] };
+
+/**
+ * The failing test files the controller may grant once (design 04-pre-push-gates, 2026-11-25): every test file the
+ * output names is outside allowed_paths, and each one's text at HEAD quotes a string (the triage pin rule) that a
+ * removed line of the branch diff contains. undefined: no file named, one is covered or quotes nothing removed.
+ */
+async function grantTests(w: Worker, handle: SandboxHandle, baseSha: string, item: WorkItem, failed: CheckResult): Promise<GrantTest[] | undefined> {
+  const files = failingTestFiles(failed.tail);
+  if (files.length === 0 || files.some((f) => isCovered(f, item.allowed_paths))) return undefined;
+  const diff = await w.gitRaw(handle, ["diff", "-U0", "--no-renames", `${baseSha}...HEAD`]);
+  if (diff.exit_code !== 0) return undefined;
+  const grants: GrantTest[] = [];
+  for (const file of files) {
+    const text = await w.gitRaw(handle, ["show", `HEAD:${file}`]);
+    const quotes = text.exit_code === 0 ? removedPins(text.stdout, diff.stdout) : [];
+    if (quotes.length === 0) return undefined;
+    grants.push({ file, quotes });
+  }
+  return grants;
+}
+
 /** `checks_failed` (a task failure): one comment naming the command, keyed on the run; nothing is pushed. */
-async function checksFailed(w: Worker, run: Run, item: WorkItem, first: CheckResult, second: CheckResult, done: DoneCheckResult[] | undefined): Promise<never> {
+async function checksFailed(w: Worker, run: Run, item: WorkItem, first: CheckResult, second: CheckResult, done: DoneCheckResult[] | undefined, grant: GrantTest[] | undefined): Promise<never> {
   const cmd = commandText(second.command);
   const before = commandText(first.command);
   const body = [
@@ -145,6 +168,7 @@ async function checksFailed(w: Worker, run: Run, item: WorkItem, first: CheckRes
   const named = tests.length > 0 ? `; failing tests: ${tests.join(", ")}` : "";
   throw new RunFailure(CHECKS_FAILED_RUN, `${failedText(second)} after one fix step${checkedLinesText(second)} (before it: ${failedText(first)})${named}`.slice(0, 500), false, {
     output_tail: second.tail, ...(done ? { done_checks: done } : {}), // each done-when line's result, on the failed outcome
+    ...(grant ? { grant_tests: grant } : {}), // the test files the controller may grant once (auto-grant.ts checksGrant)
   } as RunFailure["extra"]);
 }
 

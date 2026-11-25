@@ -4,6 +4,7 @@
 // raise the dependency-direction and kinds counts (tests/architecture).
 
 import type { Ctx } from "../context.js";
+import { checksGrant } from "./auto-grant.js";
 import type { Decision, Run, Tier, WorkItem } from "../support.js";
 import {
   type FailureClass, type StateChangeDetail, SYSTEM, footerAfter, fenced, CHECKS_ENV, CHECKS_ENV_LIMIT, PROVIDER_SETUP, RECURRING_FAILURE,
@@ -157,6 +158,10 @@ export async function retryOrBlock(c: Ctx, it: WorkItem, run: Run, cls: FailureC
       ack_run: run.id,
     };
   }
+  // Failing test files outside allowed_paths that quote text the branch removed (design 04-pre-push-gates, 2026-11-25):
+  // granted once, and the retry starts a new step, so this run is not counted toward repeated_failure.
+  const granted = run.kind === "implement" && code === "checks_failed" ? await checksGrant(c, it, run) : undefined;
+  if (granted !== undefined) return granted;
   // The same task failure twice in a row (decided 2026-11-07): a third run would fail the same way.
   if (cls === "task" && c.k.d.repeated_failure_rule !== false && repeatsLastFailure(step, run)) return stop ? stop(REPEATED_FAILURE, detail) : repeatedFailure(c, it, run, code, detail);
   // The same infra failure twice in a row, each within a minute of its start (issue #216): no passing hiccup.

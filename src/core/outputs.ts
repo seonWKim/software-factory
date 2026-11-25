@@ -3,7 +3,7 @@ import { isCovered } from "./policy.js";
 import { MAX_PHASES, MIN_PHASES, type SplitLimits, parseGoalLines, splitError } from "./split.js";
 import { DEPENDENCY_OPTIONS, proposedDependency } from "./task-build.js";
 import type { Tier } from "./types.js";
-export { checkTestFiles, doneCheckCommands } from "./done-checks.js"; export { sizeCaps } from "./size-cap.js"; export { pinTests } from "./triage-pins.js"; // the triage branch's check_commands, test file check and pinned tests; an item's size caps for the implement run
+export { checkTestFiles, doneCheckCommands } from "./done-checks.js"; export { sizeCaps } from "./size-cap.js"; export { pinTests, removedPins } from "./triage-pins.js"; // the triage branch's check_commands, test file check and pinned tests (removedPins: the checks grant's); an item's size caps for the implement run
 
 // Structured outputs of each agent role: JSON Schema for the harness + a validator for the control plane.
 // Agents can be wrong; nothing they return is trusted until it passes these.

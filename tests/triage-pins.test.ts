@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentRunResult } from "../src/interfaces/agent-runner.js";
 import { parseTriage } from "../src/core/outputs.js";
 import { renderSpec } from "../src/core/spec-comment.js";
-import { pinTests, quotedStrings } from "../src/core/triage-pins.js";
+import { pinStrings, pinTests, quotedStrings, removedPins } from "../src/core/triage-pins.js";
 import type { Run, WorkItem } from "../src/core/types.js";
 import type { Worker } from "../src/worker/runner.js";
 import type { RunCall } from "../src/worker/run-kind.js";
@@ -131,5 +131,19 @@ describe("the spec comment's tests that pin this", () => {
 
   it("refuses a pinned test that files_to_change does not list", () => {
     expect(parseTriage({ ...triageSpec, pinned_tests: ["tests/other.test.ts"] })).toMatchObject({ ok: false, error: expect.stringContaining("pinned_tests") });
+  });
+});
+
+describe("pinStrings and removedPins (the checks grant shares the pin rule, design 04-pre-push-gates)", () => {
+  it("pinStrings gives each double-quoted string of four or more characters once, in order", () => {
+    expect(pinStrings(`a("Fails on scope") b("ok") c('Single quoted') d("Fails on scope") e("Approve")`)).toEqual(["Fails on scope", "Approve"]);
+  });
+
+  it("removedPins gives the text's pin strings a removed diff line contains; added and header lines do not count", () => {
+    const text = `expect(a).toBe("Fails on scope"); expect(b).toBe("Kept label");`;
+    const diff = ["--- a/src/x.ts", "+++ b/src/x.ts", "@@ -1 +1 @@", '-  label: "Fails on scope now",', '+  label: "Kept label",'].join("\n");
+    expect(removedPins(text, diff)).toEqual(["Fails on scope"]);
+    expect(removedPins(text, ["--- a/Kept label", "+Fails on scope"].join("\n"))).toEqual([]);
+    expect(removedPins(`expect(a).toBe("ok");`, "-ok ok")).toEqual([]);
   });
 });
