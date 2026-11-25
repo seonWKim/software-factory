@@ -20,40 +20,40 @@ Read this index, then only the topics you touch. Add a line here only for a new 
 - [03-risk.md](design/03-risk.md): tier and safety ratchet.
 
 ## 4. Agents
-- [04-agents.md](design/04-agents.md): agent roles, model per kind and tier.
-- [04-gate-commands.md](design/04-gate-commands.md): human commands, refusals.
+- [04-agents.md](design/04-agents.md): agent roles, models.
+- [04-gate-commands.md](design/04-gate-commands.md): human commands.
 - [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise`.
 - [04-chat-commands.md](design/04-chat-commands.md): chat commands.
 - [04-verdicts.md](design/04-verdicts.md): `/verdict`, implicit verdicts, pushbacks.
-- [04-closing-source-issue.md](design/04-closing-source-issue.md): closing the source.
+- [04-closing-source-issue.md](design/04-closing-source-issue.md): closing source.
 - [04-pre-push-gates.md](design/04-pre-push-gates.md): pre-push gates.
 - [04-triage.md](design/04-triage.md): path companions, allowed paths.
 - [04-split-specs.md](design/04-split-specs.md): size estimates, phases.
 - [04-screenshots.md](design/04-screenshots.md): UI screenshots.
 
 ## 5. Coordination
-- [05-coordination.md](design/05-coordination.md): claim order, leases, fencing.
+- [05-coordination.md](design/05-coordination.md): claims, leases, fencing.
 - [05-dependencies.md](design/05-dependencies.md): parallel workers, holds.
-- [05-restarts.md](design/05-restarts.md): stalled runs, retries, backoff, handoff.
+- [05-restarts.md](design/05-restarts.md): stalled runs, retries.
 - [05-restart-asks.md](design/05-restart-asks.md): runs asking for paths.
 - [05-restart-pauses.md](design/05-restart-pauses.md): claim pauses, drains.
 - [05-alarms.md](design/05-alarms.md): repeated errors, zero-token runs.
 - [05-sandbox.md](design/05-sandbox.md): interface, run folders, tools.
 - [05-merge-conflict.md](design/05-merge-conflict.md): update runs, `/resolve`.
 - [05-ci-gate.md](design/05-ci-gate.md): CI workflow, check gate.
-- [05-sources.md](design/05-sources.md): local items, thread, outbox, CLI.
+- [05-sources.md](design/05-sources.md): local items, outbox.
 - [05-slack-intake.md](design/05-slack-intake.md): Slack intake.
-- [05-github-sync.md](design/05-github-sync.md): GitHub client, PRs, call budget.
+- [05-github-sync.md](design/05-github-sync.md): GitHub client, PRs.
 - [05-stream-intake.md](design/05-stream-intake.md): stream intake, adopted PRs.
 - [05-interactive-sessions.md](design/05-interactive-sessions.md): interactive run.
 - [05-status-labels.md](design/05-status-labels.md): the eight status labels.
-- [05-standing-approvals.md](design/05-standing-approvals.md): spec decision records.
+- [05-standing-approvals.md](design/05-standing-approvals.md): spec decisions.
 
 ## 6. Measurement
-- [06-measurement.md](design/06-measurement.md): feedback rate, stats, golden set.
-- [06-token-budget.md](design/06-token-budget.md): per-tier token checkpoints.
-- [06-spend.md](design/06-spend.md): spend per day, week, item; budgets.
-- [06-efficiency.md](design/06-efficiency.md): items, tokens, time per period.
+- [06-measurement.md](design/06-measurement.md): feedback rate, stats.
+- [06-token-budget.md](design/06-token-budget.md): token checkpoints.
+- [06-spend.md](design/06-spend.md): spend per day, week, item.
+- [06-efficiency.md](design/06-efficiency.md): per-period totals.
 
 ## 7. Self-improvement
 - [07-self-improvement.md](design/07-self-improvement.md): self-change.
@@ -73,6 +73,8 @@ Read this index, then only the topics you touch. Add a line here only for a new 
 - [08-retention.md](design/08-retention.md): daily retention pass.
 - [08-cleanup.md](design/08-cleanup.md): closed items' leftovers.
 - [08-schedules.md](design/08-schedules.md): schedules and runs.
+- [08-schedules-actions.md](design/08-schedules-actions.md): actions.
+- [08-schedules-manage.md](design/08-schedules-manage.md): writes.
 - [08-routines.md](design/08-routines.md): routines.
 
 ## 9. Status page
@@ -81,7 +83,7 @@ Read this index, then only the topics you touch. Add a line here only for a new 
 - [09-dashboard-app.md](design/09-dashboard-app.md): dashboard index.
 - [09-dashboard-shell.md](design/09-dashboard-shell.md): sidebar, top bar.
 - [09-dashboard-components.md](design/09-dashboard-components.md): shared pieces, i18n.
-- [09-dashboard-search.md](design/09-dashboard-search.md): `⌘K` search, `?` help.
+- [09-dashboard-search.md](design/09-dashboard-search.md): `⌘K` search.
 - [09-dashboard-api.md](design/09-dashboard-api.md): API, serving.
 - [09-dashboard-activity.md](design/09-dashboard-activity.md): Activity page.
 - [09-dashboard-runners.md](design/09-dashboard-runners.md): Runners page.
@@ -115,7 +117,7 @@ Read this index, then only the topics you touch. Add a line here only for a new 
 
 ## 10. Event-driven factory
 - [10-event-driven.md](design/10-event-driven.md): tables, migrations, merge queue.
-- [10-event-bus.md](design/10-event-bus.md): sql bus, consumer groups, dead letters.
+- [10-event-bus.md](design/10-event-bus.md): sql bus, dead letters.
 - [10-event-outbound.md](design/10-event-outbound.md): outbound delivery.
 
 ## 11. Packs and signal ledger
