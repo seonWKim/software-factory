@@ -3,10 +3,13 @@
 // secret; else the factory's default client (default-client.ts), so the sign-in needs no setup; else (the dashboard's
 // "use my own client" option, or a build with no default client, which it says first) the ID and secret are asked once
 // with hidden input, for the one that is missing. `hasDefault` tells the dashboard whether the build has that client.
-// The browser opens Google's consent page for calendar.readonly only, with a PKCE S256 challenge, a random state and a
-// redirect to a loopback listener on 127.0.0.1 that closes after 5 minutes. The code is
-// exchanged, the answer must grant exactly calendar.readonly and carry a refresh token, and only then are the three
-// secrets stored, together. Every value stays in memory until then; no message carries one. The token exchange is
+// It asks whether to allow writes (design 02-tasks-calendar, copy to a connected calendar; the dashboard answers from
+// its "with write access" option): yes asks for the calendar.events scope only, no for calendar.readonly only.
+// The browser opens Google's consent page for that one scope, with a PKCE S256 challenge, a random state and a
+// redirect to a loopback listener on 127.0.0.1 that closes after 5 minutes. The code is exchanged; the answer must
+// grant the scope asked for, no scope other than calendar.readonly or calendar.events, and carry a refresh token, and
+// only then are the three secrets stored, together. Which scope was granted is never stored: the source reads it from
+// each token answer. Every value stays in memory until then; no message carries one. The token exchange is
 // given up after GOOGLE_HTTP_TIMEOUT_MS, as the sync's calls are. The HTTP client is injected and both timeouts run
 // on the context's Clock, so no test calls Google or waits. The CLI and the dashboard both run this one hook.
 
@@ -14,7 +17,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { GoogleClient } from "./default-client.js";
-import { CALENDAR_READONLY_SCOPE, GOOGLE_HTTP_TIMEOUT_MS, type HttpClient, type SecretReader, TOKEN_URL, fail, json } from "./google-calendar-source.js";
+import {
+  CALENDAR_EVENTS_SCOPE, CALENDAR_READONLY_SCOPE, GOOGLE_HTTP_TIMEOUT_MS, type HttpClient, type SecretReader, TOKEN_URL, calendarScopes, fail, json,
+} from "./google-calendar-source.js";
 
 export const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 /** How long the loopback listener waits for the browser's callback. */
@@ -22,6 +27,8 @@ export const CONNECT_TIMEOUT_MS = 5 * 60_000;
 const CALLBACK_PATH = "/callback";
 /** Said before asking for the owner's client when this build has no default one; the dashboard says the same. */
 const NO_DEFAULT_CLIENT = "This build has no default Google client. Connect with your own OAuth client.";
+/** The write question; the dashboard's connect answers a question that starts "Allow writes" from its write option. */
+export const WRITE_QUESTION = "Allow writes: add the factory's events to Google Calendar too (the calendar.events scope)?";
 const BACK_TO_TERMINAL = "Go back to the terminal: it says whether the connection worked. You can close this tab.";
 
 /** The timer the listener's timeout runs on: the context's Clock. */
@@ -36,7 +43,8 @@ interface Sleeper {
 export interface ConnectCtx<N extends string> {
   secretsFile: string;
   secrets: SecretReader<N>;
-  ask: { hidden(prompt: string): Promise<string> };
+  /** `yesNo` absent: the write question is answered no. */
+  ask: { hidden(prompt: string): Promise<string>; yesNo?(question: string, dflt: boolean): Promise<boolean> };
   print: (line: string) => void;
   openBrowser: (url: string) => Promise<void>;
   storeSecrets: (values: ReadonlyMap<N, string>) => Promise<void>;
@@ -87,13 +95,15 @@ async function connect<N extends string>(o: GoogleConnectOptions<N>, ctx: Connec
     clientSecret ??= await askHidden(ctx, secretName);
   }
 
+  const scope = (await ctx.ask.yesNo?.(WRITE_QUESTION, false)) ? CALENDAR_EVENTS_SCOPE : CALENDAR_READONLY_SCOPE;
   const verifier = base64url(randomBytes(32));
   const state = base64url(randomBytes(24));
   const loopback = await listen(ctx.clock);
   let callback: URLSearchParams;
   try {
-    const url = consentUrl({ clientId, redirectUri: loopback.redirectUri, challenge: challengeOf(verifier), state });
-    ctx.print(`   Sign in and allow read-only calendar access in the browser. If it does not open, go to:\n   ${url}`);
+    const url = consentUrl({ clientId, redirectUri: loopback.redirectUri, challenge: challengeOf(verifier), state, scope });
+    const access = scope === CALENDAR_EVENTS_SCOPE ? "calendar event access (read and write)" : "read-only calendar access";
+    ctx.print(`   Sign in and allow ${access} in the browser. If it does not open, go to:\n   ${url}`);
     await ctx.openBrowser(url);
     callback = await loopback.callback;
   } finally {
@@ -106,7 +116,9 @@ async function connect<N extends string>(o: GoogleConnectOptions<N>, ctx: Connec
   if (!code) throw fail("the callback carried no authorization code: nothing stored");
 
   const answer = await exchange(o.http, ctx.clock, { code, clientId, clientSecret, redirectUri: loopback.redirectUri, verifier });
-  if (!onlyReadonly(answer.scope)) throw fail("the token answer granted a scope other than exactly calendar.readonly: refused, nothing stored");
+  const granted = calendarScopes(answer.scope);
+  if (granted === null) throw fail("the token answer granted a scope other than calendar.readonly or calendar.events: refused, nothing stored");
+  if (!granted.has(scope)) throw fail(`the token answer did not grant ${scope === CALENDAR_EVENTS_SCOPE ? "calendar.events" : "calendar.readonly"}: refused, nothing stored`);
   if (typeof answer.refresh_token !== "string" || answer.refresh_token === "") throw fail("the token answer carried no refresh token: nothing stored");
   await ctx.storeSecrets(new Map([[idName, clientId], [secretName, clientSecret], [refreshToken, answer.refresh_token]]));
   ctx.print(`   stored ${idName}, ${secretName} and ${refreshToken} in ${ctx.secretsFile}`);
@@ -125,13 +137,13 @@ export function challengeOf(verifier: string): string {
   return base64url(createHash("sha256").update(verifier).digest());
 }
 
-/** The consent page: calendar.readonly only, offline access (a refresh token), PKCE S256 and the state. */
-export function consentUrl(p: { clientId: string; redirectUri: string; challenge: string; state: string }): string {
+/** The consent page: the one scope asked for (calendar.readonly by default), offline access (a refresh token), PKCE S256 and the state. */
+export function consentUrl(p: { clientId: string; redirectUri: string; challenge: string; state: string; scope?: string }): string {
   const q = new URLSearchParams({
     client_id: p.clientId,
     redirect_uri: p.redirectUri,
     response_type: "code",
-    scope: CALENDAR_READONLY_SCOPE,
+    scope: p.scope ?? CALENDAR_READONLY_SCOPE,
     access_type: "offline",
     prompt: "consent",
     code_challenge: p.challenge,
@@ -139,13 +151,6 @@ export function consentUrl(p: { clientId: string; redirectUri: string; challenge
     state: p.state,
   });
   return `${AUTH_URL}?${q}`;
-}
-
-/** True when `scope`, a space-separated set, is exactly calendar.readonly. */
-export function onlyReadonly(scope: unknown): boolean {
-  if (typeof scope !== "string") return false;
-  const granted = new Set(scope.split(" ").filter((s) => s !== ""));
-  return granted.size === 1 && granted.has(CALENDAR_READONLY_SCOPE);
 }
 
 async function exchange(
