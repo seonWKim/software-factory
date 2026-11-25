@@ -30,13 +30,15 @@ export type MissedRule = "catch_up" | "skip";
 /**
  * What a fired occurrence does: file one work item, run one read-only agent, file the feedback agent's tasks, queue
  * the daily improve run of its slot's UTC day, or queue a routine run (Check a page, planned by planRoutine in
- * src/core/routines.ts). Stored and routed; `factory schedule add` and `edit` (and the HTTP routes) write only
- * SCHEDULE_WRITE_KINDS: an `improve` schedule is added by setup, a `check_page` one through the routine API.
+ * src/core/routines.ts). Stored and routed; `factory schedule add` and `edit` (and the HTTP routes) write every kind
+ * but `improve`, which setup adds; they name `check_page` `check-page` (SCHEDULE_WRITE_WORDS).
  */
 export type ScheduleActionKind = "build" | "agent" | "feedback" | "improve" | "check_page";
 export const SCHEDULE_ACTION_KINDS: readonly ScheduleActionKind[] = ["build", "agent", "feedback", "improve", "check_page"];
-/** The kinds `schedule add` and `schedule edit` accept (design 08-schedules). */
-export const SCHEDULE_WRITE_KINDS: readonly ScheduleActionKind[] = ["build", "agent", "feedback"];
+/** The action words `schedule add` and `schedule edit` accept (design 08-schedules); `check_page` is accepted too. */
+const SCHEDULE_WRITE_WORDS = "build, agent, feedback, check-page";
+/** The cadence word of a Check a page schedule that runs on each merge, not on a cadence (its `trigger` merge). */
+export const ON_MERGE = "on-merge";
 /** The kinds that call a model, so the schedule's token cap holds them. */
 const MODEL_KINDS: ReadonlySet<ScheduleActionKind> = new Set(["agent", "feedback", "check_page"]);
 
@@ -90,7 +92,7 @@ export interface Schedule {
 
 /** The fields a new row may leave out: each defaults to off, none or null. */
 type Defaulted = "running_since" | "missed_rule" | "action" | "token_cap" | "token_period" | "trigger" | "run_cap_usd" | "daily_cap_usd" | "cap_raise" | "paused" | "last_run_at";
-export type NewSchedule = Omit<Schedule, Defaulted | "cadence"> & { cadence: Cadence } & Partial<Pick<Schedule, Exclude<Defaulted, "running_since">>>;
+export type NewSchedule = Omit<Schedule, Defaulted> & Partial<Pick<Schedule, Exclude<Defaulted, "running_since">>>;
 
 /** One row per claimed occurrence, unique per (schedule_id, occurrence_at). */
 export interface ScheduleRun {
@@ -140,9 +142,10 @@ export interface ScheduleRunResult {
 
 /** The store's schedule methods, part of FactoryStore. */
 export interface ScheduleStore {
-  /** Inserts the schedule unless its ID is stored; returns the stored row either way. */
+  /** Inserts the schedule unless its ID is stored (a Check a page row's `instruction` and `url` in their columns); returns the stored row either way. */
   addSchedule(s: NewSchedule): Promise<Schedule>;
-  listSchedules(): Promise<Schedule[]>;
+  /** Every schedule, oldest first; no Check a page row unless `check_pages` (the CLI's list and every write's read). Read-only. */
+  listSchedules(opts?: { check_pages?: boolean }): Promise<Schedule[]>;
   /** Schedules whose `next_due_at` is at or before `due_by`, earliest first; no Check a page row. Read-only. */
   listDueSchedules(due_by: Timestamp): Promise<Schedule[]>;
   /** Every Check a page row (action `check_page`, its settings `instruction` and `url`), oldest first: what the due list leaves out. Read-only. */
@@ -184,19 +187,20 @@ export interface ScheduleStore {
    */
   updateSchedule(id: string, read: Timestamp | null, patch: SchedulePatch): Promise<boolean>;
   /**
-   * One transaction: removes the schedule, so nothing of it comes due again, and ends its runs held at a checkpoint as
-   * `rejected`; its other run rows stay readable and no item is touched. A run in flight finishes (its end changes no
-   * row). False when no schedule had the ID.
+   * One transaction: removes the schedule and its suggestions, so nothing of it comes due again, and ends its runs held
+   * at a checkpoint as `rejected`; its other run rows stay readable and no item is touched. A run in flight finishes
+   * (its end changes no row). False when no schedule had the ID.
    */
   deleteSchedule(id: string): Promise<boolean>;
   /** The store's Clock's time: the `now` the CLI's schedule writes decide at (the CLI has no Clock of its own). */
   scheduleNow(): Timestamp;
 }
 
-/** The fields an edit, pause, resume or run may change. */
-export type SchedulePatch = Partial<Pick<NewSchedule, "title" | "cadence" | "zone" | "next_due_at" | "missed_rule" | "action" | "token_cap">>;
+/** The fields an edit, pause, resume or run may change (a Check a page row's caps and `paused` too). */
+export type SchedulePatch = Partial<Pick<NewSchedule, "title" | "cadence" | "zone" | "next_due_at" | "missed_rule" | "action" | "token_cap" | "run_cap_usd" | "daily_cap_usd" | "paused">>;
 
-export type AddScheduleInput = Pick<NewSchedule, "id" | "title" | "cadence" | "zone" | "created_by"> &
+export type AddScheduleInput = Pick<NewSchedule, "id" | "title" | "zone" | "created_by"> & { cadence: Cadence } &
+  Partial<Pick<NewSchedule, "trigger" | "run_cap_usd" | "daily_cap_usd">> &
   { missed_rule?: MissedRule; action?: ScheduleActionSpec | null; token_cap?: number | null; token_period?: TokenPeriod; run_now?: boolean };
 
 /** A write's result: the schedule as stored, or why nothing was stored. */
