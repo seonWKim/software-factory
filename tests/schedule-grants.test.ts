@@ -106,7 +106,7 @@ describe("ScheduleGrantBroker.handOut", () => {
     await expect(new ScheduleGrantBroker("s1", [{ kind: "repo", path: "/factory/.factory/x", base_ref: "main" }], deps().d).handOut(base)).rejects.toThrow(/state folder/);
   });
 
-  it("a shell grant hands out the broker tool, which runs sqlite3 -readonly through the broker's call, and nothing else", async () => {
+  it("a shell grant hands out the broker tool, which runs sqlite3 -safe -readonly through the broker's call, and nothing else", async () => {
     const { d, ran } = deps();
     const broker = new ScheduleGrantBroker("s1", [{ kind: "shell", command: SCHEDULE_SHELL_COMMAND, db: "/data/app.db" }], d);
     expect(broker.listTools([SQLITE_TOOL]).map((t) => [t.name, t.read_only])).toEqual([[SQLITE_TOOL, true]]);
@@ -114,12 +114,18 @@ describe("ScheduleGrantBroker.handOut", () => {
     expect(run.tool_grants).toEqual([SQLITE_TOOL]);
     expect(run.tools.map((t) => t.name)).toEqual(["Read", "Glob", "Grep"]);
     expect(await broker.call(ctxCall, SQLITE_TOOL, { sql: "select 1" })).toEqual({ ok: true, content: "1|ok\n" });
-    expect(ran).toEqual([{ file: "sqlite3", args: ["-readonly", "/data/app.db", "select 1"] }]);
-    for (const sql of [".shell rm -rf /", "select writefile('/x', 'y')", "attach '/other.db' as o", "select load_extension('x')", "vacuum into '/any/dir/out.db'", "VACUUM main INTO '/x.db'", "-version", "  -A x", "-unsafe-testing"]) {
+    expect(ran).toEqual([{ file: "sqlite3", args: ["-safe", "-readonly", "/data/app.db", "select 1"] }]);
+    for (const sql of [".shell rm -rf /", "select writefile('/x', 'y')", "attach '/other.db' as o", "select load_extension('x')", "vacuum into '/any/dir/out.db'", "VACUUM main INTO '/x.db'", "-version", "  -A x", "-unsafe-testing",
+      "select data from fsdir('/x')", "select name, data from FSDIR ('/Users/o/.config/software-factory/.env')", "select * from \"fsdir\"('/x')",
+      "select * from zipfile('/x.zip')", "select sqlar_uncompress(data, 1) from t", "select sqlar_compress('x')", "select lsmode(1)", "select readfile('/x')",
+      "with x as (select 1) select data from fsdir('/x')", "select 1; delete from t", "update t set a = 1", "create table t (a)", "pragma writable_schema = 1", "/* c */ select 1", "select 1\n.shell id"]) {
       expect(await broker.call(ctxCall, SQLITE_TOOL, { sql })).toMatchObject({ ok: false, error_code: "refused" });
     }
+    for (const sql of ["with t as (select 1) select * from t;", "EXPLAIN select 1", "pragma table_info(t)"]) {
+      expect(await broker.call(ctxCall, SQLITE_TOOL, { sql })).toMatchObject({ ok: true });
+    }
     expect(await new ScheduleGrantBroker("s1", [], d).call(ctxCall, SQLITE_TOOL, { sql: "select 1" })).toMatchObject({ ok: false, error_code: "not_granted" });
-    expect(ran).toHaveLength(1);
+    expect(ran).toHaveLength(4);
   });
 });
 
@@ -138,7 +144,7 @@ describe("scheduleGrantTools: the runner's broker with the shell grant's tool", 
     expect(broker.listTools(["forge.read"]).map((t) => t.name)).toEqual(["forge.read"]);
     expect(broker.listTools(["forge.read", SQLITE_TOOL]).map((t) => t.name)).toEqual(["forge.read", SQLITE_TOOL]);
     expect(await broker.call({ ...ctxCall, work_item_id: "schedule:s1" as never }, SQLITE_TOOL, { sql: "select 1" })).toEqual({ ok: true, content: "1|ok\n" });
-    expect(ran).toEqual([{ file: "sqlite3", args: ["-readonly", "/data/app.db", "select 1"] }]);
+    expect(ran).toEqual([{ file: "sqlite3", args: ["-safe", "-readonly", "/data/app.db", "select 1"] }]);
     expect(await broker.call({ ...ctxCall, work_item_id: "schedule:s2" as never }, SQLITE_TOOL, { sql: "select 1" })).toMatchObject({ ok: false, error_code: "not_granted" });
     expect(await broker.call({ ...ctxCall, work_item_id: "wi_1" as never }, SQLITE_TOOL, { sql: "select 1" })).toMatchObject({ ok: false, error_code: "not_granted" });
     expect(asked).toEqual(["s1", "s2"]);

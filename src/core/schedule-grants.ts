@@ -152,8 +152,13 @@ export interface GrantBrokerDeps {
   exec(file: string, args: readonly string[], signal?: AbortSignal): Promise<string>;
 }
 
-/** SQL the read-only shell refuses: CLI dot commands, ATTACH, VACUUM (VACUUM INTO writes a file even under -readonly), and the CLI's functions that read or write files or load code. */
-const UNSAFE_SQL = /(^|\n)\s*\.|\b(load_extension|writefile|readfile|edit|fts3_tokenizer)\s*\(|\b(attach|vacuum)\b/i;
+/** The one statement the read-only shell runs: a SELECT, WITH, EXPLAIN or PRAGMA table_info, with at most a trailing `;`. */
+const ALLOWED_SQL = /^\s*(select|with|explain|pragma\s+table_info)\b[^;]*;?\s*$/i;
+/**
+ * Second layer under ALLOWED_SQL and `-safe`: a line starting a dot command, ATTACH, VACUUM (its INTO writes a file even under -readonly), and the
+ * CLI's functions and virtual tables that read or write files or load code (fsdir reads any file, even under -safe).
+ */
+const UNSAFE_SQL = /(^|\n)\s*\.|\b(attach|vacuum|fsdir|zipfile|sqlar_compress|sqlar_uncompress|lsmode|readfile|writefile|load_extension|fts3_tokenizer)\b|\bedit\s*\(/i;
 
 const SQLITE_DESCRIPTOR: ToolDescriptor = {
   name: SQLITE_TOOL,
@@ -164,7 +169,7 @@ const SQLITE_DESCRIPTOR: ToolDescriptor = {
 
 /**
  * The ToolBroker of one feedback run's grants: `handOut` checks every grant and returns what the run gets; the shell
- * grant's tool is served by `call`, which runs `sqlite3 -readonly` on the granted database and nothing else.
+ * grant's tool is served by `call`, which runs `sqlite3 -safe -readonly` on the granted database and nothing else.
  */
 export class ScheduleGrantBroker implements ToolBroker {
   constructor(
@@ -190,10 +195,11 @@ export class ScheduleGrantBroker implements ToolBroker {
     if (name !== SQLITE_TOOL || !shell) return { ok: false, error_code: "not_granted", message: `${name} is not granted to schedule ${this.schedule_id}` };
     const sql = (args as { sql?: unknown } | null)?.sql;
     if (typeof sql !== "string" || sql.trim() === "") return { ok: false, error_code: "bad_args", message: "sql must be a query" };
-    // sqlite3 reads any argument that starts with `-` as an option, even after the database: refused, not run.
-    if (UNSAFE_SQL.test(sql) || sql.trim().startsWith("-")) return { ok: false, error_code: "refused", message: `${SCHEDULE_SHELL_COMMAND} runs plain SQL only: no dot commands, options, ATTACH, VACUUM or file functions` };
+    // The allowlist also refuses dot commands and a leading `-`, which sqlite3 reads as an option even after the database.
+    if (!ALLOWED_SQL.test(sql) || UNSAFE_SQL.test(sql)) return { ok: false, error_code: "refused", message: `${SCHEDULE_SHELL_COMMAND} runs one SELECT, WITH, EXPLAIN or PRAGMA table_info only: no ATTACH, VACUUM or file functions` };
     try {
-      return { ok: true, content: await this.deps.exec("sqlite3", ["-readonly", shell.db, sql]) };
+      // -safe turns off the CLI's commands and functions that touch files; fsdir is still refused above.
+      return { ok: true, content: await this.deps.exec("sqlite3", ["-safe", "-readonly", shell.db, sql]) };
     } catch (e) {
       return { ok: false, error_code: "failed", message: e instanceof Error ? e.message : String(e) };
     }
