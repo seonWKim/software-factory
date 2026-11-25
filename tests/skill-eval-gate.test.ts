@@ -100,8 +100,8 @@ describe("skill version gate: the gate row", () => {
 
   it("only gates in five states are stored", async () => {
     const { store } = await setup();
-    for (const state of ["pending", "running", "passed", "held", "rejected"]) {
-      await store.db.run("INSERT INTO controller_skill_version_gates (ref_id, version, state, detail, created_at, updated_at) VALUES ('r', ?, ?, '{}', 't', 't')", [state.length, state]);
+    for (const [i, state] of ["pending", "running", "passed", "held", "rejected"].entries()) {
+      await store.db.run("INSERT INTO controller_skill_version_gates (ref_id, version, state, detail, created_at, updated_at) VALUES ('r', ?, ?, '{}', 't', 't')", [i + 1, state]);
     }
     await expect(store.db.run("INSERT INTO controller_skill_version_gates (ref_id, version, state, detail, created_at, updated_at) VALUES ('r', 99, 'current', '{}', 't', 't')")).rejects.toThrow();
   });
