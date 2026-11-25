@@ -2101,7 +2101,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
   });
 
   describe("claim order: kind rank, then created_at, then insertion order", () => {
-    const ALL_KINDS: RunKind[] = ["triage", "implement", "review", "update", "resolve", "merge-check"];
+    const ALL_KINDS: RunKind[] = ["triage", "implement", "review", "update", "resolve", "merge-check", "screenshot", "judge"];
     const claim = (store: FactoryStore, worker_id = w1) => store.claimRun({ worker_id, kinds: ALL_KINDS, lease_ms: LEASE });
     const enqueue = (store: FactoryStore, n: number, kind: RunKind, not_before?: string) =>
       store.createWorkItem(issue(n), system, { enqueue: { kind, idempotency_key: `${n}:${kind}`, not_before: not_before as never } });
@@ -2126,15 +2126,25 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect([(await claim(store))?.kind, (await claim(store))?.kind]).toEqual(["merge-check", "implement"]);
     });
 
-    it("ranks merge-check, resolve, review, triage, update, implement, whatever their age", async () => {
+    it("ranks merge-check, resolve, review, screenshot, judge, triage, update, implement, whatever their age", async () => {
       const { store, clock } = await make();
-      for (const [n, kind] of (["implement", "update", "triage", "review", "resolve", "merge-check"] as RunKind[]).entries()) {
+      for (const [n, kind] of (["implement", "update", "triage", "judge", "screenshot", "review", "resolve", "merge-check"] as RunKind[]).entries()) {
         await enqueue(store, n + 1, kind);
         clock.advance(1_000);
       }
       const order: (RunKind | undefined)[] = [];
-      for (let i = 0; i < 6; i++) order.push((await claim(store))?.kind);
-      expect(order).toEqual(["merge-check", "resolve", "review", "triage", "update", "implement"]);
+      for (let i = 0; i < 8; i++) order.push((await claim(store))?.kind);
+      expect(order).toEqual(["merge-check", "resolve", "review", "screenshot", "judge", "triage", "update", "implement"]);
+    });
+
+    it("a queued judge and a queued screenshot, created after an older implement, are claimed before it (a starved judge holds its split's next phase)", async () => {
+      const { store, clock } = await make();
+      await enqueue(store, 1, "implement");
+      clock.advance(1_000);
+      await enqueue(store, 2, "judge");
+      clock.advance(1_000);
+      await enqueue(store, 3, "screenshot");
+      expect([(await claim(store))?.kind, (await claim(store))?.kind, (await claim(store))?.kind]).toEqual(["screenshot", "judge", "implement"]);
     });
 
     it("within one kind, the oldest queued run is claimed first; equal created_at breaks on insertion order", async () => {
@@ -2208,7 +2218,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
   });
 
   describe("claim cap: every kind waits at `workers`; a merge check takes one slot beyond", () => {
-    const ALL_KINDS: RunKind[] = ["triage", "implement", "review", "update", "resolve", "merge-check"];
+    const ALL_KINDS: RunKind[] = ["triage", "implement", "review", "update", "resolve", "merge-check", "screenshot", "judge"];
     /** Loop ids: p:0 … p:3, so three `workers` and the first loop above them. The cap counts every process's runs. */
     const owners = [0, 1, 2, 3].map((n) => `p:${n}` as WorkerId);
     const claim = (store: FactoryStore, worker_id: WorkerId, workers?: number) =>
