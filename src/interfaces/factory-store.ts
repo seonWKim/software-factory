@@ -1,28 +1,20 @@
 import type { TierHistory } from "../core/budget.js";
-import type { ChildRestart } from "./updater.js";
-import type { CoordinationSettings, DependencyLink } from "../core/coordination.js";
+import type { ChildRestart } from "./updater.js"; import type { CoordinationSettings, DependencyLink } from "../core/coordination.js";
 import type {
   Actor, BlockedOn, BudgetAnswer, BudgetCheckpoint, BudgetCheckpointId, ClaimDecision, ClaimPauseName, DependencyEdge, DependencyState, Tier, Handoff,
   FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, Run, RunAttempt, RunId, RunInput, RunKind, RunOutcome, RunResume,
   RunStatus, SessionFinish, SourceRef, SourceType, StandingGate, StandingProposal, StandingRule, StateChange, StateChangeDetail, Stage, Timestamp,
   UnreviewedMerge, UnreviewedMergeId, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId, WorkItemPatch, WorkerId, WorkerPause } from "../core/types.js";
-import type { AuthAction, AuthResource, LinkedAccount } from "./auth-provider.js";
-import type { SourceEvent } from "./source-adapter.js";
-import type { StatsRecord } from "../core/stats.js";
-import type { MergeEvaluation, MergeWindow } from "../core/merge-evaluation.js";
-import type { LearnedSettingsStore } from "../core/learned-settings.js";
-import type { CommandProposalStore } from "../core/interpret.js";
-import type { TaskStore } from "../core/tasks.js";
-import type { NoticeStore } from "../core/notifications.js";
-import type { DesignLearningStore } from "../core/design-learnings.js";
-import type { PostedCommentReads } from "../core/reaction-verdict.js";
-import type { RunOutputStore } from "../core/stall.js";
-import type { SessionReservation, SessionReservationStore } from "../core/session.js";
-import type { ProposalStore } from "../core/proposals.js";
-import type { StandingChangeStore } from "../core/standing.js";
+import type { AuthAction, AuthResource, LinkedAccount } from "./auth-provider.js"; import type { SourceEvent } from "./source-adapter.js";
+import type { StatsRecord } from "../core/stats.js"; import type { MergeEvaluation, MergeWindow } from "../core/merge-evaluation.js";
+import type { LearnedSettingsStore } from "../core/learned-settings.js"; import type { CommandProposalStore } from "../core/interpret.js";
+import type { TaskStore } from "../core/tasks.js"; import type { NoticeStore } from "../core/notifications.js";
+import type { DesignLearningStore } from "../core/design-learnings.js"; import type { PostedCommentReads } from "../core/reaction-verdict.js";
+import type { RunOutputStore } from "../core/stall.js"; import type { SessionReservation, SessionReservationStore } from "../core/session.js";
+import type { ProposalStore } from "../core/proposals.js"; import type { StandingChangeStore } from "../core/standing.js";
 import type { ScheduleStore } from "../core/schedule.js"; import type { AttachmentStore } from "../core/attachments.js"; import type { RoutineStore } from "../core/check-page.js";
 import type { SkillEvalStore } from "./skill-eval-store.js"; import type { SkillDraftStore } from "./skill-draft-store.js";
-import type { AlertDismissalStore } from "../core/alarms.js";
+import type { AlertDismissalStore } from "../core/alarms.js"; import type { LLMMessage } from "./llm-provider.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -99,7 +91,7 @@ export interface NewRun {
 /** The patterns the alarm step looks for across items (design 05-alarms); `spend_budget`: spend passed 80% or 100% of a budget (06-spend). */
 /** `auto_stopped`: a stop condition set auto mode back to manual; `red_main`: the base fails a check on its own, keyed on its sha (design 03-risk). The controller stores both. */
 /** `dead_letter`: the bus dead-lettered a message (RFC 0015 §5.4); the controller's dead-letter-alarm handler stores it. */
-export type AlertPattern = "repeated_error" | "zero_tokens" | "child_restarts" | "auto_stopped" | "dead_letter" | "spend_budget" | "red_main" | "skill_draft_limit" | "skill_version_gate"; // skill_draft_limit: a skill draft cap or token budget was reached; skill_version_gate: a new skill version is held (design 07)
+export type AlertPattern = "repeated_error" | "zero_tokens" | "child_restarts" | "auto_stopped" | "dead_letter" | "spend_budget" | "red_main" | "skill_draft_limit" | "skill_version_gate" | "ci_rerun_failed"; // skill_draft_limit: a skill draft cap or token budget was reached; skill_version_gate: a new skill version is held (design 07); ci_rerun_failed: an item's cancelled CI jobs could not be rerun, keyed on item and head (design 05-ci-gate)
 
 /** An alert as the alarm step builds it; the store adds `id` and `created_at`. */
 export interface NewAlert {
@@ -348,8 +340,16 @@ export interface NoticeMessageStore {
   recordNoticeQuestion(q: Omit<NoticeQuestion, "created_at">): Promise<boolean>;
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
+/** A chat message to store (controller_chat_messages): `seq` orders a session's messages; the rest as on LLMMessage. */
+export interface NewChatMessage extends LLMMessage { seq: number }
+export interface ChatMessageRecord extends NewChatMessage { session_id: string; created_at: Timestamp }
+/** A chat session's messages: an append writes the whole batch, or nothing (false) when one of its seqs is the session's already. */
+export interface ChatMessageStore {
+  appendChatMessages(session_id: string, messages: readonly NewChatMessage[]): Promise<boolean>;
+  listChatMessages(session_id: string): Promise<ChatMessageRecord[]>;
+}
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore, SkillDraftStore, AttachmentStore, AlertDismissalStore, RoutineStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore, SkillDraftStore, AttachmentStore, AlertDismissalStore, RoutineStore, ChatMessageStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes

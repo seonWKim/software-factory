@@ -49,12 +49,12 @@ export const WORKER_INDEX_ENV = "SF_WORKER_INDEX";
 export const TEST_WORKERS_ENV = "SF_TEST_WORKERS";
 
 /**
- * One run's share of the host's CPUs: the CPUs over the runs running on this host when it is claimed (this one
- * included), rounded down, at most cpus - 1 and at least 1. A lone run on ten CPUs gets 9; three running runs get 3
- * each. Computed once at claim and kept for the run (design §5 Parallel workers).
+ * A run's CPU share: CPUs over the host's runs at claim (it included), rounded down; a merge check (the serial gate) at
+ * least ceil(cpus / 2); at most cpus - 1, at least 1. Ten CPUs, five runs: merge check 5, others 2 (design §5).
  */
-export function testWorkerShare(cpus: number, runs: number): number {
-  return Math.max(1, Math.min(cpus - 1, Math.floor(cpus / Math.max(1, runs))));
+export function testWorkerShare(cpus: number, runs: number, kind: RunKind): number {
+  const even = Math.floor(cpus / Math.max(1, runs));
+  return Math.max(1, Math.min(cpus - 1, kind === "merge-check" ? Math.max(even, Math.ceil(cpus / 2)) : even));
 }
 
 /** Git hooks off for every command the worker runs after an agent step (merge, commit, checkout). */

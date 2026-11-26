@@ -1,5 +1,9 @@
 ## History
 
+- **Cancelled checks, Workflow line** (changed 2026-11-26). Before: "the WebKit install step has its own `timeout-minutes: 5` (the job limit is now 15), and `~/.cache/ms-playwright` is cached by playwright-core version, so a hang fails that step quickly." One step ran `install --with-deps webkit`; on the b8ecfbdb main run the cache hit but the apt part hung until the 5-minute limit, so main went red on an infra hang.
+
+- **Cancelled checks** (decision changed 2026-11-26; changed "Today's path kept" of the 2026-11-18 Rerun once decision for cancelled checks). Before: a cancelled or timed-out check was failed like any other, and "a rerun that throws [...] takes the path as before: `checks_failed` with the names only", so a job cancelled by its time limit used a loop, and a rerun that threw while the workflow still ran sent wi_8394b3e3 (PR #862) to `max_loops`. The `responsive` job had one 10-minute limit for the whole job and downloaded WebKit on every run.
+
 - **Failing-test parsing reads only vitest output** (new decision, 2026-11-25, wi_a2a79767). Before: the topic did not say the parser matches only vitest's `FAIL` line, so a Gradle/JUnit check's missing failing-test names and flaky rerun looked like a gap in the gate rather than the rule for non-vitest runners.
 
 - **An unchanged head after a `bug` verdict** (decision changed 2026-11-23; changed "After a `bug` verdict nothing changes" of the 2026-11-08 decision). Before: "After a `bug` verdict nothing changes: a review_bug loop that pushes nothing still stops in `REVIEW` (follow-up issue)." The item sat in `REVIEW`, blocked on nothing, with no run queued and no command but `/reject` to move it (wi_bdd36b09, 2026-11-22).

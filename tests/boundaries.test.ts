@@ -53,7 +53,7 @@ interface Allowed {
 
 const ALLOWED: readonly Allowed[] = [
   { token: /\bgithub_issue\b/g, files: ["interfaces/forge.ts"], reason: "stored source type of GitHub items and its `intake:github_issue` cursor name" },
-  { token: /\bgithub_rate_limit(?:ed)?\b/g, files: ["core/types.ts", "core/policy.ts", "interfaces/factory-store.ts"], reason: "stored run error code `github_rate_limited` and claim pause name `github_rate_limit`" },
+  { token: /\bgithub_rate_limit(?:ed)?\b/g, files: ["core/types/runs.ts", "core/policy.ts", "interfaces/factory-store.ts"], reason: "stored run error code `github_rate_limited` and claim pause name `github_rate_limit`" },
   { token: /\bGITHUB_RATE_LIMIT(?:ED)?\b/g, files: ["core/policy.ts"], reason: "exported constant names of that error code and claim pause" },
   { token: /\bgithubRateLimit(?:Message|Reset)\b/g, files: ["core/policy.ts"], reason: "exported function names the GitHub broker calls" },
   { token: /["`]github["`]/g, files: ["core/command-inbox.ts", "interfaces/auth-provider.ts"], reason: "stored provider name of identities and project keys" },

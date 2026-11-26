@@ -116,6 +116,19 @@ describe("config keys: unknown keys fail at load", () => {
     }
   });
 
+  it("repo.test_selection needs an npm repo.test_command: a Gradle command with it fails startup, without it loads", async () => {
+    const { test_selection, ...repo } = REAL.repo as Record<string, unknown>;
+    const gradle = ["./gradlew", "test"];
+    const err = await loadError({ ...REAL, repo: { ...repo, test_command: gradle, test_selection } });
+    expect(err.message).toContain("repo.test_selection");
+    expect(err.message).toContain("needs an npm test command");
+    const plain = await loadConfig(root({ ...REAL, repo: { ...repo, test_command: gradle } }));
+    expect(plain.config.repo.test_command).toEqual(gradle);
+    expect(plain.config.repo.test_selection).toBeUndefined();
+    const npm = await loadConfig(root({ ...REAL, repo: { ...repo, test_command: ["npm", "test"], test_selection } }));
+    expect(npm.config.repo.test_selection).toEqual(test_selection);
+  });
+
   it('a sqlite store with the key "host" fails', async () => {
     const err = await loadError({ ...REAL, store: { type: "sqlite", host: "localhost" } });
     expect(err.message).toContain("store.host");

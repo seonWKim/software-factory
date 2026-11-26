@@ -363,14 +363,19 @@ describe("factory eval case split and case from-run", () => {
     expect(await store.db.all("SELECT * FROM controller_skill_eval_cases ORDER BY id")).toEqual(before);
   });
 
-  it("case from-run adds one new dev case with a new id, copying the failed case's input, expected, seed and MCP servers", async () => {
+  it("case from-run adds one new dev case with an id from the run and the case, copying the failed case's input, expected, seed and MCP servers", async () => {
     const store = await withFailedRun();
     const r = await evalCommand(store, ["case", "from-run", "r1", "c1"]);
     expect(r.code).toBe(0);
     const added = (await store.listSkillEvalCases("s1")).filter((c) => c.id !== "c1" && c.id !== "c2");
     expect(added).toEqual([expect.objectContaining({ suite_id: "s1", input: { prompt: "in" }, expected: ["a"], seed: "seeds/one", mcp: ["files"], split: "dev" })]);
-    expect(r.out.join("\n")).toContain(added[0]!.id);
+    expect(r.out).toEqual([`added case ${added[0]!.id} (dev) from case c1 of eval run r1`]);
     expect(await store.getSkillEvalCase("c1")).toMatchObject({ split: "held-out" });
+    const before = await store.db.all("SELECT * FROM controller_skill_eval_cases ORDER BY id");
+    const again = await evalCommand(store, ["case", "from-run", "r1", "c1"]);
+    expect(again.code).toBe(0);
+    expect(again.out.join("\n")).toContain(added[0]!.id);
+    expect(await store.db.all("SELECT * FROM controller_skill_eval_cases ORDER BY id")).toEqual(before);
   });
 
   it("case from-run is refused, writing nothing, unless the case has a failed replay in the run", async () => {
@@ -379,7 +384,7 @@ describe("factory eval case split and case from-run", () => {
     for (const args of [["r1", "c2"], ["r-none", "c1"], ["r1", "c-none"]]) {
       const r = await evalCommand(store, ["case", "from-run", ...args]);
       expect(r.code, args.join(" ")).toBe(1);
-      expect(r.err.join("\n")).toContain("nothing written");
+      expect(r.err).toEqual(["That case has no failed replay in that run: nothing written."]);
     }
     expect((await evalCommand(store, ["case", "from-run", "r1"])).code).toBe(1);
     expect(await store.db.all("SELECT * FROM controller_skill_eval_cases ORDER BY id")).toEqual(before);

@@ -202,7 +202,23 @@ describe("GitHubForge.prChecks", () => {
       run("ok", "completed", "success"),
     ];
     client.statuses = [{ context: "ci/legacy", state: "error" }, { context: "ci/fine", state: "success" }];
-    expect(await forge.prChecks(42)).toEqual({ state: "failed", failed: ["test", "typecheck", "cancelled-one", "ci/legacy"] });
+    expect(await forge.prChecks(42)).toEqual({
+      state: "failed", failed: ["test", "typecheck", "cancelled-one", "ci/legacy"], cancelled: ["typecheck", "cancelled-one"],
+    });
+  });
+
+  it("checks that were only cancelled or timed out are failed with every name in `cancelled` once nothing runs (design 05-ci-gate, Cancelled checks)", async () => {
+    const { client, forge } = make();
+    client.runs = [run("responsive", "completed", "cancelled"), run("e2e", "completed", "timed_out"), run("test", "completed", "success")];
+    expect(await forge.prChecks(42)).toEqual({ state: "failed", failed: ["responsive", "e2e"], cancelled: ["responsive", "e2e"] });
+  });
+
+  it("checks that were only cancelled while another still runs are pending: their workflow run cannot be rerun before it ends", async () => {
+    const { client, forge } = make();
+    client.runs = [run("responsive", "completed", "cancelled"), run("test", "in_progress")];
+    expect(await forge.prChecks(42)).toEqual({ state: "pending" });
+    client.runs = [run("responsive", "completed", "cancelled"), run("lint", "completed", "failure"), run("test", "in_progress")];
+    expect(await forge.prChecks(42)).toEqual({ state: "failed", failed: ["responsive", "lint"], cancelled: ["responsive"] });
   });
 });
 
@@ -240,6 +256,13 @@ describe("GitHubForge: rerunFailedJobs and failedJobLog (design 05-ci-gate)", ()
       ["GET", "/repos/o/r/actions/runs?head_sha=h1&per_page=100"],
       ["POST", "/repos/o/r/actions/runs/7/rerun-failed-jobs"],
     ]);
+  });
+
+  it("reruns a cancelled workflow run's jobs like a failed one's", async () => {
+    const { client, forge } = make();
+    client.workflowRuns = [{ id: 7, status: "completed", conclusion: "cancelled" }, { id: 8, status: "completed", conclusion: "success" }];
+    await forge.rerunFailedJobs("h1");
+    expect(client.calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual(["/repos/o/r/actions/runs/7/rerun-failed-jobs"]);
   });
 
   it("throws, rerunning nothing, when the head has no failed workflow run (e.g. only a commit status failed)", async () => {

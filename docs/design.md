@@ -84,6 +84,7 @@ Read this index, then only the topics you touch. Add a line here only for a new 
 - [09-dashboard-components.md](design/09-dashboard-components.md): shared pieces, i18n.
 - [09-dashboard-search.md](design/09-dashboard-search.md): `⌘K` search.
 - [09-dashboard-api.md](design/09-dashboard-api.md): API, serving.
+- [09-api-registry.md](design/09-api-registry.md): capability registry, feature map, OpenAPI.
 - [09-dashboard-activity.md](design/09-dashboard-activity.md): Activity page.
 - [09-dashboard-runners.md](design/09-dashboard-runners.md): Runners page.
 - [09-dashboard-tasks.md](design/09-dashboard-tasks.md): Tasks list, row.

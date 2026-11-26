@@ -369,13 +369,14 @@ export async function loadConfig(
 
   const home = process.env.HOME ?? "";
   const { install_commands: rawInstalls, check_commands: rawChecks, ui_check: rawUiCheck, check_tz: rawTz, restart_command: rawRestart, test_selection: rawSelection, ...fileRepo } = file.repo;
+  const test_command = testCommand(file.repo.test_command);
   const config: LoadedConfig = {
     repo: {
       ...fileRepo,
       path: repoPath,
       install_command: argvConfig("repo.install_command", file.repo.install_command, ["npm", "ci"]),
-      test_command: testCommand(file.repo.test_command),
-      ...installCommandsConfig(rawInstalls), ...checkCommandsConfig(rawChecks), ...uiCheckConfig(rawUiCheck), ...checkTzConfig(rawTz), ...testSelectionConfig(rawSelection), ...(rawRestart === undefined ? {} : { restart_command: argvConfig("repo.restart_command", rawRestart, ["bin/restart"]) }),
+      test_command,
+      ...installCommandsConfig(rawInstalls), ...checkCommandsConfig(rawChecks), ...uiCheckConfig(rawUiCheck), ...checkTzConfig(rawTz), ...testSelectionConfig(rawSelection, test_command), ...(rawRestart === undefined ? {} : { restart_command: argvConfig("repo.restart_command", rawRestart, ["bin/restart"]) }),
     },
     ...(local ? { local_only: true as const } : {}),
     intake_label: intakeLabel(file.intake_label),

@@ -8,7 +8,8 @@ import type { Pack } from "../../packs/packs.js";
  * Rules and learnings for every agent prompt (design 07-self-improvement.md). Each pack layer, in layer order,
  * may hold `rules/*.md` (each file goes into the prompt in full) and a `learnings.md` whose `## ` sections are
  * entries; an entry with a `status: retired` line is left out. Rules come first (every layer's), then learnings.
- * Rules and learnings together are capped at GUIDANCE_MAX characters; text past the cap is dropped with a warning.
+ * Rules and learnings together are capped at GUIDANCE_MAX characters: each entry is kept whole or left out, from the
+ * first that does not fit on; the section then ends with a line giving the count left out, and a warning is logged.
  * Best effort: a failed read is a warning and gives no section. Nothing is cached: each read sees the files now.
  */
 
@@ -29,11 +30,11 @@ export class PackGuidance implements GuidanceSource {
       log.warn("rules and learnings could not be read; none in the prompt", { error: errorText(err) });
       return { text: "", dropped: 0 };
     });
-    if (g.dropped > 0) log.warn("rules and learnings over their cap; the rest was dropped", { dropped_chars: g.dropped, cap: GUIDANCE_MAX });
+    if (g.dropped > 0) log.warn("rules and learnings over their cap; the rest was dropped", { dropped_entries: g.dropped, cap: GUIDANCE_MAX });
     return g.text;
   }
 
-  /** The section and the characters cut at the cap. A read failure other than a missing file rejects. */
+  /** The section and the count of entries left out at the cap. A read failure other than a missing file rejects. */
   async collect(): Promise<{ text: string; dropped: number }> {
     const rules: { id: string; text: string }[] = [];
     const learnings: string[] = [];
@@ -48,21 +49,21 @@ export class PackGuidance implements GuidanceSource {
     }
     if (rules.length === 0 && learnings.length === 0) return { text: "", dropped: 0 };
 
+    // Each entry (a rule file's text or a learning) goes in whole while it fits the characters left under the cap;
+    // at the first that does not, it and every later entry are left out, so no entry is ever cut.
     let left = GUIDANCE_MAX;
-    let dropped = 0;
-    const take = (text: string): string | undefined => {
-      const kept = text.slice(0, Math.max(left, 0));
-      dropped += text.length - kept.length;
-      left -= kept.length;
-      return kept === "" ? undefined : kept;
-    };
-    const parts = [HEADING, INTRO];
-    for (const r of rules) {
-      const kept = take(r.text);
-      if (kept !== undefined) parts.push(`### Rule: \`${r.id}\``, kept);
+    let fit = 0;
+    for (const text of [...rules.map((r) => r.text), ...learnings]) {
+      if (text.length > left) break;
+      left -= text.length;
+      fit++;
     }
-    const kept = learnings.map(take).filter((t): t is string => t !== undefined);
+    const dropped = rules.length + learnings.length - fit;
+    const parts = [HEADING, INTRO];
+    for (const r of rules.slice(0, fit)) parts.push(`### Rule: \`${r.id}\``, r.text);
+    const kept = learnings.slice(0, Math.max(fit - rules.length, 0));
     if (kept.length > 0) parts.push("### Learnings", ...kept);
+    if (dropped > 0) parts.push(`${dropped} more rule or learning entries were left out because of the ${GUIDANCE_MAX}-character cap.`);
     return { text: parts.join("\n\n"), dropped };
   }
 }

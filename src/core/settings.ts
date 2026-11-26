@@ -9,7 +9,7 @@ import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TI
 import { usdBudget } from "./spend.js"; import { fewOrdinaryPaths, testPathsOnly } from "./auto-grant.js";
 import type { RunId, RunKind, Tier, Timestamp } from "./types.js";
 import type { SettingOverride } from "../interfaces/factory-store.js";
-import maxRestart from "../controller/settings/max-restart.setting.js"; import retryBase from "../controller/settings/retry-base-ms.setting.js"; import retryMax from "../controller/settings/retry-max-ms.setting.js";
+import maxRestart from "../controller/settings/max-restart.setting.js"; import retryBase from "../controller/settings/retry-base-ms.setting.js"; import retryMax from "../controller/settings/retry-max-ms.setting.js"; import summaryMorning from "../controller/settings/summary-morning-time.setting.js"; import summaryEvening from "../controller/settings/summary-evening-time.setting.js";
 import lease from "../worker/settings/lease-ms.setting.js"; import runTimeout from "../worker/settings/run-timeout-ms.setting.js"; import { AGENT_STOP_CHECK_MS_DEFAULT } from "./config.js";
 
 // Per-project settings in layers (design 2026-11-01, "Settings resolve in layers"). Pure: the parse and
@@ -287,7 +287,7 @@ export const SETTABLE_KEYS = [
   "alarm_repeat_count", "alarm_window_minutes", "alarm_restart_count",
   "standing_approvals.threshold",
   "mode", "auto_merge_max_tier",
-  "message_style", "notice_kinds", "quiet_hours", "review_time", "notify_channels", "integrations", "calendar",
+  "message_style", "notice_kinds", "quiet_hours", "review_time", "summary_morning_time", "summary_evening_time", "notify_channels", "integrations", "calendar",
   "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label", "spend.daily_budget_usd", "spend.weekly_budget_usd", "tool_grants", "conflict_hotspot_threshold",
   "worker_kinds", "agent_stop_check_ms",
 ] as const;
@@ -343,7 +343,7 @@ export interface SettableValues {
   mode: Mode;
   auto_merge_max_tier: number;
   message_style: string;
-  notice_kinds: NoticeKind[]; quiet_hours: string; review_time: string; notify_channels: string[];
+  notice_kinds: NoticeKind[]; quiet_hours: string; review_time: string; summary_morning_time: string; summary_evening_time: string; notify_channels: string[];
   integrations: Readonly<Record<string, string>>; calendar: readonly string[]; // interface → plugin name (no entry: the config's choice); calendar plugin names
   stall_ms: number; probe_interval_ms: number; auth_pause_ms: number; conflict_hotspot_threshold: number;
   max_coordination_cost: number; hotspot_weight: number; mechanical_weight: number; tool_grants: ToolGrants; // run kind → granted tools (design 08-settings)
@@ -373,7 +373,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   mode: "manual",
   auto_merge_max_tier: 0,
   message_style: "",
-  notice_kinds: [...NOTICE_KINDS], quiet_hours: "", review_time: "09:00", notify_channels: [], integrations: {}, calendar: [],
+  notice_kinds: [...NOTICE_KINDS], quiet_hours: "", review_time: "09:00", summary_morning_time: summaryMorning.default, summary_evening_time: summaryEvening.default, notify_channels: [], integrations: {}, calendar: [],
   stall_ms: STALL_DEFAULTS.stall_ms, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms, conflict_hotspot_threshold: DEFAULT_HOTSPOT_THRESHOLD,
   auth_pause_ms: 1_800_000, // shown as the default; with no override and no file value it follows the effective retry_max_ms
   max_coordination_cost: DEFAULT_COORDINATION.max_cost, hotspot_weight: DEFAULT_COORDINATION.hotspot_weight, mechanical_weight: DEFAULT_COORDINATION.mechanical_weight, tool_grants: {},
@@ -463,7 +463,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "message_style":
       return parseMessageStyle(value) as SettableValues[K];
     case "notice_kinds": return parseNoticeKinds(value) as SettableValues[K];
-    case "quiet_hours": return quietHoursSetting(value) as SettableValues[K]; case "review_time": if (value === "" || (typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value))) return value as SettableValues[K]; throw new Error('review_time must be "HH:MM" (24-hour, local time, 00:00 to 23:59), or "" to turn holding off'); // design 09-status-page
+    case "quiet_hours": return quietHoursSetting(value) as SettableValues[K]; case "review_time": case "summary_morning_time": case "summary_evening_time": if ((value === "" && key === "review_time") || (typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value))) return value as SettableValues[K]; throw new Error(`${key} must be "HH:MM" (24-hour, local time, 00:00 to 23:59)${key === "review_time" ? ', or "" to turn holding off' : ""}`); // design 09-status-page, 08-schedules-actions
     case "notify_channels": return parseNotifyChannels(value) as SettableValues[K];
     case "integrations": return integrationEntries(value) as SettableValues[K]; case "tool_grants": return toolGrantsShape(value) as SettableValues[K];
     case "calendar": case "test_globs": try { return parseNotifyChannels(value) as SettableValues[K]; } catch { throw new Error(`${key} must be a list of distinct ${key === "calendar" ? "calendar plugin names" : "globs"}, or [] for none`); } // the same list check

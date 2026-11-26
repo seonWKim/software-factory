@@ -30,6 +30,9 @@
 //     { "op": "label.set", "run", "case", "replay", "check", "label": "right" | "wrong" }: the owner's label on one judged
 //     check (recordSkillEvalLabel, owner_id the page's factory user); a run, case, replay or check the judge did not
 //     answer is a 409 in plain words; a second label on the same check keeps the first.
+//     { "op": "case.from_run", "run", "case" }: `eval case from-run` (caseFromRun): a new dev case copying a case that has a
+//     failed replay in the run, answered as { case } with the new case's id; its id comes from the run and the case, so a
+//     repeat writes nothing and answers the same case; a case with no failed replay there is a 409 in plain words.
 //     { "op": "starter.draft", "skill" }: 5 to 8 starter cases drafted from the skill's SKILL.md by one model call
 //     (src/core/skill-eval-starter.ts, design 07-self-improvement), answered as { cases } and stored nowhere.
 //     { "op": "starter.accept", "skill", "cases" }: the whole drafted set checked again by the same rules, then the
@@ -209,9 +212,9 @@ interface JudgedCheck {
 function judgedChecks(r: Pick<SkillEvalReplay, "case_id" | "replay" | "detail">): JudgedCheck[] {
   const answers = (r.detail as { answers?: unknown } | null)?.answers;
   if (!Array.isArray(answers)) return [];
-  return (answers as { check?: unknown; answer?: unknown; kind?: unknown }[])
+  return (answers as { check?: unknown; answer?: unknown; kind?: unknown; reason?: unknown }[])
     .filter((a) => JUDGED_KINDS.includes(a.kind) && typeof a.check === "string" && typeof a.answer === "string")
-    .map((a) => ({ case_id: r.case_id, replay: r.replay ?? 0, check: a.check as string, answer: a.answer as string }));
+    .map((a) => ({ case_id: r.case_id, replay: r.replay ?? 0, check: a.check as string, answer: a.answer as string, reason: typeof a.reason === "string" ? a.reason : "" }));
 }
 
 /** A label's key: run, case, replay and check. */
@@ -257,7 +260,7 @@ export const EVALS_WRITE_PATH = "/api/v1/evals/write";
 /** What the write route needs beside the store and the owner check (wired by `factory ui`). */
 export interface UiEvals {
   /** The CLI's authoring rules with ids bound, and its import (src/skill-evals.ts skillEvalAuthoring, main.ts importCases). */
-  authoring: Pick<SkillEvalAuthoring, "addSuite" | "renameSuite" | "deleteSuite" | "addCase" | "editCase"> & { importCases: NonNullable<SkillEvalAuthoring["importCases"]> };
+  authoring: Pick<SkillEvalAuthoring, "addSuite" | "renameSuite" | "deleteSuite" | "addCase" | "editCase" | "caseFromRun"> & { importCases: NonNullable<SkillEvalAuthoring["importCases"]> };
   /** `eval case try` over the configured plugins (src/skill-evals.ts skillEvalTry); stores no run and no replay. */
   tryCase(store: FactoryStore, r: { case_id: string; model_class: string; signal: AbortSignal }): Promise<Authored<TriedCase>>;
   /** The eval source switch: the `integrations` entry, else `plugins.eval_source`. */
@@ -277,14 +280,15 @@ const NO_STARTER = "This server has no starter drafts wired, so starter cases ca
 /** The UI's dependencies with the evals write route. Absent `evals`: a POST to it is a 405. */
 export type EvalsWriteDeps = PauseDeps & { evals?: UiEvals };
 
-const OPS = ["suite.add", "suite.rename", "suite.delete", "case.add", "case.edit", "case.delete", "case.try", "import", "version.settle", "label.set", "starter.draft", "starter.accept"] as const;
+const OPS = ["suite.add", "suite.rename", "suite.delete", "case.add", "case.edit", "case.delete", "case.try", "import", "version.settle", "label.set", "case.from_run", "starter.draft", "starter.accept"] as const;
 type Op = (typeof OPS)[number];
 type Body = Record<string, unknown>;
 
 const text = (b: Body, key: string): string | null => (typeof b[key] === "string" && (b[key] as string).trim() !== "" ? (b[key] as string) : null);
 
-/** What the op needs and the body lacks, or null: `skill` for suite ops, add and import; `ref`, `version` and `decision` for a settle; `run`, `case`, `replay`, `check` and `label` for a label; `case` for the others. */
+/** What the op needs and the body lacks, or null: `skill` for suite ops, add and import; `ref`, `version` and `decision` for a settle; `run`, `case`, `replay`, `check` and `label` for a label; `run` and `case` for a from-run; `case` for the others. */
 function missing(op: Op, b: Body): string | null {
+  if (op === "case.from_run" && text(b, "run") === null) return "run must be a non-empty string (a run id)";
   if (op === "label.set") {
     if (text(b, "run") === null) return "run must be a non-empty string (a run id)";
     if (text(b, "case") === null) return "case must be a non-empty string (a case id)";
@@ -369,6 +373,8 @@ async function runOp(store: FactoryStore, e: UiEvals, op: Op, b: Body, user: str
     }
     case "label.set":
       return setLabel(store, { run_id: text(b, "run")!, case_id: id, replay: b.replay as number, check: b.check as string, verdict: b.label as "right" | "wrong", owner_id: user as UserId });
+    case "case.from_run":
+      return as("case")(await e.authoring.caseFromRun(store, text(b, "run")!, id));
     case "starter.draft":
     case "starter.accept":
       return starterOp(store, e, op, skill, b.cases, user);

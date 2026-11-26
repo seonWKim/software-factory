@@ -2,16 +2,19 @@
 // gate row, pending, written with its version row (SkillEvalStore.recordSkillVersion). A gate pass takes each due gate
 // (pending, or running with its lease ended) by a conditional update under a new lease token and a lease end
 // GATE_LEASE_MS after the take, runs the skill's suite on the version with GATE_REPLAYS replays per case, and compares
-// its pass rate with the latest run of the current version (the newest earlier version whose gate is passed or that
-// has none) on the same model class. A drop past skill_improve_noise holds the version, names the cases whose pass
-// rate fell and raises one owner question (alert pattern skill_version_gate, one per skill ref and version); else it
-// passes. A skill with no suite passes with no run (reason no_suite); a run that gives no pass rate puts the gate back
+// it with the latest run of the current version (the newest earlier version whose gate is passed or that has none) on
+// the same model class, paired case by case (compareSkillEvalRuns: the baseline as a, the gate run as b). Only the
+// paired verdict worse (sign-test p < 0.05 and a paired 95% interval below zero) holds the version, names the cases
+// whose pass rate fell and raises one owner question (alert pattern skill_version_gate, one per skill ref and version);
+// within noise or better passes it, and runs that are not comparable (suite or judge versions differ, or one has none
+// recorded) pass with reason not_comparable. A skill with no suite passes with no run (reason no_suite); a run that gives no pass rate puts the gate back
 // to pending. Every end is written only while the pass still holds its token: a late holder writes nothing and asks
 // nothing. A version recorded before the gate has no row: it stays current and is never gated (no backfill). The Clock
 // is injected; nothing is kept in process.
 
 import { MODEL_CLASSES, type ModelClass } from "./model-choice.js";
-import type { SkillImproveConfig } from "./skill-improve-config.js";
+import { compareSkillEvalRuns } from "./skill-eval-compare.js";
+import { caseRates } from "./skill-eval-stats.js";
 import type { Timestamp, UserId } from "./types.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -26,8 +29,6 @@ export const SKILL_GATE = "system:skill-gate" as UserId;
 /** The class a gate runs on when the current version has no run to name one. */
 const DEFAULT_CLASS: ModelClass = "standard";
 const DAY_MS = 86_400_000;
-/** Pass rates are fractions: a change of exactly the noise is within it (as the improve run reads it). */
-const past = (change: number, margin: number) => change > margin + 1e-9;
 const iso = (ms: number) => new Date(ms).toISOString() as Timestamp;
 
 /** What the composition root builds (src/skill-evals.ts skillGateWiring). */
@@ -49,13 +50,12 @@ export interface SkillGateDeps {
   scanner: EgressScanner;
   /** The injected Clock (only its now): the take's time and lease end. */
   clock: { now(): Date };
-  config: Pick<SkillImproveConfig, "skill_improve_noise">;
   wiring: SkillGateWiring;
   signal: AbortSignal;
 }
 
 /** Why a gate ended as it did. */
-export type GateReason = "no_suite" | "no_version" | "no_pass_rate" | "no_baseline" | "within_noise" | "dropped";
+export type GateReason = "no_suite" | "no_version" | "no_pass_rate" | "no_baseline" | "not_comparable" | "within_noise" | "better" | "dropped";
 
 /** One gate a pass took: the state it wrote, or `lost` when its lease token was no longer the gate's (nothing written). */
 export interface SkillGateResult {
@@ -100,38 +100,31 @@ async function gateVersion(d: SkillGateDeps, ref_id: string, version: number): P
   if (!current || !baseline) return finish("passed", run.id, { reason: "no_baseline", pass_rate: run.pass_rate, model_class, current_version: current?.version ?? null });
 
   const scores = { pass_rate: run.pass_rate, model_class, current: { version: current.version, run_id: baseline.id, pass_rate: baseline.pass_rate } };
-  const drop = baseline.pass_rate! - run.pass_rate;
-  if (!past(drop, d.config.skill_improve_noise)) return finish("passed", run.id, { reason: "within_noise", ...scores });
-  const fell = await casesThatFell(d, baseline.id, run.id);
-  const result = await finish("held", run.id, { reason: "dropped", ...scores, fell });
+  const [before, after] = await Promise.all([d.store.listSkillEvalReplays(baseline.id), d.store.listSkillEvalReplays(run.id)]);
+  const cmp = compareSkillEvalRuns(baseline, run, { a: before, b: after });
+  if (!cmp.comparable) return finish("passed", run.id, { reason: "not_comparable", ...scores, not_comparable: cmp.reason });
+  const paired = { verdict: cmp.verdict, p_value: cmp.p_value, mean_difference: cmp.mean_difference, interval: cmp.interval, wins: cmp.wins, losses: cmp.losses, ties: cmp.ties };
+  if (cmp.verdict !== "worse") return finish("passed", run.id, { reason: cmp.verdict === "better" ? "better" : "within_noise", ...scores, ...paired });
+  const fell = casesThatFell(before, after);
+  const result = await finish("held", run.id, { reason: "dropped", ...scores, ...paired, fell });
   if (result.state === "held") {
-    await heldQuestion(d, { ref_id, version, skill_ref, pass_rate: run.pass_rate, before: baseline.pass_rate!, current: current.version, model_class, fell });
+    await heldQuestion(d, { ref_id, version, skill_ref, pass_rate: run.pass_rate, before: baseline.pass_rate!, current: current.version, model_class, fell, p_value: cmp.p_value! });
   }
   return result;
 }
 
-/** Each case's pass rate in `run_id`: pass verdicts ÷ its replays. */
-async function caseRates(store: Store, run_id: string): Promise<Map<string, number>> {
-  const tally = new Map<string, { pass: number; all: number }>();
-  for (const r of await store.listSkillEvalReplays(run_id)) {
-    const t = tally.get(r.case_id) ?? { pass: 0, all: 0 };
-    tally.set(r.case_id, { pass: t.pass + (r.verdict === "pass" ? 1 : 0), all: t.all + 1 });
-  }
-  return new Map([...tally].map(([id, t]) => [id, t.pass / t.all]));
-}
-
-/** The case IDs whose pass rate in the gate run is more than skill_improve_noise below the current version's run, in order. */
-async function casesThatFell(d: SkillGateDeps, before_run: string, gate_run: string): Promise<string[]> {
-  const [before, after] = await Promise.all([caseRates(d.store, before_run), caseRates(d.store, gate_run)]);
-  return [...after].filter(([id, rate]) => before.has(id) && past(before.get(id)! - rate, d.config.skill_improve_noise)).map(([id]) => id).sort();
+/** The cases in both runs whose pass rate in the gate run is below the current version's run, in order. */
+function casesThatFell(before_replays: Parameters<typeof caseRates>[0], gate_replays: Parameters<typeof caseRates>[0]): string[] {
+  const before = caseRates(before_replays), after = caseRates(gate_replays);
+  return [...after].filter(([id, rate]) => before.has(id) && rate < before.get(id)!).map(([id]) => id).sort();
 }
 
 /** One owner question per skill ref and version (alert pattern skill_version_gate), its text scanned as UI text first. */
 async function heldQuestion(
-  d: SkillGateDeps, q: { ref_id: string; version: number; skill_ref: string; pass_rate: number; before: number; current: number; model_class: ModelClass; fell: readonly string[] },
+  d: SkillGateDeps, q: { ref_id: string; version: number; skill_ref: string; pass_rate: number; before: number; current: number; model_class: ModelClass; fell: readonly string[]; p_value: number },
 ): Promise<void> {
   const cases = q.fell.length > 0 ? q.fell.join(", ") : "none by itself";
-  const text = `${q.skill_ref} version ${q.version} is held: its pass rate ${q.pass_rate} on ${q.model_class} fell from ${q.before} (version ${q.current}). Cases that fell: ${cases}.`;
+  const text = `${q.skill_ref} version ${q.version} is held: its pass rate ${q.pass_rate} on ${q.model_class} fell from ${q.before} (version ${q.current}), and the paired verdict is worse (sign-test p ${q.p_value.toFixed(3)}). Cases that fell: ${cases}.`;
   const detail = (await d.scanner.scan("ui", text)).clean ? text : null;
   await d.store.recordAlert({ pattern: "skill_version_gate", pattern_key: heldAlertKey(q.ref_id, q.version), error_code: "pass_rate_drop", count: q.version, detail }, DAY_MS);
 }

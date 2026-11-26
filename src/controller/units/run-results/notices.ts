@@ -107,7 +107,7 @@ export async function unchangedHead(c: Ctx, it: WorkItem, run: Run): Promise<Dec
   }
   if (last?.verdict !== "pass") return ack;
   const checks = await gate.readChecks(it);
-  return checks.state === "failed" ? gate.checksFailed(it, run, checks.failed, {}, { ack_run: run.id }) : ack;
+  return checks.state === "failed" ? gate.checksFailed(it, run, checks, {}, { ack_run: run.id }) : ack;
 }
 
 /**

@@ -9,7 +9,7 @@ import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
-import { addSkillEvalCase, addSkillEvalSuite, deleteSkillEvalSuite, editSkillEvalCase, renameSkillEvalSuite } from "../src/runtime/index.js";
+import { addSkillEvalCase, addSkillEvalSuite, caseFromRun, deleteSkillEvalSuite, editSkillEvalCase, renameSkillEvalSuite } from "../src/runtime/index.js";
 import { type ImportSource, importSkillEvalCases } from "../src/runtime/skill-evals/import.js";
 import { EVALS_WRITE_PATH, type UiEvals } from "../src/ui/evals-api.js";
 import { HealthMonitor } from "../src/ui/health.js";
@@ -59,6 +59,7 @@ async function setup(opts: { configured?: string; user?: UserId; scanner?: Egres
       deleteSuite: deleteSkillEvalSuite,
       addCase: (s, skill, f) => addSkillEvalCase({ store: s, newId }, skill, f),
       editCase: editSkillEvalCase,
+      caseFromRun,
     },
     tryCase: async (_s, r) => (tries.push(r.case_id), { value: { verdict: "pass", checks: [{ check: RUBRIC[0]!, answer: "yes", reason: "ok" }], error: null } }),
     source: {
@@ -169,11 +170,77 @@ describe("POST /api/v1/evals/write: cases", () => {
   });
 });
 
+describe("POST /api/v1/evals/write: case.from_run", () => {
+  const REFUSAL = "That case has no failed replay in that run: nothing written.";
+  /** c1 (seed and MCP servers set) failed once in run r1; c2 passed. */
+  async function failedRun(o: Parameters<typeof setup>[0] = {}) {
+    const s = await seeded(o);
+    await s.store.addSkillEvalCase({ id: "c1x", suite_id: "s1", input: { prompt: "in" }, expected: RUBRIC, seed: "seeds/one", mcp: ["files"], split: "held-out" });
+    await s.store.addSkillEvalCase({ id: "c2", suite_id: "s1", input: "other", expected: RUBRIC });
+    await s.store.startSkillEvalRun({ id: "r1", suite_id: "s1", created_by: OWNER });
+    await s.store.recordSkillEvalReplay({ run_id: "r1", case_id: "c1x", replay: 1, verdict: "fail", detail: {} });
+    await s.store.recordSkillEvalReplay({ run_id: "r1", case_id: "c2", replay: 1, verdict: "pass", detail: {} });
+    await s.store.finishSkillEvalRun("r1", "failed");
+    return s;
+  }
+  const others = async (s: Awaited<ReturnType<typeof setup>>) => (await s.store.listSkillEvalCases("s1")).filter((c) => !["c1", "c1x", "c2"].includes(c.id));
+
+  it("adds one dev case copying a failed case's input, expected, seed and MCP servers, answering its id", async () => {
+    const s = await failedRun();
+    const r = await s.write({ op: "case.from_run", run: "r1", case: "c1x" });
+    expect(r.status).toBe(200);
+    const added = await others(s);
+    expect(added).toEqual([expect.objectContaining({ suite_id: "s1", input: { prompt: "in" }, expected: RUBRIC, seed: "seeds/one", mcp: ["files"], split: "dev" })]);
+    expect(r.value).toMatchObject({ op: "case.from_run", case: { id: added[0]!.id } });
+  });
+
+  it("is safe to run twice: the repeat writes nothing and answers the same case id", async () => {
+    const s = await failedRun();
+    const first = await s.write({ op: "case.from_run", run: "r1", case: "c1x" });
+    const before = await s.tables();
+    const again = await s.write({ op: "case.from_run", run: "r1", case: "c1x" });
+    expect(again.status).toBe(200);
+    expect((again.value.case as { id: string }).id).toBe((first.value.case as { id: string }).id);
+    expect(await s.tables()).toEqual(before);
+  });
+
+  it("refuses a passed case, an unknown run and an unknown case with a 409 in plain words, writing nothing", async () => {
+    const s = await failedRun();
+    const before = await s.tables();
+    for (const [run, c] of [["r1", "c2"], ["r-none", "c1x"], ["r1", "c-none"]]) {
+      const r = await s.write({ op: "case.from_run", run, case: c });
+      expect(r.status, `${run} ${c}`).toBe(409);
+      expect(r.value.error).toBe(REFUSAL);
+    }
+    expect(await s.tables()).toEqual(before);
+  });
+
+  it("answers 400 without a run or a case, before any write", async () => {
+    const s = await failedRun();
+    const before = await s.tables();
+    for (const body of [{ op: "case.from_run", case: "c1x" }, { op: "case.from_run", run: "r1" }, { op: "case.from_run", run: " ", case: "c1x" }]) {
+      expect((await s.write(body)).status).toBe(400);
+    }
+    expect(await s.tables()).toEqual(before);
+  });
+
+  it("passes every string it answers through the Withholder, the refusal too", async () => {
+    const s = await failedRun({ scanner: { scan: async (channel, t) => (t.includes("LEAK") || t.includes("failed replay") ? { clean: false, findings: [{ rule: "test_rule", channel }] } : { clean: true }) } });
+    await s.store.addSkillEvalCase({ id: "c3", suite_id: "s1", input: "LEAK in", expected: RUBRIC });
+    await s.store.recordSkillEvalReplay({ run_id: "r1", case_id: "c3", replay: 1, verdict: "fail", detail: {} });
+    const ok = await s.write({ op: "case.from_run", run: "r1", case: "c3" });
+    expect(ok.status).toBe(200);
+    expect(JSON.stringify(ok.value)).not.toContain("LEAK");
+    const refused = await s.write({ op: "case.from_run", run: "r1", case: "c2" });
+    expect(refused).toMatchObject({ status: 409, value: { error: "[withheld: test_rule]" } });
+  });
+});
+
 describe("POST /api/v1/evals/write: the guards and the owner check", () => {
   const every = [
     { op: "suite.add", skill: "skills/new" }, { op: "suite.rename", skill: SKILL, title: "T" }, { op: "suite.delete", skill: SKILL },
     { op: "case.add", skill: SKILL, input: "x", expected: RUBRIC }, { op: "case.edit", case: "c1", input: "y" }, { op: "case.delete", case: "c1" },
-    { op: "case.try", case: "c1" }, { op: "import", skill: SKILL },
+    { op: "case.try", case: "c1" }, { op: "import", skill: SKILL }, { op: "case.from_run", run: "r1", case: "c1" },
   ];
 
   it("refuses every op without the CSRF token, or with a stale one, and writes nothing", async () => {

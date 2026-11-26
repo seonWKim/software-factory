@@ -5,7 +5,10 @@ import type { SecretStore } from "../../interfaces/secret-store.js";
 import { runProcess } from "../process/run-process.js";
 import { buildAgentEnv, harnessCredential } from "../runner/claude-code-runner.js";
 
-/** Anthropic via the Claude Code CLI on the subscription login (D2). No tools, one turn. */
+/**
+ * Anthropic via the Claude Code CLI on the subscription login (D2). One turn, no tools: a request with tools is
+ * answered stop_reason "error" without running the CLI, and a request holding tool messages or calls is the same.
+ */
 export class ClaudeCliLLMProvider implements LLMProvider {
   constructor(
     private readonly opts: {
@@ -20,6 +23,9 @@ export class ClaudeCliLLMProvider implements LLMProvider {
   async complete(req: LLMRequest): Promise<LLMResponse> {
     const usage = { input_tokens: 0, output_tokens: 0, cost_usd: null as number | null };
     if (req.data_env === "prod") return { text: "", stop_reason: "refused", usage };
+    if ((req.tools?.length ?? 0) > 0 || req.messages.some((m) => m.role === "tool" || (m.tool_calls?.length ?? 0) > 0)) {
+      return { text: "claude-cli: tool calls are not supported; use a provider that supports tools (openai-compatible)", stop_reason: "error", usage };
+    }
 
     await mkdir(join(this.opts.workDir, "tmp"), { recursive: true });
     const env = buildAgentEnv({ env_allowlist: {} }, await harnessCredential(this.opts.secrets), {

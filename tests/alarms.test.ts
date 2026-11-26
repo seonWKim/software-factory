@@ -630,6 +630,22 @@ describe("alarms: red main", () => {
   });
 });
 
+// Cancelled CI jobs not rerun (design 05-ci-gate, Cancelled checks): the CI gate stores one alert per item and head;
+// it shows on that item only.
+describe("alarms: cancelled CI jobs not rerun", () => {
+  it("alarmText names the wait, and only the item its key names is held up", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const { item } = await store.createWorkItem(issue(902), system);
+    const { item: other } = await store.createWorkItem(issue(903), system);
+    await store.recordAlert({ pattern: "ci_rerun_failed", pattern_key: `ci_rerun_failed:${item.id}:h1`, error_code: "ci_rerun_failed", count: 0, detail: "not rerun" }, ALERT_DEDUPE_MS);
+    const [open] = await openAlarms(store, clock.now());
+    expect(alarmText(open!)).toBe("Alarm: an item's cancelled CI jobs could not be rerun; it waits on its checks with no loop counted");
+    expect(alarmsFor([open!], item, [])).toEqual([open]);
+    expect(alarmsFor([open!], other, [])).toEqual([]);
+  });
+});
+
 // A skill draft limit (design 07-self-improvement): the improve run stores one owner question per limit and UTC day; the
 // status views name the limit and its value, and its detail the proposed change. It holds up no item's runs.
 describe("alarms: skill draft limit", () => {

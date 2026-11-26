@@ -3,7 +3,7 @@
 // skill_ref, URL-encoded. A null figure means none was recorded, never 0. The Plugins page's Evals card (design
 // 09-dashboard-settings) also reads /suite and writes through POST /api/v1/evals/write (postEvalWrite), with
 // GET /api/v1/pauses's csrf_token, and reads GET /api/v1/evals's `starter` for Draft starter cases. The evals page's Judge checks card reads /calibration and labels a check with
-// postEvalWrite's label.set.
+// postEvalWrite's label.set; its Cases card adds a case that failed in the newest finished run with case.from_run.
 
 import { useQuery } from "@tanstack/react-query";
 import { t } from "../i18n/index.js";
@@ -26,11 +26,6 @@ export interface EvalRun {
   errored: number | null;
 }
 
-/** One run as the grid shows it. */
-export interface EvalRunSummary extends Omit<EvalRun, "id"> {
-  run_id: string;
-}
-
 /** One version of the skill (GET /api/v1/evals/<skill>/versions), newest first: its latest linked run's pass rate and the change since the previous version. */
 export interface SkillVersionRow {
   version: number;
@@ -43,6 +38,12 @@ export interface SkillVersionRow {
   pass_rate: number | null;
   /** pass_rate − the previous version's, as a fraction; null when either has none. */
   change: number | null;
+  /** The 95% interval of the newest linked run's pass rate, from its replays' verdicts; null with no replay. Absent from an older server. */
+  band?: { low: number; high: number } | null;
+  /** The sum of that run's replays' recorded cost in dollars; null when none was recorded. Absent from an older server. */
+  cost_usd?: number | null;
+  /** Each case's verdict in that run (its first replay's), by case ID; absent from an older server. */
+  cases?: { case_id: string; verdict: string }[];
 }
 
 /** One line of the unified diff. */
@@ -74,9 +75,6 @@ const POLL_MS = 30_000;
 /** The skill's runs, newest first. */
 export const useEvalRuns = (skill: string) => useApi<{ runs: EvalRun[] }>(base(skill, "runs"), POLL_MS);
 
-/** One row per skill version and model class: that pair's newest run. */
-export const useEvalGrid = (skill: string) => useApi<{ rows: EvalRunSummary[] }>(base(skill, "grid"), POLL_MS);
-
 /** The skill's versions, newest first; `unlinked` holds the IDs of runs that match no version. */
 export const useSkillVersions = (skill: string) => useApi<{ versions: SkillVersionRow[]; unlinked: string[] }>(base(skill, "versions"), POLL_MS);
 
@@ -92,6 +90,8 @@ export interface JudgedCheck {
   replay: number;
   check: string;
   answer: string;
+  /** The judge's reason for its answer; "" when none was stored. Absent from an older server. */
+  reason?: string;
   label: "right" | "wrong" | null;
 }
 
@@ -176,6 +176,7 @@ export type EvalWrite =
   | { op: "case.try"; case: string }
   | { op: "import"; skill: string }
   | { op: "label.set"; run: string; case: string; replay: number; check: string; label: "right" | "wrong" }
+  | { op: "case.from_run"; run: string; case: string }
   | { op: "starter.draft"; skill: string }
   | { op: "starter.accept"; skill: string; cases: StarterCase[] };
 

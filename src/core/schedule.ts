@@ -30,12 +30,12 @@ export type MissedRule = "catch_up" | "skip";
 
 /**
  * What a fired occurrence does: file one work item, run one read-only agent, file the feedback agent's tasks, queue
- * the daily improve run of its slot's UTC day, or queue a routine run (Check a page, planned by planRoutine in
- * src/core/check-page.ts). Stored and routed; `factory schedule add` and `edit` (and the HTTP routes) write every kind
- * but `improve`, which setup adds; they name `check_page` `check-page` (SCHEDULE_WRITE_WORDS).
- */
-export type ScheduleActionKind = "build" | "agent" | "feedback" | "improve" | "check_page";
-export const SCHEDULE_ACTION_KINDS: readonly ScheduleActionKind[] = ["build", "agent", "feedback", "improve", "check_page"];
+ * the daily improve run of its slot's UTC day, queue a routine run (Check a page, src/core/check-page.ts), or post the
+ * owner's summary (src/core/summary.ts). Stored and routed; schedule add and edit (and the HTTP routes) write every
+ * kind but those setup adds (SETUP_ONLY_KINDS), and name `check_page` `check-page` (SCHEDULE_WRITE_WORDS). */
+export type ScheduleActionKind = "build" | "agent" | "feedback" | "improve" | "check_page" | "summary";
+export const SCHEDULE_ACTION_KINDS: readonly ScheduleActionKind[] = ["build", "agent", "feedback", "improve", "check_page", "summary"];
+const SETUP_ONLY_KINDS: Readonly<Record<string, string>> = { improve: "improver.daily_trigger off", summary: "the owner's summary posts" };
 /** The action words `schedule add` and `schedule edit` accept (design 08-schedules), and the kind each stores. */
 const SCHEDULE_WRITE_WORDS: Readonly<Record<string, ScheduleActionKind>> = { build: "build", agent: "agent", feedback: "feedback", "check-page": "check_page", check_page: "check_page" };
 const WRITE_WORDS = "build, agent, feedback, check-page";
@@ -373,7 +373,7 @@ const capProblem = (f: Pick<ScheduleFields, "run_cap_usd" | "daily_cap_usd">): s
 
 /** The action a word and its text make (CLI, HTTP): build `body`; agent, feedback `prompt` (needed); check-page an http(s) `url` and an `instruction` (or `body`), whose fields any other refuses. */
 export function scheduleActionOf(word: string, body: string | undefined, page: Pick<ScheduleFields, (typeof PAGE_FIELDS)[number]> = {}): ScheduleActionSpec | { problem: string } {
-  if (word === "improve") return { problem: `the improve action is added by setup only (improver.daily_trigger off), not by schedule add or edit: one of ${WRITE_WORDS}` };
+  if (Object.hasOwn(SETUP_ONLY_KINDS, word)) return { problem: `the ${word} action is added by setup only (${SETUP_ONLY_KINDS[word]}), not by schedule add or edit: one of ${WRITE_WORDS}` };
   const kind = Object.hasOwn(SCHEDULE_WRITE_WORDS, word) ? SCHEDULE_WRITE_WORDS[word]! : undefined;
   if (kind === undefined) return { problem: `unknown action kind "${word}": one of ${WRITE_WORDS}` };
   if (kind === "check_page") {

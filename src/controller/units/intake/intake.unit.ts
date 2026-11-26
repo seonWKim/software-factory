@@ -39,7 +39,9 @@ export class IntakeUnit {
       }
       return;
     }
-    if (e.classify && (await this.answered(e))) return;
+    // A top-level chat message: answered in its thread, unless the model read it as a work request, made here.
+    const read = e.classify ? await this.answered(e) : "item";
+    if (read === "answered") return;
     const { item, created } = await this.c.k.d.store.createWorkItem(
       {
         source: e.source,
@@ -55,7 +57,9 @@ export class IntakeUnit {
     if (created) {
       this.c.k.d.log.info("intake", { work_item_id: item.id });
       // A press of "Make this a task" (design 04-gate-commands): one line before the item's status and spec.
-      if (e.offered) await this.c.unit("outbox").postWithoutItem(e.source, `Task created: ${e.title}`, `<!-- factory:task-created:${e.source.id} -->`);
+      // A top-level message read as a work request (design 04-chat-commands): one line naming the item by ID and title.
+      const line = e.offered ? `Task created: ${e.title}` : read === "request" ? `Task created: \`${item.id}\` ${e.title}` : null;
+      if (line !== null) await this.c.unit("outbox").postWithoutItem(e.source, line, `<!-- factory:task-created:${e.source.id} -->`);
       await this.c.unit("outbox").setStatus(item.source, "triaging", null);
       // Edges first, so a claim holds the implement run even before the next coordination tick.
       await this.c.k.guard("dependencies", async () => void (await this.c.unit("coordination").refreshEdges(item, this.c.unit("coordination").issueTime(e.updated_at))));
@@ -97,24 +101,26 @@ export class IntakeUnit {
   }
 
   /**
-   * A top-level chat message (design 05-sources, 04-gate-commands): answered in its own thread, never taken in by
-   * itself; only a press of the offer (`offered`) makes it an item. True when it was answered; false only when it is
-   * already an item (a redelivery after a press), which intake handles as before. An empty message gets one line; a
-   * message the egress scan flags gets one fixed line that quotes nothing and offers nothing, before any model call,
-   * so the offer's marker, which carries the message, never holds a flagged text. A requester without `approve_spec`,
-   * no model, a long message or no usable answer (`none`) get the unread line and the offer, with no model call where
-   * there is no model or no right. A model answer the scan flags posts nothing. Every reply is keyed on the message's
-   * source id, so a redelivery posts no second one.
+   * A top-level chat message (design 05-sources, 04-chat-commands): answered in its own thread, or, when the model
+   * reads it as one work request, made an item at once (`request`) with the same create a press of the offer
+   * (`offered`) makes. `item` when it is already an item (a redelivery), which intake handles as before, so a
+   * redelivery makes no model call, no second item and no second reply. An empty message gets one line; a message the
+   * egress scan flags gets one fixed line that quotes nothing and offers nothing, before any model call, so the offer's
+   * marker, which carries the message, never holds a flagged text. A requester without `approve_spec`, no model, a long
+   * message or no usable answer (`none`) get the unread line and the offer, with no model call where there is no model
+   * or no right. A chat or unsure answer is posted as it reads. A model answer the scan flags posts nothing. Every
+   * reply is keyed on the message's source id, so a redelivery posts no second one.
    */
-  private async answered(e: ItemRequested): Promise<boolean> {
-    if (await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id)) return false;
+  private async answered(e: ItemRequested): Promise<"answered" | "request" | "item"> {
+    if (await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id)) return "item";
     const body = await this.answer(e);
+    if (body === "request") return "request";
     if (body !== null) await this.c.unit("outbox").postWithoutItem(e.source, body, `<!-- factory:chat-answer:${e.source.id} -->`);
-    return true;
+    return "answered";
   }
 
-  /** The reply to a top-level chat message, or null when the model's answer failed the egress scan. */
-  private async answer(e: ItemRequested): Promise<string | null> {
+  /** The reply to a top-level chat message, `request` for a work request, or null when the model's answer failed the egress scan. */
+  private async answer(e: ItemRequested): Promise<string | "request" | null> {
     const where = { source_id: e.source.id };
     const text = e.body.trim();
     if (text === "") return EMPTY_TEXT;
@@ -125,7 +131,7 @@ export class IntakeUnit {
     if (read === "blocked") return null;
     if (read === "unread" || read.body === null) return unreadOffer(text);
     this.c.k.d.log.info("chat message answered", { ...where, kind: read.kind });
-    return read.body;
+    return read.kind === "request" ? "request" : read.body;
   }
 }
 

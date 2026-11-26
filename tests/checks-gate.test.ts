@@ -416,6 +416,81 @@ describe("CI gate: a failed head's jobs are rerun once (design 05-ci-gate, Rerun
   });
 });
 
+describe("CI gate: checks that were only cancelled rerun and never count a loop (design 05-ci-gate, Cancelled checks)", () => {
+  const cancelled = (...names: string[]): PrChecks => ({ state: "failed", failed: names, cancelled: names });
+  const rerunForge = (f: { forge: BaseForge }) => f.forge as RerunForge;
+  const reasons = async (f: Awaited<ReturnType<typeof factory>>, id: string) => (await f.store.listStateChanges(id as never)).map((c) => c.reason);
+
+  it("a cancelled check reruns its jobs and waits on checks_rerun; cancelled again it reruns again, with loop_count 0 and no implement run", async () => {
+    const f = await factory([cancelled("responsive")], { rerun: true, head: "h1" });
+    const it0 = await f.toReview(40);
+    expect(it0).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "checks_rerun", loop_count: 0 });
+    expect((await f.store.listStateChanges(it0.id)).at(-1)).toMatchObject({ reason: "checks_rerun", detail: { rerun_head: "h1", cancelled: true } });
+
+    f.forge.checkResults = [cancelled("responsive")];
+    await f.controller.tickChecks();
+    expect(rerunForge(f).reruns).toEqual(["h1", "h1"]);
+    expect(await f.item(it0.id)).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "checks_rerun", loop_count: 0 });
+    expect(await f.implementRuns(it0.id)).toHaveLength(1);
+    expect(await reasons(f, it0.id)).not.toContain("checks_failed");
+  });
+
+  it("after 3 cancelled reruns of a head it waits on checks_pending with one ci_rerun_failed alert, never max_loops", async () => {
+    const f = await factory([cancelled("responsive")], { rerun: true, head: "h1" });
+    const it0 = await f.toReview(41);
+    for (let i = 0; i < 4; i++) {
+      f.forge.checkResults = [cancelled("responsive")];
+      await f.controller.tickChecks();
+    }
+    expect(rerunForge(f).reruns).toEqual(["h1", "h1", "h1"]);
+    expect(await f.item(it0.id)).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "checks_pending", loop_count: 0 });
+    expect(await reasons(f, it0.id)).not.toContain("max_loops");
+    expect(await f.implementRuns(it0.id)).toHaveLength(1);
+    const alerts = await f.store.listAlerts({ limit: 10 });
+    expect(alerts).toEqual([expect.objectContaining({ pattern: "ci_rerun_failed", pattern_key: `ci_rerun_failed:${it0.id}:h1`, count: 3 })]);
+  });
+
+  it("a rerun that throws (the workflow run not finished yet) waits on checks_pending with an alert, then reruns on a later tick", async () => {
+    const f = await factory([cancelled("responsive")], { rerun: true, head: "h1" });
+    rerunForge(f).rerunError = new Error("no failed GitHub Actions run on h1");
+    const it0 = await f.toReview(42);
+    expect(it0).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "checks_pending", loop_count: 0 });
+    expect(await f.implementRuns(it0.id)).toHaveLength(1);
+    expect(await reasons(f, it0.id)).not.toContain("checks_failed");
+    const [alert] = await f.store.listAlerts({ limit: 10 });
+    expect(alert).toMatchObject({ pattern: "ci_rerun_failed", error_code: "ci_rerun_failed" });
+    expect(alert!.detail).toContain("no failed GitHub Actions run on h1");
+
+    rerunForge(f).rerunError = null;
+    f.forge.checkResults = [cancelled("responsive")];
+    await f.controller.tickChecks();
+    expect(rerunForge(f).reruns).toEqual(["h1"]);
+    expect(await f.item(it0.id)).toMatchObject({ blocked_on: "ci", blocked_reason: "checks_rerun", loop_count: 0 });
+  });
+
+  it("a real failure after a cancelled rerun still gets its own rerun once, then goes back to implement as before", async () => {
+    const f = await factory([cancelled("responsive")], { rerun: true, head: "h1" });
+    const it0 = await f.toReview(43);
+    f.forge.checkResults = [failed("test")];
+    await f.controller.tickChecks();
+    expect(rerunForge(f).reruns).toEqual(["h1", "h1"]);
+    expect(await f.item(it0.id)).toMatchObject({ blocked_reason: "checks_rerun", loop_count: 0 });
+    f.forge.checkResults = [failed("test")];
+    await f.controller.tickChecks();
+    expect(rerunForge(f).reruns).toEqual(["h1", "h1"]);
+    expect(await f.item(it0.id)).toMatchObject({ stage: "RUNNING", loop_count: 1 });
+  });
+
+  it("cancelled and failed checks together take the failed path: rerun once, then a loop", async () => {
+    const f = await factory([{ state: "failed", failed: ["test", "responsive"], cancelled: ["responsive"] }], { rerun: true, head: "h1" });
+    const it0 = await f.toReview(44);
+    expect((await f.store.listStateChanges(it0.id)).at(-1)!.detail).not.toHaveProperty("cancelled");
+    f.forge.checkResults = [{ state: "failed", failed: ["test", "responsive"], cancelled: ["responsive"] }];
+    await f.controller.tickChecks();
+    expect(await f.item(it0.id)).toMatchObject({ stage: "RUNNING", loop_count: 1 });
+  });
+});
+
 describe("CI gate: red main decided per failing test (design 05-ci-gate, Red main)", () => {
   const MAIN_TEST = "tests/ui-health-page.test.tsx > health page > renders";
   const OWN_TEST = "tests/own.test.ts > own > breaks";

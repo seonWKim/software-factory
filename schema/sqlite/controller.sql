@@ -46,6 +46,17 @@ CREATE TABLE controller_budget_checkpoints (
     answered_at          TEXT
   );
 
+CREATE TABLE controller_chat_messages (
+    session_id    TEXT NOT NULL,
+    seq           INTEGER NOT NULL,
+    role          TEXT NOT NULL,
+    content       TEXT NOT NULL,
+    tool_calls    TEXT,
+    tool_call_id  TEXT,
+    created_at    TEXT NOT NULL,
+    PRIMARY KEY (session_id, seq)
+  );
+
 CREATE TABLE controller_claim_decisions (
     run_id               TEXT PRIMARY KEY,
     work_item_id         TEXT NOT NULL REFERENCES controller_work_items(id),

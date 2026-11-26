@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useRef, useState } from "react";
 import { postJson, useApi } from "../api/client.js";
-import { type EvalRun, type EvalRunSummary, type JudgedCheck, type SkillVersionRow, postEvalRun, postEvalWrite, useEvalCalibration, useEvalGrid, useEvalRuns, useSkillDiff, useSkillVersions } from "../api/evals.js";
+import { type EvalRun, type JudgedCheck, type SkillVersionRow, postEvalRun, postEvalWrite, useEvalCalibration, useEvalRuns, useSkillDiff, useSkillVersions } from "../api/evals.js";
 import type { Session } from "../api/overview.js";
 import { API } from "../api/routes.js";
 import { Badge } from "../components/ui/badge.js";
@@ -25,9 +25,11 @@ import { t } from "../i18n/index.js";
 import { localDateTime, localShortDate } from "../lib/format.js";
 
 // The evals page at evals/<skill> (design 09-dashboard-evals): the header (title and Run now, the one primary Button), the
-// Versions Card (a ListRow per version, newest first, the current one with a Badge), a ButtonRow with Compare (opens a
-// ModalPanel: two version Selects, the unified DiffView of their SKILL.md texts and each case's result), the Grid Card
-// (the case results: the newest run per version and model class) and the Trend Card. Plain words only: folder hashes
+// Versions Card (a ListRow per version, newest first, the current one with a Badge, its pass rate, 95% band in words and
+// cost per run), the Cases Card (a DataTable: a row per case, a column per version), a ButtonRow with Compare (opens a
+// ModalPanel: two version Selects, the unified DiffView of their SKILL.md texts and each case's result) and the Trend Card.
+// A case that failed in the newest finished run (its verdict in that run's version row) has "Add as a new case" in the
+// Cases table's last column: a Dialog that posts case.from_run (a new dev case copying it) and shows a refusal in it. Plain words only: folder hashes
 // and run IDs show only inside a version row's Details. Run now opens a Dialog that starts one run
 // (POST /api/v1/evals/<skill>/runs); the server's refusal (403 owner check, 409 refused run) shows in it. A version the
 // gate holds is a Card above Versions: its pass rates, the cases that got worse, "Keep the current version" (a Dialog
@@ -45,9 +47,6 @@ export function skillName(ref: string): string {
 const percent = (rate: number): string => `${Math.round(rate * 100)}%`;
 const rateText = (rate: number | null): string => (rate === null ? t("evals.noRate") : percent(rate));
 const points = (n: number): string => t("evals.points", { sign: n < 0 ? "−" : "+", n: Math.abs(Math.round(n * 100)) });
-
-/** A run's state as the state table's key: a finished run passed or failed, an errored one failed. */
-const levelOf = (status: string): string => (status === "passed" ? "succeeded" : status === "errored" ? "failed" : status);
 
 /** Pass rate by run date, oldest first, skipping runs with no pass rate. */
 function Trend({ runs }: { runs: readonly EvalRun[] }) {
@@ -67,73 +66,27 @@ function Trend({ runs }: { runs: readonly EvalRun[] }) {
   );
 }
 
-/** The model classes in the order cheap, standard, strong, then any other by name; Run now's model choices. */
+/** The model classes in the order cheap, standard, strong; Run now's model choices. */
 const CLASS_ORDER = ["cheap", "standard", "strong"];
 /** The class a run's judge uses for `model` (src/core/scorer.ts judgeClass): strong grades the others, standard grades strong. */
 const judgeOf = (model: string): string => (model === "strong" ? "standard" : "strong");
-const byClass = (a: string, b: string): number => {
-  const [i, j] = [CLASS_ORDER.indexOf(a), CLASS_ORDER.indexOf(b)];
-  return i < 0 && j < 0 ? a.localeCompare(b) : i < 0 ? 1 : j < 0 ? -1 : i - j;
-};
-
-interface GridRow {
-  key: string;
-  version: string;
-  cells: Map<string, EvalRunSummary>;
-}
-
-/** One row per version, named by its order: the first version the skill had is "Version 1". */
-function gridRows(rows: readonly EvalRunSummary[], runs: readonly EvalRun[]): GridRow[] {
-  const first = new Map<string, string>();
-  for (const r of runs) if (r.skill_version !== null && (first.get(r.skill_version) ?? "￿") > r.started_at) first.set(r.skill_version, r.started_at);
-  const order = [...first].sort((a, b) => (a[1] < b[1] ? -1 : 1)).map(([v]) => v);
-  const out = new Map<string, GridRow>();
-  for (const r of rows) {
-    const key = r.skill_version ?? "";
-    const row = out.get(key) ?? { key, version: r.skill_version === null ? t("evals.versionUnknown") : t("evals.versionN", { n: order.indexOf(r.skill_version) + 1 }), cells: new Map() };
-    row.cells.set(r.model_class ?? "", r);
-    out.set(key, row);
-  }
-  return [...out.values()];
-}
-
-/** One row per skill version, one column per model class; a pair with no run says so. */
-function Grid({ rows, runs }: { rows: readonly EvalRunSummary[]; runs: readonly EvalRun[] }) {
-  const classes = [...new Set(rows.map((r) => r.model_class).filter((c): c is string => c !== null))].sort(byClass);
-  const columns: Column<GridRow>[] = [
-    { key: "version", header: t("evals.version") },
-    ...classes.map((c): Column<GridRow> => ({
-      key: c,
-      header: c,
-      render: (row) => {
-        const run = row.cells.get(c);
-        if (!run) return <span className="text-text-2">{t("evals.noRun")}</span>;
-        return (
-          <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1" data-cell>
-            <Badge level={levelOf(run.status)}>{rateText(run.pass_rate)}</Badge>
-            <span className="text-xs text-text-2">{localShortDate(run.started_at)}</span>
-          </span>
-        );
-      },
-    })),
-  ];
-  return (
-    <Card title={t("evals.grid")}>
-      <DataTable label={t("evals.grid")} columns={columns} rows={gridRows(rows, runs)} rowKey={(r) => r.key} empty={t("evals.gridEmpty")} />
-    </Card>
-  );
-}
 
 /** The change since the previous version as +N points or −N points; a version with no change to show says so. */
 const changeText = (change: number | null): string => (change === null ? t("evals.noChange") : t("evals.changeOf", { change: points(change) }));
 
-/** One version: Version N, a Badge on the current one, its pass rate, change and date; hash and run ID under Details. */
+/** The 95% band of a version's pass rate as words ("between 70% and 90%"); none says so. */
+const bandText = (band: SkillVersionRow["band"]): string => (band == null ? t("evals.noBand") : t("evals.bandOf", { low: percent(band.low), high: percent(band.high) }));
+/** A version's cost per run in dollars, to the cent (less than a cent shows as "<$0.01"); none says so. */
+const costText = (cost: number | null | undefined): string =>
+  cost == null ? t("evals.noCost") : t("evals.costOf", { cost: cost > 0 && cost < 0.01 ? "<$0.01" : `$${cost.toFixed(2)}` });
+
+/** One version: Version N, a Badge on the current one, its pass rate, band, cost, change and date; hash and run ID under Details. */
 function VersionRow({ v }: { v: SkillVersionRow }) {
   return (
     <ListRow
       data-version={v.version}
       title={<span className="flex items-center gap-2"><span className={ROW_TITLE}>{t("evals.versionN", { n: v.version })}</span>{v.current && <Badge level="succeeded">{t("evals.current")}</Badge>}</span>}
-      details={<><span>{t("evals.rateOf", { rate: rateText(v.pass_rate) })}</span><span>{changeText(v.change)}</span><span>{t("evals.versionDate", { date: localShortDate(v.created_at) })}</span></>}
+      details={<><span>{t("evals.rateOf", { rate: rateText(v.pass_rate) })}</span><span>{bandText(v.band)}</span><span>{costText(v.cost_usd)}</span><span>{changeText(v.change)}</span><span>{t("evals.versionDate", { date: localShortDate(v.created_at) })}</span></>}
     >
       <Disclosure summary={t("evals.details")} lazy>
         <KeyValue items={[
@@ -159,6 +112,102 @@ function Versions({ versions }: { versions: ReturnType<typeof useSkillVersions> 
         <ul aria-label={t("evals.versionsLabel")} className="divide-y divide-border rounded-box border border-border">
           {versions.data.versions.map((v) => <VersionRow key={v.folder_hash} v={v} />)}
         </ul>
+      )}
+    </Card>
+  );
+}
+
+interface VersionCasesRow {
+  key: string;
+  n: number;
+  name: string;
+  results: Map<number, string | null>;
+  /** The case failed in the newest finished run (its verdict in that run's version row). */
+  failed: boolean;
+}
+
+/**
+ * One write from this page: `busy` while it posts; `post` answers the server's refusal (shown as `error`) or null;
+ * a throw shows `failed`. On success every read loads again, then `done` runs (a Dialog closes).
+ */
+function useEvalPost(failed: string) {
+  const client = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const send = async (post: () => Promise<string | null>, done?: () => void): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const refused = await post();
+      if (refused !== null) return setError(refused);
+      await client.invalidateQueries();
+      done?.();
+    } catch {
+      setError(failed);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { busy, error, setError, send };
+}
+
+/** A write's refusal text, or null when it went through. */
+const refusalOf = (r: { ok: true } | { ok: false; error: string | null }, fallback: string): string | null => (r.ok ? null : (r.error ?? fallback));
+
+/** "Add as a new case" for one case that failed in `run`: a Dialog that posts case.from_run, then reads the page again. */
+function AddFromRun({ run, row }: { run: string; row: VersionCasesRow }) {
+  const token = useApi<Session>(API.session, false).data?.csrf_token ?? null;
+  const button = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const { busy, error, setError, send: post } = useEvalPost(t("evals.fromRunFailed"));
+  const send = async () => {
+    if (token === null) return;
+    await post(async () => refusalOf(await postEvalWrite(token, { op: "case.from_run", run, case: row.key }), t("evals.fromRunFailed")), () => setOpen(false));
+  };
+  return (
+    <>
+      <Button ref={button} size="sm" onClick={() => { setError(null); setOpen(true); }}>{t("evals.fromRun")}</Button>
+      {open && (
+        <Dialog
+          title={t("evals.fromRunTitle", { n: row.n })}
+          consequence={t("evals.fromRunConsequence", { n: row.n })}
+          confirmLabel={busy ? t("evals.fromRunAdding") : t("evals.fromRunConfirm")}
+          confirmDisabled={busy || token === null}
+          error={error}
+          onConfirm={() => void send()}
+          onClose={() => setOpen(false)}
+          returnFocusTo={button}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * One row per case (numbered, never by ID), one column per version newest first; a cell is the case's result in that
+ * version. When a case failed in the newest finished run (`run`), a last column holds its "Add as a new case".
+ */
+function Cases({ versions, run }: { versions: ReturnType<typeof useSkillVersions>; run: string | null }) {
+  const list = versions.data?.versions ?? [];
+  const ids = [...new Set(list.flatMap((v) => (v.cases ?? []).map((c) => c.case_id)))].sort();
+  const newest = run === null ? undefined : list.find((v) => v.run_id === run);
+  const rows = ids.map((id, i): VersionCasesRow => ({
+    key: id, n: i + 1, name: t("evals.caseN", { n: i + 1 }), results: new Map(list.map((v) => [v.version, v.cases?.find((c) => c.case_id === id)?.verdict ?? null])),
+    failed: newest?.cases?.some((c) => c.case_id === id && c.verdict === "fail") ?? false,
+  }));
+  const columns: Column<VersionCasesRow>[] = [
+    { key: "name", header: t("evals.caseColumn") },
+    ...list.map((v): Column<VersionCasesRow> => ({ key: `v${v.version}`, header: t("evals.versionN", { n: v.version }), render: (r) => verdictText(r.results.get(v.version) ?? null) })),
+    ...(run !== null && rows.some((r) => r.failed) ? [{ key: "actions", header: t("evals.colActions"), render: (r: VersionCasesRow) => (r.failed ? <AddFromRun run={run} row={r} /> : null) }] : []),
+  ];
+  return (
+    <Card title={t("evals.cases")}>
+      {versions.isError ? (
+        <ErrorNote error={new Error(t("evals.versionsFailed"))} />
+      ) : !versions.data ? (
+        <Loading rows={3} label="loading.evalRuns" onRetry={() => void versions.refetch()} />
+      ) : (
+        <DataTable label={t("evals.casesLabel")} columns={columns} rows={rows} rowKey={(r) => r.key} empty={t("evals.casesEmpty")} />
       )}
     </Card>
   );
@@ -290,28 +339,17 @@ export function HeldCases({ held }: { held: HeldVersion }) {
  * the Dialog and a refusal shows in it, or (for Use this version) on its own line under the buttons.
  */
 export function HeldVersionActions({ held, skill, size = "md" }: { held: HeldVersion; skill: string; size?: "sm" | "md" }) {
-  const client = useQueryClient();
   const token = useApi<Session>(API.session, false).data?.csrf_token ?? null;
   const keepButton = useRef<HTMLButtonElement>(null);
   const [keeping, setKeeping] = useState(false);
   const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<{ on: "use" | "keep"; text: string } | null>(null);
+  const [on, setOn] = useState<"use" | "keep">("use");
+  const { busy, error: refused, setError, send } = useEvalPost(t("evals.heldFailed"));
+  const error = refused === null ? null : { on, text: refused };
   const settle = async (decision: "approve" | "reject") => {
     if (token === null) return;
-    const on = decision === "approve" ? "use" : "keep";
-    setBusy(true);
-    setError(null);
-    try {
-      const refused = await postSettle(token, held, decision);
-      if (refused !== null) return setError({ on, text: refused });
-      await client.invalidateQueries();
-      setKeeping(false);
-    } catch {
-      setError({ on, text: t("evals.heldFailed") });
-    } finally {
-      setBusy(false);
-    }
+    setOn(decision === "approve" ? "use" : "keep");
+    await send(() => postSettle(token, held, decision), () => setKeeping(false));
   };
   return (
     <>
@@ -374,22 +412,10 @@ function Agreement({ labels, agreement }: { labels: number; agreement: number | 
  * its first label, so both buttons are off once it has one. A refusal shows on its own line under the buttons.
  */
 function JudgeCheckRow({ c, n, replays, token }: { c: JudgedCheck & { run: string }; n: number; replays: boolean; token: string | null }) {
-  const client = useQueryClient();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { busy, error, send } = useEvalPost(t("evals.labelFailed"));
   const label = async (verdict: "right" | "wrong") => {
     if (token === null) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await postEvalWrite(token, { op: "label.set", run: c.run, case: c.case_id, replay: c.replay, check: c.check, label: verdict });
-      if (!r.ok) return setError(r.error);
-      await client.invalidateQueries();
-    } catch {
-      setError(t("evals.labelFailed"));
-    } finally {
-      setBusy(false);
-    }
+    await send(async () => refusalOf(await postEvalWrite(token, { op: "label.set", run: c.run, case: c.case_id, replay: c.replay, check: c.check, label: verdict }), t("evals.labelFailed")));
   };
   const where = replays ? t("evals.judgeCaseReplay", { n, replay: c.replay }) : t("evals.judgeCase", { n });
   const said = t("evals.judgeSaid", { answer: c.answer === "yes" ? t("evals.answerYes") : c.answer === "no" ? t("evals.answerNo") : c.answer });
@@ -403,6 +429,7 @@ function JudgeCheckRow({ c, n, replays, token }: { c: JudgedCheck & { run: strin
           <span>{said}</span>
           {c.label !== null && <span>{t(c.label === "right" ? "evals.markedRight" : "evals.markedWrong")}</span>}
         </p>
+        {c.reason !== undefined && c.reason !== "" && <p className="text-xs text-pretty break-words text-text-2">{t("evals.judgeReason", { reason: c.reason })}</p>}
         {error !== null && <p data-row-error role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">{error}</p>}
       </div>
       <ButtonRow className="shrink-0">
@@ -447,27 +474,14 @@ function JudgeChecks({ skill }: { skill: string }) {
 
 /** Run now: model class, its judge class (follows the model) and replay count; the run is stored before it closes. */
 function RunNowDialog({ skill, onClose, returnFocusTo }: { skill: string; onClose: () => void; returnFocusTo: RefObject<HTMLButtonElement | null> }) {
-  const client = useQueryClient();
   const token = useApi<Session>(API.session, false).data?.csrf_token ?? null;
   const [model, setModel] = useState("standard");
   const [replays, setReplays] = useState("1");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { busy, error, send: post } = useEvalPost(t("evals.runFailed"));
   const judge = judgeOf(model);
   const send = async () => {
     if (token === null) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await postEvalRun(token, skill, { model_class: model, judge_model_class: judge, replays: Number(replays) });
-      if (!r.ok) return setError(r.error ?? t("evals.runFailed"));
-      await client.invalidateQueries();
-      onClose();
-    } catch {
-      setError(t("evals.runFailed"));
-    } finally {
-      setBusy(false);
-    }
+    await post(async () => refusalOf(await postEvalRun(token, skill, { model_class: model, judge_model_class: judge, replays: Number(replays) }), t("evals.runFailed")), onClose);
   };
   return (
     <Dialog
@@ -509,14 +523,13 @@ function RunNow({ skill }: { skill: string }) {
   );
 }
 
-/** The evals page of one skill (`skill` is its skill_ref): Run now in the header, then any held version, Versions, Compare, Grid, Trend, Judge checks. */
+/** The evals page of one skill (`skill` is its skill_ref): Run now in the header, then any held version, Versions, Cases, Compare, Trend, Judge checks. */
 export function EvalsPage({ skill }: { skill: string }) {
   const runs = useEvalRuns(skill);
-  const grid = useEvalGrid(skill);
   const versions = useSkillVersions(skill);
   const header = <PageHeader title={skillName(skill)} description={t("evals.description")} actions={<RunNow skill={skill} />} />;
-  if (runs.isError || grid.isError) return <>{header}<ErrorNote error={new Error(t("evals.loadFailed"))} /></>;
-  if (!runs.data || !grid.data) return <>{header}<Loading label="loading.evalRuns" onRetry={() => { void runs.refetch(); void grid.refetch(); }} /></>;
+  if (runs.isError) return <>{header}<ErrorNote error={new Error(t("evals.loadFailed"))} /></>;
+  if (!runs.data) return <>{header}<Loading label="loading.evalRuns" onRetry={() => void runs.refetch()} /></>;
   if (runs.data.runs.length === 0) return <>{header}<EmptyState title={t("evals.empty")} description={t("evals.emptyHelp")} /></>;
   return (
     <>
@@ -526,8 +539,8 @@ export function EvalsPage({ skill }: { skill: string }) {
           <HeldVersions skill={skill} />
           <Versions versions={versions} />
         </div>
+        <Cases versions={versions} run={runs.data.runs.find((r) => r.status !== "running")?.id ?? null} />
         <CompareVersions skill={skill} versions={versions.data?.versions ?? []} />
-        <Grid rows={grid.data.rows} runs={runs.data.runs} />
         <Trend runs={runs.data.runs} />
         <JudgeChecks skill={skill} />
       </div>

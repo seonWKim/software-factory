@@ -79,7 +79,11 @@ export interface ForgePollResult {
  * ones (untrusted text: check names come from files in the repository); `passed` when every check passed,
  * and also when the head commit has no checks at all, so a repository without CI is not held forever.
  */
-export type PrChecks = { state: "pending" } | { state: "passed" } | { state: "failed"; failed: string[] };
+/**
+ * `cancelled`: the failed names that were cancelled or timed out, not failed by the code (design 05-ci-gate,
+ * Cancelled checks); absent or empty: none.
+ */
+export type PrChecks = { state: "pending" } | { state: "passed" } | { state: "failed"; failed: string[]; cancelled?: string[] };
 
 /**
  * The checks on the base branch's head commit, summed up as PrChecks are, with the commit read (`head_sha`; null
@@ -209,8 +213,9 @@ export interface Forge {
    */
   baseChecks?(): Promise<BaseChecks>;
   /**
-   * Reruns only the failed CI jobs of commit `head_sha` (a PR head whose checks failed), on that same commit. Called by
-   * the CI gate at most once per PR head, before it sends the item back to implement (design 05-ci-gate, Rerun once).
+   * Reruns only the failed CI jobs of commit `head_sha` (a PR head whose checks failed), cancelled and timed-out jobs
+   * included, on that same commit. Called by the CI gate at most once per PR head before it sends the item back to
+   * implement (design 05-ci-gate, Rerun once), and for checks that were only cancelled up to a cap (Cancelled checks).
    * A write. Throws when nothing can be rerun (no failed job, e.g. only a commit status failed) or the forge refuses
    * it (e.g. a token without the right to rerun); the gate then takes the path it takes without it. Absent: no rerun.
    */

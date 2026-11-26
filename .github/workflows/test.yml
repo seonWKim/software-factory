@@ -49,9 +49,13 @@ jobs:
   # The dashboard at five window sizes, light and dark (docs/design/09-dashboard-app.md, Responsive check): a local
   # development check, so it is not in repo.check_commands (the factory's sandbox has no browser) and its step is
   # written as name + run, which tests/check-commands.test.ts does not count. ubuntu-latest has google-chrome.
+  # WebKit needs system libraries (apt) and the browser itself. The apt part has hung for 5-10 minutes on a slow
+  # mirror (docs/design/05-ci-gate.md, Cancelled checks), so it runs in its own step: apt retries and times out
+  # per request, and each attempt is cut at 150 s and tried up to 3 times. The browser download is cached per
+  # playwright-core version and runs only on a cache miss.
   responsive:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -59,9 +63,30 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: playwright-core version
+        id: playwright
+        run: echo "version=$(node -p "JSON.parse(require('fs').readFileSync('node_modules/playwright-core/package.json', 'utf8')).version")" >> "$GITHUB_OUTPUT"
+      - name: Cache of the WebKit browser
+        id: webkit-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-webkit-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       # The check's WebKit pass (scripts/responsive/webkit.mjs) needs playwright-core's WebKit and its system libraries.
-      - name: WebKit for the responsive check
-        run: npx playwright-core install --with-deps webkit
+      - name: WebKit system libraries for the responsive check
+        timeout-minutes: 8
+        run: |
+          printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' | sudo tee /etc/apt/apt.conf.d/80-ci-retries
+          for attempt in 1 2 3; do
+            if timeout -k 10 150 npx playwright-core install-deps webkit; then exit 0; fi
+            echo "install-deps attempt $attempt failed or timed out"
+            sleep 10
+          done
+          exit 1
+      - name: WebKit browser for the responsive check
+        if: steps.webkit-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 5
+        run: npx playwright-core install webkit
       - name: npm run check:responsive
         run: npm run check:responsive
       - name: Screenshots of the failures

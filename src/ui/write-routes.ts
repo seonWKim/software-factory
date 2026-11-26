@@ -5,23 +5,38 @@
 // the route's CSRF token in x-csrf-token, the body size, then the route. The owner, rules and evals routes then check
 // the owner (approve_spec or ownerOf), the pack approvals route approve_tool, and the work routes the commands actor.
 // The item commands route (commands.ts) runs its own guards in the same order. A new write route adds one entry to
-// its area file (and its name to POST_ONLY), not to this file's lookup or to server.ts.
+// its area file (and its name to POST_ONLY), not to this file's lookup or to server.ts. A POST capability of the API
+// registry (src/api/registry.ts, design 09-api-registry) needs no entry: the one registry entry, last, takes every
+// declared POST path behind the same guards, with the pauses token.
 
 import { type ApiResult, apiError } from "./api.js";
 import { commandsPathId, commandsPost, staleCsrf } from "./commands.js";
 import { csrfMatches } from "./settings-api.js";
-import type { WriteRoute } from "./write-route-types.js";
+import { type WriteRoute, pausesToken } from "./write-route-types.js";
 import { SETTINGS_WRITE_ROUTES } from "./write-routes-settings.js";
 import { OWNER_WRITE_ROUTES } from "./write-routes-owner.js";
 import { WORK_WRITE_ROUTES } from "./write-routes-work.js";
+import { registryOf } from "../api/index.js";
+import { registryWrite, registryWrites } from "../api/registry.js";
+import { Withholder } from "./withhold.js";
 import type { ServerDeps, UiRequest } from "./server.js";
 
 /** The 405 text for a POST to any path no write route takes. */
 export const POST_ONLY =
-  "Only the settings, item commands, pause resume, alarm dismiss, standing, improve run, pack approvals, plugins import, rule verdict, rule edit, pushback dismiss, schedule (draft and improve too), proposal verdict, task, project file, calendar, local calendar event, model credential, data ask, migrate, supervisor, attachments, evals write, evals run and Re-check routes take a POST.";
+  "Only the settings, item commands, pause resume, alarm dismiss, standing, improve run, pack approvals, plugins import, rule verdict, rule edit, pushback dismiss, schedule (draft and improve too), proposal verdict, task, project file, calendar, local calendar event, model credential, data ask, migrate, supervisor, attachments, evals write, evals run, Re-check and API registry capability routes take a POST.";
 
-/** First match wins. A query string is ignored: `path` is the raw URL's path. The areas' paths do not overlap. */
-const WRITE_ROUTES: readonly WriteRoute[] = [...SETTINGS_WRITE_ROUTES, ...OWNER_WRITE_ROUTES, ...WORK_WRITE_ROUTES];
+/** The API registry's POST capabilities: the owner's writes, so the pauses token. */
+const REGISTRY_WRITES: WriteRoute = {
+  matches: (d, p) => d.pauses !== undefined && registryWrites(registryOf(d), p),
+  token: pausesToken,
+  run: (d, p, b) => registryWrite(registryOf(d), d, p, b, new Withholder(d.scanner)),
+};
+
+/**
+ * First match wins. A query string is ignored: `path` is the raw URL's path. The areas' paths do not overlap; the
+ * registry's entry is last, so a declared path never takes an existing route's.
+ */
+const WRITE_ROUTES: readonly WriteRoute[] = [...SETTINGS_WRITE_ROUTES, ...OWNER_WRITE_ROUTES, ...WORK_WRITE_ROUTES, REGISTRY_WRITES];
 
 /** A raw request URL's path, without its query string or fragment. */
 export const pathOf = (rawUrl: string | undefined): string => (rawUrl ?? "/").split(/[?#]/, 1)[0]!;

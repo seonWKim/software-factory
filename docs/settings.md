@@ -61,6 +61,8 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `stall_ms` | worker | runtime | global | free |  | `300000` | Longest an agent run may go with no model output and no open tool call before it counts as stalled. |
 | `standing_approvals.threshold` | controller | runtime | global | tighten-only |  | `10` | Spec approvals in a row, with the spec unchanged, before a standing rule is proposed. |
 | `store` | state | review | global | free |  |  | Where the factory keeps its state: the store's driver and location. |
+| `summary_evening_time` | controller | runtime | global | free |  | `"22:00"` | Local time, HH:MM in the machine's zone, of the owner's evening summary post. |
+| `summary_morning_time` | controller | runtime | global | free |  | `"08:30"` | Local time, HH:MM in the machine's zone, of the owner's morning summary post. |
 | `tasks_add_key` | runtime | runtime | global | free |  | `"enter"` | Which key adds a task from the Tasks page quick-add field: enter or cmd-enter. |
 | `test_globs` | controller | runtime | global | tighten-only |  | `["tests/**","**/*.test.*"]` | Globs of the test files an implement run's ask may be granted automatically. |
 | `tick_ms` | runtime | runtime | global | free |  | `2000` | How often the controller and the worker pool run their loop. |

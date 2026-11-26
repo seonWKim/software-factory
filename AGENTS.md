@@ -47,6 +47,7 @@ Weigh every change against it: does it make the factory better at building softw
   - When a feature is replaced, deprecate it in its topic file with a removal plan, then remove it. Don't keep two ways of doing the same thing.
   - Prefer fewer settings, states and code paths. A new one needs a reason recorded in its topic file.
 - `npm run check:responsive` (every dashboard page at five window sizes, light and dark) runs at merge on the merged commit (`repo.ui_check`), not in the agent sandbox, which cannot start Chrome: not running it there is not missing work.
+- Headless first: a feature is declared as an API capability first (`src/api/`, design `docs/design/09-api-registry.md`: schema, description and permission, once), and the dashboard, chat and CLI call that API. Page-only or CLI-only behaviour and hand-written routes count as gaps.
 - Factory feature or local development process: before filing or building something, ask whether a factory user on another project would get anything from it. If yes, it is a factory feature (an issue, built through the factory). If it only helps develop this repository (a review agent for its own dashboard, a dev script, a local check), it is a local development process: a Claude Code agent or skill under `.claude/`, or a script under `scripts/`, never a factory issue or a factory role.
 
 ## UI changes
