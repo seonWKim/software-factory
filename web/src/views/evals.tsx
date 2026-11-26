@@ -303,7 +303,7 @@ function Compare({ skill, versions }: { skill: string; versions: ReturnType<type
               </Field>
             </div>
           )}
-          {body((d) => <DataTable label={t("evals.tallyLabel")} columns={columns} rows={tallyRows(d)} rowKey={(r) => r.key} />)}
+          {body((d) => <DataTable label={t("evals.tallyLabel")} columns={columns} rows={tallyRows(d)} rowKey={(r) => r.key} empty={t("evals.verdictNone")} />)}
         </div>
       </Card>
       <Card title={t("evals.diff")}>
