@@ -57,10 +57,14 @@ export async function projectJdk(w: Worker, handle: SandboxHandle, sha: string):
   return null;
 }
 
-/** Prints `current=<the first line of the worker's java -version>` (java writes it to stderr; both are read). */
+/**
+ * Prints `current=<the first line of the worker's java -version that quotes a version>` (java writes it to stderr;
+ * both are read). The JVM may print `Picked up JAVA_TOOL_OPTIONS: ...` (or `_JAVA_OPTIONS`) first, so the first line
+ * is not always the version line.
+ */
 export const JDK_PROBE = [
   'if [ -n "$JAVA_HOME" ]; then j="$JAVA_HOME/bin/java"; else j=java; fi',
-  'echo "current=$("$j" -version 2>&1 | head -n 1)"',
+  'echo "current=$("$j" -version 2>&1 | grep -m 1 \'version "\')"',
 ].join("\n");
 
 /**
