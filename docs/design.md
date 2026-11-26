@@ -3,18 +3,18 @@
 Read this index, then only the topics you touch. Add a line here only for a new topic. "§5" means `05-*`.
 
 ## 1. Shape
-- [01-shape.md](design/01-shape.md): intake to gate, post-merge.
+- [01-shape.md](design/01-shape.md): intake to human gate.
 
 ## 2. Work item
 - [02-work-item.md](design/02-work-item.md): one shape for all sources.
-- [02-attachments.md](design/02-attachments.md): triage context, images, links.
-- [02-tasks.md](design/02-tasks.md): table, `task add`, route.
-- [02-tasks-quick-add.md](design/02-tasks-quick-add.md): quick-add words, repeats.
+- [02-attachments.md](design/02-attachments.md): triage context.
+- [02-tasks.md](design/02-tasks.md): table, `task add`.
+- [02-tasks-quick-add.md](design/02-tasks-quick-add.md): quick-add words.
 - [02-tasks-projects.md](design/02-tasks-projects.md): task projects.
-- [02-tasks-build.md](design/02-tasks-build.md): Build this, merge close.
-- [02-tasks-edit.md](design/02-tasks-edit.md): edit, delete, sub-tasks.
+- [02-tasks-build.md](design/02-tasks-build.md): Build this.
+- [02-tasks-edit.md](design/02-tasks-edit.md): edit, delete.
 - [02-tasks-page.md](design/02-tasks-page.md): the Tasks page.
-- [02-tasks-calendar.md](design/02-tasks-calendar.md): calendar, Google sync.
+- [02-tasks-calendar.md](design/02-tasks-calendar.md): calendar sync.
 
 ## 3. Risk
 - [03-risk.md](design/03-risk.md): tier and safety ratchet.
@@ -22,7 +22,7 @@ Read this index, then only the topics you touch. Add a line here only for a new 
 ## 4. Agents
 - [04-agents.md](design/04-agents.md): agent roles, models.
 - [04-gate-commands.md](design/04-gate-commands.md): human commands.
-- [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise`.
+- [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers.
 - [04-chat-commands.md](design/04-chat-commands.md): chat commands.
 - [04-chat-agent](design/04-chat-agent.md): turns.
 - [04-verdicts.md](design/04-verdicts.md): `/verdict`, implicit verdicts.
@@ -83,12 +83,13 @@ Read this index, then only the topics you touch. Add a line here only for a new 
 - [09-health.md](design/09-health.md): Health panel, schema probe.
 - [09-dashboard-app.md](design/09-dashboard-app.md): dashboard index.
 - [09-dashboard-shell.md](design/09-dashboard-shell.md): sidebar, top bar.
-- [09-dashboard-components.md](design/09-dashboard-components.md): shared pieces, i18n.
+- [09-dashboard-components.md](design/09-dashboard-components.md): shared pieces.
 - [09-dashboard-search.md](design/09-dashboard-search.md): `⌘K` search.
 - [09-dashboard-api.md](design/09-dashboard-api.md): API, serving.
 - [09-api-registry.md](design/09-api-registry.md): capability registry, OpenAPI.
 - [09-dashboard-activity.md](design/09-dashboard-activity.md): Activity page.
 - [09-dashboard-runners.md](design/09-dashboard-runners.md): Runners page.
+- [09-dashboard-chat.md](design/09-dashboard-chat.md): chat panel.
 - [09-dashboard-tasks.md](design/09-dashboard-tasks.md): Tasks list, row.
 - [09-dashboard-tasks-needs.md](design/09-dashboard-tasks-needs.md): Needs you.
 - [09-dashboard-tasks-quick-add.md](design/09-dashboard-tasks-quick-add.md): Quick add.
