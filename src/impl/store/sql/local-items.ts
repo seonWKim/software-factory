@@ -4,7 +4,6 @@
 
 import { createHash } from "node:crypto";
 import type { SourceRef, SourceType, Timestamp, UserId, WorkItemId } from "../../../core/types.js";
-import { permissionModeOf } from "../../../core/authorize.js";
 import type {
   AppCommandRequest, CliCommand, ItemMessage, NewAppCommandRequest, NewCliCommand, NewItemMessage, RunIntent, SyncFence, ThreadDelivery, ThreadLinkField,
 } from "../../../interfaces/factory-store.js";
@@ -132,15 +131,10 @@ export async function appendCliCommand(db: SqlDriver, time: StoreTime, input: Ne
     const existing = await selectCliCommand(tx, input.key);
     if (existing) return { created: false, command: existing };
     await lockCommandSequence(tx);
-    // The mode in force at this write, read in its transaction (design 08-permissions): the row keeps what it ran under.
-    const [mode] = await tx.all("SELECT value_json FROM runtime_settings_overrides WHERE setting_key = 'permission_mode' AND project_key = ''");
     const created = await insertOnce(
       db, tx,
-      "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, mirror, passport_id, write_origin, permission_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [
-        commandId(input.key), commandOrigin(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), time.now(), input.mirror ? 1 : 0, input.passport_id ?? null,
-        input.write_origin ?? null, permissionModeOf(mode === undefined ? undefined : String(mode.value_json)),
-      ],
+      "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, mirror, passport_id, write_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [commandId(input.key), commandOrigin(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), time.now(), input.mirror ? 1 : 0, input.passport_id ?? null, input.write_origin ?? null],
     );
     return { created, command: (await selectCliCommand(tx, input.key))! };
   });

@@ -127,14 +127,10 @@ export function permissionGate(i: { mode: PermissionMode; reversible: boolean | 
 
 /** The mode in force, read from the store's override at each write (never a process cache); none, or a bad one, is the default. */
 export async function readPermissionMode(store: Pick<FactoryStore, "listSettingOverrides">): Promise<PermissionMode> {
-  return permissionModeOf((await store.listSettingOverrides()).find((r) => r.key === "permission_mode" && r.project === "")?.value);
-}
-
-/** The mode a stored global override's JSON names; none, or a bad one, is the default. */
-export function permissionModeOf(json: string | undefined): PermissionMode {
+  const row = (await store.listSettingOverrides()).find((r) => r.key === "permission_mode" && r.project === "");
   let value: unknown = null;
   try {
-    value = json === undefined ? null : JSON.parse(json);
+    value = row ? JSON.parse(row.value) : null;
   } catch { /* a bad stored value reads as the default */ }
   return PERMISSION_MODES.find((m) => m === value) ?? (permissionMode.default as PermissionMode);
 }
