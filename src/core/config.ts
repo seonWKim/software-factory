@@ -145,9 +145,15 @@ export function goldenConfig(raw: unknown): { replays: number; regression_margin
   return g === undefined ? null : { replays: replays as number, regression_margin };
 }
 
-/** `repo.ui_check`: an argv command and the path prefixes whose change makes the merge check run it. */
+/**
+ * A gate command entry as factory.config.json writes it (design 04-gate-commands): a plain argv, run in the run
+ * folder, or `{ "dir": <folder>, "argv": [...] }`, run in that folder inside the run folder. Never a shell string.
+ */
+export type GateEntry = string[] | { dir: string; argv: string[] };
+
+/** `repo.ui_check`: a gate entry and the path prefixes whose change makes the merge check run it. */
 export interface UiCheck {
-  command: string[];
+  command: GateEntry;
   paths: string[];
 }
 
@@ -156,10 +162,51 @@ export const UI_CHECK_DEFAULT_PATHS: readonly string[] = ["web/", "src/ui/"];
 
 const nonEmptyStrings = (v: unknown): v is string[] => Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === "string" && x !== "");
 
+/** `dir` as a folder inside the run folder, `/`-separated with no `.` or empty part ("" is the run folder itself); null when absolute or above it. */
+function insideRunFolder(dir: string): string | null {
+  if (/^([/\\]|[A-Za-z]:)/.test(dir)) return null;
+  const out: string[] = [];
+  for (const seg of dir.split(/[/\\]/)) {
+    if (seg === "" || seg === ".") continue;
+    if (seg !== "..") out.push(seg);
+    else if (out.pop() === undefined) return null;
+  }
+  return out.join("/");
+}
+
 /**
- * `repo.ui_check` (design §4, UI check at merge): absent → nothing (off). Otherwise an object with `command`, an argv,
- * and `paths`, a non-empty list of non-empty path prefixes (absent: UI_CHECK_DEFAULT_PATHS), and no other key; any
- * other value fails startup naming the key.
+ * One gate entry from config (the one parser of `repo.install_commands`, `repo.check_commands` and
+ * `repo.ui_check.command`): a non-empty argv of non-empty strings, or an object with only `dir`, a non-empty folder
+ * inside the run folder (not absolute, not above it via `..`), and `argv`, such an argv. Anything else fails startup
+ * naming `key`. A `dir` that is the run folder itself (`.`) gives the plain argv.
+ */
+export function gateEntryConfig(key: string, value: unknown, example: string): GateEntry {
+  if (nonEmptyStrings(value)) return [...value];
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${key} must be an argv (a non-empty array of non-empty strings, no shell) or { "dir": <folder>, "argv": [...] }, e.g. ${example}`);
+  }
+  const { dir, argv, ...rest } = value as { dir?: unknown; argv?: unknown };
+  const extra = Object.keys(rest);
+  if (extra.length > 0) throw new Error(`${key} has unknown keys ${extra.join(", ")}; valid keys: dir, argv`);
+  const folder = typeof dir === "string" && dir.trim() !== "" ? insideRunFolder(dir) : null;
+  if (folder === null) throw new Error(`${key}.dir must be a non-empty folder inside the run folder (relative, not above it), e.g. "frontend"`);
+  if (!nonEmptyStrings(argv)) throw new Error(`${key}.argv must be a non-empty array of non-empty strings (argv, no shell), e.g. ["npm", "test"]`);
+  return folder === "" ? [...argv] : { dir: folder, argv: [...argv] };
+}
+
+/** A list of gate entries from config: absent → undefined; otherwise a non-empty list, each checked by gateEntryConfig as `key[i]`. */
+export function gateListConfig(key: string, value: unknown, example: string): GateEntry[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${key} must be a non-empty list of gate commands, each an argv or { "dir": <folder>, "argv": [...] }, e.g. ${example}`);
+  }
+  return value.map((v, i) => gateEntryConfig(`${key}[${i}]`, v, example));
+}
+
+/**
+ * `repo.ui_check` (design §4, UI check at merge): absent → nothing (off). Otherwise an object with `command`, a gate
+ * entry (gateEntryConfig: an argv, or `{ dir, argv }` to run it in a folder), and `paths`, a non-empty list of
+ * non-empty path prefixes (absent: UI_CHECK_DEFAULT_PATHS), and no other key; any other value fails startup naming the key.
  */
 export function uiCheckConfig(value: unknown): { ui_check?: UiCheck } {
   if (value === undefined) return {};
@@ -170,17 +217,17 @@ export function uiCheckConfig(value: unknown): { ui_check?: UiCheck } {
   const { command, paths, ...rest } = value as { command?: unknown; paths?: unknown };
   const extra = Object.keys(rest);
   if (extra.length > 0) throw new Error(`repo.ui_check has unknown keys ${extra.join(", ")}; valid keys: command, paths`);
-  if (!nonEmptyStrings(command)) throw new Error(`repo.ui_check.command must be a non-empty array of non-empty strings (argv), e.g. ${example}`);
+  const entry = gateEntryConfig("repo.ui_check.command", command, example);
   if (paths !== undefined && !nonEmptyStrings(paths)) {
     throw new Error(`repo.ui_check.paths must be a non-empty list of non-empty path prefixes, e.g. ${JSON.stringify(UI_CHECK_DEFAULT_PATHS)}`);
   }
-  return { ui_check: { command: [...command], paths: [...(paths ?? UI_CHECK_DEFAULT_PATHS)] } };
+  return { ui_check: { command: entry, paths: [...(paths ?? UI_CHECK_DEFAULT_PATHS)] } };
 }
 
 /** The prompts' `{{ui_check}}` sentence (design §4): with a `repo.ui_check`, it runs at merge and is no missing work; none: "". */
 export function uiCheckSentence(ui: UiCheck | undefined): string {
   return ui
-    ? ` The project's UI check, \`${commandText(ui.command)}\`, runs at merge, on the merged commit, where a browser can start, never in this sandbox. Not running it here is not work to report as missing or as unverified.`
+    ? ` The project's UI check, \`${commandText(gateArgv(ui.command))}\`, runs at merge, on the merged commit, where a browser can start, never in this sandbox. Not running it here is not work to report as missing or as unverified.`
     : "";
 }
 
