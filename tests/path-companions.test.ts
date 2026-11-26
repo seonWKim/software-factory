@@ -508,17 +508,15 @@ describe("path_companions load check", () => {
       expect(await allowedFor("src/impl/store/sqlite/schema.ts")).toContain("schema/sqlite/");
     });
 
-    it.each([
-      "src/controller/settings/",
-      "src/guards/settings/",
-      "src/inbound/settings/",
-      "src/outbound/settings/",
-      "src/runtime/settings/",
-      "src/state/settings/",
-      "src/worker/settings/",
-    ])("naming a setting file under %s adds docs/settings.md", async (folder) => {
-      expect(await allowedFor(`${folder}example.setting.ts`)).toContain("docs/settings.md");
-    });
+    // Decided 2026-11-27 (wi_fa0efebd): each settings folder adds only its owner's catalog page, not the index.
+    it.each(["controller", "guards", "inbound", "outbound", "runtime", "state", "worker"])(
+      "naming a setting file under src/%s/settings/ adds docs/settings/<owner>.md and not docs/settings.md",
+      async (owner) => {
+        const paths = await allowedFor(`src/${owner}/settings/example.setting.ts`);
+        expect(paths).toContain(`docs/settings/${owner}.md`);
+        expect(paths).not.toContain("docs/settings.md");
+      },
+    );
 
     // Decided 2026-11-22 (wi_3f9ab60a): the pairs behind most agent_needs_human stops of 2026-11-20..22.
     it("naming a controller migration or the SQLite schema adds src/controller/table-docs.ts", async () => {
@@ -534,7 +532,7 @@ describe("path_companions load check", () => {
     const KIND_FILES = [
       "src/core/settings.ts",
       "src/worker/settings/worker-kinds.setting.ts",
-      "docs/settings.md",
+      "docs/settings/worker.md",
       "tests/settings-catalog.test.ts",
       "tests/worker-kinds.test.ts",
       "tests/architecture/rule-of-two.test.ts",
@@ -558,6 +556,7 @@ describe("path_companions load check", () => {
       const paths = await allowedFor("src/core/policy.ts");
       expect(paths).not.toContain("schema/sqlite/");
       expect(paths).not.toContain("docs/settings.md");
+      expect(paths.filter((p) => p.startsWith("docs/settings/"))).toEqual([]);
     });
   });
 });

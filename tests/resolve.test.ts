@@ -113,7 +113,9 @@ describe("resolve prompt fixed rules", () => {
     }
     expect(rule).toMatch(/keep both sides' sections/i);
     expect(rule, "docs/settings.md is generated, not hand-merged").not.toContain("docs/settings.md");
-    expect(lines.find((l) => l.includes("`docs/settings.md`"))).toContain("`npm run settings:catalog`");
+    expect(rule, "the docs/settings/ owner pages are generated, not hand-merged").not.toContain("docs/settings/");
+    const generated = lines.find((l) => l.startsWith("- Generated files are regenerated on a conflict, never hand-merged"));
+    for (const doc of ["`docs/settings.md`", "`docs/settings/`", "`npm run settings:catalog`"]) expect(generated, doc).toContain(doc);
   });
 
   it("says next to the allowed-paths rule that known-violations lists are always editable to shrink (never to grow)", () => {

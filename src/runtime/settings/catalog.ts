@@ -1,7 +1,7 @@
 // The settings catalog (RFC 0015 §6.1, M10): every `*.setting.ts` under the code root, found by discovery. The
-// catalog page docs/settings.md is generated from it (`npm run settings:catalog`), never written by hand.
+// catalog pages (docs/settings.md and docs/settings/<owner>.md) are generated from it (`npm run settings:catalog`),
+// never written by hand.
 
-import { join } from "node:path";
 import type { SettingDescriptor } from "../../shared/setting.js";
 import { CODE_ROOT, forgetOnFailure } from "../../state/index.js";
 import { type Located, loadDescriptors } from "../registry/registry.js";
@@ -45,22 +45,49 @@ export function loadSettingCatalog(root: string = CODE_ROOT): Promise<SettingCat
 
 const cell = (v: string) => v.replace(/\|/g, "\\|");
 
-/** docs/settings.md: one row per setting. Generated; `tests/architecture/settings-catalog.test.ts` checks it is fresh. */
-export function renderSettingCatalog(c: SettingCatalog): string {
+const HEADER = [
+  "Generated from the `*.setting.ts` files by `npm run settings:catalog`; do not edit by hand.",
+  "Direction: `tighten-only` keys may only be tightened by a lower level (owner → org → project → pack → user);",
+  "`review` keys change only by a reviewed PR to factory.config.json. Guards are never loosened.",
+];
+
+function ownerPage(owner: string, settings: readonly SettingDescriptor[]): string {
   const lines = [
-    "# Settings catalog",
+    `# Settings catalog: ${owner}`,
     "",
-    "Generated from the `*.setting.ts` files by `npm run settings:catalog`; do not edit by hand.",
-    "Direction: `tighten-only` keys may only be tightened by a lower level (owner → org → project → pack → user);",
-    "`review` keys change only by a reviewed PR to factory.config.json. Guards are never loosened.",
+    `The settings that \`src/${owner}/\` reads; the index is [docs/settings.md](../settings.md).`,
+    ...HEADER,
     "",
     "| Key | Owner | Changed by | Scope | Direction | Class | Default | What it controls |",
     "|---|---|---|---|---|---|---|---|",
   ];
-  for (const s of c.all()) {
+  for (const s of settings) {
     const cls = s.guard ? "guard" : s.dial ? `dial${s.change_needs ? ` (${s.change_needs})` : ""}` : "";
     const dflt = s.default === null ? "" : `\`${cell(JSON.stringify(s.default))}\``;
     lines.push(`| \`${s.key}\` | ${s.owner} | ${s.changed_by} | ${s.scope} | ${s.direction} | ${cls} | ${dflt} | ${cell(s.description)} |`);
   }
   return lines.join("\n") + "\n";
+}
+
+/**
+ * The generated catalog, by repo-relative path: one page per owner, `docs/settings/<owner>.md`, with that owner's
+ * rows, and the index `docs/settings.md`, which only links them (so a change to one setting edits only its owner's
+ * page). `tests/architecture/settings-monotonic.test.ts` checks every page is fresh.
+ */
+export function renderSettingCatalog(c: SettingCatalog): Map<string, string> {
+  const byOwner = new Map<string, SettingDescriptor[]>();
+  for (const s of c.all()) byOwner.set(s.owner, [...(byOwner.get(s.owner) ?? []), s]);
+  const owners = [...byOwner.keys()].sort();
+  const index = [
+    "# Settings catalog",
+    "",
+    ...HEADER,
+    "",
+    "One page per owner component, with a row per setting that component reads:",
+    "",
+    ...owners.map((o) => `- [${o}](settings/${o}.md)`),
+  ];
+  const pages = new Map<string, string>([["docs/settings.md", index.join("\n") + "\n"]]);
+  for (const o of owners) pages.set(`docs/settings/${o}.md`, ownerPage(o, byOwner.get(o)!));
+  return pages;
 }
