@@ -174,7 +174,7 @@ export interface WorkerDeps {
   /**
    * The host's CPU count (compose: `os.availableParallelism()`). Set: each run's agent and check commands get
    * SF_TEST_WORKERS, this run's share of it (testWorkerShare): the CPUs over the runs running on this host at its
-   * claim (`hostRuns`), kept for the run. Absent: SF_TEST_WORKERS is not set.
+   * claim (`hostRuns`), at least half for a merge-check run, kept for the run. Absent: SF_TEST_WORKERS is not set.
    */
   cpus?: number;
   /**

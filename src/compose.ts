@@ -2,7 +2,7 @@
 // lives in load-config.ts and config-values.ts, so code that only reads config does not load this file.
 // Environment (local / cloud) is chosen here; core code never branches on it.
 
-import { mkdir, realpath, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { type FactoryConfig, cliUserConfig, toolGrantsConfig } from "./core/config.js";
@@ -24,7 +24,9 @@ import { StoredLearnedSettings } from "./core/learned-settings.js";
 import type { UserId } from "./core/types.js";
 import { gitHost, hostId } from "./runtime/host-id.js";
 import { ControllerRole } from "./runtime/roles/controller-role.js";
-import { SqlHookAudit, loadHooks } from "./runtime/index.js";
+import { SqlHookAudit, loadHooks, validateCase } from "./runtime/index.js";
+import { skillFolderPath } from "./runtime/capabilities/capabilities.js";
+import { type SkillStarter, STARTER_PROMPT, skillStarter } from "./core/skill-eval-starter.js";
 import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
 import { type LearnedSettingsSource, LiveSettings, maxWorkers, workerCount } from "./core/settings.js";
@@ -448,6 +450,7 @@ export interface UiParts {
   migrate: import("./ui/migrate-api.js").UiMigrate; // Migrate now, Start and Restart now (design 08-self-update): state dir, clock, run_timeout_ms, steps
   changes: import("./ui/changes.js").UiChanges | undefined; // the sandbox's readChanges on repo.path and its base: the Changes tab and Re-check (design 09-dashboard-item)
   skillImprove: import("./ui/deps.js").UiSkillImprove; // a skill draft's verdicts and Promote's wiring (design 09-dashboard-rules-waiting)
+  starter: SkillStarter; // Draft starter cases on the Evals card: the Model plugin, prompts/skill-starter.md and the skill's SKILL.md (design 07-self-improvement)
   close(): Promise<void>;
 }
 
@@ -499,6 +502,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   const modelCredential = modelCredentialDialog(loaded);
   if (modelCredential) settings.modelCredential = modelCredential; // the Add model credential dialog (Needs you, Failures)
   const llm = await p.llm(secrets).catch(() => null), wiring = llm ? await p.runner(sbx, secrets).then((runner) => skillImproveWiring(store, loaded, { sandbox: sbx, runner, llm, scanner }), () => undefined) : undefined;
+  const starter = skillStarter({ llm, scanner, validate: validateCase, prompt: () => readFile(join(loaded.codeRoot, STARTER_PROMPT), "utf8").catch(() => null), readSkill: (ref) => readFile(join(skillFolderPath(ref, loaded.root), "SKILL.md"), "utf8").catch(() => null) });
   settings.ask = { llm, log: new ConsoleLogger(clock, "ask") }; // the Data page's Ask: the Model plugin, null when it cannot be built; wiring: Promote's re-run, none without capabilities.skill_folders
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {
@@ -512,7 +516,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   const profiles = new ProfileStore(storeSql(store)), displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
   const tacit = await uiTacit(loaded.plugins.tacit, (n) => createPlugin(loaded.registry, "tacit", n, p.base), { config: loaded.config, base: settingsBase(loaded), source: store, log: new ConsoleLogger(clock, "tacit") });
   const migrate = (await import("./ui/migrate-api.js")).uiMigrate({ stateDir: loaded.stateDir, clock, runTimeoutMs: loaded.config.run_timeout_ms, githubApi: () => p.githubApi(), resolveProject }); // its GitHub client only for owner/name rows
-  return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, migrate, changes, skillImprove: { hold: holdSkillDraft, reject: rejectSkillDraft, promote: promoteSkillDraft, wiring }, close: () => identity.stop().then(() => store.close()) };
+  return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, migrate, changes, skillImprove: { hold: holdSkillDraft, reject: rejectSkillDraft, promote: promoteSkillDraft, wiring }, starter, close: () => identity.stop().then(() => store.close()) };
 }
 
 const refusalOf = (d: AuthDecision): string | null => (d.allow ? null : d.reason);

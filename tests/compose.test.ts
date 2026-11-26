@@ -54,4 +54,17 @@ describe("buildUiParts: the skill verdicts and wiring", () => {
       await parts.close();
     }
   });
+
+  it("builds the starter drafts with the Model plugin and prompts/skill-starter.md, with or without skill_folders (design 07)", async () => {
+    const l = await loaded();
+    const parts = await buildUiParts(l, { identity: ME });
+    try {
+      expect(await parts.starter.unavailable()).toMatch(/^prompts\/skill-starter\.md cannot be read/);
+      writeFileSync(join(l.codeRoot, "prompts", "skill-starter.md"), "starter");
+      expect(await parts.starter.unavailable()).toBeNull();
+      expect(await parts.starter.draft("skills/none", new AbortController().signal)).toEqual({ refused: "skills/none/SKILL.md cannot be read, so nothing was drafted." });
+    } finally {
+      await parts.close();
+    }
+  });
 });

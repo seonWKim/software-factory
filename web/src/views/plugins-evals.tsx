@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { type EvalCase, type EvalWrite, type EvalWritten, type TriedCase, postEvalWrite, useEvalRuns, useEvalSuite, useEvalsToken } from "../api/evals.js";
+import { type EvalCase, type EvalWrite, type EvalWritten, type StarterCase, type TriedCase, postEvalWrite, useEvalRuns, useEvalSuite, useEvalSuites, useEvalsToken } from "../api/evals.js";
 import { CARD_INTRO } from "../components/ui/card.js";
 import { Clamp } from "../components/ui/clamp.js";
 import { Badge } from "../components/ui/badge.js";
@@ -22,6 +22,9 @@ import { skillName } from "./evals.js";
 // history after a delete), and writes each op through POST /api/v1/evals/write with GET /api/v1/pauses's csrf_token.
 // Every input, each delete and each try result opens in the shared Dialog, so no row changes height; a refusal (409)
 // stays in the open Dialog and nothing else changes. Labels are plain words: no suite, case or run ID is shown.
+// A skill with no cases also gets Draft starter cases (design 07-self-improvement): its Dialog drafts the set with one
+// model call per Draft click (starter.draft, nothing saved), lists the drafts, and Accept sends the whole set in one
+// starter.accept. It is off, with GET /api/v1/evals's reason in a Notice, when the server cannot draft.
 
 /** A case's input as text: text as it is, any other value as JSON. */
 const inputText = (input: unknown): string => (typeof input === "string" ? input : JSON.stringify(input));
@@ -205,8 +208,56 @@ function ImportDialog({ path, write, onClose }: { path: string; write: Write; on
   );
 }
 
+const KIND: Record<StarterCase["kind"], { label: MessageKey; level: string }> = {
+  typical: { label: "evals.starterKindTypical", level: "ready_to_merge" },
+  edge: { label: "evals.starterKindEdge", level: "needs_you" },
+  refuse: { label: "evals.starterKindRefuse", level: "stuck" },
+};
+
+/** A drafted case's checks as text: a rubric check's criterion, a text check as it is. */
+function criteriaOf(expected: unknown): string[] {
+  const list = Array.isArray(expected) ? expected : typeof expected === "object" && expected !== null ? (expected as { checks?: unknown }).checks : null;
+  if (!Array.isArray(list)) return [];
+  return list.map((c) => (typeof c === "string" ? c : String((c as { criterion?: unknown } | null)?.criterion ?? ""))).filter((c) => c !== "");
+}
+
+/** Draft starter cases: each Draft is one model call that saves nothing; Accept writes the listed set in one op. */
+function StarterDialog({ path, write, onClose }: { path: string; write: Write; onClose: () => void }) {
+  const [drafts, setDrafts] = useState<StarterCase[] | null>(null);
+  const draft = async () => {
+    setDrafts(null);
+    const r = await write.send({ op: "starter.draft", skill: path });
+    if (r?.cases) setDrafts(r.cases);
+  };
+  const confirm = async () => {
+    if (drafts === null) return void (await draft());
+    if ((await write.send({ op: "starter.accept", skill: path, cases: drafts })) !== null) onClose();
+  };
+  const label = write.busy && drafts === null ? t("evals.starterDrafting") : drafts ? t("evals.starterAccept", { n: drafts.length }) : t(write.error ? "evals.starterAgain" : "evals.starterDraft");
+  return (
+    <Dialog title={t("evals.starterTitle")} consequence={t("evals.starterConsequence")} confirmLabel={label} confirmDisabled={write.busy} error={write.error} onConfirm={() => void confirm()} onClose={onClose}>
+      {drafts && (
+        <ol aria-label={t("evals.starterDrafts")} className="flex flex-col gap-3">
+          {drafts.map((c, i) => (
+            <li key={i} className="flex min-w-0 flex-col gap-1 text-sm">
+              <span className="flex flex-wrap items-center gap-2">
+                <Badge level={KIND[c.kind].level}>{t(KIND[c.kind].label)}</Badge>
+                <span className="font-medium text-pretty wrap-anywhere">{c.title}</span>
+              </span>
+              <span className="text-pretty wrap-anywhere text-text-2">{c.input}</span>
+              <ul className="flex list-disc flex-col gap-0.5 ps-5 text-xs text-text-2">
+                {criteriaOf(c.expected).map((k, j) => <li key={j} className="text-pretty wrap-anywhere">{k}</li>)}
+              </ul>
+            </li>
+          ))}
+        </ol>
+      )}
+    </Dialog>
+  );
+}
+
 type Open =
-  | { kind: "suite.add" | "suite.rename" | "suite.delete" | "case.add" | "import" }
+  | { kind: "suite.add" | "suite.rename" | "suite.delete" | "case.add" | "import" | "starter" }
   | { kind: "case.edit" | "case.delete" | "case.try"; of: EvalCase };
 
 /** The Evals content for one skill's SKILL.md path: its test set and cases, each change in a Dialog. */
@@ -225,6 +276,12 @@ export function EvalsCard({ path }: { path: string }) {
   const suite = q.data?.suite ?? null;
   const cases = q.data?.cases ?? [];
   const n = (c: EvalCase) => cases.indexOf(c) + 1;
+  const suites = useEvalSuites();
+  // Why Draft starter cases is off: the server's reason, a plain one from an older server, null when it can draft.
+  const starterOff = !suites.data ? null : suites.data.starter === undefined ? t("evals.starterOff") : suites.data.starter;
+  const starter = (
+    <Button disabled={off || !suites.data || starterOff !== null} title={offTitle ?? starterOff ?? undefined} onClick={() => show({ kind: "starter" })}>{t("evals.starter")}</Button>
+  );
   const columns: Column<EvalCase>[] = [
     { key: "input", header: t("evals.colInput"), render: (c) => <Clamp className="text-xs">{inputText(c.input)}</Clamp> },
     { key: "checks", header: t("evals.colChecks"), render: (c) => <span className="text-xs whitespace-nowrap">{t("evals.checkCount", { n: checksOf(c.expected).length })}</span> },
@@ -241,6 +298,7 @@ export function EvalsCard({ path }: { path: string }) {
     },
   ];
   const name = skillName(path);
+  const note = !q.data ? null : off ? t("evals.cannotWrite") : cases.length === 0 ? starterOff : null;
   return (
     <>
       <p className={CARD_INTRO}>{t("evals.cardIntro")}</p>
@@ -252,6 +310,7 @@ export function EvalsCard({ path }: { path: string }) {
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-sm text-pretty">{t("evals.cardNoSuite")}</p>
           <Button variant="secondary" disabled={off} title={offTitle} onClick={() => show({ kind: "suite.add" })}>{t("evals.addSuite")}</Button>
+          {starter}
         </div>
       ) : (
         <>
@@ -260,6 +319,7 @@ export function EvalsCard({ path }: { path: string }) {
             <Badge>{t("evals.caseCount", { n: cases.length })}</Badge>
             <ButtonRow>
               <Button disabled={off} title={offTitle} onClick={() => show({ kind: "case.add" })}>{t("evals.addCase")}</Button>
+              {cases.length === 0 && starter}
               <Button disabled={off} title={offTitle} onClick={() => show({ kind: "import" })}>{t("evals.import")}</Button>
               <Button disabled={off} title={offTitle} onClick={() => show({ kind: "suite.rename" })}>{t("evals.renameSuite")}</Button>
               <Button variant="danger" disabled={off} title={offTitle} onClick={() => show({ kind: "suite.delete" })}>{t("evals.deleteSuite")}</Button>
@@ -268,7 +328,8 @@ export function EvalsCard({ path }: { path: string }) {
           <DataTable label={t("evals.cardTitle", { name })} columns={columns} rows={cases} rowKey={(c) => c.id} empty={t("evals.cardNoCases")} />
         </>
       )}
-      {off && q.data && <div className="mt-4"><Notice tone="info">{t("evals.cannotWrite")}</Notice></div>}
+      {/* One note under the card: the server cannot write, else why Draft starter cases is off for a skill with no cases. */}
+      {note !== null && <div className="mt-4"><Notice tone="info">{off ? t("evals.cannotWrite") : note}</Notice></div>}
       {open?.kind === "suite.add" && <SuiteDialog path={path} write={write} initial={name} adding onClose={close} />}
       {open?.kind === "suite.rename" && suite && <SuiteDialog path={path} write={write} initial={suite.title} adding={false} onClose={close} />}
       {open?.kind === "suite.delete" && suite && <DeleteDialog path={path} suiteId={suite.id} write={write} body={{ op: "suite.delete", skill: path }} heading="evals.deleteSuiteTitle" onClose={close} />}
@@ -277,6 +338,7 @@ export function EvalsCard({ path }: { path: string }) {
       {open?.kind === "case.edit" && <CaseDialog path={path} write={write} edit={open.of} onClose={close} />}
       {open?.kind === "case.try" && <TryDialog write={write} of={open.of} onClose={close} />}
       {open?.kind === "import" && <ImportDialog path={path} write={write} onClose={close} />}
+      {open?.kind === "starter" && <StarterDialog path={path} write={write} onClose={close} />}
     </>
   );
 }
