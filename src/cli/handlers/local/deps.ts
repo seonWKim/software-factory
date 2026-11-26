@@ -32,7 +32,7 @@ export async function buildLocalCliDeps(
     project: async () => (await resolveProject())?.key ?? null,
     read: (path: string) => readFile(path, "utf8"),
     newId: () => randomUUID(),
-    clock: await new Plugins(loaded).clock(), // today's UTC day, for the coordinator limit question (design 06-spend)
+    clock: () => new Plugins(loaded).clock(), // built on a bare approve or reject only: today's UTC day, for the coordinator limit question (design 06-spend)
     cli,
     ui: loaded.file.ui ?? {},
     answers: { split: splitAnswers, detail: answersDetail },

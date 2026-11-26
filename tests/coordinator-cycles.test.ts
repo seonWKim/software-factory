@@ -76,7 +76,7 @@ const limitAlerts = async (store: FactoryStore) => (await store.listAlerts({ lim
 function answerer(store: FactoryStore, clock: FakeClock) {
   const controller = new ControllerRole({ store, sources: [new LocalSource(store)], auth: new OwnerAuth(store), clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false });
   let n = 0;
-  const deps = (user: UserId): LocalCliDeps => ({ store, identity: { user, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "b", newId: () => `id${++n}`, clock, answers });
+  const deps = (user: UserId): LocalCliDeps => ({ store, identity: { user, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "b", newId: () => `id${++n}`, clock: async () => clock, answers });
   const answer = async (command: "approve" | "reject", value: string | null = null, user: UserId = OWNER) => {
     const r = await runLocalCli(deps(user), { action: "settle", command, ...(value !== null ? { value } : {}) });
     await controller.tickIntake();

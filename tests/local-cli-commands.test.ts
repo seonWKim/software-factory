@@ -257,7 +257,8 @@ describe("a bare approve <usd> or reject answers the coordinator limit question 
     const f = await setup();
     const { alert, dedupe_ms } = coordinatorLimitAlert({ day, limit_usd: 5, spent_usd: 6, unknown: 0 });
     await f.store.recordAlert(alert, dedupe_ms);
-    const d = { ...f.d, clock: new FakeClock() };
+    const clock = new FakeClock();
+    const d = { ...f.d, clock: async () => clock };
     return { ...f, run: (a: Parameters<typeof runLocalCli>[1]) => runLocalCli(d, a), as: (user: string) => (a: Parameters<typeof runLocalCli>[1]) => runLocalCli({ ...d, identity: { user: user as UserId, from: "git user.email" } }, a) };
   }
   const limitRows = async (store: Awaited<ReturnType<typeof setup>>["store"]) => (await store.listCliCommandsAfter(0, 100)).filter((c) => "coordinator_limit" in c.args);

@@ -56,7 +56,7 @@ export interface LocalCliDeps extends DraftTerminal { // DraftTerminal: `schedul
   caps?: (project: string) => Promise<{ max_diff_lines: number; max_diff_files: number }>; // the project's size caps as the controller reads them (storedProjectCaps): `approve` refuses an over-cap approval with no note before any write; absent (chat): the controller does
   cli?: string; // the hints' command name (cliName); absent: DEFAULT_CLI_NAME, as chat callers leave it
   ui?: { port?: number }; // factory.config.json's `ui` (validated at load): `task create` prints the item's loopback link on its port; absent: no link (chat)
-  clock?: { now(): Date }; // today's UTC day, for the coordinator limit question a bare `approve <usd>` or `reject` answers (design 06-spend); absent (chat): those settle a held skill version only
+  clock?: () => Promise<{ now(): Date }>; // today's UTC day, for the coordinator limit question a bare `approve <usd>` or `reject` answers (design 06-spend); absent (chat): those settle a held skill version only
   answers: NoteAnswers<{ question: string; answer: string | null; accepted_default: boolean }>; // splitAnswers, answersDetail (src/shared/command-notes.ts)
 }
 
@@ -240,7 +240,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       // controller, which checks and applies it (the commands unit's answerLimit). A bare `approve` settles a held skill
       // version first: the question needs an amount.
       const value = a.value ?? null;
-      const limit = d.clock ? coordinatorLimitAnswer(await d.store.listAlerts({ limit: LIMIT_ALERTS_SCAN }), d.clock.now().getTime(), a.command, value) : null;
+      const limit = d.clock ? coordinatorLimitAnswer(await d.store.listAlerts({ limit: LIMIT_ALERTS_SCAN }), (await d.clock()).now().getTime(), a.command, value) : null;
       if (limit !== null && !(a.command === "approve" && value === null)) return storeLimitAnswer(d, limit, a.command, value, user, cli, async () => (await claim()) === user);
       // `approve <usd>` with no question open: the item command it reads as.
       if (a.value !== undefined) {
