@@ -37,13 +37,15 @@ describe("settings catalog", () => {
     expect(keys((s) => s.change_needs === "approve_merge")).toEqual([...APPROVE_MERGE_KEYS].sort());
   });
 
-  it("keeps each owner-only key (integrations) runtime, global and free, with no grant beyond the owner", () => {
+  it("keeps each owner-only key runtime and global with no grant beyond the owner; only permission_mode is tighten-only", () => {
     for (const k of OWNER_KEYS) {
       const s = catalog.get(k)!;
-      expect(s, k).toMatchObject({ changed_by: "runtime", scope: "global", direction: "free" });
+      // permission_mode is the one owner key checked as tighten-only: a set toward full needs approve_merge.
+      expect(s, k).toMatchObject({ changed_by: "runtime", scope: "global", direction: k === "permission_mode" ? "tighten-only" : "free" });
       expect(s.change_needs, k).toBeUndefined();
     }
     expect(OWNER_KEYS).toContain("integrations");
+    expect(OWNER_KEYS).toContain("permission_mode");
     expect(catalog.get("plugins")!.changed_by).toBe("review");
   });
 
