@@ -1,9 +1,13 @@
 // Permission modes, phase 1 (design 08-permissions, 2026-11-27): the owner-only `permission_mode` setting. Readable and
 // settable through `factory settings set` and the settings API, owner only; ask_irreversible with nothing stored; a set
 // toward `full` needs approve_merge, a set toward a tighter value does not; each set or reset writes one audit row.
-// Nothing reads the mode yet: no test here checks a gate.
+// Phase 2: the gate (`permissionGate`, `authorizeWrite`, src/core/authorize.ts) over mode, reversible, origin and chat
+// turn, after the secret and egress guards; held agent writes in controller_held_writes, once per key.
 
 import { describe, expect, it } from "vitest";
+import { AGENT_WRITE_IN_CHAT, EGRESS_BLOCKED, SECRET_READ, type WriteRequest, authorizeWrite, permissionGate } from "../src/core/authorize.js";
+import { ChatToolBroker, chatCallContext } from "../src/core/chat-agent-tools.js";
+import { COMMAND_TABLE } from "../src/core/command-table.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { PERMISSION_MODES } from "../src/controller/settings/permission-mode.setting.js";
 import { LiveSettings, OWNER_KEYS, SETTABLE_DEFAULTS, SETTABLE_KEYS, type SettingsBase, baseFromConfig, parseSettable } from "../src/core/settings.js";
@@ -131,5 +135,126 @@ describe("permission_mode through the settings API", () => {
       expect((r.value as { error: string }).error).toMatch(/permission_mode changes only by the owner/);
     }
     expect(await store.listSettingOverrides()).toEqual([expect.objectContaining({ key: KEY, value: '"ask_all"' })]);
+  });
+});
+
+const command = (name: string) => COMMAND_TABLE.find((c) => c.name === name)!;
+const REVERSIBLE = command("task done");
+const IRREVERSIBLE = command("merge");
+const scanner = new PatternEgressScanner(async () => []);
+const SECRET_LOOKING = `sk-ant-${"a".repeat(24)}`;
+
+function write(over: Partial<WriteRequest> = {}): WriteRequest {
+  return { command: REVERSIBLE, args: ["tk_1"], actor: "service:coordinator" as UserId, origin: "agent", in_chat_turn: false, key: "k1", ...over };
+}
+
+describe("the permission gate, a pure function", () => {
+  it("holds an agent write by mode: ask_all both, ask_irreversible the irreversible one (or one that declares neither), full neither", () => {
+    const gate = (mode: (typeof PERMISSION_MODES)[number], reversible: boolean | undefined) => permissionGate({ mode, reversible, origin: "agent", in_chat_turn: false }).outcome;
+    expect([gate("ask_all", true), gate("ask_all", false)]).toEqual(["hold", "hold"]);
+    expect([gate("ask_irreversible", true), gate("ask_irreversible", false), gate("ask_irreversible", undefined)]).toEqual(["run", "hold", "hold"]);
+    expect([gate("full", true), gate("full", false)]).toEqual(["run", "run"]);
+  });
+
+  it("refuses an agent write in a chat turn in every mode, and never gates a typed command, in a chat turn or not", () => {
+    for (const mode of PERMISSION_MODES) {
+      for (const reversible of [true, false]) {
+        expect(permissionGate({ mode, reversible, origin: "agent", in_chat_turn: true })).toEqual({ outcome: "refuse", reason: AGENT_WRITE_IN_CHAT });
+        for (const in_chat_turn of [true, false]) expect(permissionGate({ mode, reversible, origin: "human_command", in_chat_turn })).toEqual({ outcome: "run" });
+      }
+    }
+  });
+});
+
+describe.each(BACKENDS)("authorizeWrite against the store: $name", ({ make }) => {
+  async function inMode(mode: string | null) {
+    const { store } = await make();
+    if (mode) await store.setSettingOverride({ key: KEY, project: "", value: JSON.stringify(mode), actor: "local:owner" });
+    return { store, auth: (w: WriteRequest) => authorizeWrite({ store, scanner }, w) };
+  }
+
+  it("ask_all holds a reversible and an irreversible agent write, each for confirm <id>, with the mode it ran under", async () => {
+    const { store, auth } = await inMode("ask_all");
+    const a = await auth(write({ key: "a" }));
+    const b = await auth(write({ command: IRREVERSIBLE, args: ["wi_1"], key: "b" }));
+    for (const d of [a, b]) {
+      expect(d).toMatchObject({ outcome: "held", mode: "ask_all" });
+      if (d.outcome === "held") expect(d.reply).toContain(`confirm ${d.id}`);
+    }
+    const held = await store.listHeldWrites(10);
+    expect(held.map((h) => [h.key, h.command, h.mode, h.status]).sort()).toEqual([["a", "task done", "ask_all", "pending"], ["b", "merge", "ask_all", "pending"]]);
+    expect(held.find((h) => h.key === "b")).toMatchObject({ args: ["wi_1"], actor: "service:coordinator" });
+  });
+
+  it("ask_irreversible (also with nothing stored) runs a reversible agent write and holds an irreversible one; full holds neither", async () => {
+    for (const mode of ["ask_irreversible", null]) {
+      const { store, auth } = await inMode(mode);
+      expect(await auth(write())).toEqual({ outcome: "run", mode: "ask_irreversible" });
+      expect(await auth(write({ command: IRREVERSIBLE, key: "m" }))).toMatchObject({ outcome: "held", mode: "ask_irreversible" });
+      expect((await store.listHeldWrites(10)).map((h) => h.key)).toEqual(["m"]);
+    }
+    const { store, auth } = await inMode("full");
+    expect(await auth(write())).toEqual({ outcome: "run", mode: "full" });
+    expect(await auth(write({ command: IRREVERSIBLE, key: "m" }))).toEqual({ outcome: "run", mode: "full" });
+    expect(await store.listHeldWrites(10)).toEqual([]);
+  });
+
+  it("refuses a write that reads a secret or that egress flags, in full too and for both origins, before the gate holds anything", async () => {
+    for (const mode of ["full", "ask_all"]) {
+      const { store, auth } = await inMode(mode);
+      for (const origin of ["agent", "human_command"] as const) {
+        expect(await auth(write({ origin, reads_secret: true }))).toMatchObject({ outcome: "refused", reason: SECRET_READ });
+        expect(await auth(write({ origin, args: [SECRET_LOOKING] }))).toMatchObject({ outcome: "refused", reason: EGRESS_BLOCKED });
+      }
+      expect(await store.listHeldWrites(10)).toEqual([]);
+    }
+  });
+
+  it("refuses an agent write in a chat turn in every mode; a typed command in the same turn runs, never held", async () => {
+    for (const mode of PERMISSION_MODES) {
+      const { store, auth } = await inMode(mode);
+      expect(await auth(write({ in_chat_turn: true }))).toMatchObject({ outcome: "refused", reason: AGENT_WRITE_IN_CHAT });
+      expect(await auth(write({ in_chat_turn: true, origin: "human_command", command: IRREVERSIBLE }))).toEqual({ outcome: "run", mode });
+      expect(await auth(write({ origin: "human_command", command: IRREVERSIBLE }))).toEqual({ outcome: "run", mode });
+      expect(await store.listHeldWrites(10)).toEqual([]);
+    }
+  });
+
+  it("reads the mode from the store at each write", async () => {
+    const { store, auth } = await inMode("full");
+    expect((await auth(write({ command: IRREVERSIBLE, key: "x" }))).outcome).toBe("run");
+    await store.setSettingOverride({ key: KEY, project: "", value: '"ask_all"', actor: "local:owner" });
+    expect(await auth(write({ command: IRREVERSIBLE, key: "x" }))).toMatchObject({ outcome: "held", mode: "ask_all" });
+  });
+
+  it("stores a pending held write once per key: asking it again gives the same id and adds no row", async () => {
+    const { store, auth } = await inMode("ask_all");
+    const first = await auth(write({ key: "same" }));
+    const again = await auth(write({ key: "same" }));
+    expect(first.outcome === "held" && again.outcome === "held" && again.id === first.id).toBe(true);
+    expect((await store.listHeldWrites(10)).filter((h) => h.key === "same")).toHaveLength(1);
+    expect(await store.holdWrite({ key: "same", command: "task done", args: [], actor: "service:coordinator" as UserId, mode: "full" })).toMatchObject({ created: false, write: { mode: "ask_all" } });
+  });
+});
+
+describe("each typed command row stores the mode it ran under", () => {
+  it("is the mode stored at the append, or the default with none stored", async () => {
+    const { store } = await newStore();
+    await store.appendCliCommand({ key: "cli:one", actor: "local:owner", command: "approve", args: {}, write_origin: "human_command" });
+    await store.setSettingOverride({ key: KEY, project: "", value: '"full"', actor: "local:owner" });
+    await store.appendCliCommand({ key: "cli:two", actor: "local:owner", command: "approve", args: {}, write_origin: "human_command" });
+    expect(await store.db.all("SELECT command_key, permission_mode FROM inbound_commands WHERE command_key IN ('cli:one', 'cli:two') ORDER BY command_key")).toEqual([
+      { command_key: "cli:one", permission_mode: "ask_irreversible" }, { command_key: "cli:two", permission_mode: "full" },
+    ]);
+  });
+});
+
+describe("a chat tool call that names a command", () => {
+  it("is refused as an agent write in a chat turn; any other unknown name stays unknown_tool", async () => {
+    const broker = new ChatToolBroker([]);
+    const ctx = chatCallContext("s1");
+    expect(await broker.call(ctx, "task_done", { task_id: "tk_1" })).toMatchObject({ ok: false, error_code: AGENT_WRITE_IN_CHAT });
+    expect(await broker.call(ctx, "merge", {})).toMatchObject({ ok: false, error_code: AGENT_WRITE_IN_CHAT });
+    expect(await broker.call(ctx, "no_such_tool", {})).toMatchObject({ ok: false, error_code: "unknown_tool" });
   });
 });
