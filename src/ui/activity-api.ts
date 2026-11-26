@@ -24,6 +24,7 @@ export const ACTOR_WORDS: Readonly<Record<ActivityKind, ActorWords>> = {
   auto_grant: { name: "Auto-approval", about: "Approves a change by itself when the rules allow it.", idle: "Waiting for a change to approve" },
   schedule_run: { name: "Schedules", about: "Starts the work of each schedule when its time comes.", idle: "Waiting for the next slot" },
   restart: { name: "Supervisor", about: "Restarts a part of the factory that stopped.", idle: "Every part is running" },
+  coordinator: { name: "Coordinator", about: "Looks at the items waiting for a merge and merges the small local ones.", idle: "Waiting for an item to merge" },
   migration: { name: "Data migrations", about: "Brings stored data up to the current version.", idle: "Data is up to date" },
 };
 

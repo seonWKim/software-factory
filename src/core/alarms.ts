@@ -18,14 +18,14 @@
 import { groupFailures, normalizeDetail, patternKey, sleptRuns } from "./improver.js";
 import type { Logger } from "./log.js";
 import { AGENT_STALLED, INTERACTIVE, MODEL_STALL, SESSION_ABANDONED } from "./policy.js";
-import { DAY_MS, dayStart, spendTotals, utcDay, weekStart } from "./spend.js";
+import { COORDINATOR_LIMIT_KEY, DAY_MS, coordinatorLimitKey, dayStart, spendTotals, usd, utcDay, weekStart } from "./spend.js";
 import {
   type FailureGroup, type FiledPattern, RECURRING_FAILURE, type Run, type RunId, type RunKind, type RunOutcome, type SourceRef, type StateChange, type Timestamp, type UserId, type WorkItem, type WorkItemId,
   runTokenCount,
 } from "./types.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
-import type { Alert, AlertPattern, FactoryStore } from "../interfaces/factory-store.js";
+import type { Alert, AlertPattern, FactoryStore, NewAlert } from "../interfaces/factory-store.js";
 import type { ChildRestart } from "../interfaces/updater.js";
 
 /** One pattern alerts at most once per this long (the store's dedupe window). */
@@ -312,7 +312,7 @@ export async function spendStep(d: Pick<AlarmDeps, "store" | "scanner" | "clock"
       const pattern_key = `spend:${p.name}:${utcDay(p.start)}:${pct}`;
       if (t.cost_usd * 100 < p.budget * pct || dismissed.has(pattern_key)) continue;
       const unknown = t.unknown === 0 ? "" : `; ${t.unknown} run${t.unknown === 1 ? "" : "s"} with no stored cost not counted`;
-      const detail = `$${t.cost_usd.toFixed(2)} of the $${p.budget.toFixed(2)} ${p.name} budget spent (${p.name === "daily" ? "UTC day" : "week from"} ${utcDay(p.start)})${unknown}`;
+      const detail = `${usd(t.cost_usd)} of the ${usd(p.budget)} ${p.name} budget spent (${p.name === "daily" ? "UTC day" : "week from"} ${utcDay(p.start)})${unknown}`;
       const scan = await d.scanner.scan("ui", detail);
       const r = await d.store.recordAlert(
         { pattern: "spend_budget", pattern_key, error_code: `${p.name}_${pct}`, count: t.runs, detail: scan.clean ? detail : null },
@@ -516,4 +516,40 @@ export function releasePatch(it: Pick<WorkItem, "blocked_reason">, pattern_key: 
 
 function cmp(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** The coordinator's daily limit as a cycle met it (design 06-spend): the UTC day, the limit and the day's known spend. */
+export interface CoordinatorLimit {
+  day: string;
+  limit_usd: number;
+  spent_usd: number;
+  /** The day's coordinator cycles with no reported cost, not counted in `spent_usd`. */
+  unknown: number;
+}
+
+/** The limit the question proposes: twice the current one. */
+export const proposedLimit = (limit_usd: number): number => limit_usd * 2;
+/** The day's coordinator cycles with no reported cost, as a clause after the spend ("" when there are none). */
+export const uncountedCycles = (n: number): string => (n === 0 ? "" : `; ${n} cycle${n === 1 ? "" : "s"} with no reported cost not counted`);
+/** A whole-dollar amount as the owner types it in `approve <usd>` (10, not 10.00). */
+const typed = (n: number): string => (Number.isInteger(n) ? String(n) : n.toFixed(2));
+
+/** The coordinator limit question as the cycle hands it to the unit: the alert (its text in `detail`) and its dedupe window. */
+export interface CoordinatorLimitAlert {
+  alert: NewAlert & { detail: string };
+  dedupe_ms: number;
+}
+
+/**
+ * The coordinator limit's owner question (design 06-spend), built here; the coordinator unit scans `detail` as UI text
+ * and stores it through the kernel's `alert` write. One Needs-you alert, pattern `coordinator_limit`, key
+ * `coordinator_limit:<UTC day>`, with the current and the proposed limit, deduped for one day on a key that names the
+ * day; the cycle raises it only on the day's first stop, so there is one per UTC day, answered or not. The answer is
+ * coordinatorLimitAnswer (src/core/spend.ts), applied by the commands unit (answerLimit).
+ */
+export function coordinatorLimitAlert(q: CoordinatorLimit): CoordinatorLimitAlert {
+  const proposed = proposedLimit(q.limit_usd);
+  const detail = `The coordinator reached its daily limit: ${usd(q.spent_usd)} spent on UTC day ${q.day}${uncountedCycles(q.unknown)}. Current limit ${usd(q.limit_usd)}, proposed limit ${usd(proposed)}. `
+    + `Answer approve ${typed(proposed)} to set ${COORDINATOR_LIMIT_KEY} and resume cycles, or reject to keep cycles stopped until the UTC day ends.`;
+  return { alert: { pattern: "coordinator_limit", pattern_key: coordinatorLimitKey(q.day), error_code: "daily_limit", count: q.unknown, detail }, dedupe_ms: DAY_MS };
 }

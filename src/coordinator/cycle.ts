@@ -3,13 +3,18 @@
 // due time on by one conditional update runs one cycle. The cycle asks the coordinator agent what to do with the items
 // waiting for a merge, checks every answer in code, carries out a merge only through the existing local merge, and
 // stores one record per action. The agent's answer never widens what the cycle may do: only local items of tier 1 or
-// 2, and only up to `auto_merge_max_tier`, are merged.
+// 2, and only up to `auto_merge_max_tier`, are merged. Before the agent call two gates (design 05-coordinator, 06-spend):
+// with no item waiting for a merge, or with today's coordinator spend at `spend.coordinator_daily_usd`, the cycle
+// stores one skipped record and calls nothing; at the limit it also raises the day's one owner question. A cycle that
+// calls the agent stores one `coordinator` spend row and one Activity record with its cost.
 
+import { coordinatorLimitAlert, uncountedCycles } from "../core/alarms.js";
 import { errorText, type Logger } from "../core/log.js";
 import type { CoordinatorPorts } from "../core/controller-deps.js";
 import type { StoreLease } from "../core/lease.js";
+import { COORDINATOR_LIMIT_KEY, usd, utcDay } from "../core/spend.js";
 import type { WorkItem, WorkItemId } from "../core/types.js";
-import type { ActionOutcome, CoordinatorAction, CoordinatorStore } from "./store.js";
+import { type ActionOutcome, type CoordinatorAction, type CoordinatorStore, type DaySpend } from "./store.js";
 
 /** How often a cycle is due (owner answer 3). */
 export const CYCLE_MS = 15 * 60_000;
@@ -20,6 +25,10 @@ export const COORDINATOR_LEASE = "coordinator";
 /** The one command the cycle carries out; `skip` records a decision to leave an item as it is. */
 export const MERGE = "merge";
 export const SKIP = "skip";
+/** The command of a record about the whole cycle (its agent call failed, or a gate skipped it). */
+export const CYCLE = "cycle";
+/** The reason of a cycle skipped because no item waits for a merge. */
+export const NOTHING_TO_DO = "nothing to do: no item is waiting for a merge";
 
 /** One action as the agent proposes it. */
 export interface ProposedAction {
@@ -33,6 +42,10 @@ export interface AgentCycle {
   status: string;
   actions: readonly ProposedAction[];
   transcript_link: string | null;
+  /** The run's cost in USD from the runner's own report; null when it gave none or no model was called. */
+  cost_usd: number | null;
+  /** The run's input plus output tokens. */
+  tokens: number;
   error?: string;
 }
 
@@ -87,13 +100,13 @@ export class Coordinator {
     try {
       const cycle_id = `coordinator-${(seen ?? iso(now)).replace(/[-:]|\.\d+/g, "")}`;
       if (!(await this.p.store.claim(seen, iso(now + CYCLE_MS), cycle_id, iso(now)))) return { kind: "busy", holder: null };
-      return { kind: "ran", cycle_id, actions: await this.cycle(cycle_id, settings.max_tier) };
+      return { kind: "ran", cycle_id, actions: await this.cycle(cycle_id, settings) };
     } finally {
       await this.p.lease.release();
     }
   }
 
-  private async cycle(cycle_id: string, max_tier: number): Promise<CoordinatorAction[]> {
+  private async cycle(cycle_id: string, settings: { max_tier: number; daily_usd: number }): Promise<CoordinatorAction[]> {
     const items = await this.ports.waiting();
     const out: CoordinatorAction[] = [];
     const record = async (a: Omit<CoordinatorAction, "cycle_id" | "seq" | "transcript_link">, transcript_link: string | null) => {
@@ -101,14 +114,35 @@ export class Coordinator {
       await this.p.store.record(action, this.p.clock.now().toISOString());
       out.push(action);
     };
+    const skipCycle = (reason: string) => record({ work_item_id: null, command: CYCLE, outcome: "skipped", reason }, null);
+    // The gates: nothing waiting, or the UTC day's limit reached, calls no agent (the due time has moved already).
+    if (items.length === 0) {
+      await skipCycle(NOTHING_TO_DO);
+      return out;
+    }
+    const day = utcDay(this.p.clock.now().getTime());
+    const today = await this.p.store.spendOn(day);
+    if (today.cost_usd >= settings.daily_usd) {
+      // One question per UTC day: only the day's first stop asks, so an answered question is not asked again that day.
+      // It is raised before the stop is stored, so a failure between the two asks again on the next stop (the store
+      // dedupes the day's key, so a second raise adds nothing).
+      if ((await this.p.store.limitStopsOn(day, LIMIT_REACHED)) === 0) {
+        await this.ports.limitReached(coordinatorLimitAlert({ day, limit_usd: settings.daily_usd, spent_usd: today.cost_usd, unknown: today.unknown }));
+      }
+      await skipCycle(limitReason(day, settings.daily_usd, today));
+      this.p.log.warn("the coordinator reached its daily limit", { cycle_id, day, limit_usd: settings.daily_usd });
+      return out;
+    }
     let answer: AgentCycle;
     try {
       answer = await this.p.agent({ cycle_id, items });
     } catch (err) {
-      answer = { status: "failed", actions: [], transcript_link: null, error: errorText(err) };
+      answer = { status: "failed", actions: [], transcript_link: null, cost_usd: null, tokens: 0, error: errorText(err) };
     }
+    await this.spent(cycle_id, day, answer, settings.daily_usd);
     if (answer.status !== "completed") {
-      await record({ work_item_id: null, command: "cycle", outcome: "failed", reason: `the coordinator agent ended ${answer.status}${answer.error ? `: ${answer.error}` : ""}` }, answer.transcript_link);
+      await record({ work_item_id: null, command: CYCLE, outcome: "failed", reason: `the coordinator agent ended ${answer.status}${answer.error ? `: ${answer.error}` : ""}` }, answer.transcript_link);
+      this.p.log.info("coordinator cycle done", { cycle_id, actions: out.length });
       return out;
     }
     // The lease may have run out while the agent worked: a cycle that lost it carries out nothing more.
@@ -121,7 +155,7 @@ export class Coordinator {
       else if (a.command !== MERGE) await outcome("refused", `the coordinator carries out only ${MERGE} and ${SKIP}; ${a.reason}`);
       else if (!kept.ok) await outcome("skipped", `the coordinator lease was lost during the cycle; ${a.reason}`);
       else {
-        const refusal = mergeRefusal(item, max_tier);
+        const refusal = mergeRefusal(item, settings.max_tier);
         if (refusal !== null) await outcome("refused", refusal);
         else {
           let r: string | null, failed = false;
@@ -137,4 +171,27 @@ export class Coordinator {
     this.p.log.info("coordinator cycle done", { cycle_id, actions: out.length });
     return out;
   }
+
+  /** The cycle's one spend row (kind `coordinator`, keyed on the cycle) and its Activity record, whose reason gives the cost. */
+  private async spent(cycle_id: string, day: string, answer: AgentCycle, limit_usd: number): Promise<void> {
+    const now = this.p.clock.now().toISOString();
+    if (!(await this.p.store.recordSpend({ cycle_id, day, cost_usd: answer.cost_usd, tokens: answer.tokens }, now))) return;
+    const today = await this.p.store.spendOn(day);
+    await this.p.store.recordActivity({ subject: cycle_id, outcome: answer.status, reason: costReason(answer.cost_usd, day, limit_usd, today) }, now);
+  }
+}
+
+/** A cycle's Activity reason: its cost (or that the runner reported none) and today's coordinator spend against the limit. */
+export function costReason(cost_usd: number | null, day: string, limit_usd: number, today: DaySpend): string {
+  const cost = cost_usd === null ? "the agent call reported no cost" : `the agent call cost ${usd(cost_usd)}`;
+  return `${cost}; ${usd(today.cost_usd)} of the ${usd(limit_usd)} coordinator daily limit spent (UTC day ${day})${uncountedCycles(today.unknown)}`;
+}
+
+/** How the skipped record's reason at the daily limit starts (limitStopsOn counts them). */
+const LIMIT_REACHED = "the coordinator daily limit is reached";
+
+/** The skipped record's reason at the daily limit: the limit, today's spend, and how cycles resume. */
+export function limitReason(day: string, limit_usd: number, today: DaySpend): string {
+  return `${LIMIT_REACHED}: ${usd(today.cost_usd)} spent of ${COORDINATOR_LIMIT_KEY} ${usd(limit_usd)} (UTC day ${day})${uncountedCycles(today.unknown)}; `
+    + "no agent call until the owner raises the limit (approve <usd>) or the UTC day ends";
 }

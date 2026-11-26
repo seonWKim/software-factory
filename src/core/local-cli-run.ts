@@ -2,6 +2,7 @@ import type { WorkItem, WorkItemId } from "./types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { MERGE_COMMAND } from "./local-merge.js";
 import { CLOSED_REFUSAL, approveRefusal, settleHeldSkillVersion, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText } from "./commands.js";
+import { COORDINATOR_LIMIT_KEY, type CoordinatorLimitAnswer, LIMIT_ALERTS_SCAN, coordinatorLimitAnswer, usd } from "./spend.js";
 import type { NoteAnswers } from "./request-transition.js";
 import { verdictRefusal } from "./verdict.js";
 import { CONFIRM_COMMAND } from "./interpret.js";
@@ -12,8 +13,11 @@ import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask, dependsO
 import { type DraftTerminal, runScheduleWords } from "./schedule-draft.js";
 import { ANONYMOUS_USER, CLI_KEY_PREFIX, type CliIdentity, DEFAULT_CLI_NAME } from "./local-cli-identity.js";
 import { type CliAction as ParsedAction, parseLocalCliArgs } from "./local-cli-parse.js";
-/** Every action runLocalCli runs: the parser's, and a bare `approve` or `reject`, which settles the newest held skill version (parseLocalCliArgs in local-cli.ts). */
-export type CliAction = ParsedAction | { action: "settle"; command: "approve" | "reject" };
+/**
+ * Every action runLocalCli runs: the parser's, and a bare `approve` (`value`: a dollar amount) or `reject`, which answers
+ * today's open coordinator limit question, else settles the newest held skill version (parseLocalCliArgs in local-cli.ts).
+ */
+export type CliAction = ParsedAction | { action: "settle"; command: "approve" | "reject"; value?: string };
 /** `task create`'s last line: what happens to the new item next. */ export const CREATE_NEXT_STEP = "triage queued; you'll be asked to approve the spec";
 const UI_PORT = 4310; // `ui.port` unset: compose.ts DEFAULT_UI_PORT, which core cannot import
 
@@ -38,7 +42,7 @@ export interface LocalCliDeps extends DraftTerminal { // DraftTerminal: `schedul
     | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
     | "createProject" | "listProjects" | "renameProject" | "archiveProject" | "restoreProject" | "deleteProject" | "getProjectBySlug"
     | "addTaskToProject" | "removeTaskFromProject" | "moveTaskToProject" | "listTaskProjectSlugs" | "listSchedules" | "listScheduleRuns" | "addSchedule" | "updateSchedule" | "deleteSchedule" | "scheduleNow"
-    | "listHeldSkillVersionGates" | "settleSkillVersionGate"
+    | "listHeldSkillVersionGates" | "settleSkillVersionGate" | "listAlerts"
   >;
   /** Who every command acts as (`cliIdentity`). */
   identity: CliIdentity;
@@ -52,6 +56,7 @@ export interface LocalCliDeps extends DraftTerminal { // DraftTerminal: `schedul
   caps?: (project: string) => Promise<{ max_diff_lines: number; max_diff_files: number }>; // the project's size caps as the controller reads them (storedProjectCaps): `approve` refuses an over-cap approval with no note before any write; absent (chat): the controller does
   cli?: string; // the hints' command name (cliName); absent: DEFAULT_CLI_NAME, as chat callers leave it
   ui?: { port?: number }; // factory.config.json's `ui` (validated at load): `task create` prints the item's loopback link on its port; absent: no link (chat)
+  clock?: () => Promise<{ now(): Date }>; // today's UTC day, for the coordinator limit question a bare `approve <usd>` or `reject` answers (design 06-spend); absent (chat): those settle a held skill version only
   answers: NoteAnswers<{ question: string; answer: string | null; accepted_default: boolean }>; // splitAnswers, answersDetail (src/shared/command-notes.ts)
 }
 
@@ -238,8 +243,21 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       return { code: 0, lines: [`stored \`${cli} confirm ${a.proposal}\` as ${user} (command ${command.seq}); the controller applies ${n} on its next poll`] };
     }
     case "settle": {
-      // No held version: the parser's refusal of a bare item command, word for word, as before (design 07-self-improvement).
+      // Today's open coordinator limit question (design 06-spend) takes `approve <usd>` and `reject`, stored for the
+      // controller, which checks and applies it (the commands unit's answerLimit). A bare `approve` settles a held skill
+      // version first: the question needs an amount.
+      const value = a.value ?? null;
+      const limit = d.clock ? coordinatorLimitAnswer(await d.store.listAlerts({ limit: LIMIT_ALERTS_SCAN }), (await d.clock()).now().getTime(), a.command, value) : null;
+      if (limit !== null && !(a.command === "approve" && value === null)) return storeLimitAnswer(d, limit, a.command, value, user, cli, async () => (await claim()) === user);
+      // `approve <usd>` with no question open: the item command it reads as.
+      if (a.value !== undefined) {
+        const p = parseLocalCliArgs(a.command, [a.value]);
+        return "error" in p ? { code: 1, lines: p.error.split("\n") } : runLocalCli(d, p);
+      }
+      // No held version and the question open: a bare approve's refusal names the amount it needs.
       const r = await settleHeldSkillVersion(d.store, a.command, user);
+      if (r === null && limit !== null && "refused" in limit) return fail(limit.refused);
+      // No held version: the parser's refusal of a bare item command, word for word, as before (design 07-self-improvement).
       if (r === null) { const p = parseLocalCliArgs(a.command, []); return { code: 1, lines: "error" in p ? p.error.split("\n") : [] }; }
       const v = `version ${r.gate.version} of skill ${r.gate.ref_id}`;
       if (!r.settled) return { code: 0, lines: [`${v} was settled already`] };
@@ -253,6 +271,24 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       return { code: 0, lines: helpReply(itemCommandState(item, await d.store.listRuns(item.id))).split("\n") };
     }
   }
+}
+
+/**
+ * `approve <usd>` or `reject` on today's coordinator limit question, after the checks the controller makes again
+ * (coordinatorLimitAnswer, the owner check): one command row naming the question's key, which the controller applies
+ * (the setting through the settings path, the alert dismissed by the owner). A refusal stores nothing.
+ */
+async function storeLimitAnswer(
+  d: LocalCliDeps, limit: CoordinatorLimitAnswer, command: "approve" | "reject", value: string | null, user: CliIdentity["user"], cli: string, isOwner: () => Promise<boolean>,
+): Promise<CliResult> {
+  if ("refused" in limit) return { code: 1, lines: [limit.refused] };
+  if (!(await isOwner())) return { code: 1, lines: [`only the owner answers the coordinator limit question; you are ${user}`] };
+  const args = { coordinator_limit: limit.alert.pattern_key, ...(value !== null ? { text: value } : {}) };
+  const { command: row } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command, args });
+  const next = limit.set_usd === null
+    ? `leaves ${COORDINATOR_LIMIT_KEY} as it is, so coordinator cycles stay stopped until the UTC day ends`
+    : `sets ${COORDINATOR_LIMIT_KEY} to ${usd(limit.set_usd)}, so coordinator cycles run again once today's coordinator spend is below it`;
+  return { code: 0, lines: [`stored \`${cli} ${command}${value !== null ? ` ${value}` : ""}\` on the coordinator limit question as ${user} (command ${row.seq}); on its next poll the controller ${next}`] };
 }
 
 /** `factory project <verb>`: the task projects' store methods, a slug looked up active or archived. */

@@ -47,12 +47,13 @@ interface Replica {
   lease: StoreLease;
 }
 
-/** One replica's coordinator over the shared store: the live settings in `live`, the agent `agent`, merges recorded. */
-function replica(store: FactoryStore, clock: FakeClock, owner: string, live: { on: boolean; max_tier: number }, agent: CoordinatorAgent): Replica {
+/** One replica's coordinator over the shared store: the live settings in `live` (daily limit $5 unless given), the agent `agent`, merges recorded. */
+function replica(store: FactoryStore, clock: FakeClock, owner: string, live: { on: boolean; max_tier: number; daily_usd?: number }, agent: CoordinatorAgent): Replica {
   const merges: WorkItemId[] = [];
   const lease = new StoreLease(syncLeaseOps(store, COORDINATOR_LEASE), clock, LEASE, owner);
   const ports: CoordinatorPorts = {
-    settings: async () => ({ ...live }),
+    settings: async () => ({ daily_usd: 5, ...live }),
+    limitReached: async () => undefined,
     waiting: async () => (await store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: 50 })).filter(awaitingMerge),
     merge: async (id) => {
       merges.push(id);
@@ -114,7 +115,7 @@ describe("coordinator cycle against a seeded factory", () => {
   it("records a failed agent call as one failed action, and skips and unknown commands as such", async () => {
     const { store, clock } = await newStore();
     const t1 = await seed(store, 1, 1);
-    const failing: CoordinatorAgent = async () => ({ status: "timed_out", actions: [], transcript_link: null });
+    const failing: CoordinatorAgent = async () => ({ status: "timed_out", actions: [], transcript_link: null, cost_usd: null, tokens: 0 });
     const a = replica(store, clock, "a", { on: true, max_tier: 2 }, failing);
     const first = await a.coordinator.tick();
     if (first.kind !== "ran") throw new Error(first.kind);
@@ -213,6 +214,7 @@ describe("the switch and the cadence", () => {
   it("a cycle is due every 15 minutes on the clock, and the stored due time is the same for every replica", async () => {
     expect(CYCLE_MS).toBe(15 * 60_000);
     const { store, clock } = await newStore();
+    await seed(store, 1, 1);
     const { runner, agent } = fakeAgent(mergeAll);
     const a = replica(store, clock, "a", { on: true, max_tier: 2 }, agent), b = replica(store, clock, "b", { on: true, max_tier: 2 }, agent);
     const start = clock.now().getTime();
@@ -239,7 +241,7 @@ describe("the action table", () => {
 describe("the coordinator unit", () => {
   it("binds the live settings, the waiting items and the local merge under the service passport", async () => {
     let ports: CoordinatorPorts | null = null;
-    const values = { coordinator: false, auto_merge_max_tier: 2 };
+    const values = { coordinator: false, auto_merge_max_tier: 2, "spend.coordinator_daily_usd": 5 };
     const merged: string[] = [];
     const waitingItem = { id: "wi_1", stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", project: PROJECT_KEY } as WorkItem;
     const other = { ...waitingItem, id: "wi_2", blocked_reason: "spec_pending" } as WorkItem;
@@ -259,9 +261,9 @@ describe("the coordinator unit", () => {
     await u.step();
     expect(ports).not.toBeNull();
     const p = ports as unknown as CoordinatorPorts;
-    expect(await p.settings()).toEqual({ on: false, max_tier: 2 });
+    expect(await p.settings()).toEqual({ on: false, max_tier: 2, daily_usd: 5 });
     values.coordinator = true;
-    expect(await p.settings()).toEqual({ on: true, max_tier: 2 });
+    expect(await p.settings()).toEqual({ on: true, max_tier: 2, daily_usd: 5 });
     expect((await p.waiting()).map((it) => it.id)).toEqual(["wi_1"]);
     expect(await p.merge("wi_1" as WorkItemId, "k")).toBeNull();
     expect(merged).toEqual(['wi_1:{"auto":true}']);
