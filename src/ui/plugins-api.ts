@@ -25,7 +25,7 @@
 
 import type { SettingsBase } from "../core/settings.js";
 import type * as Compare from "../core/skill-eval-compare.js";
-import { wilsonInterval } from "../core/skill-eval-stats.js";
+import type * as Stats from "../core/skill-eval-stats.js";
 import type { SkillEvalStore, SkillVersion } from "../interfaces/skill-eval-store.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { storeSql, storeSqlOrNull } from "../impl/store/sql/store-sql.js";
@@ -264,7 +264,7 @@ export async function skillVersionsOf(store: Pick<SkillEvalStore, "listSkillVers
 }
 
 /** src/core/skill-eval-compare.ts's version reads and evals-api.ts skillOf, passed in by the route table (read-routes.ts). */
-export type SkillVersionReads = Pick<typeof Compare, "skillVersionRows" | "unlinkedRuns" | "latestLinkedRun" | "lineDiff" | "caseResults"> & { skillOf: typeof skillOf };
+export type SkillVersionReads = Pick<typeof Compare, "skillVersionRows" | "unlinkedRuns" | "latestLinkedRun" | "lineDiff" | "caseResults"> & Pick<typeof Stats, "wilsonInterval"> & { skillOf: typeof skillOf };
 
 type VersionsDeps = { store: Pick<FactoryStore, "listSkillEvalRuns" | "listSkillEvalReplays" | "listSkillVersions" | "getSkillVersionGate">; scanner: ApiDeps["scanner"] };
 
@@ -291,7 +291,7 @@ export async function readSkillVersions(d: VersionsDeps, f: SkillVersionReads, u
       const run = f.latestLinkedRun(runs, hash);
       const replays = run ? await d.store.listSkillEvalReplays(run.id) : [];
       const passes = replays.filter((r) => r.verdict === "pass").length;
-      const interval = wilsonInterval(passes, replays.length);
+      const interval = f.wilsonInterval(passes, replays.length);
       const costs = replays.map((r) => r.cost_usd).filter((c): c is number => typeof c === "number");
       const cases = new Map<string, string>();
       for (const r of replays) if (!cases.has(r.case_id)) cases.set(r.case_id, r.verdict);

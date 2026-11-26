@@ -12,7 +12,6 @@ export const evals = {
   "evals.casesLabel": "Result of each case in each version",
   "evals.casesEmpty": "No version has a case result yet.",
   "evals.versionN": "Version {n}",
-  "evals.versionUnknown": "Version not recorded",
   "evals.noRate": "no pass rate",
   "evals.versions": "Versions",
   "evals.versionsLabel": "Versions of this skill, newest first",
