@@ -8,9 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EvalCalibration, EvalRun, SkillVersionDiff, SkillVersionRow } from "../web/src/api/evals.js";
 import { BASE, evalsRoute, routeFor } from "../web/src/pages.js";
 
-// The evals page at evals/<skill> (design 09-dashboard-evals): header, Versions, Cases, the Compare Button and Trend in that
-// order, then Judge checks last, the Cases table (a row per case, a column per version), plain words only (hashes and run IDs only under a version's Details), Compare's
-// ModalPanel with its DiffView, and Run now in the header, whose Dialog posts one run.
+// The evals page at evals/<skill> (design 09-dashboard-evals, owner answer 4): the header with Run now, then the Cards
+// Versions (Chart, judge agreement StatTile, warn Notice below 80%, a ListRow per version), Cases (a Badge per case and
+// version, Add as a new case, the Judge checks Disclosure), Compare (two version Selects, wins, losses, ties and the
+// verdict) and SKILL.md diff (a ValueBlock). Plain words only (hashes and run IDs only under a version's Details); Run
+// now's Dialog posts one run.
 // The reads and the POST are a fake fetch.
 
 // A variable path keeps the view's JSX out of the test type check, as the Efficiency page test does.
@@ -40,10 +42,12 @@ const VERSIONS: SkillVersionRow[] = [
   { version: 2, folder_hash: "hash-b", created_at: "2026-11-16T10:00:00.000Z", current: false, run_id: "run_xxx7", pass_rate: 0.6, change: -0.1, band: null, cost_usd: 0.004, cases: [{ case_id: "case_one1", verdict: "fail" }] },
   { version: 1, folder_hash: "hash-a", created_at: "2026-11-09T10:00:00.000Z", current: false, run_id: null, pass_rate: null, change: null },
 ];
-const DIFF = (a: string, b: string): SkillVersionDiff => ({
+const DIFF = (a: string, b: string): SkillVersionDiff & { wins: number; losses: number; ties: number; verdict: string | null } => ({
   a: VERSIONS.find((v) => v.folder_hash === a)!, b: VERSIONS.find((v) => v.folder_hash === b)!,
   lines: [{ op: "same", text: "# Review" }, { op: "removed", text: "Be brief." }, { op: "added", text: "Be thorough." }],
   cases: [{ case_id: "case_one1", a: "pass", b: "fail" }, { case_id: "case_two2", a: null, b: "errored" }],
+  // caseTally of the cases: case_one1 is a loss; case_two2 has no pass or fail in the first, so it is not counted.
+  wins: 0, losses: 1, ties: 0, verdict: "within noise",
 });
 let versions: SkillVersionRow[] = VERSIONS;
 const CALIBRATION: EvalCalibration = {
@@ -118,28 +122,21 @@ describe("evals route", () => {
 });
 
 describe("evals page", () => {
-  it("shows the header, Versions, Cases, the Compare Button, Trend and Judge checks in that order, with Run now as the one primary Button", async () => {
+  it("shows the header with Run now as the one primary Button, then Versions, Cases, Compare and SKILL.md diff, no other Card", async () => {
     const { container } = show();
     await screen.findByRole("list", { name: "Versions of this skill, newest first" }, SLOW);
-    await screen.findByRole("list", { name: "Checks the judge answered" }, SLOW);
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("review-plan");
-    expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Versions", "Cases", "Pass rate over time", "Judge checks"]);
+    expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Versions", "Cases", "Compare", "SKILL.md diff"]);
     const header = container.querySelector("header")!;
     expect(within(header).getAllByRole("button").map((b) => b.textContent)).toEqual(["Run now"]);
     const primary = [...container.querySelectorAll("button")].filter((b) => b.className.includes("bg-accent"));
     expect(primary.map((b) => b.textContent)).toEqual(["Run now"]);
-    // The Compare Button is secondary, in a ButtonRow between the Cases Card and the Trend Card.
-    const compare = screen.getByRole("button", { name: "Compare versions" });
-    expect(compare.className).not.toContain("bg-accent");
-    const versionsCard = screen.getByRole("region", { name: "Versions" });
-    const cases = screen.getByRole("region", { name: "Cases" });
-    const trend = screen.getByRole("region", { name: "Pass rate over time" });
-    expect(versionsCard.compareDocumentPosition(cases) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(cases.compareDocumentPosition(compare) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(compare.compareDocumentPosition(trend) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // The run Compare card is gone: no run pickers on the page.
-    expect(screen.queryByRole("combobox")).toBeNull();
-    expect(screen.queryByRole("region", { name: "Compare two runs" })).toBeNull();
+    const cards = ["Versions", "Cases", "Compare", "SKILL.md diff"].map((name) => screen.getByRole("region", { name }));
+    for (const [k, card] of cards.slice(1).entries()) expect(cards[k]!.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect([...container.querySelectorAll("section")]).toEqual(cards);
+    // No pop-up: Compare is on the page.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Compare versions" })).toBeNull();
   });
 
   it("lists versions newest first as ListRows with pass rate, band, cost, change and date, the current one with a Badge", async () => {
@@ -176,15 +173,38 @@ describe("evals page", () => {
     expect(row.querySelector("summary")!.textContent).toBe("Details");
   });
 
-  it("draws Trend with the Chart, oldest run first, skipping a run with no pass rate", async () => {
-    const { container } = show();
-    const chart = await screen.findByRole("list", { name: "Pass rate by run date" }, SLOW);
-    expect(container.querySelector("[data-chart]")).toBeTruthy();
-    const points = [...chart.querySelectorAll("li")].map((li) => li.textContent);
-    expect(points).toHaveLength(3);
-    expect(points[0]).toContain("50%");
-    expect(points[1]).toContain("60%");
-    expect(points[2]).toContain("90%");
+  it("Versions draws a Chart of pass rate by version, oldest first, skipping a version with no pass rate", async () => {
+    show();
+    const chart = await screen.findByRole("list", { name: "Pass rate by version" }, SLOW);
+    expect(screen.getByRole("region", { name: "Versions" }).contains(chart)).toBe(true);
+    expect(chart.closest("[data-chart]")).toBeTruthy();
+    expect([...chart.querySelectorAll("li")].map((li) => li.getAttribute("title"))).toEqual(["Version 2: 60%", "Version 3: 90%"]);
+  });
+
+  it("Versions shows the judge's agreement in a StatTile and a warn Notice below 80%", async () => {
+    show();
+    const card = await screen.findByRole("region", { name: "Versions" }, SLOW);
+    const tile = await vi.waitFor(() => card.querySelector("[data-agreement]")!, SLOW);
+    expect(tile.querySelector("dt")!.textContent).toBe("Judge agreement");
+    expect(tile.querySelector("dd")!.textContent).toBe("75%");
+    expect(tile.textContent).toContain("with you, on 4 labelled checks");
+    const notice = within(card).getByRole("alert");
+    expect(notice.getAttribute("data-tone")).toBe("warn");
+    expect(notice.textContent).toContain("The judge agrees with you less than 80% of the time");
+  });
+
+  it("Versions shows no Notice at 80% or more, and says so in words with no labels", async () => {
+    calibration = { ...CALIBRATION, labels: 5, agreement: 0.8, calibrated: true };
+    show();
+    let card = await screen.findByRole("region", { name: "Versions" }, SLOW);
+    await vi.waitFor(() => expect(card.querySelector("[data-agreement]")!.textContent).toContain("80%"), SLOW);
+    expect(within(card).queryByRole("alert")).toBeNull();
+    cleanup();
+    calibration = { ...CALIBRATION, labels: 0, agreement: null, checks: CALIBRATION.checks.map((c) => ({ ...c, label: null })) };
+    show();
+    card = await screen.findByRole("region", { name: "Versions" }, SLOW);
+    await vi.waitFor(() => expect(card.querySelector("[data-agreement]")!.textContent).toContain("No checks are labelled yet"), SLOW);
+    expect(within(card).queryByRole("alert")).toBeNull();
   });
 
   it("Cases has a numbered row per case and a column per version, each cell Passed, Failed, Could not judge or no result", async () => {
@@ -193,6 +213,11 @@ describe("evals page", () => {
     expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Case", "Version 3", "Version 2", "Version 1"]);
     const rows = within(table).getAllByRole("row").slice(1).map((r) => within(r).getAllByRole("cell").map((c) => c.textContent));
     expect(rows).toEqual([["Case 1", "Passed", "Failed", "no result"], ["Case 2", "Could not judge", "no result", "no result"]]);
+    // Each cell is a Badge.
+    for (const row of within(table).getAllByRole("row").slice(1)) {
+      for (const cell of within(row).getAllByRole("cell").slice(1)) expect(cell.querySelector("[data-level], span")!.textContent).toBe(cell.textContent);
+    }
+    expect(within(table).getAllByRole("row")[1]!.querySelector("[data-level=\"succeeded\"]")!.textContent).toBe("Passed");
     expect(table.textContent).not.toContain("case_");
   });
 
@@ -204,44 +229,55 @@ describe("evals page", () => {
     expect(within(first).getByRole("button", { name: "Right" })).toBeTruthy();
   });
 
-  it("Compare opens a ModalPanel on the two newest versions with the unified diff and each case's result", async () => {
+  it("Compare starts on the two newest versions and shows wins, losses, ties and the verdict last", async () => {
     show();
-    fireEvent.click(await screen.findByRole("button", { name: "Compare versions" }, SLOW));
-    const panel = await screen.findByRole("dialog", { name: "Compare versions" }, SLOW);
-    await within(panel).findByRole("group", { name: "What changed in SKILL.md" }, SLOW);
+    const card = await screen.findByRole("region", { name: "Compare" }, SLOW);
+    const table = await within(card).findByRole("table", { name: "The second version against the first, case by case" }, SLOW);
     expect(urls.some((u) => u.includes("/diff?a=hash-b&b=hash-c"))).toBe(true);
-    expect(within(panel).getByRole("combobox", { name: "First version" }).textContent).toContain("Version 2");
-    expect(within(panel).getByRole("combobox", { name: "Second version" }).textContent).toContain("Version 3");
-    // One column, each line marked − or +, an unchanged line with no mark.
-    const lines = [...panel.querySelectorAll("[data-diff-view] li")].map((li) => [li.getAttribute("data-op"), li.textContent]);
-    expect(lines).toEqual([["same", " # Review"], ["removed", "−Be brief."], ["added", "+Be thorough."]]);
-    const table = within(panel).getByRole("table", { name: "Result of each case" });
+    expect(within(card).getByRole("combobox", { name: "First version" }).textContent).toContain("Version 2");
+    expect(within(card).getByRole("combobox", { name: "Second version" }).textContent).toContain("Version 3");
     const rows = within(table).getAllByRole("row").slice(1).map((r) => within(r).getAllByRole("cell").map((c) => c.textContent));
-    expect(rows).toEqual([["Case 1", "Passed", "Failed"], ["Case 2", "no result", "Could not judge"]]);
-    expect(panel.textContent).not.toMatch(/case_|hash-/);
+    expect(rows).toEqual([
+      ["Wins: the second passed, the first did not", "0"],
+      ["Losses: the first passed, the second did not", "1"],
+      ["Ties: both gave the same result", "0"],
+      ["Verdict", "Within noise: no clear difference"],
+    ]);
+    expect(card.textContent).not.toMatch(/case_|hash-/);
+  });
+
+  it("SKILL.md diff shows each line in a ValueBlock: − removed, + added, no mark unchanged", async () => {
+    show();
+    const card = await screen.findByRole("region", { name: "SKILL.md diff" }, SLOW);
+    const group = await within(card).findByRole("group", { name: "What changed in SKILL.md" }, SLOW);
+    const block = group.querySelector("pre")!;
+    const lines = [...block.querySelectorAll("[data-op]")].map((l) => [l.getAttribute("data-op"), l.textContent!.trimEnd()]);
+    expect(lines).toEqual([["same", "  # Review"], ["removed", "− Be brief."], ["added", "+ Be thorough."]]);
   });
 
   it("picking another version reads that diff", async () => {
     show();
-    fireEvent.click(await screen.findByRole("button", { name: "Compare versions" }, SLOW));
-    const panel = await screen.findByRole("dialog", { name: "Compare versions" }, SLOW);
-    fireEvent.click(within(panel).getByRole("combobox", { name: "First version" }));
+    const card = await screen.findByRole("region", { name: "Compare" }, SLOW);
+    fireEvent.click(await within(card).findByRole("combobox", { name: "First version" }, SLOW));
     fireEvent.click(screen.getByRole("option", { name: "Version 1" }));
     await vi.waitFor(() => expect(urls.some((u) => u.includes("/diff?a=hash-a&b=hash-c"))).toBe(true), SLOW);
   });
 
-  it("Compare is off with fewer than two versions", async () => {
+  it("Compare and SKILL.md diff say so with fewer than two versions", async () => {
     versions = [VERSIONS[0]!];
     show();
-    const button = await screen.findByRole("button", { name: "Compare versions" }, SLOW);
-    expect((button as HTMLButtonElement).disabled).toBe(true);
+    await screen.findByRole("list", { name: "Versions of this skill, newest first" }, SLOW);
+    for (const name of ["Compare", "SKILL.md diff"]) expect(screen.getByRole("region", { name }).textContent).toContain("Compare needs two saved versions.");
+    expect(screen.queryByRole("combobox")).toBeNull();
   });
 
   it("shows plain words only: no run, suite or skill ID, no snake_case name", async () => {
     const { container } = show();
     await screen.findByRole("list", { name: "Versions of this skill, newest first" }, SLOW);
+    await screen.findByRole("group", { name: "What changed in SKILL.md" }, SLOW);
+    // SKILL.md shows only as the file's name in the owner's Card title, never as a path.
     const text = container.textContent!;
-    expect(text).not.toMatch(/run_|suite_|sha-|skills\/|SKILL\.md|wi_/);
+    expect(text).not.toMatch(/run_|suite_|sha-|skills\/|\/SKILL\.md|wi_/);
     expect(text).not.toMatch(/[a-z]+_[a-z]+/);
   });
 
@@ -267,14 +303,18 @@ describe("evals page", () => {
 });
 
 describe("Judge checks", () => {
-  const card = () => screen.getByRole("region", { name: "Judge checks" });
+  const card = () => document.querySelector<HTMLElement>("[data-judge-checks]")!;
   const rows = async () => [...(await screen.findByRole("list", { name: "Checks the judge answered" }, SLOW)).querySelectorAll("[data-judge-check]")] as HTMLElement[];
 
-  it("is the last Card and lists each judged check of the newest finished run with the judge's answer, in plain words", async () => {
+  it("is a Disclosure in the Cases Card, after the table, listing each judged check of the newest finished run in plain words", async () => {
     show();
     const listed = await rows();
-    const regions = screen.getAllByRole("region");
-    expect(regions.at(-1)).toBe(card());
+    const cases = screen.getByRole("region", { name: "Cases" });
+    expect(cases.contains(card())).toBe(true);
+    expect(card().tagName).toBe("DETAILS");
+    expect(card().querySelector("summary")!.textContent).toBe("Judge checks");
+    const table = within(cases).getByRole("table", { name: "Result of each case in each version" });
+    expect(table.compareDocumentPosition(card()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(listed.map((r) => r.querySelector("p")!.textContent)).toEqual(["Names the riskiest step", "Explains why", "Says yes or no"]);
     expect(listed[0]!.textContent).toContain("Case 1");
     expect(listed[0]!.textContent).toContain("Judge said Yes");
@@ -321,28 +361,6 @@ describe("Judge checks", () => {
     await vi.waitFor(() => expect(right.disabled).toBe(false), SLOW);
     fireEvent.click(right);
     expect((await within(first!).findByRole("alert", undefined, SLOW)).textContent).toContain("nothing was labelled");
-  });
-
-  it("shows agreement as a whole percentage with the label count, and a warn Notice below 80%", async () => {
-    show();
-    await rows();
-    expect(card().textContent).toContain("The judge agrees with you on 75% of 4 labelled checks.");
-    const notice = within(card()).getByRole("alert");
-    expect(notice.textContent).toContain("The judge agrees with you less than 80% of the time");
-  });
-
-  it("shows no Notice at 80% or more, and says so in words with no labels", async () => {
-    calibration = { ...CALIBRATION, labels: 5, agreement: 0.8, calibrated: true };
-    show();
-    await rows();
-    expect(card().textContent).toContain("80% of 5 labelled checks");
-    expect(within(card()).queryByRole("alert")).toBeNull();
-    cleanup();
-    calibration = { ...CALIBRATION, labels: 0, agreement: null, checks: CALIBRATION.checks.map((c) => ({ ...c, label: null })) };
-    show();
-    await rows();
-    expect(card().textContent).toContain("No checks are labelled yet");
-    expect(within(card()).queryByRole("alert")).toBeNull();
   });
 
   it("says when the newest finished run has no judged checks", async () => {
