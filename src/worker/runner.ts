@@ -12,7 +12,7 @@ import { type FactoryConfig, type GateEntry, type Prompts, STALL_DEFAULTS, grant
 import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
 import { errorText, type LogFields } from "../core/log.js";
-import { type CheckRound, checkCommands, commandText, failingTestFiles, installCommands, mergeMiss, ranEntry, runChecks, withTestFiles } from "../core/checks.js";
+import { type CheckRound, checkCommands, commandText, failingTestFiles, installStep, mergeMiss, ranEntry, runChecks, withTestFiles } from "../core/checks.js";
 import { FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, wipBranchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, failureClass, SETUP_MISSING } from "../core/policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
 import type { MergeIO } from "../core/mechanical.js";
@@ -37,8 +37,8 @@ export class Worker {
 
   readonly live: LiveSettings;
 
-  /** The check helpers the merge-check run uses, injected so the run imports no legacy core module. */
-  readonly checkTools: MergeCheckTools = { checkCommands, commandText, failingTestFiles, withTestFiles, ranEntry, mergeMiss };
+  /** The check helpers the merge-check and screenshot runs use, injected so those runs import no legacy core module. */
+  readonly checkTools: MergeCheckTools = { checkCommands, commandText, failingTestFiles, installStep, withTestFiles, ranEntry, mergeMiss };
 
   /** The settings of the run being executed, read once at its claim. Scratch for one run, like `meters`. */
   cfg: FactoryConfig;
@@ -649,16 +649,6 @@ export class Worker {
     });
     if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
     return round;
-  }
-
-  /**
-   * The install step in `handle`'s run folder (design 04-gate-commands): `repo.install_commands` in order, each in its
-   * folder, run as they are; else `repo.install_command` through the run-side install cache (install-cache.ts), which
-   * stands in only for that one command. `run` runs the entries it is given; null: the cache stood in for the install.
-   */
-  async installStep<R extends { failed: unknown }>(handle: SandboxHandle, run: (commands: GateEntry[]) => Promise<R>): Promise<R | null> {
-    const commands = installCommands(this.cfg.repo);
-    return this.cfg.repo.install_commands ? run(commands) : cachedInstall(this, handle, () => run(commands));
   }
 
   /**

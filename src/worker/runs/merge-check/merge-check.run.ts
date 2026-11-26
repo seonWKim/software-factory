@@ -20,11 +20,14 @@
 import { NO_HOOKS, RunFailure, failingTestNames, gitIdentity } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, defineRunKind, type RunCall } from "../../run-kind.js";
+import { cachedInstall } from "../../install-cache.js";
 import { type NodeChoice, chooseNode, offNode, onNode, projectNode } from "./node-version.js";
 
 /** The check helpers the runner hands this run (core/checks.ts), so the run imports none of them. */
 export interface MergeCheckTools {
   checkCommands(repo: Worker["cfg"]["repo"]): GateEntry[];
+  /** The install step (design 04-gate-commands): `repo.install_commands`, else `repo.install_command` through `cache`. */
+  installStep<R>(repo: Worker["cfg"]["repo"], run: (commands: GateEntry[]) => Promise<R>, cache: (install: () => Promise<R>) => Promise<R | null>): Promise<R | null>;
   failingTestFiles(text: string): string[];
   withTestFiles(cmd: GateEntry, files: readonly string[]): GateEntry;
   /** The entry a check result ran (its argv, in its folder when it had one). */
@@ -90,7 +93,7 @@ async function mergeCheck(w: Worker, c: RunCall): Promise<Record<string, unknown
       const r = await w.runCheckList(run, handle, signal, { commands: commands.map((c) => viaNode(node, c)), env: checkEnv(w) });
       return { ...r, failed: r.failed && { ...r.failed, command: offNode(r.failed.command) } };
     };
-    const install = await w.installStep(handle, runOn);
+    const install = await w.checkTools.installStep(w.cfg.repo, runOn, (go) => cachedInstall(w, handle, go));
     if (install?.failed) return red(install.failed);
     const list = await checkList(w, runOn);
     // The list stays whole in every selection mode; a failing file the item's enforced selection skipped is a miss.
@@ -120,7 +123,7 @@ async function baseUiCheck(w: Worker, { run, item, signal }: RunCall, base_ref: 
   try {
     await w.git(handle, [...NO_HOOKS, "checkout", "--quiet", "--detach", base_sha]);
     const runOn = async (commands: readonly GateEntry[]) => (await w.runCheckList(run, handle, signal, { commands: commands.map((cmd) => viaNode(node, cmd)), env: checkEnv(w) })).failed;
-    const failed = (await w.installStep(handle, async (install) => ({ failed: await runOn(install) })))?.failed ?? (await runOn(uiCheck));
+    const failed = (await w.checkTools.installStep(w.cfg.repo, async (install) => ({ failed: await runOn(install) }), (go) => cachedInstall(w, handle, go)))?.failed ?? (await runOn(uiCheck));
     return failed && { ...failed, command: offNode(failed.command) };
   } finally {
     await w.d.sandbox.destroy(handle);

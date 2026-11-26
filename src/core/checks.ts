@@ -2,7 +2,7 @@
 // stopping at the first failure. One list everywhere: the implement run before push and in its merge-conflict
 // step, the update run on the merged branch, the resolve run after install.
 
-import type { FactoryConfig, GateEntry } from "./config.js";
+import type { FactoryConfig } from "./config.js";
 import { failingTests, stripAnsi } from "./output-summary.js";
 import { type SelectionMode, type SelectionRecord, type TestSelection, noteSelection, selectTests, selectionMode, uncovered } from "./test-selection.js";
 import type { TrustedGit } from "./pre-push.js";
@@ -64,6 +64,12 @@ export const CHECK_TAIL_CHARS = 2000;
 /** What the text says in place of a redacted value. */
 export const REDACTED = "[redacted]";
 
+/**
+ * A gate command entry as factory.config.json writes it (design 04-gate-commands): a plain argv, run in the run
+ * folder, or `{ "dir": <folder>, "argv": [...] }`, run in that folder inside the run folder. Never a shell string.
+ */
+export type GateEntry = readonly string[] | { readonly dir: string; readonly argv: readonly string[] };
+
 /** A gate entry's argv (design 04-gate-commands). */
 export const gateArgv = (e: GateEntry): readonly string[] => ("argv" in e ? e.argv : e);
 
@@ -87,14 +93,64 @@ export function ranFields(e: GateEntry): Pick<CheckResult, "command" | "dir"> {
 /** The entry a check result ran: its argv, in its folder when it had one. */
 export const ranEntry = (r: Pick<CheckResult, "command" | "dir">): GateEntry => (r.dir === undefined ? r.command : { dir: r.dir, argv: r.command });
 
+export const nonEmptyStrings = (v: unknown): v is string[] => Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === "string" && x !== "");
+
+/** `dir` as a folder inside the run folder, `/`-separated with no `.` or empty part ("" is the run folder itself); null when absolute or above it. */
+function insideRunFolder(dir: string): string | null {
+  if (/^([/\\]|[A-Za-z]:)/.test(dir)) return null;
+  const out: string[] = [];
+  for (const seg of dir.split(/[/\\]/)) {
+    if (seg === "" || seg === ".") continue;
+    if (seg !== "..") out.push(seg);
+    else if (out.pop() === undefined) return null;
+  }
+  return out.join("/");
+}
+
+/**
+ * One gate entry from config (the one parser of `repo.install_commands`, `repo.check_commands` and
+ * `repo.ui_check.command`): a non-empty argv of non-empty strings, or an object with only `dir`, a non-empty folder
+ * inside the run folder (not absolute, not above it via `..`), and `argv`, such an argv. Anything else fails startup
+ * naming `key`. A `dir` that is the run folder itself (`.`) gives the plain argv. `example` is an argv, as JSON.
+ */
+export function gateEntryConfig(key: string, value: unknown, example: string): GateEntry {
+  if (nonEmptyStrings(value)) return [...value];
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${key} must be an argv (a non-empty array of non-empty strings, no shell) or { "dir": <folder>, "argv": [...] }, e.g. ${example} or { "dir": "frontend", "argv": ${example} }`);
+  }
+  const { dir, argv, ...rest } = value as { dir?: unknown; argv?: unknown };
+  const extra = Object.keys(rest);
+  if (extra.length > 0) throw new Error(`${key} has unknown keys ${extra.join(", ")}; valid keys: dir, argv`);
+  const folder = typeof dir === "string" && dir.trim() !== "" ? insideRunFolder(dir) : null;
+  if (folder === null) throw new Error(`${key}.dir must be a non-empty folder inside the run folder (relative, not above it), e.g. "frontend"`);
+  if (!nonEmptyStrings(argv)) throw new Error(`${key}.argv must be a non-empty array of non-empty strings (argv, no shell), e.g. ${example}`);
+  return folder === "" ? [...argv] : { dir: folder, argv: [...argv] };
+}
+
+/** A list of gate entries from config: absent → undefined; otherwise a non-empty list, each checked by gateEntryConfig as `key[i]`. */
+export function gateListConfig(key: string, value: unknown, example: string): GateEntry[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${key} must be a non-empty list of gate commands, each an argv or { "dir": <folder>, "argv": [...] }, e.g. [${example}, { "dir": "frontend", "argv": ${example} }]`);
+  }
+  return value.map((v, i) => gateEntryConfig(`${key}[${i}]`, v, example));
+}
+
 /** The check list: `repo.check_commands`, or `[repo.test_command]` when it is absent. */
 export function checkCommands(repo: FactoryConfig["repo"]): GateEntry[] {
   return repo.check_commands && repo.check_commands.length > 0 ? repo.check_commands.map(copyEntry) : [[...repo.test_command]];
 }
 
-/** The install step: `repo.install_commands` in order, or `[repo.install_command]` when it is absent. */
-export function installCommands(repo: Pick<FactoryConfig["repo"], "install_command" | "install_commands">): GateEntry[] {
-  return repo.install_commands && repo.install_commands.length > 0 ? repo.install_commands.map(copyEntry) : [[...repo.install_command]];
+/**
+ * The install step (design 04-gate-commands): `run` on `repo.install_commands` in order, each in its folder, as they
+ * are; absent: `run` on `[repo.install_command]` through `cache`, the run-side install cache (src/worker/install-cache.ts),
+ * which stands in only for that one command. Null: the cache stood in for the install.
+ */
+export function installStep<R>(
+  repo: Pick<FactoryConfig["repo"], "install_command" | "install_commands">, run: (commands: GateEntry[]) => Promise<R>,
+  cache: (install: () => Promise<R>) => Promise<R | null>,
+): Promise<R | null> {
+  return repo.install_commands ? run(repo.install_commands.map(copyEntry)) : cache(() => run([[...repo.install_command]]));
 }
 
 /** The test files a check's output reports as failed (vitest's `FAIL  <file> > <name>` lines), in order, each once. */

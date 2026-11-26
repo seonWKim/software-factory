@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/load-config.js";
-import { gateEntryConfig } from "../src/core/config.js";
+import { gateEntryConfig } from "../src/core/checks.js";
 import { config } from "./helpers/fakes/config.js";
 import { pipeline } from "./helpers/harness.js";
 import { issue, system } from "./helpers/store.js";

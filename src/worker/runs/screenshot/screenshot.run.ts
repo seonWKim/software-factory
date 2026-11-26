@@ -6,6 +6,7 @@
 // Chrome or a failed capture is a result: the captures it has and a reason, never a run failure, so the item is not
 // held. The controller then queues the screenshot review on what it stored.
 
+import { cachedInstall } from "../../install-cache.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, type RunCall, type RunKindDescriptor, defineRunKind } from "../../run-kind.js";
 import { chromeBrowser } from "../../../shared/chrome-browser.js";
@@ -20,7 +21,7 @@ async function screenshot(w: Worker, c: RunCall, browser: ScreenshotBrowser): Pr
   const review_run_id = typeof run.input?.review_run_id === "string" ? run.input.review_run_id : null;
   const outcome = await c.step("capture", async (): Promise<ScreenshotOutcome> => {
     const runOn = (commands: NonNullable<Worker["cfg"]["repo"]["check_commands"]>) => w.runCheckList(run, handle, signal, { commands });
-    const install = await w.installStep(handle, runOn);
+    const install = await w.checkTools.installStep(w.cfg.repo, runOn, (go) => cachedInstall(w, handle, go));
     if (install?.failed) return { captures: [], reason: `the install command failed (${install.failed.how})` };
     const build = await runOn([BUILD_COMMAND]);
     if (build.failed) return { captures: [], reason: `the build failed (${build.failed.how})` };

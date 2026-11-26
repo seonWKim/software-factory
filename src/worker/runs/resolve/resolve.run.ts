@@ -1,6 +1,5 @@
 import type { ModelClass } from "../../../core/model-choice.js";
-import { type CheckResult, checkCommands, checkedLines, commandText, failingTestFiles, ranEntry, ranFields, runChecks } from "../../../core/checks.js";
-import type { GateEntry } from "../../../core/config.js";
+import { type CheckResult, checkCommands, checkedLines, commandText, failingTestFiles, installStep, ranEntry, ranFields, runChecks } from "../../../core/checks.js";
 import { IMPLEMENT_SCHEMA, NEEDS_HUMAN_MAX_CHARS, NEEDS_HUMAN_MAX_PATHS, type NeedsHuman, parseImplement } from "../../../core/outputs.js";
 import { branchFor, isCovered, parseAutoResolveKey } from "../../../core/policy.js";
 import { mergeAppendedConflicts } from "../../../core/mechanical.js";
@@ -11,8 +10,12 @@ import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
 import { NO_HOOKS, RunFailure, failingTestNames, gitIdentity, resolveScopeDetail, specQuery, tail } from "../../support.js";
 import { conflictAsk } from "../implement/conflict-ask.js";
 import type { Worker } from "../../runner.js";
+import { cachedInstall } from "../../install-cache.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 import { RESUME_LOST, fetchBundle, saveBundle } from "../../bundle.js";
+
+/** A gate entry (design 04-gate-commands): a plain argv, or `{ dir, argv }` run in that folder. */
+type GateEntry = ReturnType<typeof checkCommands>[number];
 
 /**
  * The resolve run (design §5 Merge conflict), started by a human's `/resolve` or automatically. In the PR branch's
@@ -172,7 +175,7 @@ async function mergeAndResolve(
 
     const head = await commitResolution(w, handle, { tree, tipSha, baseSha, branch, message: `Merge ${baseRef} into ${branch}` }, identity);
     // The install step first (installStep: install_commands, else install_command through the run-side install cache), then the check list (design §4).
-    const installed = await w.installStep(handle, async (install) => ({ failed: await gates(w, handle, install, signal) }));
+    const installed = await installStep(repo, async (install) => ({ failed: await gates(w, handle, install, signal) }), (go) => cachedInstall(w, handle, go));
     const failed = installed?.failed ?? (await gates(w, handle, checkCommands(repo), signal));
     if (failed) {
       const ask = testPathsAsk(w, item, conflicts, failed);

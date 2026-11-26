@@ -3,7 +3,6 @@
 // (the sandbox, the green bases table) is inline, as the unit's.
 
 import { LOCAL_SOURCE, canRevertLocal, checkCommands, runChecks, runKey } from "../../../core/local-merge.js";
-import { commandText, installCommands, ranEntry } from "../../../core/checks.js";
 import { failingTestNames } from "../../../worker/index.js";
 import { AUTO, SYSTEM } from "../support.js";
 import type { Ctx } from "../context.js";
@@ -52,11 +51,12 @@ async function checkTip(c: Ctx, where: string): Promise<Round> {
     tip = handle.base_sha ?? null;
     try {
       const round = await runChecks({
-        sandbox, handle, commands: [...installCommands(repo), ...checkCommands(repo), ...(repo.ui_check ? [repo.ui_check.command] : [])],
+        sandbox, handle, commands: [...(repo.install_commands ?? [repo.install_command]), ...checkCommands(repo), ...(repo.ui_check ? [repo.ui_check.command] : [])],
         env: { ...c.k.d.check_env }, timeout_ms: c.k.cfg.run_timeout_ms, signal: new AbortController().signal, redact: [],
       });
       if (!round.failed) return { tip, failed: null, command: null, how: null };
-      const command = commandText(ranEntry(round.failed));
+      const { dir } = round.failed; // a folder entry is named as commandText names it
+      const command = `${round.failed.command.join(" ")}${dir === undefined ? "" : ` (in ${dir}/)`}`;
       return {
         tip, command, how: round.failed.how, failed: `\`${command}\` ${round.failed.how} on ${where} of \`${repo.base_branch}\``,
         output: { failing_tests: failingTestNames(round.failed.tail), output_tail: round.failed.tail },

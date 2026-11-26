@@ -3,8 +3,9 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, STALL_DEFAULTS, type GateEntry, type StatsConfig, type ToolchainConfig, gateListConfig, readOnlyFolders,
+  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, STALL_DEFAULTS, type GateEntry, type StatsConfig, type ToolchainConfig, readOnlyFolders,
 } from "./core/config.js";
+import { gateListConfig } from "./core/checks.js";
 import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
 import type { CliIdentity } from "./core/local-cli.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
