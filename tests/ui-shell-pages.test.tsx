@@ -136,18 +136,16 @@ describe("app pages", () => {
     expect(redirectFor("/app/users")).toBeNull();
   });
 
-  it("/app/spend, /app/failures and /app/runners redirect to their Health tab, keeping the query; /app/activity and /app/queue still do", async () => {
+  it("/app/spend, /app/failures and /app/runners redirect to their Health tab, keeping the query; /app/queue still does", async () => {
     expect(redirectFor("/app/spend")).toBe("/app/health?tab=spend");
     expect(redirectFor("/app/failures")).toBe("/app/health?tab=failures");
     expect(redirectFor("/app/failures", "?window=7d")).toBe("/app/health?tab=failures&window=7d");
     expect(redirectFor("/app/runners")).toBe("/app/health?tab=runners");
-    expect(redirectFor("/app/activity")).toBe("/app/items");
     expect(redirectFor("/app/queue")).toBe("/app/items?state=queued");
     for (const [from, to] of [
       ["/app/spend", "/app/health?tab=spend"],
       ["/app/failures?window=7d", "/app/health?tab=failures&window=7d"],
       ["/app/runners", "/app/health?tab=runners"],
-      ["/app/activity", "/app/items"],
     ] as const) {
       history.replaceState(null, "", from);
       mount();

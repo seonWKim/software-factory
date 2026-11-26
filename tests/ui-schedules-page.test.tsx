@@ -51,8 +51,8 @@ beforeEach(() => {
   schedules = [schedule("sch_aaaa1111", "Nightly docs check"), schedule("sch_bbbb2222", "Weekly review", { next_due_at: null, cadence: { kind: "weekly", spec: "mon 09:00" } })];
   runs = {
     sch_aaaa1111: [
-      { schedule_id: "sch_aaaa1111", occurrence_at: "2026-11-23T08:00:00.000Z", outcome: "fired", recorded_at: "2026-11-23T08:00:05.000Z", output: "Found two stale pages.", cost_usd: 0.0123 },
-      { schedule_id: "sch_aaaa1111", occurrence_at: "2026-11-24T08:00:00.000Z", outcome: "skipped", recorded_at: "2026-11-24T08:00:05.000Z" },
+      { schedule_id: "sch_aaaa1111", occurrence_at: "2026-11-23T08:00:00.000Z", outcome: "fired", recorded_at: "2026-11-23T08:00:05.000Z", transcript: null, output: "Found two stale pages.", cost_usd: 0.0123 },
+      { schedule_id: "sch_aaaa1111", occurrence_at: "2026-11-24T08:00:00.000Z", outcome: "skipped", recorded_at: "2026-11-24T08:00:05.000Z", transcript: null },
     ],
     sch_bbbb2222: [],
   };
@@ -216,7 +216,7 @@ describe("Schedules page", () => {
 
   /** Selects Nightly docs check with one run whose output is `output`, and returns that run's Output cell. */
   const outputCell = async (output: string) => {
-    runs.sch_aaaa1111 = [{ schedule_id: "sch_aaaa1111", occurrence_at: "2026-11-23T08:00:00.000Z", outcome: "fired", recorded_at: "2026-11-23T08:00:05.000Z", output, cost_usd: 0.5 }];
+    runs.sch_aaaa1111 = [{ schedule_id: "sch_aaaa1111", occurrence_at: "2026-11-23T08:00:00.000Z", outcome: "fired", recorded_at: "2026-11-23T08:00:05.000Z", transcript: null, output, cost_usd: 0.5 }];
     show();
     await ready();
     fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "Show what Nightly docs check does and its runs" }));
@@ -344,9 +344,20 @@ describe("Schedules page", () => {
     expect(dl.querySelector("dd p")!.className).toContain("line-clamp-2");
   });
 
+  it("a run row links its transcript when its claim started one, and shows no link when none", async () => {
+    runs.sch_aaaa1111![0]!.transcript = "/app/items/wi_9/runs/run_9";
+    show();
+    await ready();
+    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "Show what Nightly docs check does and its runs" }));
+    const table = await screen.findByRole("table", { name: "Runs" }, SLOW);
+    const links = within(table).getAllByRole("link", { name: /Transcript of the run due/ });
+    expect(links).toHaveLength(1);
+    expect(links[0]!.getAttribute("href")).toBe("/app/items/wi_9/runs/run_9");
+  });
+
   it("a summary schedule setup adds shows its Last run and Next run in its detail Card", async () => {
     schedules.push(schedule("summary-morning", "Morning summary", { action: { kind: "summary", settings: {} }, cadence: { kind: "interval", spec: "15" }, next_due_at: "2026-11-25T08:15:00.000Z" }));
-    runs["summary-morning"] = [{ schedule_id: "summary-morning", occurrence_at: "2026-11-25T08:00:00.000Z", outcome: "fired", recorded_at: "2026-11-25T08:00:05.000Z", output: "nothing to report" }];
+    runs["summary-morning"] = [{ schedule_id: "summary-morning", occurrence_at: "2026-11-25T08:00:00.000Z", outcome: "fired", recorded_at: "2026-11-25T08:00:05.000Z", transcript: null, output: "nothing to report" }];
     show();
     await ready();
     fireEvent.click(within(await row("Morning summary")).getByRole("button", { name: "Show what Morning summary does and its runs" }));
