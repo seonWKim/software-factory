@@ -8,7 +8,7 @@ import { CONFIRM_COMMAND } from "./interpret.js";
 import { needsDueDate } from "./quick-add.js"; import { type Project, projectSlug } from "./projects.js";
 export { storedProjectCaps } from "./size-cap.js"; // the project's size caps for `approve` (LocalCliDeps.caps), for the CLI handler
 import { ProjectRefused, projectRefusal, taskLine } from "./tasks.js";
-import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask, localItemOf, withDependsOn } from "./task-build.js";
+import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask, dependsOnId, localItemOf, withDependsOn } from "./task-build.js";
 import { type DraftTerminal, runScheduleWords } from "./schedule-draft.js";
 import { ANONYMOUS_USER, CLI_KEY_PREFIX, type CliIdentity, DEFAULT_CLI_NAME } from "./local-cli-identity.js";
 import { type CliAction as ParsedAction, parseLocalCliArgs } from "./local-cli-parse.js";
@@ -84,8 +84,10 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
     case "create": {
       const project = await d.project();
       if (project === null) return fail(NO_PROJECT_KEY);
-      if (a.depends_on !== undefined && (await localItemOf(d.store, a.depends_on)) === null) return fail(`--depends-on ${a.depends_on} names no local work item or built task, so nothing was created`);
-      const body = withDependsOn((await d.read(a.bodyFile)).trim(), a.depends_on === undefined ? [] : [a.depends_on]);
+      const dep = a.depends_on === undefined ? null : await localItemOf(d.store, a.depends_on);
+      if (a.depends_on !== undefined && !dep) return fail(`--depends-on ${a.depends_on} names no local work item or built task, so nothing was created`);
+      // The line names the item's full wi_ ID, so a short ID given here resolves the same way for the local source.
+      const body = withDependsOn((await d.read(a.bodyFile)).trim(), a.depends_on !== undefined && dep ? [dependsOnId(a.depends_on, dep)] : []);
       if (a.project !== undefined) {
         const r = await createProjectTask(d.store, { task_id: `tk_${d.newId()}`, title: a.title, body, slug: a.project, project, user });
         if (!r.ok) return fail(r.reason);

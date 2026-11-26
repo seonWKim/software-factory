@@ -163,8 +163,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   { name: "paths", usage: "/paths +<path>...", phases: ["implementing", "failed_implement", "too_large", "session_released"], needs_pr: false, changes_state: true, // any RUNNING item: the controller checks the stage (design 05-interactive-sessions)
     description: "Add paths to the allowed paths of an item being implemented, in place: an interactive session's finish checks the new list, and a worker implement run takes it at its next attempt. At most 10, each with `+` before it, notes on the lines below. It never removes a path" },
-  { name: "hold", usage: "/hold <id>", phases: [], local_phases: ["agent_needs_human"], asked_by: ["implement"], needs_pr: false, changes_state: true, // a local implement stop (design 05-dependencies)
-    description: "Hold until <id> merges: writes a `Depends on: <id>` line in the item's problem and queues the implement run, which waits for <id> (a local wi_… item, or a built task tk_…) to merge and then starts on its own. Refused for an ID that names no local item, the item itself, or an item already merged" },
+  { name: "hold", usage: "/hold <id>", phases: [], local_phases: ["agent_needs_human"], asked_by: ["implement"], needs_pr: false, changes_state: true, // a local implement stop; a queued implement run is checked by the coordination unit from the item's runs (design 05-dependencies)
+    description: "Hold until <id> merges: writes a `Depends on: <id>` line in the item's problem and queues the implement run, which waits for <id> (a local wi_… item or its short ID, or a built task tk_…) to merge and then starts on its own. Refused for an ID that names no local item, the item itself, or an item already merged", table_note: "Also on a local item whose implement run is queued and not started (`factory hold <item> <id>`): it writes the line and the queued run waits the same way. While the run is running it is refused, and applies once the run ends" },
   { name: "note", usage: "/note <text>", phases: OPEN_PHASES, needs_pr: false, changes_state: false, // an `owner_note` state change (src/controller/units/commands/note.ts)
     description: "Add a note for the item's reviewer and implementer, such as the reason a done-when line is built differently; their next run shows it under the approver's notes. It changes no state" },
   { name: "budget", usage: "/budget [tokens]", phases: ["budget_checkpoint"], needs_pr: false, changes_state: true,
@@ -212,7 +212,7 @@ export const commandSpec = (name: CommandName): CommandSpec => BY_NAME.get(name)
 
 /** blocked_reason prefix (with `blocked_on: human`) of an item whose dependency closed without a merge (design §5). */
 export { DEPENDENCY_CLOSED } from "./phase.js"; export { LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND } from "./local-merge.js"; // for the commands unit
-export { LOCAL_ID, dependsOnIds, localItemOf, wantedDependsOn, withDependsOn } from "./task-build.js"; // for `/hold` and the coordination unit
+export { LOCAL_ID, dependsOnId, dependsOnIds, localItemOf, wantedDependsOn, withDependsOn } from "./task-build.js"; // for `/hold` and the coordination unit
 export { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "./local-cli.js"; export { specKind } from "./standing.js"; export { overCap } from "./split.js"; export { overCapApproval } from "./size-cap.js"; // for the commands unit; the last two: an over-cap `/approve` (design 04-split-specs)
 
 /** Block reasons whose step `/retry` reads from the stage (or, for the agent blocks, from the item's runs first). */

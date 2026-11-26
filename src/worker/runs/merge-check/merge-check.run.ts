@@ -15,13 +15,16 @@
 // With `repo.check_tz` (design §4), every command here (install, checks, UI check, base UI rerun) runs with TZ set to
 // that zone, so a test that passes only in the machine's zone fails before merge; absent, no TZ is set.
 // Install and checks run on the project's Node major (.nvmrc, else package.json engines; node-version.ts); a project
-// whose Node is not installed fails the run with checks_env rather than checking on another Node.
+// whose Node is not installed fails the run with checks_env rather than checking on another Node. A project naming a
+// JDK major (.java-version, else the root Gradle toolchain; jdk-version.ts) fails the run with checks_env when the
+// worker's JDK has another major or there is none, rather than checking on another JDK.
 
 import { NO_HOOKS, RunFailure, failingTestNames, gitIdentity } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, defineRunKind, type RunCall } from "../../run-kind.js";
 import { cachedInstall } from "../../install-cache.js";
 import { type NodeChoice, chooseNode, offNode, onNode, projectNode } from "./node-version.js";
+import { checkJdk, projectJdk } from "./jdk-version.js";
 
 /** The check helpers the runner hands this run (core/checks.ts), so the run imports none of them. */
 export interface MergeCheckTools {
@@ -81,6 +84,8 @@ async function mergeCheck(w: Worker, c: RunCall): Promise<Record<string, unknown
     // Which Node ran the checks, in the worker log and the run's result: no version named is said, never silent.
     const nodeUsed = want ? `Node ${node.version} (${want.from})` : "the worker's Node: no version in .nvmrc or package.json engines";
     w.d.log.info(`merge check runs on ${nodeUsed}`, { run_id: run.id, node_bin: node.bin ?? "worker" });
+    const jdk = await projectJdk(w, handle, merged_sha);
+    if (jdk) w.d.log.info(`merge check runs on JDK ${await checkJdk(w, handle, jdk)} (${jdk.from})`, { run_id: run.id });
     const red = async (failed: Failed, ui = false) => ({ result: "red", why: "checks", ...(await failure(w, failed, ui)), base_sha, merged_sha, node: nodeUsed });
     const runOn = async (commands: string[][]) => {
       const r = await w.runCheckList(run, handle, signal, { commands: commands.map((c) => onNode(node, c)), env: checkEnv(w) });
