@@ -1,5 +1,6 @@
 // Requeues runs whose worker stopped renewing its lease. A pure step (RFC 0015 §6.2): it decides on the tick's time
-// and the settings, and the router commits the lease expiry.
+// and the settings, and the router commits the lease expiry. The store's expiry writes one `lease_expiry` Activity row
+// per run it moved, with the reason and the run's transcript, in the expiry's transaction (design 08-schedules-actions).
 
 import { retryDelayMs } from "../../../core/policy.js";
 import type { ControllerDecision, Ctx } from "../context.js";

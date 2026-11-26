@@ -24,6 +24,7 @@ Read this index, then only the topics you touch. Add a line here only for a new 
 - [04-gate-commands.md](design/04-gate-commands.md): human commands.
 - [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers, `/revise`.
 - [04-chat-commands.md](design/04-chat-commands.md): chat commands.
+- [04-chat-agent](design/04-chat-agent.md): turns.
 - [04-verdicts.md](design/04-verdicts.md): `/verdict`, implicit verdicts, pushbacks.
 - [04-closing-source-issue.md](design/04-closing-source-issue.md): closing source.
 - [04-pre-push-gates.md](design/04-pre-push-gates.md): pre-push gates.

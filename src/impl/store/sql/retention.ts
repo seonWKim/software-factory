@@ -9,7 +9,8 @@ import { ALERT_DEDUPE_MS } from "../../../core/alarms.js";
 import { PROBE_PAUSES } from "../../../core/policy.js";
 import { COMMANDS_CURSOR } from "../../../inbound/index.js";
 import { ACTION_INTENT, THREAD_INTENT } from "../../../outbound/index.js";
-import type { SqlDriver, SqlValue } from "../../../state/index.js";
+import type { SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
+import { ACTIVITY_RETENTION_DAYS } from "./activity.js";
 
 /** `?, ?, ...` for `n` bound parameters (the store's lists use it too). */
 export function placeholders(n: number): string {
@@ -34,7 +35,7 @@ const INTENT_GONE = [[ACTION_INTENT, "outbound_actions"], [THREAD_INTENT, "outbo
  * the batch rows no kept intent uses: an intent row whose intent is gone, and a sent batch with no intent row left.
  * An undelivered row stays at any age, and so does every batch row of a kept intent.
  */
-export async function pruneDeliveredOutbox(db: SqlDriver, before: Timestamp, limit: number): Promise<Record<string, number>> {
+export async function pruneDeliveredOutbox(db: SqlExecutor, before: Timestamp, limit: number): Promise<Record<string, number>> {
   const delivered = "delivered_at IS NOT NULL AND created_at < ?";
   return {
     outbound_intents: await prune(db, "outbound_intents", ["seq"], delivered, [before], limit),
@@ -53,7 +54,7 @@ export async function pruneDeliveredOutbox(db: SqlDriver, before: Timestamp, lim
  * not waiting for the CLI mirror and, for an app request, that are handled. A request from before the merge (D7)
  * also waits until its app:<seq> command row is gone.
  */
-export async function pruneHandledCommands(db: SqlDriver, before: Timestamp, limit: number): Promise<Record<string, number>> {
+export async function pruneHandledCommands(db: SqlExecutor, before: Timestamp, limit: number): Promise<Record<string, number>> {
   const guard =
     "seq <= ? AND created_at < ? AND NOT (mirror = 1 AND mirrored_at IS NULL) AND (origin <> 'app' OR legacy_table = 'command_inbox' OR handled_at IS NOT NULL)";
   // The legacy check is in the select only; a gone row never returns.
@@ -102,14 +103,16 @@ const LIVE_ANCESTORS =
   "UNION SELECT p.parent_id FROM identity_passports p JOIN up ON p.id = up.id WHERE p.parent_id IS NOT NULL) SELECT id FROM up";
 
 /**
- * History older than `before`: claim decisions, host sleeps, alerts, authz_audit rows and claim pauses that ended.
+ * History older than `before`: claim decisions, host sleeps, alerts, authz_audit rows and claim pauses that ended;
+ * Activity rows older than ACTIVITY_RETENTION_DAYS (30) before `now`, whatever `before` is.
  * A claim decision of a queued or running run stays at any age (approveClaimHold and the hold timer read it); an
  * alert inside the alarm dedupe window stays too; a probe pause in effect stays. Then, by `now`: passports past
  * their expiry (but any ancestor of a live one, so no live passport loses its parent) and revocations past theirs.
  */
-export async function pruneHistory(db: SqlDriver, before: Timestamp, now: Timestamp, limit: number): Promise<Record<string, number>> {
+export async function pruneHistory(db: SqlExecutor, before: Timestamp, now: Timestamp, limit: number): Promise<Record<string, number>> {
   const active = "NOT EXISTS (SELECT 1 FROM worker_runs r WHERE r.id = controller_claim_decisions.run_id AND r.status IN ('queued', 'running'))";
   const open = new Date(Date.parse(now) - ALERT_DEDUPE_MS).toISOString();
+  const activity = new Date(Date.parse(now) - ACTIVITY_RETENTION_DAYS * 86_400_000).toISOString();
   return {
     controller_claim_decisions: await prune(db, "controller_claim_decisions", ["run_id"], `at < ? AND ${active}`, [before], limit),
     worker_host_sleeps: await prune(db, "worker_host_sleeps", ["worker_id", "woke_at"], "woke_at < ?", [before], limit),
@@ -118,6 +121,7 @@ export async function pruneHistory(db: SqlDriver, before: Timestamp, now: Timest
     worker_claim_pauses: await prune(db, "worker_claim_pauses", ["name"], `resume_at < ? AND ${PAUSE_ENDED}`, [before], limit, "resume_at < ?"),
     identity_passports: await prune(db, "identity_passports", ["id"], `expires_at <= ? AND id NOT IN (${LIVE_ANCESTORS})`, [now, now], limit, "expires_at <= ?"),
     identity_revocations: await prune(db, "identity_revocations", ["passport_id"], "expires_at <= ?", [now], limit),
+    controller_activity: await prune(db, "controller_activity", ["seq"], "at < ?", [activity], limit),
   };
 }
 
@@ -126,7 +130,7 @@ export async function pruneHistory(db: SqlDriver, before: Timestamp, now: Timest
  * `recheck` other than `where` is its start: it takes the first of `params`, one per placeholder.
  */
 async function prune(
-  db: SqlDriver, table: string, keys: string[], where: string, params: SqlValue[], limit: number, recheck = where,
+  db: SqlExecutor, table: string, keys: string[], where: string, params: SqlValue[], limit: number, recheck = where,
 ): Promise<number> {
   const order = keys.join(", ");
   const rows = await db.all(`SELECT ${order} FROM ${table} WHERE ${where} ORDER BY ${order} LIMIT ${Math.max(0, Math.floor(limit))}`, params);

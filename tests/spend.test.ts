@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { SPEND_KINDS, readSpend, spendTotals } from "../src/core/spend.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
+import { HealthMonitor } from "../src/ui/health.js";
+import { respond } from "../src/ui/server.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // Spend (design 06-spend) counts a routine's runs: `routine` is one of SPEND_KINDS, so a routine run's harness cost
@@ -24,5 +27,26 @@ describe("spend counts routine runs", () => {
     const spend = await readSpend(store, "2026-11-23", "2026-11-23");
     expect(spend.items).toEqual([expect.objectContaining({ work_item_id: item.id, kinds: ["routine"], cost_usd: 0.25, runs: 2, unknown: 1 })]);
     expect(spend.days[0]).toMatchObject({ day: "2026-11-23", cost_usd: 0.25 });
+  });
+});
+
+// Chat turns (design 04-chat-agent) are no runs: their stored spend rows are totalled apart, under `chat`.
+describe("spend counts chat turns apart", () => {
+  it("readSpend and GET /api/v1/spend answer a chat total of the range's turns, unknown cost apart, and leave the run totals alone", async () => {
+    const clock = new FakeClock("2026-11-26T09:00:00.000Z");
+    const { store } = await newStore(clock);
+    await store.recordChatSpend({ turn_id: "t1", session_id: "s1", day: "2026-11-25", cost_usd: 0.5, tokens: 100 });
+    await store.recordChatSpend({ turn_id: "t2", session_id: "s1", day: "2026-11-26", cost_usd: 0.25, tokens: 40 });
+    await store.recordChatSpend({ turn_id: "t3", session_id: "s2", day: "2026-11-26", cost_usd: null, tokens: 7 });
+    await store.recordChatSpend({ turn_id: "t4", session_id: "s3", day: "2026-11-27", cost_usd: 9, tokens: 1 });
+
+    const spend = await readSpend(store, "2026-11-25", "2026-11-26");
+    expect(spend.chat).toEqual({ cost_usd: 0.75, tokens: 147, turns: 3, unknown: 1 });
+    expect(spend.total).toEqual({ cost_usd: 0, tokens: 0, runs: 0, unknown: 0 });
+
+    const d = { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], clock) };
+    const r = await respond(d, { method: "GET", url: "/api/v1/spend?from=2026-11-26&to=2026-11-26", host: "127.0.0.1:4310" });
+    expect(r.status).toBe(200);
+    expect((JSON.parse(r.body!) as { chat: unknown }).chat).toEqual({ cost_usd: 0.25, tokens: 47, turns: 2, unknown: 1 });
   });
 });
