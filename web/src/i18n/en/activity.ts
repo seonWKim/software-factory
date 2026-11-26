@@ -22,7 +22,6 @@ export const activity = {
   "actors.detail.now": "Now",
   "actors.detail.last": "Last run",
   "actors.detail.next": "Next run",
-  "actors.recent": "Recent actions",
   "actors.recentLabel": "Recent actions of {name}",
   "actors.noActions": "No actions in the last {days} days.",
   "actors.col.outcome": "Outcome",

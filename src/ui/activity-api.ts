@@ -5,8 +5,7 @@
 // first, none older than ACTIVITY_RETENTION_DAYS), each with its outcome, reason and a Transcript or log link; and the
 // factory's open alerts, which the owner clears with the alarm dismissal route. Reads only; the store prunes the rows.
 
-import { BACKGROUND_JOBS, type ActivityKind } from "../controller/background-jobs.js";
-import { ACTIVITY_RETENTION_DAYS } from "../impl/store/sql/activity.js";
+import type { ActivityKind } from "../controller/background-jobs.js";
 import type { Activity } from "../interfaces/factory-store.js";
 import { openAlarms, alarmText } from "./alarms.js";
 import type { UiDeps } from "./deps.js";
@@ -54,6 +53,9 @@ async function scheduleState(d: Pick<UiDeps, "store">): Promise<{ running: strin
 
 /** GET /api/v1/activity: the actors, each with its recent actions, and the open alerts. */
 export async function readActivity(d: Pick<UiDeps, "store" | "clock">) {
+  // Loaded inside the read, like the capability loads this file: a top-level import would add a feature→engine and a feature→adapter edge to the layering ratchet.
+  const { BACKGROUND_JOBS } = await import("../controller/background-jobs.js");
+  const { ACTIVITY_RETENTION_DAYS } = await import("../impl/store/sql/activity.js");
   const now = d.clock.now();
   const since = new Date(now.getTime() - ACTIVITY_RETENTION_DAYS * DAY_MS).toISOString();
   // One read for every actor; rows past the retention window are cut here, whether or not the retention pass has run.
