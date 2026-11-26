@@ -468,6 +468,15 @@ describe("GitHubForge: pull requests the factory did not open (design 2026-11-01
     expect(await forge.commitAuthor("abc")).toEqual(bobId);
     expect(await forge.commitAuthor("def")).toBeNull();
   });
+
+  it("prTitle reads the PR's title with one GET, null when it has none", async () => {
+    const { client, forge } = make();
+    client.byNumber[436] = pull(436, "feature/x", { title: "Show PR titles" });
+    client.byNumber[437] = pull(437, "feature/y", { title: "" });
+    expect(await forge.prTitle(436)).toBe("Show PR titles");
+    expect(await forge.prTitle(437)).toBeNull();
+    expect(client.calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /repos/o/r/pulls/436", "GET /repos/o/r/pulls/437"]);
+  });
 });
 
 describe("GitHubForge: commitsBetween (design §4, implicit verdicts)", () => {

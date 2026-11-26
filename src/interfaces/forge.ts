@@ -195,6 +195,11 @@ export interface Forge {
    * failures are the caller's to log and must not block a transition.
    */
   setPrStatus(source: SourceRef, status: WorkStatus, pr: number): Promise<void>;
+  /**
+   * PR `pr`'s title (one read), null when the forge gives none; throws when the read fails. Absent: this forge keeps
+   * no titles to read, and an unreviewed merge recorded without one keeps "PR #N" (design 09-dashboard-tasks-needs).
+   */
+  prTitle?(pr: number): Promise<string | null>;
   /** The checks on PR `pr`'s current head commit (design §5 CI gate): `prCheckResults` summed up. Read-only. */
   prChecks(pr: number): Promise<PrChecks>;
   /**
