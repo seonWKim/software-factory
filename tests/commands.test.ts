@@ -1,3 +1,5 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { type CommandName, commandTableMarkdown, helpReply, parseCommandPaths, parseComment, retryPathsReply, withholdReplyLines } from "../src/core/commands.js";
 import { itemCommands, resolveScopePaths } from "../src/ui/commands.js";
@@ -154,5 +156,33 @@ describe("+paths (issue #280)", () => {
     }
     // The usage column stays `/resolve [notes]`; `+paths` is in its description, as for /retry.
     expect(helpReply({ phase: "merge_conflict", has_pr: true })).toContain("`/resolve [notes]` **(now)**");
+  });
+});
+
+describe("the commands unit's folder (issue #866)", () => {
+  const DIR = join(import.meta.dirname, "..", "src", "controller", "units", "commands");
+  const src = (f: string) => readFileSync(join(DIR, f), "utf8");
+  const unit = () => src("commands.unit.ts");
+
+  it("keeps every file in the folder within the 600-line budget, with commands.unit.ts its only unit file", () => {
+    const files = readdirSync(DIR).filter((f) => f.endsWith(".ts"));
+    for (const f of files) expect({ f, over: src(f).split("\n").length > 600 }).toEqual({ f, over: false });
+    expect(files.filter((f) => f.endsWith(".unit.ts"))).toEqual(["commands.unit.ts"]);
+  });
+
+  it("holds PR feedback, the checkpoint answer and the info and link replies in their own files, imported by the unit", () => {
+    const moved: [string, string[]][] = [
+      ["pr-feedback.ts", ["function reviewFeedback(", "PR_REVISE =", "PR_CHANGES =", "function prFeedback(", "function handlePrReview(", "function itemOfPr("]],
+      ["checkpoint.ts", ["function answerCheckpoint("]],
+      ["replies.ts", ["function handleInfo(", "function handleLink(", "LINK_REFUSALS"]],
+    ];
+    for (const [file, names] of moved) {
+      for (const n of names) {
+        expect({ file, n, there: src(file).includes(n) }).toEqual({ file, n, there: true });
+        if (n !== "LINK_REFUSALS") expect({ n, left: unit().includes(n) }).toEqual({ n, left: false });
+      }
+      expect(unit()).toContain(`from "./${file.replace(/\.ts$/, ".js")}"`);
+    }
+    expect(unit()).not.toContain("LINK_REFUSALS");
   });
 });
