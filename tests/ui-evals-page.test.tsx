@@ -435,6 +435,7 @@ const SKILL_ROWS = [
 let suiteView: { suite: typeof SUITE | null; cases: typeof CASES } = { suite: SUITE, cases: CASES };
 let answer: { status: number; body: unknown } = { status: 200, body: {} };
 let writes: unknown[] = [];
+let starterOff: string | null | undefined = null;
 
 function stubPlugins() {
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
@@ -444,7 +445,7 @@ function stubPlugins() {
       return json(answer.status, answer.body);
     }
     if (url === "/api/v1/plugins") return json(200, { as_of: "2026-11-24T00:00:00.000Z", csrf_token: "t", mcp: [], tools: [], skills: SKILL_ROWS, skill_folders: ["skills"], settings_token: "s" });
-    if (url === "/api/v1/evals") return json(200, { skills: [] });
+    if (url === "/api/v1/evals") return json(200, { skills: [], ...(starterOff !== undefined && { starter: starterOff }) });
     if (url === "/api/v1/pauses") return json(200, { pauses: [], csrf_token: "tok_evals" });
     if (url === `/api/v1/evals/${ENC}/suite`) return json(200, suiteView);
     if (url === `/api/v1/evals/${ENC}/runs`) return json(200, { runs: [run("run_a1", 20, { suite_id: SUITE.id }), run("run_b2", 19, { suite_id: SUITE.id }), run("run_old", 1, { suite_id: "suite_gone" })] });
@@ -470,6 +471,7 @@ describe("Plugins Skills tab: the Evals card", () => {
     suiteView = { suite: SUITE, cases: CASES };
     answer = { status: 200, body: {} };
     writes = [];
+    starterOff = null;
     stubPlugins();
   });
 
@@ -599,6 +601,83 @@ describe("Plugins Skills tab: the Evals card", () => {
     await within(dialog()).findByText(/nothing written/, undefined, SLOW);
     expect(urls.filter((u) => u.endsWith("/suite")).length).toBe(reads);
     expect(within(card).getAllByRole("row")).toHaveLength(CASES.length + 1);
+  });
+});
+
+// Draft starter cases (design 07-self-improvement): beside Add test set on a skill with no cases; its Dialog drafts with
+// starter.draft (nothing saved), lists the drafts and accepts the whole set in one starter.accept.
+describe("Plugins Skills tab: Draft starter cases", () => {
+  const rubric = (criterion: string) => ({ kind: "rubric", criterion, anchors: { 1: "a", 2: "b", 3: "c", 4: "d", 5: "e" } });
+  const DRAFTS = [
+    { kind: "edge", title: "Empty plan", input: "Review this plan: (empty)", expected: { checks: [rubric("Asks for the plan")] } },
+    { kind: "refuse", title: "Not a plan", input: "Write my essay", expected: { checks: [rubric("Declines politely")] } },
+    { kind: "typical", title: "Short plan", input: "Review: ship it", expected: { checks: [rubric("Names a risk")] } },
+  ];
+
+  beforeEach(() => {
+    suiteView = { suite: null, cases: [] };
+    answer = { status: 200, body: {} };
+    writes = [];
+    starterOff = null;
+    stubPlugins();
+  });
+
+  it("shows Draft starter cases beside Add test set with no test set, and with an empty one; not when there are cases", async () => {
+    const card = await openCard();
+    const draft = await within(card).findByRole("button", { name: "Draft starter cases" }, SLOW);
+    await vi.waitFor(() => expect((draft as HTMLButtonElement).disabled).toBe(false), SLOW);
+    expect(within(card).getByRole("button", { name: "Add test set" })).toBeTruthy();
+    cleanup();
+    suiteView = { suite: SUITE, cases: [] };
+    const empty = await openCard();
+    expect(await within(empty).findByRole("button", { name: "Draft starter cases" }, SLOW)).toBeTruthy();
+    cleanup();
+    suiteView = { suite: SUITE, cases: CASES };
+    const full = await openCard();
+    await within(full).findByRole("table", undefined, SLOW);
+    expect(within(full).queryByRole("button", { name: "Draft starter cases" })).toBeNull();
+  });
+
+  it("drafts in a Dialog that lists the drafts and saves nothing, then accepts the whole set in one op", async () => {
+    const card = await openCard();
+    const draft = await within(card).findByRole("button", { name: "Draft starter cases" }, SLOW);
+    await vi.waitFor(() => expect((draft as HTMLButtonElement).disabled).toBe(false), SLOW);
+    fireEvent.click(draft);
+    expect(writes).toEqual([]);
+    answer = { status: 200, body: { op: "starter.draft", skill: PATH, cases: DRAFTS } };
+    confirmIn("Draft");
+    const list = await within(dialog()).findByRole("list", { name: "Drafted cases" }, SLOW);
+    expect(within(list).getAllByRole("listitem").filter((li) => li.parentElement === list)).toHaveLength(DRAFTS.length);
+    expect(list.textContent).toContain("Edge case");
+    expect(list.textContent).toContain("Should refuse");
+    expect(list.textContent).toContain("Declines politely");
+    expect(writes).toEqual([{ url: "/api/v1/evals/write", token: "tok_evals", body: { op: "starter.draft", skill: PATH } }]);
+    answer = { status: 200, body: { op: "starter.accept", skill: PATH, added: ["a", "b", "c"] } };
+    confirmIn(`Accept ${DRAFTS.length} cases`);
+    await vi.waitFor(() => expect(writes.at(-1)).toMatchObject({ body: { op: "starter.accept", skill: PATH, cases: DRAFTS } }), SLOW);
+    await closed();
+  });
+
+  it("keeps a refused draft's reason in the Dialog and lists nothing", async () => {
+    const card = await openCard();
+    const draft = await within(card).findByRole("button", { name: "Draft starter cases" }, SLOW);
+    await vi.waitFor(() => expect((draft as HTMLButtonElement).disabled).toBe(false), SLOW);
+    fireEvent.click(draft);
+    answer = { status: 409, body: { error: "The set has no edge case, so nothing is shown or saved." } };
+    confirmIn("Draft");
+    await within(dialog()).findByText(/no edge case/, undefined, SLOW);
+    expect(within(dialog()).queryByRole("list", { name: "Drafted cases" })).toBeNull();
+    expect(within(dialog()).getByRole("button", { name: "Draft again" })).toBeTruthy();
+  });
+
+  it("is off with the server's reason in a Notice when it cannot draft; Add test set still works", async () => {
+    starterOff = "No model is set up, so starter cases cannot be drafted. Add test set still works.";
+    const card = await openCard();
+    await within(card).findByText(starterOff, undefined, SLOW);
+    const draft = within(card).getByRole("button", { name: "Draft starter cases" }) as HTMLButtonElement;
+    expect(draft.disabled).toBe(true);
+    expect(draft.title).toBe(starterOff);
+    expect((within(card).getByRole("button", { name: "Add test set" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });
 

@@ -517,7 +517,7 @@ describe("SF_WORKER_INDEX", () => {
     const { item } = await store.createWorkItem(issue(1), system);
     await store.transition({
       id: item.id, expected_version: 1, patch: { change_ref: "7", allowed_paths: ["docs/"] }, actor: system, reason: "x",
-      enqueue: { kind, idempotency_key: kind },
+      enqueue: { kind, idempotency_key: kind, ...(kind === "merge-check" ? { input: { merge_check: { base_ref: "main", branches: [`factory/${item.id}`] } } } : {}) },
     });
     const sandbox = new UpdateSandbox();
     const runner = new FakeRunner({ triage: (): Partial<AgentRunResult> => ({ output: triageSpec }) });
@@ -582,6 +582,21 @@ describe("SF_WORKER_INDEX", () => {
     expect(runner.specs[0]!.env_allowlist).toMatchObject({ SF_TEST_WORKERS: "9" });
   });
 
+  it("a merge-check run claimed among five runs on ten CPUs gets SF_TEST_WORKERS = 5 in its check commands' env; an update run there gets 2", async () => {
+    const check = await poolWith("merge-check", 3, undefined, 10);
+    await check.store.reportWorkerProcess(row("host:7", "host", 2));
+    await check.store.reportWorkerProcess(row("host:8", "host", 2));
+    expect(await check.pool.workers[0]!.tick()).toBe(true);
+    expect((await check.store.listRuns(check.item.id))[0]).toMatchObject({ kind: "merge-check", status: "succeeded" });
+    expect(check.sandbox.testEnvs.length).toBeGreaterThan(0);
+    expect(check.sandbox.testEnvs.every((e) => e.SF_TEST_WORKERS === "5")).toBe(true);
+    const update = await poolWith("update", 3, undefined, 10);
+    await update.store.reportWorkerProcess(row("host:7", "host", 2));
+    await update.store.reportWorkerProcess(row("host:8", "host", 2));
+    expect(await update.pool.workers[0]!.tick()).toBe(true);
+    expect(update.sandbox.testEnvs).toEqual([{ PATH: "/usr/bin", SF_WORKER_INDEX: "0", SF_TEST_WORKERS: "2" }]);
+  });
+
   it("keeps a run's share when another run starts on the host during it", async () => {
     const { pool, runner, store } = await poolWith("triage", 3, undefined, 10);
     let during: Record<string, string> = {};
@@ -599,15 +614,26 @@ describe("SF_WORKER_INDEX", () => {
 
 describe("testWorkerShare", () => {
   it("splits the CPUs over the running runs, rounding down, at most cpus - 1, never below 1", () => {
-    expect(testWorkerShare(10, 1)).toBe(9);
-    expect(testWorkerShare(10, 3)).toBe(3);
-    expect(testWorkerShare(10, 10)).toBe(1);
-    expect(testWorkerShare(4, 10)).toBe(1);
-    expect(testWorkerShare(1, 1)).toBe(1);
+    expect(testWorkerShare(10, 1, "implement")).toBe(9);
+    expect(testWorkerShare(10, 3, "implement")).toBe(3);
+    expect(testWorkerShare(10, 5, "implement")).toBe(2);
+    expect(testWorkerShare(10, 10, "review")).toBe(1);
+    expect(testWorkerShare(4, 10, "update")).toBe(1);
+    expect(testWorkerShare(1, 1, "implement")).toBe(1);
   });
 
   it("treats zero runs as one", () => {
-    expect(testWorkerShare(8, 0)).toBe(7);
+    expect(testWorkerShare(8, 0, "implement")).toBe(7);
+  });
+
+  it("gives a merge-check run at least half the CPUs, rounded up, still at most cpus - 1 and at least 1", () => {
+    expect(testWorkerShare(10, 5, "merge-check")).toBe(5);
+    expect(testWorkerShare(10, 10, "merge-check")).toBe(5);
+    expect(testWorkerShare(9, 5, "merge-check")).toBe(5);
+    expect(testWorkerShare(10, 1, "merge-check")).toBe(9);
+    expect(testWorkerShare(2, 5, "merge-check")).toBe(1);
+    expect(testWorkerShare(2, 1, "merge-check")).toBe(1);
+    expect(testWorkerShare(1, 1, "merge-check")).toBe(1);
   });
 });
 

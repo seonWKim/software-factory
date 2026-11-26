@@ -182,7 +182,7 @@ export class Worker {
     this.holding = run.kind;
     await this.d.awake.hold().catch((err: unknown) => this.awakeFailed("hold", err));
     try {
-      if (this.d.cpus !== undefined) this.testWorkers = testWorkerShare(this.d.cpus, this.d.hostRuns ? await this.d.hostRuns() : 1);
+      if (this.d.cpus !== undefined) this.testWorkers = testWorkerShare(this.d.cpus, this.d.hostRuns ? await this.d.hostRuns() : 1, run.kind);
       await this.execute(run, run.lease.token);
     } finally {
       this.holding = this.testWorkers = null;
