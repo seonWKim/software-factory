@@ -447,6 +447,7 @@ const AUTONOMOUS_SURFACES: Record<ScheduleActionKind, string> = {
   feedback: "schedules",
   improve: "schedules",
   check_page: "schedules",
+  summary: "schedules",
 };
 
 describe("autonomous work is visible", () => {

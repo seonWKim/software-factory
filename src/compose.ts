@@ -11,6 +11,7 @@ import { routineQueue, scheduledAction } from "./core/controller-deps.js";
 import { agentAction } from "./controller/units/schedule/plugins/agent/agent-action.js";
 import { buildAction } from "./controller/units/schedule/plugins/build/build-action.js";
 import { checkPageAction } from "./controller/units/schedule/plugins/check-page/check-page-action.js";
+import { summaryAction } from "./controller/units/schedule/plugins/summary/summary-action.js"; import { NO_OWNER_CHAT, summaryDeps } from "./core/summary.js";
 import { feedbackAction } from "./controller/units/schedule/plugins/feedback/feedback-action.js";
 import { improveAction } from "./controller/units/schedule/plugins/improve/improve-action.js";
 import { dailyTriggerOn, enqueueImprove } from "./core/improver.js";
@@ -265,7 +266,7 @@ export async function build(
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
   // What a fired schedule occurrence runs (design 08-schedules): none unless `plugins.schedule_action` names one; its routes are the schedule unit's action folders.
-  const routes = { build: buildAction, agent: agentAction, feedback: feedbackAction, improve: improveAction((slot) => enqueueImprove({ store, clock }, project.key, { slot })), check_page: checkPageAction(routineQueue(store, project.key)) }, actionCtx = { ...base, store, runner, sandbox, scanner, tools: READ_TOOLS, project: project.key, routes };
+  const routes = { build: buildAction, agent: agentAction, feedback: feedbackAction, improve: improveAction((slot) => enqueueImprove({ store, clock }, project.key, { slot })), check_page: checkPageAction(routineQueue(store, project.key)), summary: summaryAction(summaryDeps({ store, scanner, times: () => settings.values(), post: NO_OWNER_CHAT })) }, actionCtx = { ...base, store, runner, sandbox, scanner, tools: READ_TOOLS, project: project.key, routes };
   const schedule_action = sel.schedule_action === undefined ? undefined : scheduledAction(store, await createPlugin(registry, "schedule_action", sel.schedule_action, actionCtx), new ConsoleLogger(clock, "schedule"), project.key);
   // The pack checks `hooks` names (design §4, issue #494), refused here when bad; its other names are `*.hook.ts`.
   const checks = packChecks(loaded.packs, config.hooks ?? [], { toolHooks: runner.supports_tool_hooks === true });
