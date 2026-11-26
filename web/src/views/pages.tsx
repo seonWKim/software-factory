@@ -46,6 +46,10 @@ import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { Tooltip } from "../components/ui/menu.js";
 import { ChatCard } from "./chat-panel.js";
 import { HostSleeps, sleptMinutes } from "./host-sleeps.js";
+import { ActivityActorsPage } from "./activity/page.js";
+
+/** The Activity page of the autonomous actors (design 09-dashboard-activity): registered here with the other pages. */
+export { ActivityActorsPage };
 
 /** "host slept N min" for a host sleep's gap, on the item timeline. */
 export const sleptText = (gap_ms: number): string => t("host.slept", { min: sleptMinutes(gap_ms) });
