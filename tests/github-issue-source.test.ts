@@ -528,6 +528,8 @@ describe("GitHubIssueSource: /resolve", () => {
       ["github:41", null],
       ["github:42", null],
     ]);
+    // A person's comment command (design 08-permissions): each row records it as a human command.
+    expect(rows.map((r) => r.write_origin)).toEqual(["human_command", "human_command", "human_command"]);
     const lookups = client.calls.filter((c) => /^\/repos\/o\/r\/pulls\/\d+$/.test(c.path)).map((c) => c.path);
     expect(lookups).toEqual(["/repos/o/r/pulls/692", "/repos/o/r/pulls/45"]);
   });

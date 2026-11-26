@@ -46,6 +46,7 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `notify_channels` | controller | runtime | global | free |  | `[]` | Source plugins that also get the owner's notices, e.g. slack; one without notifyOwner gets none. |
 | `outbound.batching` | outbound | review | global | free |  | `{}` | Per destination kind or `*`: batching mode (auto, commit, fixed), debounce, max_wait, max_messages. |
 | `packs.auto_approve_read_only` | worker | review | global | tighten-only |  | `false` | Whether a read-only pack tool with no credential is approved without the owner's approval. |
+| `permission_mode` | controller | runtime | global | tighten-only |  | `"ask_irreversible"` | What a write asks the owner first: every write, only irreversible ones, or none (full). |
 | `phases_auto_approve` | controller | runtime | global | tighten-only |  | `false` | Whether a phase spec of an approved split needs no approval of its own. |
 | `plugins` | runtime | review | global | free |  |  | Which named implementation the factory uses for each interface. |
 | `poll_interval_ms` | inbound | runtime | global | free |  | `30000` | How often the factory polls the forge for new work items and comments. |
