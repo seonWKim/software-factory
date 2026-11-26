@@ -16,6 +16,7 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `broker` | guards | review | global | tighten-only | guard |  | Which tool broker runs the forge actions agents ask for, such as a push. |
 | `calendar` | runtime | runtime | global | free |  | `[]` | Calendar plugins the factory reads, in order, over the calendar key in factory.config.json. |
 | `conflict_hotspot_threshold` | controller | runtime | global | free |  | `3` | Conflicts or held items on one file in 7 days that file a task to reduce conflicts on it. |
+| `coordinator` | controller | runtime | global | free |  | `false` | Whether the coordinator runs its cycle every 15 minutes and acts on the work items. |
 | `deny_paths` | guards | review | global | tighten-only | guard |  | Absolute paths that agent runs may never read. |
 | `dials` | controller | review | global | tighten-only | dial |  | The lowest tier that needs a spec approval; its auto_merge_max_tier stays 0 (the setting decides). |
 | `egress` | guards | review | global | tighten-only | guard |  | Which scanner checks outgoing text and withholds what looks like a secret. |

@@ -227,6 +227,8 @@ export const settings = {
   "key.worker_kinds.help": "Which kinds of runs workers take; the others wait for you to start a session.",
   "key.phases_auto_approve.label": "Approve phases automatically",
   "key.phases_auto_approve.help": "Whether the next phase of a multi-phase item is approved without waiting for you.",
+  "key.coordinator.label": "Coordinator",
+  "key.coordinator.help": "Whether the coordinator checks the work every 15 minutes and merges small local changes up to the auto-merge risk level.",
   "key.hold_policy.label": "Held item policy",
   "key.hold_policy.help": "What the factory does with an item that is held: keep holding, start anyway, or start after a wait.",
   "key.auto_grant_test_paths.label": "Grant test paths automatically",
