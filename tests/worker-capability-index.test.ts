@@ -231,13 +231,13 @@ describe("worker: pack rules, learnings and skills in the agent prompt", () => {
     expect(log.warnings.filter((w) => w.includes("rules and learnings could not be read"))).toHaveLength(3);
   });
 
-  it("text past the cap is dropped with a warning", async () => {
+  it("an entry past the cap is left out whole, with a note and a warning", async () => {
     const log = recording();
     const dir = folder({ "rules/big.md": "x".repeat(9000) });
     const specs = await flow(undefined, { guidance: new PackGuidance([{ layer: "base", dir }]), log });
     for (const s of specs) {
-      expect(s.prompt).toContain("x".repeat(8000));
-      expect(s.prompt).not.toContain("x".repeat(8001));
+      expect(s.prompt).not.toContain("xxxx");
+      expect(s.prompt).toContain("1 more rule or learning entries were left out because of the 8000-character cap.");
     }
     expect(log.warnings.some((w) => w.includes("over their cap"))).toBe(true);
   });
