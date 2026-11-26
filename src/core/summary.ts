@@ -11,28 +11,12 @@ import { FAILED_PHASES, phaseOf } from "./phase.js";
 import type { ScheduleStore } from "./schedule.js";
 import type { Run, Timestamp, WorkItem } from "./types.js";
 
-/** One summary slot (design 08-schedules-actions): the morning or the evening post of a local date. */
-export type SummarySlotName = "morning" | "evening";
-/** The window one summary covers: from the slot before it (`since`) to its own time (`until`), ISO times. */
-export interface SummaryWindow { slot: SummarySlotName; since: string; until: string; exclude_schedule: string }
+/** The window one summary covers (the summary action's SummaryWindow, src/controller/units/schedule/plugins/ports.ts). */
+export interface SummaryWindow { slot: "morning" | "evening"; since: string; until: string; exclude_schedule: string }
 /** A summary's button: the command its line asks for, on its item (null: open the item). */
 export interface SummaryButton { work_item_id: string; label: string; command: string | null }
 /** A summary as built: fixed-wording text and one button per waiting decision and per failure without a retry. */
 export interface SummaryMessage { text: string; buttons: readonly SummaryButton[] }
-
-/**
- * What the summary action (src/controller/units/schedule/plugins/summary/) works through; compose binds it
- * (summaryDeps below). `times` reads both time settings now (each run), `build` the window's summary from the store
- * (null: nothing to report), `scan` the egress scanner's findings (empty: clean), `post` one outbound delivery on the
- * owner's chat, keyed on `key`: a key already stored stores nothing (`created` false). `post` throws while the
- * channel is down.
- */
-export interface SummaryDeps {
-  times(): Promise<{ morning: string; evening: string }>;
-  build(w: SummaryWindow): Promise<SummaryMessage | null>;
-  scan(text: string): Promise<readonly string[]>;
-  post(d: { key: string; text: string; buttons: readonly SummaryButton[] }): Promise<{ created: boolean }>;
-}
 
 /** The most rows of each read, as the dashboard's lists read them. */
 const READ_LIMIT = 200;
@@ -88,14 +72,14 @@ export async function buildSummary(store: SummaryReads, w: SummaryWindow): Promi
 }
 
 /** The owner's chat as the summary posts to it: one outbound delivery keyed `key` (wi_805e builds it); throws while down. */
-export type OwnerChatPost = SummaryDeps["post"];
+export type OwnerChatPost = (d: { key: string; text: string; buttons: readonly SummaryButton[] }) => Promise<{ created: boolean }>;
 /** The post before the owner's chat channel exists: down, so each run stores its summary on its run row and posts nothing. */
 export const NO_OWNER_CHAT: OwnerChatPost = async () => { throw new Error("no owner chat channel is set up yet"); };
 
 /** The summary action's ports: both time settings read now, the store's summary, the egress scan, the owner's chat. */
-export const summaryDeps = (d: { store: SummaryReads; scanner: EgressScanner; times: () => { summary_morning_time: string; summary_evening_time: string }; post: OwnerChatPost }): SummaryDeps => ({
+export const summaryDeps = (d: { store: SummaryReads; scanner: EgressScanner; times: () => { summary_morning_time: string; summary_evening_time: string }; post: OwnerChatPost }) => ({
   times: async () => { const v = d.times(); return { morning: v.summary_morning_time, evening: v.summary_evening_time }; },
-  build: (w) => buildSummary(d.store, w),
-  scan: async (text) => { const r = await d.scanner.scan("comment", text); return r.clean ? [] : r.findings.map((f) => f.rule); },
+  build: (w: SummaryWindow) => buildSummary(d.store, w),
+  scan: async (text: string) => { const r = await d.scanner.scan("comment", text); return r.clean ? [] : r.findings.map((f) => f.rule); },
   post: d.post,
 });
