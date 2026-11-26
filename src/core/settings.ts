@@ -348,8 +348,7 @@ export interface SettableValues {
   stall_ms: number; probe_interval_ms: number; auth_pause_ms: number; conflict_hotspot_threshold: number;
   max_coordination_cost: number; hotspot_weight: number; mechanical_weight: number; tool_grants: ToolGrants; // run kind → granted tools (design 08-settings)
   intake_label: string | null; // null: no built-in default, and neither the file nor an override says
-  worker_kinds: RunKind[]; agent_stop_check_ms: number; // the run kinds a worker claims (design 05-interactive-sessions); the gate Stop check's limit (04-pre-push-gates)
-  coordinator: boolean; // the coordinator's switch, read at each tick (design 05-coordinator)
+  worker_kinds: RunKind[]; agent_stop_check_ms: number; coordinator: boolean; // the run kinds a worker claims (design 05-interactive-sessions); the gate Stop check's limit (04-pre-push-gates); the coordinator's switch (05-coordinator)
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it (a key with a setting file read there reads it from that file). */
@@ -379,8 +378,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   auth_pause_ms: 1_800_000, // shown as the default; with no override and no file value it follows the effective retry_max_ms
   max_coordination_cost: DEFAULT_COORDINATION.max_cost, hotspot_weight: DEFAULT_COORDINATION.hotspot_weight, mechanical_weight: DEFAULT_COORDINATION.mechanical_weight, tool_grants: {},
   intake_label: null, // no built-in default: the config file must say, and its value applies
-  worker_kinds: [...WORKER_KINDS], agent_stop_check_ms: AGENT_STOP_CHECK_MS_DEFAULT,
-  coordinator: false,
+  worker_kinds: [...WORKER_KINDS], agent_stop_check_ms: AGENT_STOP_CHECK_MS_DEFAULT, coordinator: false,
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";

@@ -21,6 +21,7 @@ import type { Sandbox } from "../interfaces/sandbox.js";
 import type { SourceAdapter } from "../interfaces/source-adapter.js";
 import type { TacitLedger } from "../interfaces/tacit-ledger.js";
 import type { ChildRestart } from "../interfaces/updater.js";
+import type { CoordinatorPorts, TickResult } from "../coordinator/cycle.js";
 
 /**
  * The forge's core rate limit as one process sees it (design §5 Sources, call budget): the forge's limit,
@@ -161,6 +162,8 @@ export interface ControllerDeps {
    * until an action is selected.
    */
   schedule_action?: ScheduledAction;
+  /** The coordinator cycle (design 05-coordinator), bound by the coordinator unit to its ports. Absent: no cycle runs. */
+  coordinator?: (ports: CoordinatorPorts) => { tick(): Promise<TickResult> };
 }
 
 /** A ScheduleAction bound to the store's claim pass: what the schedule unit calls with each tick's time. */
