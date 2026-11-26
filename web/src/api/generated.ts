@@ -11,6 +11,11 @@ function query(input: Record<string, unknown>): string {
   return s === "" ? "" : `?${s}`;
 }
 
+export type ActivityActorsInput = { [key: string]: never };
+export type ActivityActorsOutput = { "as_of": string; "retention_days": number; "actors": Array<{ "actor_id": string; "name": string; "about": string; "state": "idle" | "running" | "attention"; "now": string; "last_at": string | null; "next_run_at": string | null; "transcript": { "kind": "transcript" | "log"; "href": string | null; "text": string } | null; "actions": Array<{ "seq": number; "kind": string; "subject": string; "outcome": string; "reason": string; "at": string; "link": { "kind": "transcript" | "log"; "href": string | null; "text": string } | null }> }>; "alerts": Array<{ "alert_id": string; "text": string; "created_at": string }> };
+/** Every autonomous actor with its name, what it does now, its last and next run and its recent actions (outcome, reason, transcript or log link; none older than the retention days), and the open factory alerts (clear one with POST /api/v1/alarms/dismiss). (GET /api/v1/activity, permission read) */
+export const activityActors = (input: ActivityActorsInput): Promise<ActivityActorsOutput> => getJson<ActivityActorsOutput>("/api/v1/activity" + query(input));
+
 export type ChatSendInput = { "session_id"?: string; "text": string };
 export type ChatSendOutput = { "turn_id": string; "session_id": string; "outcome": "answered" | "refused" | "failed"; "reason"?: string; "reply"?: string };
 /** Send the owner's message to the chat and run one turn with the Ask model; no session_id starts a new session. A withheld turn answers no reply. (POST /api/v1/chat/send, permission owner) */

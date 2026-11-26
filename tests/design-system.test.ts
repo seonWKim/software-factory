@@ -3,7 +3,9 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+import { BACKGROUND_JOBS } from "../src/controller/background-jobs.js";
 import { SCHEDULE_ACTION_KINDS, type ScheduleActionKind } from "../src/core/schedule.js";
+import { ACTOR_WORDS } from "../src/ui/activity-api.js";
 import { PAGES } from "../web/src/pages.js";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -575,5 +577,23 @@ describe("autonomous work is visible", () => {
     for (const map of ["ACTION_TEXT", "ACTION_ABOUT"]) {
       expect(keysOf(map), `web/src/views/schedules/labels.ts ${map} names every schedule action kind`).toEqual(expect.arrayContaining([...SCHEDULE_ACTION_KINDS]));
     }
+  });
+});
+
+// The registered background jobs (src/controller/background-jobs.ts) each have an Activity mapping: the actor's name,
+// what it does and what it says while idle, in src/ui/activity-api.ts ACTOR_WORDS (design 09-dashboard-activity).
+const jobsWithoutActivity = (kinds: readonly string[], words: Readonly<Record<string, { name: string; about: string; idle: string } | undefined>>): string[] =>
+  kinds.filter((k) => ![words[k]?.name, words[k]?.about, words[k]?.idle].every((w) => typeof w === "string" && w.trim() !== ""));
+
+describe("background jobs are visible on the Activity page", () => {
+  it("every registered background job has an Activity mapping", () => {
+    expect(jobsWithoutActivity(BACKGROUND_JOBS.map((j) => j.kind), ACTOR_WORDS)).toEqual([]);
+    expect(Object.keys(ACTOR_WORDS).sort()).toEqual(BACKGROUND_JOBS.map((j) => j.kind).sort());
+  });
+
+  it("self-check: a registered job with no Activity mapping fails", () => {
+    const kinds = [...BACKGROUND_JOBS.map((j) => j.kind), "new_job"];
+    expect(jobsWithoutActivity(kinds, ACTOR_WORDS)).toEqual(["new_job"]);
+    expect(jobsWithoutActivity(["x"], { x: { name: "", about: "a", idle: "i" } })).toEqual(["x"]);
   });
 });
