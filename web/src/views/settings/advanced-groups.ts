@@ -32,7 +32,7 @@ export const GROUP_KEYS: Readonly<Record<AdvancedGroupId, readonly string[]>> = 
   ],
   retries: ["max_attempts", "max_loops", "max_restart", "auth_pause_ms", "retry_base_ms", "retry_max_ms"],
   models: ["models", "model_by", "message_style"],
-  notices: ["notice_kinds", "quiet_hours", "review_time", "notify_channels", "integrations", "calendar"],
+  notices: ["notice_kinds", "quiet_hours", "review_time", "summary_morning_time", "summary_evening_time", "notify_channels", "integrations", "calendar"],
   developers: ["lease_ms", "heartbeat_ms", "hotspot_weight", "mechanical_weight", "max_coordination_cost", "tick_ms", "poll_interval_ms"],
 };
 
