@@ -1,7 +1,7 @@
 import type { WorkItem, WorkItemId } from "./types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { MERGE_COMMAND } from "./local-merge.js";
-import { CLOSED_REFUSAL, approveRefusal, settleHeldSkillVersion, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText } from "./commands.js";
+import { CLOSED_REFUSAL, answerCoordinatorLimit, approveRefusal, settleHeldSkillVersion, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText } from "./commands.js";
 import type { NoteAnswers } from "./request-transition.js";
 import { verdictRefusal } from "./verdict.js";
 import { CONFIRM_COMMAND } from "./interpret.js";
@@ -12,8 +12,13 @@ import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask, dependsO
 import { type DraftTerminal, runScheduleWords } from "./schedule-draft.js";
 import { ANONYMOUS_USER, CLI_KEY_PREFIX, type CliIdentity, DEFAULT_CLI_NAME } from "./local-cli-identity.js";
 import { type CliAction as ParsedAction, parseLocalCliArgs } from "./local-cli-parse.js";
-/** Every action runLocalCli runs: the parser's, and a bare `approve` or `reject`, which settles the newest held skill version (parseLocalCliArgs in local-cli.ts). */
-export type CliAction = ParsedAction | { action: "settle"; command: "approve" | "reject" };
+/**
+ * Every action runLocalCli runs: the parser's, and a bare `approve` (`value`: a dollar amount) or `reject`, which answers
+ * the open coordinator limit question, else settles the newest held skill version (parseLocalCliArgs in local-cli.ts).
+ */
+export type CliAction = ParsedAction | { action: "settle"; command: "approve" | "reject"; value?: string };
+/** A dollar amount as `approve <usd>` takes it (10, 12.50, $10). */
+export const USD = /^\$?\d+(\.\d+)?$/;
 /** `task create`'s last line: what happens to the new item next. */ export const CREATE_NEXT_STEP = "triage queued; you'll be asked to approve the spec";
 const UI_PORT = 4310; // `ui.port` unset: compose.ts DEFAULT_UI_PORT, which core cannot import
 
@@ -38,7 +43,7 @@ export interface LocalCliDeps extends DraftTerminal { // DraftTerminal: `schedul
     | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
     | "createProject" | "listProjects" | "renameProject" | "archiveProject" | "restoreProject" | "deleteProject" | "getProjectBySlug"
     | "addTaskToProject" | "removeTaskFromProject" | "moveTaskToProject" | "listTaskProjectSlugs" | "listSchedules" | "listScheduleRuns" | "addSchedule" | "updateSchedule" | "deleteSchedule" | "scheduleNow"
-    | "listHeldSkillVersionGates" | "settleSkillVersionGate"
+    | "listHeldSkillVersionGates" | "settleSkillVersionGate" | "listAlerts" | "dismissAlert" | "setSettingOverride"
   >;
   /** Who every command acts as (`cliIdentity`). */
   identity: CliIdentity;
@@ -231,6 +236,19 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       return { code: 0, lines: [`stored \`${cli} confirm ${a.proposal}\` as ${user} (command ${command.seq}); the controller applies ${n} on its next poll`] };
     }
     case "settle": {
+      // The open coordinator limit question first (design 06-spend); the answer claims the owner and is refused for anyone else.
+      const limit = await answerCoordinatorLimit(d.store, { command: a.command, value: a.value ?? null, by: user, isOwner: async () => (await claim()) === user });
+      if (limit !== null) {
+        if ("refused" in limit) return fail(limit.refused);
+        return { code: 0, lines: [limit.set_usd === null
+          ? "rejected: spend.coordinator_daily_usd stays as it is; coordinator cycles stay stopped until the UTC day ends"
+          : `approved: spend.coordinator_daily_usd is now $${limit.set_usd.toFixed(2)}; coordinator cycles run again once today's coordinator spend is below it`] };
+      }
+      // `approve <usd>` with no question open: the item command it reads as.
+      if (a.value !== undefined) {
+        const p = parseLocalCliArgs(a.command, [a.value]);
+        return "error" in p ? { code: 1, lines: p.error.split("\n") } : runLocalCli(d, p);
+      }
       // No held version: the parser's refusal of a bare item command, word for word, as before (design 07-self-improvement).
       const r = await settleHeldSkillVersion(d.store, a.command, user);
       if (r === null) { const p = parseLocalCliArgs(a.command, []); return { code: 1, lines: "error" in p ? p.error.split("\n") : [] }; }
