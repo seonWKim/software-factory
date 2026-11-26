@@ -71,6 +71,7 @@ import { brokerGuard, skillImproveWiring } from "./skill-evals.js";
 import { holdSkillDraft, promoteSkillDraft, rejectSkillDraft, withHandOff } from "./core/skill-improve.js";
 import { Cleaner, type CleanupStore, agentTempRoots, cleanupConfig, hostProcesses } from "./cleanup/index.js";
 import { RUN_FOLDER } from "./setup-paths.js";
+import { randomUUID } from "node:crypto"; import { CHAT_EVAL_QUESTIONS, chatEvalDaily, chatEvalSchedule } from "./core/chat-eval.js"; import { readFeatureMap } from "./api/feature-map.js"; import { REGISTRY } from "./api/index.js";
 
 export { CODE_ROOT_ENV, CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 
@@ -191,7 +192,6 @@ export interface Built {
   close(): Promise<void>;
 }
 
-
 export async function build(
   loaded: Loaded,
   opts: { clock?: Clock; extraScanValues?: string[]; workerIndexBase?: number; repoLookup?: RepoLookup; signal?: AbortSignal } = {},
@@ -311,7 +311,7 @@ export async function build(
     ...(loaded.config.local_only === true ? {} : { github_budget: () => github.status(), refresh_forge_budget: () => github.refreshSharedBudget() }),
     // The red-main check after an automatic merge (design 03-risk) runs the checks with the worker's base env.
     check_env: baseEnv(),
-    cleanup: await hostCleaner(loaded, store, clock), // closed items' run folders, branches, processes and agent temp folders (design 08-cleanup)
+    cleanup: await hostCleaner(loaded, store, clock), ...(chatEvalDaily(loaded.file) && { chat_eval: chatEvalSchedule(store, { llm, judge: llm, read: (p) => readFeatureMap(REGISTRY, p), scanner, clock, newId: randomUUID }, () => readFile(join(loaded.codeRoot, CHAT_EVAL_QUESTIONS), "utf8")) }), // closed items' leftovers (design 08-cleanup); the daily chat eval run with chat_eval.schedule "daily" (design 04-chat-agent)
   });
 
   const id_prefix = `${hostname()}:${process.pid}`;
