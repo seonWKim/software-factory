@@ -1,8 +1,8 @@
 import { OwnerAuth } from "../src/core/authorize.js";
-// Top-level Slack mentions (design 05-sources and 04-gate-commands, "a mention creates an item only on a press"): a
-// mention from an account that may approve is classified by one model call and answered in its own thread; it never
-// becomes an item by itself. A chat message gets one answer; a request, an unsure or unread message gets a short
-// reply with a "Make this a task" button whose press takes the message in as the presser. End to end on a fake
+// Top-level Slack mentions (design 05-sources and 04-chat-commands, "a top-level request creates one item"): a
+// mention from an account that may approve is classified by one model call and answered in its own thread. A request
+// becomes its item at once, with one reply naming it (design 04-chat-commands); a chat message gets one answer; an
+// unsure or unread message gets a short reply with a "Make this a task" button whose press takes the message in as the presser. End to end on a fake
 // Slack, through the real listener and inbox.
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -121,23 +121,25 @@ describe("chat intake: top-level Slack mentions", () => {
     expect(FakeSlackApi.buttons(thread[0]!)).toEqual([]);
   });
 
-  it("a request creates no item: one reply, the model's sentences then the Make this a task button", async () => {
+  it("a request creates its item at once: one reply naming it by ID and title, with no Make this a task button", async () => {
     const said = "I can make this a task: send a Slack message when a task finishes or needs you.";
     const f = await setup(new ScriptedLLM([{ kind: "request", text: said }]));
     await deliver(f, eventEnvelope(mention(TS, "report when tasks finish or need my decision")));
     expect(f.llm.requests).toHaveLength(1);
-    const reply = await onlyReply(f);
-    expect(reply.text.startsWith(said)).toBe(true);
-    expect(reply.text).not.toContain("factory:make-task");
-    expect(reply.buttons).toEqual([ACTION_MAKE_TASK]);
-    expect(f.api.thread(TS)[0]!.blocks).toContainEqual({
-      type: "actions", elements: [expect.objectContaining({ action_id: ACTION_MAKE_TASK, value: "report when tasks finish or need my decision" })],
-    });
+    const [item, ...more] = await items(f);
+    expect(more).toEqual([]);
+    expect(item!.source.id).toBe(SOURCE_ID);
+    expect(item!.requester_id).toBe("github:1");
+    const [reply, ...rest] = replies(f);
+    expect(rest).toEqual([]);
+    expect(reply!.text).toBe(`Task created: \`${item!.id}\` report when tasks finish or need my decision`);
+    expect(FakeSlackApi.buttons(reply!)).toEqual([]);
   });
 
   it("a press of Make this a task creates exactly one item and one 'Task created' line; a second press changes nothing", async () => {
-    const f = await setup(new ScriptedLLM([{ kind: "request", text: "I can make this a task: a Today view." }]));
+    const f = await setup(new ScriptedLLM([{ kind: "unsure", text: "I can't tell whether you want a Today view." }]));
     await deliver(f, eventEnvelope(mention(TS, "build a Today view for tasks")));
+    expect(await items(f)).toEqual([]);
     await deliver(f, press(TS, ACTION_MAKE_TASK, "build a Today view for tasks"));
     const all = await items(f);
     expect(all).toHaveLength(1);
@@ -252,13 +254,16 @@ describe("chat intake: top-level Slack mentions", () => {
     expect(reply.buttons).toEqual([ACTION_MAKE_TASK]);
   });
 
-  it("a redelivered request posts no second reply and creates no item", async () => {
+  it("a redelivered request creates no second item and posts no second reply", async () => {
     const f = await setup(new ScriptedLLM([{ kind: "request", text: "I can make this a task: a Today view." }]));
     await deliver(f, eventEnvelope(mention(TS, "build a Today view for tasks"), "Ev0REQ0001"));
     await deliver(f, eventEnvelope(mention(TS, "build a Today view for tasks"), "Ev0REQ0002"));
-    expect(f.api.calls.filter((c) => c.method === "postMessage")).toHaveLength(1);
-    expect(await f.store.getPostedComment(SOURCE_ID, `<!-- factory:chat-answer:${SOURCE_ID} -->`, "")).toMatchObject({ comment_id: f.api.thread(TS)[0]!.ts });
-    expect(await items(f)).toEqual([]);
+    const [item, ...more] = await items(f);
+    expect(more).toEqual([]);
+    expect(replies(f).map((m) => m.text)).toEqual([`Task created: \`${item!.id}\` build a Today view for tasks`]);
+    expect(await f.store.getPostedComment(SOURCE_ID, `<!-- factory:task-created:${SOURCE_ID} -->`, "")).toMatchObject({ comment_id: replies(f)[0]!.ts });
+    // The redelivery finds the item: no second model call.
+    expect(f.llm.requests).toHaveLength(1);
   });
 
   it("a redelivered message posts no second reply: the reply is keyed on the message id", async () => {
