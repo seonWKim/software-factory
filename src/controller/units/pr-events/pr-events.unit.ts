@@ -4,7 +4,7 @@
 import { prNumber } from "../../../core/change-ref.js";
 import { errorText } from "../../../core/log.js";
 import { SKIP_LABEL, floorTier, workItemIdFromBranch } from "../../../core/policy.js";
-import { type Actor, type SourceRef, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
+import { type Actor, type SourceRef, type StateChangeDetail, type UnreviewedMergeId, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import { prMergeOutcome, type ActionRow } from "../../../outbound/index.js";
 import { SYSTEM, updateKey, awaitingMerge } from "../support.js";
@@ -17,6 +17,10 @@ type PrFinishedEvent = Extract<ForgeEvent, { kind: "change_merged" | "change_clo
 const PR_SYNC: Actor = { kind: "system", id: "system:pr-sync" };
 /** A sender's identity on a source (provider and subject), resolved to a user by the auth unit. */
 type Identity = Extract<ControllerEvent, { kind: "spec_approved" }>["approver"];
+/** Unreviewed merges given a title per pass (fillMergeTitles), so a backlog costs at most this many forge reads a poll. */
+export const TITLE_FILLS = 20;
+/** How long a merge that got no title (a deleted PR, a failed read) is left alone by this process. */
+export const MISS_RETRY_MS = 24 * 60 * 60 * 1000;
 
 /** The forge's PR events: merged or closed, opened (adopt, record a pushed head), unmergeable (an update run). */
 export class PrEventsUnit {
@@ -220,6 +224,39 @@ export class PrEventsUnit {
     });
     if (created) {
       this.c.k.d.log.warn("unreviewed merge", { change_ref: e.change_ref, merge_sha: e.merge_sha, user_id: merger?.user_id ?? null, fork: e.fork ?? false });
+    }
+  }
+
+  /** Unreviewed merges that got no title, with when they may be asked about again: a cache of this process only. */
+  private readonly titleMisses = new Map<UnreviewedMergeId, number>();
+
+  /**
+   * The title backfill of unreviewed merges recorded with none (design 09-dashboard-tasks-needs, 2026-11-26), after
+   * each poll: at most TITLE_FILLS of this project's untitled rows, newest first, take the title of the work item with
+   * their change_ref, else one read of the PR's title when the selected forge has one (GitHub; not with no forge or
+   * the local forge). A row that gets neither is left alone for MISS_RETRY_MS; a failed read also ends the pass, so a
+   * rate limit costs one read. The page never waits on this: it shows what is stored.
+   */
+  async fillMergeTitles(): Promise<void> {
+    const { d, forge } = this.c.k;
+    const project = this.c.k.project();
+    const now = this.c.k.nowMs();
+    for (const [id, until] of this.titleMisses) if (until <= now) this.titleMisses.delete(id);
+    const rows = await d.store.listUntitledUnreviewedMerges(project, TITLE_FILLS + this.titleMisses.size);
+    for (const m of rows.filter((r) => !this.titleMisses.has(r.id)).slice(0, TITLE_FILLS)) {
+      let title = (await d.store.getWorkItemByPr(project, m.change_ref))?.title || null;
+      const pr = prNumber(m);
+      let failed = false;
+      if (!title && forge?.prTitle && pr !== null) {
+        title = await forge.prTitle(pr).catch((err: unknown) => {
+          d.log.warn("merged PR title not read", { change_ref: m.change_ref, error: errorText(err) });
+          failed = true;
+          return null;
+        });
+      }
+      if (title) await d.store.setUnreviewedMergeTitle(m.id, title);
+      else this.titleMisses.set(m.id, now + MISS_RETRY_MS);
+      if (failed) return;
     }
   }
 

@@ -3,7 +3,7 @@ import type {
   Actor, BudgetCheckpoint, BudgetCheckpointId, BudgetOutcome, ClaimDecision, CloseReason, DependencyState, FiledPattern,
   FiledPatternId, Handoff, HostSleep, ImproveReport, ImproveReportId, Run, RunAttempt, RunAttemptStatus, RunId, RunKind, RunOutcome,
   RunInput, RunStatus, SessionRecord, SourceRef, SourceType, Stage, StandingGate, StandingProposal, StandingProposalId, StandingRule, StateChange,
-  StateChangeDetail, StateChangeId, Tier, Timestamp, UnreviewedMerge, UnreviewedMergeId, UserId, Verdict, VerdictId, VerdictSeverity,
+  StateChangeDetail, StateChangeId, Tier, Timestamp, UnreviewedMergeId, UserId, Verdict, VerdictId, VerdictSeverity,
   WorkItem, WorkItemId, WorkItemPatch, ClaimPauseName, RunResume, WorkerId, WorkerPause,
 } from "../../../core/types.js";
 import { RECURRING_FAILURE, outcomeTokens } from "../../../core/types.js";
@@ -82,7 +82,7 @@ import { countLegacyProjectRows, legacyRowsMessage } from "../project-keys.js";
 import { changeAssignments, changeFields } from "./change-fields.js";
 import {
   diffPatch, newId, newWorkItem, rowToBudgetCheckpoint, rowToRun,
-  rowToRunAttempt, rowToStateChange, rowToUnreviewedMerge, rowToVerdict, rowToWorkItem, workItemInsert,
+  rowToRunAttempt, rowToStateChange, rowToVerdict, rowToWorkItem, workItemInsert,
 } from "./rows.js";
 import * as filed from "./filed-patterns.js";
 import * as settingsSql from "./settings.js";
@@ -106,6 +106,7 @@ import * as sessions from "./sessions.js";
 import * as improve from "./improve-reports.js";
 import * as deps from "./dependencies.js";
 import * as prHeads from "./pr-heads.js";
+import * as merges from "./unreviewed-merges.js";
 import * as intake from "./intake.js";
 import * as links from "./identity-links.js";
 import * as sync from "./github-sync.js";
@@ -1245,30 +1246,12 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
   appendHandoff(input: Omit<Handoff, "id" | "at">, token: number) { return prHeads.appendHandoff(this.db, this.time, input, token); }
   listHandoffs(id: WorkItemId) { return prHeads.listHandoffs(this.db, id); }
 
-  // Unreviewed merges
-
-  async recordUnreviewedMerge(input: NewUnreviewedMerge): Promise<{ merge: UnreviewedMerge; created: boolean }> {
-    assertProjectKey(input.project);
-    return this.db.transaction(async (tx) => {
-      const created = await this.insertOnce(
-        tx,
-        "INSERT INTO controller_unreviewed_merges (id, project, change_ref, merge_sha, merger_id, at, title) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [newId("um") as UnreviewedMergeId, input.project, input.change_ref, input.merge_sha, input.merger_id, this.now(), input.title ?? null],
-      );
-      const [row] = await tx.all("SELECT * FROM controller_unreviewed_merges WHERE project = ? AND change_ref = ?", [input.project, input.change_ref]);
-      return { merge: rowToUnreviewedMerge(row!), created };
-    });
-  }
-
-  async listUnreviewedMerges(limit: number): Promise<UnreviewedMerge[]> {
-    const rows = await this.db.all(`SELECT * FROM controller_unreviewed_merges ORDER BY at DESC, ${this.db.dialect.seq} DESC LIMIT ?`, [limit]);
-    return rows.map(rowToUnreviewedMerge);
-  }
-
-  async countUnreviewedMergesSince(since: Timestamp): Promise<number> {
-    const [row] = await this.db.all("SELECT COUNT(*) AS n FROM controller_unreviewed_merges WHERE at >= ?", [since]);
-    return Number(row!.n);
-  }
+  // Unreviewed merges: unreviewed-merges.ts
+  async recordUnreviewedMerge(input: NewUnreviewedMerge) { assertProjectKey(input.project); return merges.recordUnreviewedMerge(this.db, this.now(), input); }
+  listUnreviewedMerges(limit: number) { return merges.listUnreviewedMerges(this.db, limit); }
+  countUnreviewedMergesSince(since: Timestamp) { return merges.countUnreviewedMergesSince(this.db, since); }
+  listUntitledUnreviewedMerges(project: string, limit: number) { return merges.listUntitledUnreviewedMerges(this.db, project, limit); }
+  setUnreviewedMergeTitle(id: UnreviewedMergeId, title: string) { return merges.setUnreviewedMergeTitle(this.db, id, title); }
 
   // Cursors and stream intake: intake.ts
   getCursor(name: string) { return intake.getCursor(this.db, name); }

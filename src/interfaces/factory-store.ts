@@ -5,7 +5,7 @@ import type {
   Actor, BlockedOn, BudgetAnswer, BudgetCheckpoint, BudgetCheckpointId, ClaimDecision, ClaimPauseName, DependencyEdge, DependencyState, Tier, Handoff,
   FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, Run, RunAttempt, RunId, RunInput, RunKind, RunOutcome, RunResume,
   RunStatus, SessionFinish, SourceRef, SourceType, StandingGate, StandingProposal, StandingRule, StateChange, StateChangeDetail, Stage, Timestamp,
-  UnreviewedMerge, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId, WorkItemPatch, WorkerId, WorkerPause } from "../core/types.js";
+  UnreviewedMerge, UnreviewedMergeId, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId, WorkItemPatch, WorkerId, WorkerPause } from "../core/types.js";
 import type { AuthAction, AuthResource, LinkedAccount } from "./auth-provider.js";
 import type { SourceEvent } from "./source-adapter.js";
 import type { StatsRecord } from "../core/stats.js";
@@ -84,13 +84,7 @@ export type RecordPrHeadResult =
   | { ok: false; reason: "not_found" }
   /** last_head_sha is no longer `expected_head` (another poll or a factory push recorded first). Nothing written. */
   | { ok: false; reason: "head_moved"; current: WorkItem };
-export interface NewUnreviewedMerge {
-  project: string;
-  change_ref: string;
-  merge_sha: string;
-  merger_id: UserId | null;
-  title?: string | null;
-}
+export interface NewUnreviewedMerge { project: string; change_ref: string; merge_sha: string; merger_id: UserId | null; title?: string | null }
 
 export interface NewRun {
   work_item_id: WorkItemId;
@@ -669,10 +663,12 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
 
   /** Idempotent on (project, change_ref): a second call returns the first row with created false. */
   recordUnreviewedMerge(input: NewUnreviewedMerge): Promise<{ merge: UnreviewedMerge; created: boolean }>;
-  /** Newest first. Read-only. */
-  listUnreviewedMerges(limit: number): Promise<UnreviewedMerge[]>;
-  /** How many rows were recorded at or after `since`. Read-only. */
-  countUnreviewedMergesSince(since: Timestamp): Promise<number>;
+  listUnreviewedMerges(limit: number): Promise<UnreviewedMerge[]>; // newest first, read-only
+  countUnreviewedMergesSince(since: Timestamp): Promise<number>; // rows recorded at or after `since`, read-only
+  /** `project`'s rows with no title, newest first (the title backfill, design 09-dashboard-tasks-needs). Read-only. */
+  listUntitledUnreviewedMerges(project: string, limit: number): Promise<UnreviewedMerge[]>;
+  /** Sets a row's title only while it has none. */
+  setUnreviewedMergeTitle(id: UnreviewedMergeId, title: string): Promise<void>;
 
   // Handoffs
 

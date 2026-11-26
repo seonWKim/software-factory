@@ -257,6 +257,7 @@ export class ControllerRole implements Decisions {
     const r = await this.router();
     await this.kernel.guard("sync", () => r.unit("sync").syncStep());
     await r.unit("closes").afterPoll();
+    await this.kernel.guard("merge titles", () => r.unit("pr-events").fillMergeTitles());
     await this.outboxStep();
   }
 
