@@ -3,6 +3,10 @@
 // tests/data-table-docs.test.ts fails on a table with none, or a line for a table or column that does not exist.
 
 export const TABLE_DOCS: Readonly<Record<string, string>> = {
+  controller_activity: "One row per action the factory took on its own (a lease expiry, retention, cleanup, auto-grant, schedule run, restart or migration), with its reason; kept 30 days.",
+  "controller_activity.actor_id": "The background job's system actor ID (src/controller/background-jobs.ts), never a display name.",
+  "controller_activity.kind": "The job's Activity kind: lease_expiry, retention, cleanup, auto_grant, schedule_run, restart or migration.",
+  "controller_activity.ref": "Where to read more: a run's transcript path, a schedule's run list or a log:<component>:<message> reference; empty when none.",
   controller_alert_patterns: "When each alarm pattern last alerted, so a repeat inside its quiet window stays silent.",
   controller_alerts: "Stored alarms (failure bursts, spend budgets and others) that show in Needs you.",
   controller_attachments: "Images and links the owner attached to a New or in-triage item, for its triage run; an image's bytes are base64 in data.",
@@ -45,6 +49,8 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   "controller_schedule_suggestions.state": "pending, accepted, dismissed or snoozed; a snooze reads as pending once snoozed_until passes.",
   controller_schedule_runs: "Each claimed occurrence of a schedule: the slot it was due for, and whether it fired, was refused or was skipped.",
   "controller_schedule_runs.occurrence_at": "The slot the occurrence was due for, not when it was claimed; one row per schedule and slot.",
+  "controller_schedule_runs.reason": "Why the claim came out as it did (due, still running, skipped while busy, held); empty on runs from before 2026-11-26.",
+  "controller_schedule_runs.ref": "Where to read the run: its schedule's run list with the recorded output; empty on runs from before 2026-11-26.",
   "controller_schedule_runs.queued_implement_runs": "How many implement runs were queued when the occurrence was skipped; empty for the other outcomes.",
   controller_schedules: "Schedules: a cadence in a time zone, when each is next due, and since when it runs.",
   "controller_schedules.action_kind": "What a fired occurrence does: build, agent, feedback or check_page (Check a page); factory schedule add and edit write check_page, the dashboard's schedule list leaves it out.",

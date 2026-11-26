@@ -340,54 +340,111 @@ const modeStep: SetupStep<GuidedState> = {
   },
 };
 
-/** The schedule setup adds when `improver.daily_trigger` is off (design 08-schedules): it owns the daily improve run. */
-export const IMPROVE_SCHEDULE = { id: "improve-daily", title: "Daily improve run", cadence: { kind: "daily", spec: "09:00" } } as const;
+type ScheduleInput = Parameters<typeof addSchedule>[1];
 
-export interface ImproveScheduleDeps {
+/** A schedule only setup adds (design 08-schedules-actions): its ID, title, action and cadence. */
+export interface SetupSchedule {
+  id: string;
+  title: string;
+  action: NonNullable<ScheduleInput["action"]>;
+  cadence: ScheduleInput["cadence"];
+  /** The cadence in words, for the line that says it was added. */
+  when: string;
+}
+
+/** The schedule setup adds when `improver.daily_trigger` is off (design 08-schedules): it owns the daily improve run. */
+export const IMPROVE_SCHEDULE: SetupSchedule = {
+  id: "improve-daily", title: "Daily improve run", action: { kind: "improve", settings: {} }, cadence: { kind: "daily", spec: "09:00" }, when: "daily at 09:00",
+};
+
+/**
+ * The two summary schedules (design 08-schedules-actions): each fires every 15 minutes, and the summary action posts
+ * only for the latest slot at or before its time, so a changed `summary_morning_time` or `summary_evening_time` still
+ * moves the next post.
+ */
+export const SUMMARY_SCHEDULES: readonly SetupSchedule[] = (["morning", "evening"] as const).map((part) => ({
+  id: `summary-${part}`, title: `${part[0]!.toUpperCase()}${part.slice(1)} summary`, action: { kind: "summary", settings: {} },
+  cadence: { kind: "interval", spec: "15" }, when: "every 15 minutes",
+}));
+
+export interface SetupScheduleDeps {
   store: Pick<FactoryStore, "listSchedules" | "addSchedule" | "getOwner">;
-  config: Pick<Loaded["config"], "improver">;
   plugins: Pick<Loaded["plugins"], "schedule_action">;
-  /** The machine's IANA zone: the schedule's 09:00 is its wall clock. */
+  /** The machine's IANA zone: the schedule's wall clock. */
   zone: string;
   now: Date;
   print(line: string): void;
 }
 
+export interface ImproveScheduleDeps extends SetupScheduleDeps {
+  config: Pick<Loaded["config"], "improver">;
+}
+
 /**
- * Adds the Daily improve run schedule (ID `improve-daily`, action `improve`, daily at 09:00 in `zone`, created by the
- * owner) once, when `improver.daily_trigger` is off; nothing when the flag is on or the ID is stored. A schedule
- * runs only when `plugins.schedule_action` is routed, so with none it warns and still adds it.
+ * Adds `s` in `zone`, created by the owner, once: nothing when its ID is stored. A schedule runs only when
+ * `plugins.schedule_action` is routed, so with none it warns and still adds it.
  */
-export async function addImproveSchedule(d: ImproveScheduleDeps): Promise<StepResult> {
-  if (dailyTriggerOn(d.config.improver)) return { ok: true, line: "improver.daily_trigger is on: the controller queues the daily improve run, no schedule added" };
-  if ((await d.store.listSchedules()).some((x) => x.id === IMPROVE_SCHEDULE.id)) return { ok: true, line: `schedule ${IMPROVE_SCHEDULE.id} is already stored` };
+async function addSetupSchedule(d: SetupScheduleDeps, s: SetupSchedule): Promise<StepResult> {
+  if ((await d.store.listSchedules()).some((x) => x.id === s.id)) return { ok: true, line: `schedule ${s.id} is already stored` };
   const owner = await d.store.getOwner();
   if (owner === null) return { ok: false, line: "no owner yet: register in the You step, then run npm run setup again" };
   if (d.plugins.schedule_action !== "routed") {
-    d.print(`   warning: plugins.schedule_action is not "routed", so no schedule runs and no daily improve run is queued until it is`);
+    d.print(`   warning: plugins.schedule_action is not "routed", so ${s.id} does not run until it is`);
   }
-  const r = await addSchedule(d.store, { ...IMPROVE_SCHEDULE, zone: d.zone, created_by: owner, action: { kind: "improve", settings: {} } }, d.now);
-  return r.ok ? { ok: true, line: `added schedule ${IMPROVE_SCHEDULE.id} (${IMPROVE_SCHEDULE.title}, daily at 09:00 ${d.zone})` } : { ok: false, line: `schedule not added: ${r.problem}` };
+  const { when, ...fields } = s;
+  const r = await addSchedule(d.store, { ...fields, zone: d.zone, created_by: owner }, d.now);
+  return r.ok ? { ok: true, line: `added schedule ${s.id} (${s.title}, ${when} ${d.zone})` } : { ok: false, line: `schedule ${s.id} not added: ${r.problem}` };
 }
 
-const improveScheduleStep: SetupStep<GuidedState> = {
-  name: "improve-schedule",
-  title: "Daily improve run",
-  why: "With improver.daily_trigger off, a schedule queues the daily improve run instead of the controller.",
-  async run(s, io) {
-    if (!(await io.ask.yesNo("   Check the daily improve run schedule now?", true))) return { ok: false, line: "not checked (run npm run setup again)" };
-    const store = await openStore(s.loaded, io.print);
-    if (!store) return { ok: false, line: "skipped: the store is not ready" };
-    try {
-      return await addImproveSchedule({
-        store, config: s.loaded.config, plugins: s.loaded.plugins, print: io.print,
-        zone: Intl.DateTimeFormat().resolvedOptions().timeZone, now: (await new Plugins(s.loaded).clock()).now(),
-      });
-    } finally {
-      await store.close();
-    }
-  },
-};
+/**
+ * Adds the Daily improve run schedule (ID `improve-daily`, action `improve`, daily at 09:00 in `zone`, created by the
+ * owner) once, when `improver.daily_trigger` is off; nothing when the flag is on or the ID is stored.
+ */
+export async function addImproveSchedule(d: ImproveScheduleDeps): Promise<StepResult> {
+  if (dailyTriggerOn(d.config.improver)) return { ok: true, line: "improver.daily_trigger is on: the controller queues the daily improve run, no schedule added" };
+  return addSetupSchedule(d, IMPROVE_SCHEDULE);
+}
+
+/** Adds `summary-morning` and `summary-evening`, each once; stops at the first one not added. */
+export async function addSummarySchedules(d: SetupScheduleDeps): Promise<StepResult> {
+  const lines: string[] = [];
+  for (const s of SUMMARY_SCHEDULES) {
+    const r = await addSetupSchedule(d, s);
+    if (!r.ok) return r;
+    lines.push(r.line);
+  }
+  return { ok: true, line: lines.join("; ") };
+}
+
+/** A setup step that opens the store and runs `add` with the machine's zone and the clock's time. */
+function scheduleStep(name: string, title: string, why: string, question: string, add: (d: ImproveScheduleDeps) => Promise<StepResult>): SetupStep<GuidedState> {
+  return {
+    name, title, why,
+    async run(s, io) {
+      if (!(await io.ask.yesNo(question, true))) return { ok: false, line: "not checked (run npm run setup again)" };
+      const store = await openStore(s.loaded, io.print);
+      if (!store) return { ok: false, line: "skipped: the store is not ready" };
+      try {
+        return await add({
+          store, config: s.loaded.config, plugins: s.loaded.plugins, print: io.print,
+          zone: Intl.DateTimeFormat().resolvedOptions().timeZone, now: (await new Plugins(s.loaded).clock()).now(),
+        });
+      } finally {
+        await store.close();
+      }
+    },
+  };
+}
+
+const improveScheduleStep = scheduleStep(
+  "improve-schedule", "Daily improve run", "With improver.daily_trigger off, a schedule queues the daily improve run instead of the controller.",
+  "   Check the daily improve run schedule now?", addImproveSchedule,
+);
+
+const summaryScheduleStep = scheduleStep(
+  "summary-schedules", "Morning and evening summaries", "Two schedules post what merged, what waits for you and what failed, at the summary times in Settings.",
+  "   Check the summary schedules now?", addSummarySchedules,
+);
 
 /** Every step of `npm run setup`, in order. A step's number is its place here, so it is the same on every run. */
 export const SETUP_STEPS: readonly SetupStep<GuidedState>[] = [
@@ -398,6 +455,7 @@ export const SETUP_STEPS: readonly SetupStep<GuidedState>[] = [
   youStep,
   modeStep,
   improveScheduleStep,
+  summaryScheduleStep,
   pluginSetupStep,
   checksStep,
   canaryStep,

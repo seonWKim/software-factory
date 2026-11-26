@@ -19,6 +19,8 @@ export interface Schema<T> {
   ts(): string;
   readonly query?: QueryKind;
   readonly optional?: true;
+  /** A leaf's value in words ("a number"), for a nullable's refusal ("a number or null"). */
+  readonly what?: string;
 }
 
 export type Infer<S> = S extends Schema<infer T> ? T : never;
@@ -42,6 +44,7 @@ function leaf<T>(check: (v: unknown) => v is T, what: string, json: JsonSchema, 
     render: async (v, text, at = "value") => (!check(v) ? fail(at, what) : ok(typeof v === "string" && !fixed ? await text(v) : v)),
     json: () => json,
     ts: () => ts,
+    what,
     ...(query ? { query } : {}),
   };
 }
@@ -76,11 +79,15 @@ export function jsonObject(): Schema<{ [key: string]: unknown }> {
 }
 
 export function nullable<T>(s: Schema<T>): Schema<T | null> {
+  const what = s.what === undefined ? undefined : `${s.what} or null`;
+  // A leaf's refusal names null too ("daily_cap_usd must be a number or null."); a nested schema's names its field.
+  const orNull = <P>(r: Parsed<P>, at = "value"): Parsed<P> => (r.ok || what === undefined ? r : fail(at, what));
   return {
-    parse: (v, at) => (v === null ? ok(null) : s.parse(v, at)),
-    render: async (v, text, at) => (v === null ? ok(null) : s.render(v, text, at)),
+    parse: (v, at) => (v === null ? ok(null) : orNull(s.parse(v, at), at)),
+    render: async (v, text, at) => (v === null ? ok(null) : orNull(await s.render(v, text, at), at)),
     json: () => ({ anyOf: [s.json(), { type: "null" }] }),
     ts: () => `${s.ts()} | null`,
+    ...(what === undefined ? {} : { what }),
     ...(s.query ? { query: s.query } : {}),
   };
 }

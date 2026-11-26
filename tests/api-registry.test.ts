@@ -155,7 +155,7 @@ describe("src/api/index.ts", () => {
   });
 
   it("is stale when a declaration file is not imported, or an import has no file", () => {
-    expect(indexGaps(index, ["fixture.ts"])).toEqual({ unlisted: ["fixture"], missing: [] });
+    expect(indexGaps(index, [...(existsSync(dir) ? readdirSync(dir) : []), "fixture.ts"])).toEqual({ unlisted: ["fixture"], missing: [] });
     expect(indexGaps('import { CAPABILITIES as a } from "./capabilities/gone.js";', [])).toEqual({ unlisted: [], missing: ["gone"] });
   });
 });

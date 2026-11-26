@@ -434,11 +434,77 @@ const INNER_SPACING: readonly { file: string; snippet: string; reason: string }[
   { file: "item-decisions.tsx", snippet: 'aria-label={t("decisions.reason")}', reason: "radio group under its label, inside the decisions block" },
   { file: "item-row.tsx", snippet: "data-row-second", reason: "second line under the row's title, inside one row" },
   { file: "merge-button.tsx", snippet: 'className="mt-2 inline-flex', reason: "confirm buttons under the merge button, inside its block" },
+  // Phase 2 of widening the guard to N >= 1: margins of 1 and 2 in the pages, efficiency, transcript and settings views.
+  { file: "pages.tsx", snippet: 'aria-label={t("item.breadcrumb")} className="mb-1', reason: "breadcrumb above the item's title, inside the page header" },
+  { file: "pages.tsx", snippet: 'data-testid="parent" className="mt-1', reason: "parent line under the item's title, inside the page header" },
+  { file: "pages.tsx", snippet: "data-ids className=\"mt-2\"", reason: "ids disclosure under the header text, inside one Card" },
+  { file: "pages.tsx", snippet: 'className="mt-1 grid grid-cols-[auto_minmax(0,1fr)]', reason: "ids list inside its opened disclosure" },
+  { file: "pages.tsx", snippet: 'aria-label={t("item.conflicting")}', reason: "list under its label, inside one Card" },
+  { file: "pages.tsx", snippet: "r.error.detail", reason: "error detail under the error's message, inside one Card" },
+  { file: "pages.tsx", snippet: '<RawDetails className="mt-1">', reason: "raw details under their row, inside one Card (two lines)" },
+  { file: "pages.tsx", snippet: 'ul className="mt-1 font-mono text-xs break-all"', reason: "list inside the opened raw details" },
+  { file: "pages.tsx", snippet: '<div className="mt-1">', reason: "block under its heading, inside one Card" },
+  { file: "pages.tsx", snippet: "data-spec className=\"mt-2", reason: "spec fields under their toggle, inside one Card" },
+  { file: "pages.tsx", snippet: 'cn("mb-1", SUB_TITLE)', reason: "field name above its value, inside the spec box" },
+  { file: "pages.tsx", snippet: 'aria-label={t("runners.runsOf"', reason: "runs list under the runner's row, inside one Card" },
+  { file: "pages.tsx", snippet: 'data-testid="ok-checks"', reason: "passing checks disclosure under the open checks, inside one Card" },
+  { file: "efficiency.tsx", snippet: 'aria-label={title} className="mt-2', reason: "bars under the chart title, inside a Card" },
+  { file: "efficiency.tsx", snippet: "aria-hidden className=\"mt-1 flex justify-between", reason: "axis labels under the bars, inside a Card" },
+  { file: "efficiency.tsx", snippet: "data-finished", reason: "finished line above the week's figures, inside a Card" },
+  { file: "efficiency.tsx", snippet: "efficiency.notCountedTokens", reason: "note under the figures, inside a Card" },
+  { file: "efficiency.tsx", snippet: "efficiency.notCountedTime", reason: "note under the figures, inside a Card" },
+  { file: "efficiency.tsx", snippet: 'className="mt-1 block h-2', reason: "meter bar under its label, inside one row" },
+  { file: "efficiency.tsx", snippet: "data-left-out", reason: "note under the table, inside a Card" },
+  { file: "efficiency.tsx", snippet: "efficiency.runsWithoutUsage", reason: "note under the table, inside a Card" },
+  { file: "transcript.tsx", snippet: 'className={cn("mt-1", LINK_CLASS)}', reason: "show-more button under a step's text, inside a Card" },
+  { file: "transcript.tsx", snippet: 'cn(PRE, "mt-1', reason: "step text under its header line, inside a Card" },
+  { file: "transcript.tsx", snippet: 'className="mb-1 flex flex-wrap items-center gap-2', reason: "step meta line above its text, inside a Card" },
+  { file: "transcript.tsx", snippet: 'className="mt-1 text-xs opacity-80', reason: "usage line under the outcome text, inside the outcome box" },
+  { file: "transcript.tsx", snippet: "transcript.plainFormat", reason: "note above the steps list, inside a Card" },
+  { file: "transcript.tsx", snippet: "transcript.tailNote", reason: "note above the steps list, inside a Card" },
+  { file: "transcript.tsx", snippet: 'className="mb-1 text-sm"', reason: "run line above its details, inside a Card" },
+  { file: "settings/advanced.tsx", snippet: '<div className="mt-1">{list}</div>', reason: "list under its label, inside a settings row" },
+  { file: "settings/advanced.tsx", snippet: "data-duration", reason: "readable duration under its field, inside a settings row" },
+  { file: "settings/advanced.tsx", snippet: "data-learned", reason: "learned-rule row under its field, inside a settings row" },
+  { file: "settings/advanced.tsx", snippet: 'ul className="mt-1 font-mono break-all"', reason: "list inside the opened learned-rule details" },
+  { file: "settings/advanced.tsx", snippet: 'className="mt-2"', reason: "block under its field, inside a settings row" },
+  { file: "settings/advanced.tsx", snippet: '<div className="mt-2">', reason: "block under its field, inside a settings row" },
+  { file: "settings/advanced.tsx", snippet: "data-model-summary", reason: "summary above the model fields, inside a settings row" },
+  { file: "settings/advanced.tsx", snippet: '<p className="mt-1 text-xs text-text-2">', reason: "note under its heading, inside a Card" },
+  { file: "settings/advanced.tsx", snippet: "border-t border-border pt-2", reason: "divided block under the note, inside a Card" },
+  { file: "settings/advanced.tsx", snippet: '<p className="mb-1 text-xs text-text-2">', reason: "note above its list, inside the divided block" },
+  { file: "settings/editor.tsx", snippet: "{form}", reason: "form under its row, inside a settings row" },
+  { file: "settings-calendar.tsx", snippet: 'hidden={!open} className="mt-1', reason: "opened help under its toggle, inside a Card" },
+  { file: "settings-file-keys.tsx", snippet: 'role="alert" className="mt-1', reason: "error under the field, inside a Card" },
+  { file: "settings-file-keys.tsx", snippet: 'role="status" className="mt-1', reason: "status under the field, inside a Card" },
+  { file: "settings-file-keys.tsx", snippet: "data-filed", reason: "filed-issue line under the form, inside a Card" },
+  { file: "settings-file-keys.tsx", snippet: 'className="mt-1"', reason: "control under its label, inside a Card" },
+  { file: "settings-row.tsx", snippet: "max-w-64 text-xs", reason: "hint under its field, inside a settings row" },
+  // Phase 3 of widening the guard to N >= 1: margins of 1 and 2 in the rules, plugins, schedules, standing and remaining views.
+  { file: "host-sleeps.tsx", snippet: '<RawDetails className="mt-2">', reason: "raw details under the row above it" },
+  { file: "plugins.tsx", snippet: 'className="mt-2 text-xs text-pretty break-words text-pill-bad-fg"', reason: "error line under the form's controls" },
+  { file: "rules-applied.tsx", snippet: "mt-2 ${STACK_NARROW}", reason: "stacked block under the row above it" },
+  { file: "rules-detail.tsx", snippet: '<div className="mt-2 space-y-1">', reason: "list under its heading, inside one block" },
+  { file: "rules-improve.tsx", snippet: '<div className="mt-2 space-y-2">', reason: "list under its heading, inside one block" },
+  { file: "rules-skills.tsx", snippet: "mb-2 ${PROSE} ${muted}", reason: "note above its list, inside one block" },
+  { file: "rules.tsx", snippet: "mb-2 ${PROSE} ${muted}", reason: "note above its list, inside one block" },
+  { file: "schedules/detail.tsx", snippet: "mb-2 min-w-0 wrap-anywhere sm:mb-0", reason: "field values in the detail list (two lines)" },
+  { file: "spend.tsx", snippet: 'data-axis="x"', reason: "axis labels under the bars, inside one Card" },
+  { file: "standing.tsx", snippet: 'className="mt-1 text-xs text-pretty break-words text-pill-bad-fg"', reason: "error line under the controls" },
+  { file: "standing.tsx", snippet: "data-recent-all", reason: "list under its heading, inside one block" },
+  { file: "standing.tsx", snippet: '<ul className="mt-1 list-disc pl-5">', reason: "list under its heading, inside one block" },
+  { file: "standing.tsx", snippet: "mb-2 ${muted}", reason: "note above its content, inside one block" },
+  { file: "system-banner.tsx", snippet: 'className="mt-1 max-h-48', reason: "list under the banner's line" },
+  { file: "system-banner.tsx", snippet: "update.more", reason: "count note under the list" },
+  { file: "tasks.tsx", snippet: '<div className="mt-2">', reason: "block under its heading" },
+  { file: "thread.tsx", snippet: 'flush className="mt-2"', reason: "toggle under the thread's header" },
+  { file: "tree.tsx", snippet: "group mt-1 text-text-2", reason: "chevron nudged to line up with the row's text" },
+  { file: "workers.tsx", snippet: 'className="mt-1 flex justify-between text-xs', reason: "axis labels under the graph" },
 ];
 
 describe("page blocks are stacked by the page's gap-6 column", () => {
   const views = join(WEB_SRC, "views");
-  const MARGIN = /(?<![\w-])m[tb]-(?:(?:[3-9]|\d\d)(?![\w-])|\[)/;
+  const MARGIN = /(?<![\w-])m[tb]-(?:(?:[1-9]|[1-9]\d)(?![\w-])|\[)/;
   const flagged = (rel: string, text: string) =>
     text
       .split("\n")
@@ -457,16 +523,34 @@ describe("page blocks are stacked by the page's gap-6 column", () => {
     ).toEqual([]);
   });
 
+  it("phase 3 files: every mt-1, mt-2, mb-1 or mb-2 line is listed in INNER_SPACING", () => {
+    const SMALL = /(?<![\w-])m[tb]-[12](?![\w.-])/;
+    const phase3 = [
+      "host-sleeps.tsx", "plugins.tsx", "rules-applied.tsx", "rules-detail.tsx", "rules-improve.tsx", "rules-skills.tsx",
+      "rules.tsx", "schedules/detail.tsx", "spend.tsx", "standing.tsx", "system-banner.tsx", "tasks.tsx", "thread.tsx",
+      "tree.tsx", "workers.tsx",
+    ];
+    const unlisted = phase3.flatMap((rel) =>
+      readFileSync(join(views, rel), "utf8")
+        .split("\n")
+        .map((line, i) => ({ line, at: `web/src/views/${rel}:${i + 1}` }))
+        .filter(({ line }) => SMALL.test(line))
+        .filter(({ line }) => !INNER_SPACING.some((a) => a.file === rel && line.includes(a.snippet)))
+        .map(({ at, line }) => `${at}: ${line.trim()}`),
+    );
+    expect(unlisted).toEqual([]);
+  });
+
   it("self-check: a block margin is flagged, an allowed inner one and scroll-mt are not", () => {
     expect(flagged("pages.tsx", '<div className="mt-6">')).toHaveLength(1);
     expect(flagged("pages.tsx", '<div className="mb-3 flex">')).toHaveLength(1);
-    expect(flagged("pages.tsx", '<div className="mt-1 scroll-mt-4 first:mt-0">')).toEqual([]);
+    expect(flagged("pages.tsx", '<div className="scroll-mt-4 first:mt-0">')).toEqual([]);
     expect(flagged("spend.tsx", '<div data-spend-notes className="mt-3">')).toEqual([]);
     expect(flagged("item-about.tsx", '<div className="mt-3">')).toHaveLength(1);
     expect(flagged("item-about.tsx", '<div data-about-part className="mt-3 min-w-0">')).toEqual([]);
     expect(flagged("pages.tsx", '<div className="mt-[10px]">')).toHaveLength(1);
     expect(flagged("pages.tsx", '<div className="mb-[2rem] flex">')).toHaveLength(1);
-    expect(flagged("pages.tsx", '<div className="mt-2">')).toEqual([]);
+    expect(flagged("pages.tsx", '<div className="mt-2">')).toHaveLength(1);
   });
 });
 

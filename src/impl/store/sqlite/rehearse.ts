@@ -9,9 +9,11 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Timestamp } from "../../../core/types.js";
 import { breakingStep } from "../../../interfaces/updater.js";
 import { type Migration, type MigrationDb, type SqlExecutor, fingerprintTables, lostRows, pendingMigrations } from "../../../state/index.js";
 import { type ProjectKeyMode, countLegacyProjectRows } from "../project-keys.js";
+import { migrateWithActivity } from "../sql/activity.js";
 import { SqliteDriver } from "./sqlite-driver.js";
 
 function migrationDb(d: SqlExecutor): MigrationDb {
@@ -54,7 +56,9 @@ export async function migrateSqlite(file: string, mode: ProjectKeyMode, steps: S
   if (mode === "apply") {
     const driver = new SqliteDriver(file, { applyBreaking: true });
     try {
-      await driver.migrate();
+      // Each migration this run applies gets its Activity row (design 08-schedules-actions), at the database's time.
+      const [row] = await driver.all("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS at");
+      await migrateWithActivity(driver, () => String(row!.at) as Timestamp, "npm run migrate");
       await steps.topicTables(driver);
       const code = await steps.projectKeys(driver, mode);
       await vacuum(driver, print);

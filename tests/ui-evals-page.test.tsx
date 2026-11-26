@@ -352,6 +352,74 @@ describe("Judge checks", () => {
   });
 });
 
+describe("Cases: Add as a new case", () => {
+  // run_zzz9, the newest finished run (run_new0 is still running), is linked to version 3: case_two2 failed there.
+  // case_one1 failed only in version 2, an older run.
+  const failedNewest = () => {
+    runs = [run("run_new0", 21, { status: "running" }), ...RUNS];
+    versions = [{ ...VERSIONS[0]!, cases: [{ case_id: "case_one1", verdict: "pass" }, { case_id: "case_two2", verdict: "fail" }] }, ...VERSIONS.slice(1)];
+  };
+  const table = () => screen.findByRole("table", { name: "Result of each case in each version" }, SLOW);
+  const rowsOf = (t: HTMLElement) => within(t).getAllByRole("row").slice(1);
+  async function open() {
+    failedNewest();
+    const view = show();
+    const [, second] = rowsOf(await table());
+    fireEvent.click(within(second!).getByRole("button", { name: "Add as a new case" }));
+    const dialog = await screen.findByRole("dialog", undefined, SLOW);
+    await vi.waitFor(() => expect((within(dialog).getByRole("button", { name: "Add case" }) as HTMLButtonElement).disabled).toBe(false), SLOW);
+    return { ...view, dialog };
+  }
+
+  it("shows a secondary Button in the last column only for a case that failed in the newest finished run", async () => {
+    failedNewest();
+    const { container } = show();
+    const t = await table();
+    expect(within(t).getAllByRole("columnheader").map((h) => h.textContent).at(-1)).toBe("Actions");
+    const [first, second] = rowsOf(t);
+    expect(within(first!).queryByRole("button")).toBeNull();
+    const button = within(second!).getByRole("button", { name: "Add as a new case" });
+    expect(within(second!).getAllByRole("cell").at(-1)!.contains(button)).toBe(true);
+    expect(button.className).not.toContain("bg-accent");
+    expect(button.className).toContain("min-h-7");
+    const primary = [...container.querySelectorAll("button")].filter((b) => b.className.includes("bg-accent"));
+    expect(primary.map((b) => b.textContent)).toEqual(["Run now"]);
+  });
+
+  it("shows no Button and no extra column when no case failed in the newest finished run", async () => {
+    show();
+    const t = await table();
+    expect(within(t).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Case", "Version 3", "Version 2", "Version 1"]);
+    expect(within(t).queryByRole("button")).toBeNull();
+  });
+
+  it("opens a Dialog naming the case as Case N, posts case.from_run, then closes and reads versions and runs again", async () => {
+    postAnswer = () => json(200, { op: "case.from_run", case: { id: "from-run:run_zzz9:case_two2" } });
+    const { dialog, container } = await open();
+    expect(within(dialog).getByRole("heading").textContent).toContain("Case 2");
+    expect(dialog.textContent).not.toMatch(/run_|case_/);
+    const reads = { versions: urls.filter((u) => u.endsWith("/versions")).length, runs: urls.filter((u) => u.endsWith("/runs")).length };
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add case" }));
+    await vi.waitFor(() => expect(posts).toHaveLength(1), SLOW);
+    expect(posts[0]).toEqual({ url: "/api/v1/evals/write", token: "tok", body: { op: "case.from_run", run: "run_zzz9", case: "case_two2" } });
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), SLOW);
+    await vi.waitFor(() => {
+      expect(urls.filter((u) => u.endsWith("/versions")).length).toBeGreaterThan(reads.versions);
+      expect(urls.filter((u) => u.endsWith("/runs")).length).toBeGreaterThan(reads.runs);
+    }, SLOW);
+    expect(container.textContent).not.toMatch(/run_|case_/);
+  });
+
+  it("shows a refusal in the Dialog, which stays open", async () => {
+    const refusal = "That case has no failed replay in that run: nothing written.";
+    postAnswer = () => json(409, { error: refusal });
+    const { dialog } = await open();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add case" }));
+    expect((await within(dialog).findByRole("alert", undefined, SLOW)).textContent).toBe(refusal);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+});
+
 describe("Run now", () => {
   async function open() {
     const view = show();

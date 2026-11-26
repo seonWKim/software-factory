@@ -1,12 +1,11 @@
 // `factory eval run|results|compare|suite|case|import` (design 06-measurement, skill evals). Suites and cases are
 // written through the authoring rules (src/runtime/skill-evals/authoring.ts), `import` through its importCases (the
 // configured SkillEvalSource, src/runtime/skill-evals/import.ts); `case try` is the call's trySkillEvalCase; `case split`
-// and `case from-run` (design 07-self-improvement) are store calls on a stored case. The
+// (design 07-self-improvement) is a store call on a stored case and `case from-run` the authoring's caseFromRun. The
 // run itself is the root wiring (src/skill-evals.ts) and the grid and compare are src/core/skill-eval-compare.ts, both
 // passed in by main.ts through the command call (runSkillEval, skillEvalReads), so this handler imports no root or
 // legacy module. <skill> is a suite's skill_ref: a skill folder.
 
-import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { parseArgs as parseFlags } from "node:util";
 import { type CommandContext, type FactoryStore, type SkillEvalReads, type SkillEvalRunOptions, type SkillEvalRunRow, type SkillEvalRunStats, type SkillEvalRunSummary, defineCommand } from "../../command.js";
@@ -53,7 +52,7 @@ const USAGE = `  eval run <skill> [--model <class>] [--judge-model <class>] [--r
                case split <case-id> dev|held-out sets the case's split (the suite's version is unchanged):
                self-improve tunes and measures drafts on dev cases and checks a draft on held-out cases before
                it is promoted, while eval run replays every case; case from-run <run-id> <case-id> adds a new dev
-               case with a new id, copying the input, expected, seed and MCP servers of <case-id>, only when
+               case with an id from the run and the case (a repeat adds nothing), copying the input, expected, seed and MCP servers of <case-id>, only when
                <case-id> has a replay with verdict fail in <run-id> (else refused, nothing written)
   eval import <skill> [--source <plugin>]
                copies the skill's cases from the eval source (--source, else plugins.eval_source; default none)
@@ -133,21 +132,6 @@ async function setSplit(store: FactoryStore, case_id: string, split: SkillEvalSp
   return report(c ? { value: c } : { refused: `no skill eval case ${case_id}: nothing changed` }, (x) => console.log(`case ${x.id} is ${x.split}`));
 }
 
-/**
- * `case from-run <run-id> <case-id>`: a new dev case in the case's suite with a new id and the case's input, expected,
- * seed and MCP servers; refused, nothing written, unless the case has a replay with verdict `fail` in the run.
- */
-async function caseFromRun(store: FactoryStore, run_id: string, case_id: string): Promise<number> {
-  const [replays, c] = await Promise.all([store.listSkillEvalReplays(run_id), store.getSkillEvalCase(case_id)]);
-  if (!replays.some((r) => r.case_id === case_id && r.verdict === "fail")) return report({ refused: `case ${case_id} has no failed replay in eval run ${run_id}: nothing written` }, () => {});
-  if (!c) return report({ refused: `no skill eval case ${case_id}: nothing written` }, () => {});
-  const added = await store.addSkillEvalCase({
-    id: randomUUID(), suite_id: c.suite_id, input: c.input, expected: c.expected, split: "dev", ...(c.seed != null ? { seed: c.seed } : {}), ...(c.mcp != null ? { mcp: c.mcp } : {}),
-  });
-  console.log(`added case ${added.id} (dev) from case ${case_id} of eval run ${run_id}`);
-  return 0;
-}
-
 async function caseCommand(argv: readonly string[], ctx: CommandContext, authoring: NonNullable<CommandContext["authoring"]>): Promise<number | null> {
   const { values, positionals: [sub, target, second, ...extra] } = parseFlags({
     args: [...argv], allowPositionals: true, options: { file: { type: "string" }, input: { type: "string" }, check: { type: "string", multiple: true }, model: { type: "string" } },
@@ -159,7 +143,7 @@ async function caseCommand(argv: readonly string[], ctx: CommandContext, authori
   const secondOk = pair ? second !== undefined && (sub !== "split" || isSplit(second)) : second === undefined;
   if (!["list", "add", "edit", "delete", "try", "split", "from-run"].includes(sub ?? "") || !target || !secondOk || extra.length > 0 || !modelOk || !flagsOk) return null;
   if (sub === "split") return ctx.withStore((store) => setSplit(store, target, second as SkillEvalSplit));
-  if (sub === "from-run") return ctx.withStore((store) => caseFromRun(store, target, second!));
+  if (sub === "from-run") return ctx.withStore(async (store) => report(await authoring.caseFromRun(store, target, second!), (c) => console.log(`added case ${c.id} (dev) from case ${second} of eval run ${target}`)));
   if (sub === "try") {
     const tryCase = ctx.trySkillEvalCase;
     if (!tryCase) {

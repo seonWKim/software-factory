@@ -80,13 +80,11 @@ import { type ChildRestart, migrationPendingError } from "../../../interfaces/up
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
 import { countLegacyProjectRows, legacyRowsMessage } from "../project-keys.js";
 import { changeAssignments, changeFields } from "./change-fields.js";
-import {
-  diffPatch, newId, newWorkItem, rowToBudgetCheckpoint, rowToRun,
-  rowToRunAttempt, rowToStateChange, rowToVerdict, rowToWorkItem, workItemInsert,
-} from "./rows.js";
+import { diffPatch, newId, newWorkItem, rowToBudgetCheckpoint, rowToRun, rowToRunAttempt, rowToStateChange, rowToVerdict, rowToWorkItem, workItemInsert } from "./rows.js";
 import * as filed from "./filed-patterns.js";
 import * as settingsSql from "./settings.js";
 import { PAUSE_END_INSERT, PAUSE_INSERT_ROW, pauseAt, placeholders, pruneDeliveredOutbox, pruneHandledCommands, pruneHistory } from "./retention.js";
+import { insertActivity, leaseExpiryActivity, migrateWithActivity, prunedWithActivity } from "./activity.js";
 import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
@@ -136,7 +134,7 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
    * never runs on unmigrated rows. `npm run migrate` rewrites them.
    */
   async migrate(): Promise<void> {
-    await this.db.migrate();
+    await migrateWithActivity(this.db, () => this.now(), "open"); // each migration this open applies gets its Activity row (./activity.ts)
     const legacy = await countLegacyProjectRows(this.db);
     if (legacy > 0) throw migrationPendingError(legacyRowsMessage(legacy));
   }
@@ -276,9 +274,8 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
     );
     if (updated !== 1) return { ok: false, reason: "version_conflict", current };
 
-    const state_change = await this.insertStateChange(
-      tx, input.id, version, input.actor, input.reason, changes, input.detail ?? null,
-    );
+    const state_change = await this.insertStateChange(tx, input.id, version, input.actor, input.reason, changes, input.detail ?? null);
+    if (input.activity) await insertActivity(tx, now, input.activity);
     if (input.ack_run !== undefined) {
       await tx.run("UPDATE worker_runs SET acknowledged_at = ?, updated_at = ? WHERE id = ?", [now, now, input.ack_run]);
     }
@@ -1015,6 +1012,7 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
           await this.closeAttempt(tx, run.id as RunId, Number(run.lease_token), "lease_expired", now);
         }
       }
+      await leaseExpiryActivity(tx, now, abandoned, max_attempts); // one Activity row per run moved, in this transaction
       return { ids: expired.map((r) => r.id as RunId), abandoned };
     });
     // After the commit, so a rolled-back expiry reports nothing.
@@ -1330,9 +1328,10 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
   async getSyncLease(name: string): Promise<SyncLease | null> {
     return this.selectSyncLease(this.db, name);
   }
-  pruneDeliveredOutbox(older_than_ms: number, limit: number) { return pruneDeliveredOutbox(this.db, this.after(-older_than_ms), limit); } // ./retention.ts
-  pruneHandledCommands(older_than_ms: number, limit: number) { return pruneHandledCommands(this.db, this.after(-older_than_ms), limit); }
-  pruneHistory(older_than_ms: number, limit: number) { return pruneHistory(this.db, this.after(-older_than_ms), this.now(), limit); }
+  // ./retention.ts; each batch that deletes rows writes its Activity row in its transaction (./activity.ts)
+  pruneDeliveredOutbox(ms: number, limit: number) { return prunedWithActivity(this.db, () => this.now(), "outbox", ms, (tx) => pruneDeliveredOutbox(tx, this.after(-ms), limit)); }
+  pruneHandledCommands(ms: number, limit: number) { return prunedWithActivity(this.db, () => this.now(), "commands", ms, (tx) => pruneHandledCommands(tx, this.after(-ms), limit)); }
+  pruneHistory(ms: number, limit: number) { return prunedWithActivity(this.db, () => this.now(), "history", ms, (tx) => pruneHistory(tx, this.after(-ms), this.now(), limit)); }
   recordEndedPause(p: Parameters<FactoryStore["recordEndedPause"]>[0]) { return this.insertOnce(this.db, PAUSE_INSERT_ROW, [p.name, p.started_at, p.ended_at]); } // ./retention.ts
   pauseAt(at: Timestamp) { return pauseAt(this.db, at); }
 

@@ -5,9 +5,11 @@
 
 import type { ServerDeps } from "../ui/server.js";
 import { type Declared, type Registry, type RegistryDeps, buildRegistry } from "./registry.js";
+import { ITEMS } from "./capabilities/items.js";
+import { SCHEDULES } from "./capabilities/schedules.js";
 
-/** Every declared capability. None in phase 1: only the tests declare a fixture. */
-export const DECLARATIONS: readonly Declared[] = [];
+/** Every declared capability. */
+export const DECLARATIONS: readonly Declared[] = [...ITEMS, ...SCHEDULES];
 
 export const REGISTRY: Registry = buildRegistry(DECLARATIONS);
 

@@ -1,16 +1,14 @@
 // The dashboard's POST routes that check the pauses CSRF token: the owner's writes (resume, stop, alarm dismiss,
-// standing, improve, pack approvals, plugins import, rules, schedules, proposal verdict, migrate, supervisor, evals).
-// write-routes.ts runs the guards before each; a new pauses-token write route adds one entry here.
+// standing, improve, pack approvals, plugins import, rules, proposal verdict, migrate, supervisor, evals).
+// write-routes.ts runs the guards before each; a new pauses-token write route adds one entry here. The schedule writes
+// (draft and improve too) are the API registry's capabilities (src/api/capabilities/schedules.ts), behind the same
+// guards and the pauses token through write-routes.ts's registry entry.
 
-import { randomUUID } from "node:crypto";
 import { RESUME_PATH, STOP_PATH, resumePause, stopAllAgents } from "./pause-api.js";
 import { ALARM_DISMISS_PATH, dismissPost } from "./alarm-api.js";
 import { STANDING_PATH, writeStanding } from "./standing-api.js";
 import { PACK_APPROVALS_PATH, writePackApproval } from "./packs-api.js";
 import { RULE_WRITES, ownerOf } from "./rules-api.js";
-import { SCHEDULE_DRAFT_PATHS, SCHEDULE_WRITE_PATHS, postSchedule, postScheduleDraft } from "./schedules-api.js";
-import { writeSchedule } from "../core/schedule.js";
-import { draftSchedule, improveSchedule } from "../core/schedule-draft.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, PROPOSAL_VERDICT_PATH, improveRunWired, runImproveNow, writeProposalVerdict } from "./improve-api.js";
 import { PLUGINS_IMPORT_PATH, writePluginsImport } from "./plugins-import-api.js";
 import { MIGRATE_PATH, SUPERVISOR_PATH, postMigrate, postSupervisor } from "./migrate-api.js";
@@ -29,18 +27,6 @@ export const OWNER_WRITE_ROUTES: readonly WriteRoute[] = [
   { matches: (d, p) => p === PACK_APPROVALS_PATH && d.pauses?.auth !== undefined, token: pausesToken, run: (d, _p, b) => writePackApproval(d, d.pauses!, b) },
   { matches: (d, p) => p === PLUGINS_IMPORT_PATH && d.pauses !== undefined, token: pausesToken, run: (d, _p, b) => writePluginsImport(d, d.pauses!, b) },
   { matches: (d, p) => Object.hasOwn(RULE_WRITES, p) && d.pauses !== undefined, token: pausesToken, run: (d, p, b) => RULE_WRITES[p]!(d, d.pauses!, b) },
-  {
-    matches: (d, p) => Object.hasOwn(SCHEDULE_WRITE_PATHS, p) && d.pauses !== undefined,
-    token: pausesToken,
-    run: (d, p, b) => postSchedule(d, SCHEDULE_WRITE_PATHS[p]!, b, { write: writeSchedule, owner: (does) => ownerOf(d, d.pauses!, does), log: d.pauses!.log }),
-  },
-  {
-    matches: (d, p) => Object.hasOwn(SCHEDULE_DRAFT_PATHS, p) && d.pauses !== undefined,
-    token: pausesToken,
-    run: (d, p, b) => postScheduleDraft(d, SCHEDULE_DRAFT_PATHS[p]!, b, {
-      draft: draftSchedule, improve: improveSchedule, owner: (does) => ownerOf(d, d.pauses!, does), llm: d.settings?.ask?.llm ?? null, newId: randomUUID, log: d.pauses!.log,
-    }),
-  },
   { matches: (d, p) => p === PROPOSAL_VERDICT_PATH && d.pauses !== undefined, token: pausesToken, run: (d, _p, b) => writeProposalVerdict(d, d.pauses!, b) },
   { matches: (d, p) => p === MIGRATE_PATH && d.pauses !== undefined && d.migrate !== undefined, token: pausesToken, run: (d, _p, b) => postMigrate(d.migrate!, d.pauses!, b) },
   { matches: (d, p) => p === SUPERVISOR_PATH && d.pauses !== undefined && d.migrate !== undefined, token: pausesToken, run: (d, _p, b) => postSupervisor(d.migrate!, d.pauses!, b) },

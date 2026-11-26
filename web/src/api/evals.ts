@@ -3,7 +3,7 @@
 // skill_ref, URL-encoded. A null figure means none was recorded, never 0. The Plugins page's Evals card (design
 // 09-dashboard-settings) also reads /suite and writes through POST /api/v1/evals/write (postEvalWrite), with
 // GET /api/v1/pauses's csrf_token, and reads GET /api/v1/evals's `starter` for Draft starter cases. The evals page's Judge checks card reads /calibration and labels a check with
-// postEvalWrite's label.set.
+// postEvalWrite's label.set; its Cases card adds a case that failed in the newest finished run with case.from_run.
 
 import { useQuery } from "@tanstack/react-query";
 import { t } from "../i18n/index.js";
@@ -176,6 +176,7 @@ export type EvalWrite =
   | { op: "case.try"; case: string }
   | { op: "import"; skill: string }
   | { op: "label.set"; run: string; case: string; replay: number; check: string; label: "right" | "wrong" }
+  | { op: "case.from_run"; run: string; case: string }
   | { op: "starter.draft"; skill: string }
   | { op: "starter.accept"; skill: string; cases: StarterCase[] };
 

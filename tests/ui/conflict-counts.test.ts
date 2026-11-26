@@ -4,7 +4,7 @@ import type { WorkItem } from "../../src/core/types.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scanner.js";
 import type { FactoryStore } from "../../src/interfaces/factory-store.js";
-import { api } from "../../src/ui/api.js";
+import { readApi } from "../../src/ui/read-routes.js";
 import { HealthMonitor } from "../../src/ui/health.js";
 import type { UiDeps } from "../../src/ui/deps.js";
 import { issue, newStore, system, w1 } from "../helpers/store.js";
@@ -42,7 +42,7 @@ async function block(store: FactoryStore, item: WorkItem, blocked_reason: string
 }
 
 async function get(store: FactoryStore, clock: FakeClock, path: string): Promise<unknown> {
-  const r = await api(deps(store, clock), new URL(`http://127.0.0.1/api/v1${path}`));
+  const r = await readApi(deps(store, clock), new URL(`http://127.0.0.1/api/v1${path}`), { method: "GET", url: `/api/v1${path}`, host: "127.0.0.1" });
   expect(r.status).toBe(200);
   return r.value;
 }
