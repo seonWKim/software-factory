@@ -34,7 +34,7 @@ import { REGISTRY, type Registry, type Selection, selectPlugins, selectedSources
 import { batchingPolicies } from "./outbound/index.js";
 import { type Pack, autoApproveReadOnly, findPacks, packPluginFiles, packPrompts } from "./packs/packs.js";
 import {
-  agentStopChecks, alarmConfig, argvConfig, checkCommandsConfig, expandHome, hookNames, isTier, mergeQueueDepth, retryConfig, stallConfig,
+  agentStopChecks, alarmConfig, argvConfig, checkCommandsConfig, expandHome, installCommandsConfig, hookNames, isTier, mergeQueueDepth, retryConfig, stallConfig,
   statsConfig, testCommand, toolchainConfig, uiPort, uiUserId,
 } from "./config-values.js";
 import { testSelectionConfig } from "./core/test-selection.js";
@@ -46,13 +46,15 @@ export interface FileConfig {
   env: "local" | "cloud";
   store?: StoreConfig;
   /**
-   * install_command, test_command: argv, defaults ["npm", "ci"] and ["npm", "test"]. check_commands: a list of
-   * argv, the pre-push checks (design §4); absent: [test_command]. ui_check: the merge-time UI check (uiCheckConfig).
+   * install_command, test_command: argv, defaults ["npm", "ci"] and ["npm", "test"]. install_commands: a list of gate
+   * entries (an argv, or { dir, argv }), the install step in order in place of install_command (installCommandsConfig).
+   * check_commands: a list of gate entries, the pre-push checks (design §4); absent: [test_command]. ui_check: the
+   * merge-time UI check (uiCheckConfig).
    * check_tz: the merge check's time zone (checkTzConfig).
    * restart_command: argv, the restart run's command (design 04-gate-commands, restart); absent: off. test_selection: testSelectionConfig. */
   repo: {
-    owner: string; name: string; path: string; base_branch: string; install_command?: unknown; test_command?: unknown;
-    check_commands?: unknown; ui_check?: unknown; check_tz?: unknown; restart_command?: unknown; test_selection?: unknown };
+    owner: string; name: string; path: string; base_branch: string; install_command?: unknown; install_commands?: unknown;
+    test_command?: unknown; check_commands?: unknown; ui_check?: unknown; check_tz?: unknown; restart_command?: unknown; test_selection?: unknown };
   intake_label: string;
   /** Prefix of the status labels (docs/plugins.md, SourceAdapter). Absent: "sf: ". */
   status_label_prefix?: string;
@@ -366,7 +368,7 @@ export async function loadConfig(
   const secretsFile = defaultSecretsFile();
 
   const home = process.env.HOME ?? "";
-  const { check_commands: rawChecks, ui_check: rawUiCheck, check_tz: rawTz, restart_command: rawRestart, test_selection: rawSelection, ...fileRepo } = file.repo;
+  const { install_commands: rawInstalls, check_commands: rawChecks, ui_check: rawUiCheck, check_tz: rawTz, restart_command: rawRestart, test_selection: rawSelection, ...fileRepo } = file.repo;
   const test_command = testCommand(file.repo.test_command);
   const config: LoadedConfig = {
     repo: {
@@ -374,7 +376,7 @@ export async function loadConfig(
       path: repoPath,
       install_command: argvConfig("repo.install_command", file.repo.install_command, ["npm", "ci"]),
       test_command,
-      ...checkCommandsConfig(rawChecks), ...uiCheckConfig(rawUiCheck), ...checkTzConfig(rawTz), ...testSelectionConfig(rawSelection, test_command), ...(rawRestart === undefined ? {} : { restart_command: argvConfig("repo.restart_command", rawRestart, ["bin/restart"]) }),
+      ...installCommandsConfig(rawInstalls), ...checkCommandsConfig(rawChecks), ...uiCheckConfig(rawUiCheck), ...checkTzConfig(rawTz), ...testSelectionConfig(rawSelection, test_command), ...(rawRestart === undefined ? {} : { restart_command: argvConfig("repo.restart_command", rawRestart, ["bin/restart"]) }),
     },
     ...(local ? { local_only: true as const } : {}),
     intake_label: intakeLabel(file.intake_label),

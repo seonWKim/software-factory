@@ -1,5 +1,5 @@
 import type { ModelClass } from "../../../core/model-choice.js";
-import { type CheckResult, checkCommands, checkedLines, commandText, failingTestFiles, runChecks } from "../../../core/checks.js";
+import { type CheckResult, checkCommands, checkedLines, commandText, failingTestFiles, installStep, ranEntry, ranFields, runChecks } from "../../../core/checks.js";
 import { IMPLEMENT_SCHEMA, NEEDS_HUMAN_MAX_CHARS, NEEDS_HUMAN_MAX_PATHS, type NeedsHuman, parseImplement } from "../../../core/outputs.js";
 import { branchFor, isCovered, parseAutoResolveKey } from "../../../core/policy.js";
 import { mergeAppendedConflicts } from "../../../core/mechanical.js";
@@ -8,11 +8,14 @@ import type { Run, WorkItem } from "../../../core/types.js";
 import { type Sandbox, type SandboxHandle, reconcileOf } from "../../../interfaces/sandbox.js";
 import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
 import { NO_HOOKS, RunFailure, failingTestNames, gitIdentity, resolveScopeDetail, specQuery, tail } from "../../support.js";
-import { cachedInstall } from "../../install-cache.js";
 import { conflictAsk } from "../implement/conflict-ask.js";
 import type { Worker } from "../../runner.js";
+import { cachedInstall } from "../../install-cache.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 import { RESUME_LOST, fetchBundle, saveBundle } from "../../bundle.js";
+
+/** A gate entry (design 04-gate-commands): a plain argv, or `{ dir, argv }` run in that folder. */
+type GateEntry = ReturnType<typeof checkCommands>[number];
 
 /**
  * The resolve run (design §5 Merge conflict), started by a human's `/resolve` or automatically. In the PR branch's
@@ -59,7 +62,7 @@ async function resolve(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext
 
     // Stored and recorded as keyed intents (RFC 0015 M7): outbound pushes it and refreshes the PR body behind it. A
     // local item's store is the commit on its local branch: no intent, nothing pushed.
-    const passed = checkCommands(repo).map((command) => ({ command, ok: true, how: "passed", tail: "" }));
+    const passed = checkCommands(repo).map((e) => ({ ...ranFields(e), ok: true, how: "passed", tail: "" }));
     const push_intent = await w.pushBranch({ run, item, ctx, step }, handle.workdir, branch, head, () =>
       w.prRefresh(item, checkedLines(passed, { fixed: false })));
     return { result: "pushed", conflicts, head_sha: head, base_sha: baseSha, ...(push_intent ? { push_intent } : {}) };
@@ -171,8 +174,8 @@ async function mergeAndResolve(
     }
 
     const head = await commitResolution(w, handle, { tree, tipSha, baseSha, branch, message: `Merge ${baseRef} into ${branch}` }, identity);
-    // install_command first (through the run-side install cache, design 05-sandbox), then the check list (design §4).
-    const installed = await cachedInstall(w, handle, async () => ({ failed: await gates(w, handle, [repo.install_command], signal) }));
+    // The install step first (installStep: install_commands, else install_command through the run-side install cache), then the check list (design §4).
+    const installed = await installStep(repo, async (install) => ({ failed: await gates(w, handle, install, signal) }), (go) => cachedInstall(w, handle, go));
     const failed = installed?.failed ?? (await gates(w, handle, checkCommands(repo), signal));
     if (failed) {
       const ask = testPathsAsk(w, item, conflicts, failed);
@@ -255,7 +258,7 @@ async function commitResolution(
 }
 
 /** The gate commands (install, then each check) in order in the sandbox with the worker's tool env and slot env; the first failure, or null. */
-async function gates(w: Worker, handle: SandboxHandle, commands: readonly (readonly string[])[], signal: AbortSignal): Promise<CheckResult | null> {
+async function gates(w: Worker, handle: SandboxHandle, commands: readonly GateEntry[], signal: AbortSignal): Promise<CheckResult | null> {
   const round = await runChecks({
     sandbox: w.d.sandbox,
     handle,
@@ -282,7 +285,7 @@ function testPathsAsk(w: Worker, item: WorkItem, conflicts: readonly string[], f
     maxChars: NEEDS_HUMAN_MAX_CHARS,
   });
   if (!ask) return null;
-  const reason = `The resolve run merged the base, but the checks failed (\`${commandText(failed.command)}\` ${failed.how}) only in test files outside the allowed paths: ${ask.paths.join(", ")}. Nothing was pushed.`;
+  const reason = `The resolve run merged the base, but the checks failed (\`${commandText(ranEntry(failed))}\` ${failed.how}) only in test files outside the allowed paths: ${ask.paths.join(", ")}. Nothing was pushed.`;
   return {
     reason: reason.length > NEEDS_HUMAN_MAX_CHARS ? `${reason.slice(0, NEEDS_HUMAN_MAX_CHARS - 1)}…` : reason,
     question: "Allow these test files (`/resolve` with a `+paths` line naming them), so the resolve run can run again and update them with the merge?",
@@ -301,7 +304,7 @@ async function testsFailed(w: Worker, failed: CheckResult): Promise<RunFailure> 
   const named = failing_tests.length > 0 ? `; failing tests: ${failing_tests.join(", ")}` : "";
   // output_tail is null when withheld, as in the merge check's outcome; RunFailure's extra types only a string.
   const extra = { failing_tests, output_tail: clean ? failed.tail : null } as RunFailure["extra"];
-  return new RunFailure(RESOLVE_TESTS_FAILED, `\`${commandText(failed.command)}\` ${failed.how}${named}`.slice(0, 500), false, extra);
+  return new RunFailure(RESOLVE_TESTS_FAILED, `\`${commandText(ranEntry(failed))}\` ${failed.how}${named}`.slice(0, 500), false, extra);
 }
 
 export default defineRunKind({

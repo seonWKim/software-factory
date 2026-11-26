@@ -1,4 +1,4 @@
-import { commandText } from "./checks.js";
+import { type GateEntry, commandText, gateArgv, gateEntryConfig, nonEmptyStrings } from "./checks.js"; export type { GateEntry } from "./checks.js";
 import type { PathCompanion } from "./companions.js";
 import { type CoordinationSettings, DEFAULT_COORDINATION, type HotspotMode, HOTSPOT_MODES, parseHoldPolicy } from "./coordination.js";
 import type { ProjectRef } from "./project.js";
@@ -145,36 +145,34 @@ export function goldenConfig(raw: unknown): { replays: number; regression_margin
   return g === undefined ? null : { replays: replays as number, regression_margin };
 }
 
-/** `repo.ui_check`: an argv command and the path prefixes whose change makes the merge check run it. */
+/** `repo.ui_check`: a gate entry and the path prefixes whose change makes the merge check run it. */
 export interface UiCheck {
-  command: string[];
+  command: GateEntry;
   paths: string[];
 }
 
 /** The paths a `repo.ui_check` without `paths` watches: the dashboard's sources. */
 export const UI_CHECK_DEFAULT_PATHS: readonly string[] = ["web/", "src/ui/"];
 
-const nonEmptyStrings = (v: unknown): v is string[] => Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === "string" && x !== "");
-
 /**
- * `repo.ui_check` (design §4, UI check at merge): absent → nothing (off). Otherwise an object with `command`, an argv,
- * and `paths`, a non-empty list of non-empty path prefixes (absent: UI_CHECK_DEFAULT_PATHS), and no other key; any
- * other value fails startup naming the key.
+ * `repo.ui_check` (design §4, UI check at merge): absent → nothing (off). Otherwise an object with `command`, a gate
+ * entry (gateEntryConfig: an argv, or `{ dir, argv }` to run it in a folder), and `paths`, a non-empty list of
+ * non-empty path prefixes (absent: UI_CHECK_DEFAULT_PATHS), and no other key; any other value fails startup naming the key.
  */
 export function uiCheckConfig(value: unknown): { ui_check?: UiCheck } {
   if (value === undefined) return {};
-  const example = '{ "command": ["npm", "run", "check:responsive"], "paths": ["web/", "src/ui/"] }';
+  const argv = '["npm", "run", "check:responsive"]';
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`repo.ui_check must be an object with an argv command and optional path prefixes, e.g. ${example}`);
+    throw new Error(`repo.ui_check must be an object with a command and optional path prefixes, e.g. { "command": ${argv}, "paths": ["web/", "src/ui/"] }`);
   }
   const { command, paths, ...rest } = value as { command?: unknown; paths?: unknown };
   const extra = Object.keys(rest);
   if (extra.length > 0) throw new Error(`repo.ui_check has unknown keys ${extra.join(", ")}; valid keys: command, paths`);
-  if (!nonEmptyStrings(command)) throw new Error(`repo.ui_check.command must be a non-empty array of non-empty strings (argv), e.g. ${example}`);
+  const entry = gateEntryConfig("repo.ui_check.command", command, argv);
   if (paths !== undefined && !nonEmptyStrings(paths)) {
     throw new Error(`repo.ui_check.paths must be a non-empty list of non-empty path prefixes, e.g. ${JSON.stringify(UI_CHECK_DEFAULT_PATHS)}`);
   }
-  return { ui_check: { command: [...command], paths: [...(paths ?? UI_CHECK_DEFAULT_PATHS)] } };
+  return { ui_check: { command: entry, paths: [...(paths ?? UI_CHECK_DEFAULT_PATHS)] } };
 }
 
 /** The prompts' `{{ui_check}}` sentence (design §4): with a `repo.ui_check`, it runs at merge and is no missing work; none: "". */
@@ -190,7 +188,7 @@ export function uiCheckSentence(ui: UiCheck | undefined): string {
  * when it holds the command's last argument (e.g. `check:responsive`), in any case. No `repo.ui_check`: all kept.
  */
 export function withoutUiCheck(missing: readonly string[], ui: UiCheck | undefined): string[] {
-  const name = ui?.command.at(-1)?.toLowerCase();
+  const name = ui ? gateArgv(ui.command).at(-1)?.toLowerCase() : undefined;
   return name ? missing.filter((m) => !m.toLowerCase().includes(name)) : [...missing];
 }
 
@@ -201,7 +199,8 @@ export function withoutUiCheck(missing: readonly string[], ui: UiCheck | undefin
 export interface LoadedConfig {
   /**
    * `install_command` and `test_command`: argv (no shell) of the gate commands. Defaults ["npm", "ci"] and
-   * ["npm", "test"]. `check_commands`: the pre-push checks, a list of argv run in order before every push
+   * ["npm", "test"]. `install_commands`: gate entries (GateEntry: an argv, or `{ dir, argv }` run in that folder) run in
+   * order in place of `install_command` (installStep). `check_commands`: the pre-push checks, gate entries run in order before every push
    * (design §4): the implement run before push (and in its merge-conflict step), the update run on the merged
    * branch, the resolve run after install. Absent: `[test_command]` (checkCommands in src/core/checks.ts).
    * `ui_check`: the UI check (design §4), run only by the merge-check run, after the install command and the checks,
@@ -213,8 +212,9 @@ export interface LoadedConfig {
     path: string;
     base_branch: string;
     install_command: string[];
+    install_commands?: GateEntry[];
     test_command: string[];
-    check_commands?: string[][];
+    check_commands?: GateEntry[];
     ui_check?: UiCheck; check_tz?: string; restart_command?: string[]; test_selection?: { hubs: string[]; always: string[] };
   };
   /**

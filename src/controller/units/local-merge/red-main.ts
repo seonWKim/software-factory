@@ -38,8 +38,9 @@ function greenBases(c: Ctx): GreenBaseStore | null {
 }
 
 /**
- * The install command, the checks and the UI check (`repo.ui_check`) on the base tip in a fresh detached checkout,
- * through the merge check's runner (`runChecks`: its tail, at most CHECK_TAIL_CHARS). `where` names the tip in the text.
+ * The install step (`repo.install_commands`, else `repo.install_command`), the checks and the UI check (`repo.ui_check`)
+ * on the base tip in a fresh detached checkout, each entry in its folder (design 04-gate-commands), through the merge
+ * check's runner (`runChecks`: its tail, at most CHECK_TAIL_CHARS). `where` names the tip in the text.
  */
 async function checkTip(c: Ctx, where: string): Promise<Round> {
   const sandbox = c.k.d.sandbox!;
@@ -50,11 +51,13 @@ async function checkTip(c: Ctx, where: string): Promise<Round> {
     tip = handle.base_sha ?? null;
     try {
       const round = await runChecks({
-        sandbox, handle, commands: [repo.install_command, ...checkCommands(repo), ...(repo.ui_check ? [repo.ui_check.command] : [])],
+        sandbox, handle, commands: [...(repo.install_commands ?? [repo.install_command]), ...checkCommands(repo), ...(repo.ui_check ? [repo.ui_check.command] : [])],
         env: { ...c.k.d.check_env }, timeout_ms: c.k.cfg.run_timeout_ms, signal: new AbortController().signal, redact: [],
       });
       if (!round.failed) return { tip, failed: null, command: null, how: null };
-      const command = round.failed.command.join(" ");
+      // Named as core/checks.ts commandText names a folder entry; this unit reaches core only through core/local-merge.js.
+      const { dir } = round.failed;
+      const command = `${round.failed.command.join(" ")}${dir === undefined ? "" : ` (in ${dir}/)`}`;
       return {
         tip, command, how: round.failed.how, failed: `\`${command}\` ${round.failed.how} on ${where} of \`${repo.base_branch}\``,
         output: { failing_tests: failingTestNames(round.failed.tail), output_tail: round.failed.tail },

@@ -64,9 +64,93 @@ export const CHECK_TAIL_CHARS = 2000;
 /** What the text says in place of a redacted value. */
 export const REDACTED = "[redacted]";
 
+/**
+ * A gate command entry as factory.config.json writes it (design 04-gate-commands): a plain argv, run in the run
+ * folder, or `{ "dir": <folder>, "argv": [...] }`, run in that folder inside the run folder. Never a shell string.
+ */
+export type GateEntry = readonly string[] | { readonly dir: string; readonly argv: readonly string[] };
+
+/** A gate entry's argv (design 04-gate-commands). */
+export const gateArgv = (e: GateEntry): readonly string[] => ("argv" in e ? e.argv : e);
+
+/** A gate entry's folder inside the run folder; undefined: the run folder itself. */
+export const gateDir = (e: GateEntry): string | undefined => ("dir" in e ? e.dir : undefined);
+
+/** `e`'s folder with `argv`: a plain argv when `e` has no folder. */
+function withArgv(e: GateEntry, argv: string[]): GateEntry {
+  const dir = gateDir(e);
+  return dir === undefined ? argv : { dir, argv };
+}
+
+const copyEntry = (e: GateEntry): GateEntry => withArgv(e, [...gateArgv(e)]);
+
+/** What a check result records of the entry it ran (the inverse of ranEntry). */
+export function ranFields(e: GateEntry): Pick<CheckResult, "command" | "dir"> {
+  const dir = gateDir(e);
+  return { command: [...gateArgv(e)], ...(dir === undefined ? {} : { dir }) };
+}
+
+/** The entry a check result ran: its argv, in its folder when it had one. */
+export const ranEntry = (r: Pick<CheckResult, "command" | "dir">): GateEntry => (r.dir === undefined ? r.command : { dir: r.dir, argv: r.command });
+
+export const nonEmptyStrings = (v: unknown): v is string[] => Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === "string" && x !== "");
+
+/** `dir` as a folder inside the run folder, `/`-separated with no `.` or empty part ("" is the run folder itself); null when absolute or above it. */
+function insideRunFolder(dir: string): string | null {
+  if (/^([/\\]|[A-Za-z]:)/.test(dir)) return null;
+  const out: string[] = [];
+  for (const seg of dir.split(/[/\\]/)) {
+    if (seg === "" || seg === ".") continue;
+    if (seg !== "..") out.push(seg);
+    else if (out.pop() === undefined) return null;
+  }
+  return out.join("/");
+}
+
+/**
+ * One gate entry from config (the one parser of `repo.install_commands`, `repo.check_commands` and
+ * `repo.ui_check.command`): a non-empty argv of non-empty strings, or an object with only `dir`, a non-empty folder
+ * inside the run folder (not absolute, not above it via `..`), and `argv`, such an argv. Anything else fails startup
+ * naming `key`. A `dir` that is the run folder itself (`.`) gives the plain argv. `example` is an argv, as JSON.
+ */
+export function gateEntryConfig(key: string, value: unknown, example: string): GateEntry {
+  if (nonEmptyStrings(value)) return [...value];
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${key} must be an argv (a non-empty array of non-empty strings, no shell) or { "dir": <folder>, "argv": [...] }, e.g. ${example} or { "dir": "frontend", "argv": ${example} }`);
+  }
+  const { dir, argv, ...rest } = value as { dir?: unknown; argv?: unknown };
+  const extra = Object.keys(rest);
+  if (extra.length > 0) throw new Error(`${key} has unknown keys ${extra.join(", ")}; valid keys: dir, argv`);
+  const folder = typeof dir === "string" && dir.trim() !== "" ? insideRunFolder(dir) : null;
+  if (folder === null) throw new Error(`${key}.dir must be a non-empty folder inside the run folder (relative, not above it), e.g. "frontend"`);
+  if (!nonEmptyStrings(argv)) throw new Error(`${key}.argv must be a non-empty array of non-empty strings (argv, no shell), e.g. ${example}`);
+  return folder === "" ? [...argv] : { dir: folder, argv: [...argv] };
+}
+
+/** A list of gate entries from config: absent → undefined; otherwise a non-empty list, each checked by gateEntryConfig as `key[i]`. */
+export function gateListConfig(key: string, value: unknown, example: string): GateEntry[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${key} must be a non-empty list of gate commands, each an argv or { "dir": <folder>, "argv": [...] }, e.g. [${example}, { "dir": "frontend", "argv": ${example} }]`);
+  }
+  return value.map((v, i) => gateEntryConfig(`${key}[${i}]`, v, example));
+}
+
 /** The check list: `repo.check_commands`, or `[repo.test_command]` when it is absent. */
-export function checkCommands(repo: FactoryConfig["repo"]): string[][] {
-  return repo.check_commands && repo.check_commands.length > 0 ? repo.check_commands.map((c) => [...c]) : [[...repo.test_command]];
+export function checkCommands(repo: FactoryConfig["repo"]): GateEntry[] {
+  return repo.check_commands && repo.check_commands.length > 0 ? repo.check_commands.map(copyEntry) : [[...repo.test_command]];
+}
+
+/**
+ * The install step (design 04-gate-commands): `run` on `repo.install_commands` in order, each in its folder, as they
+ * are; absent: `run` on `[repo.install_command]` through `cache`, the run-side install cache (src/worker/install-cache.ts),
+ * which stands in only for that one command. Null: the cache stood in for the install.
+ */
+export function installStep<R>(
+  repo: Pick<FactoryConfig["repo"], "install_command" | "install_commands">, run: (commands: GateEntry[]) => Promise<R>,
+  cache: (install: () => Promise<R>) => Promise<R | null>,
+): Promise<R | null> {
+  return repo.install_commands ? run(repo.install_commands.map(copyEntry)) : cache(() => run([[...repo.install_command]]));
 }
 
 /** The test files a check's output reports as failed (vitest's `FAIL  <file> > <name>` lines), in order, each once. */
@@ -78,13 +162,17 @@ export function failingTestFiles(text: string): string[] {
  * `cmd` run on `files` only, for the base rerun (design §4): npm needs `--` before arguments for the script;
  * a command that already has `--`, or any other runner, takes the files as they are.
  */
-export function withTestFiles(cmd: readonly string[], files: readonly string[]): string[] {
-  return cmd[0] === "npm" && !cmd.includes("--") ? [...cmd, "--", ...files] : [...cmd, ...files];
+export function withTestFiles(cmd: readonly string[], files: readonly string[]): string[];
+export function withTestFiles(cmd: GateEntry, files: readonly string[]): GateEntry;
+export function withTestFiles(cmd: GateEntry, files: readonly string[]): GateEntry {
+  const argv = gateArgv(cmd);
+  return withArgv(cmd, argv[0] === "npm" && !argv.includes("--") ? [...argv, "--", ...files] : [...argv, ...files]);
 }
 
-/** A command as it is shown in prompts, comments and the PR body. */
-export function commandText(cmd: readonly string[]): string {
-  return cmd.join(" ");
+/** A command as it is shown in prompts, comments and the PR body; a folder entry adds `(in <dir>/)`. */
+export function commandText(cmd: GateEntry): string {
+  const dir = gateDir(cmd);
+  return `${gateArgv(cmd).join(" ")}${dir === undefined ? "" : ` (in ${dir}/)`}`;
 }
 
 /** Every occurrence of every value replaced by REDACTED, longest value first. Empty values are skipped. */
@@ -95,7 +183,10 @@ export function redact(text: string, values: readonly string[]): string {
 }
 
 export interface CheckResult {
+  /** The argv that ran. */
   command: string[];
+  /** Its entry's folder inside the run folder (a `{ dir, argv }` entry); absent: the run folder. */
+  dir?: string;
   ok: boolean;
   /** "passed", "exited 1", "timed out", "could not run: ...". */
   how: string;
@@ -121,41 +212,45 @@ export function exitText(r: Pick<ExecResult, "exit_code" | "signal" | "timed_out
 }
 
 /**
- * Runs `commands` in order in the run folder (or `cwd` inside it), each with `env` and the run timeout, and stops at the first
- * failure. Output is redacted before it is kept: `redact` lists values that must never leave the worker.
+ * Runs `commands` in order, each in its own folder (a `{ dir, argv }` entry: `dir`; a plain argv: the run folder; both
+ * inside `cwd` when it is given), each with `env` and the run timeout, without a shell, and stops at the first failure.
+ * Output is redacted before it is kept: `redact` lists values that must never leave the worker.
  */
 export async function runChecks(o: {
   sandbox: Sandbox;
   handle: SandboxHandle;
-  commands: readonly (readonly string[])[];
+  commands: readonly GateEntry[];
   env: Record<string, string>;
   timeout_ms: number;
   signal: AbortSignal;
   redact: readonly string[];
-  /** The folder to run in, relative to the run folder; absent: the run folder itself. */
+  /** The folder every command's folder is in, relative to the run folder; absent: the run folder itself. */
   cwd?: string;
 }): Promise<CheckRound> {
   const results: CheckResult[] = [];
-  for (const cmd of o.commands) {
+  for (const entry of o.commands) {
+    const ran = ranFields(entry);
+    const dir = ran.dir;
+    const cwd = dir === undefined ? o.cwd : o.cwd === undefined ? dir : `${o.cwd}/${dir}`;
     let r: ExecResult;
     try {
-      r = await o.sandbox.exec(o.handle, cmd, {
-        env: o.env, timeout_ms: o.timeout_ms, signal: o.signal, ...(o.cwd === undefined ? {} : { cwd: o.cwd }),
+      r = await o.sandbox.exec(o.handle, [...ran.command], {
+        env: o.env, timeout_ms: o.timeout_ms, signal: o.signal, ...(cwd === undefined ? {} : { cwd }),
       });
     } catch (err) {
       const why = redact(err instanceof Error ? err.message : "unknown", o.redact).slice(0, 300);
-      const failed = { command: [...cmd], ok: false, how: `could not run: ${why}`, tail: "" };
+      const failed = { ...ran, ok: false, how: `could not run: ${why}`, tail: "" };
       results.push(failed);
       return { results, failed };
     }
     if (o.signal.aborted) return { results, failed: null };
     if (r.exit_code === 0 && !r.timed_out) {
-      results.push({ command: [...cmd], ok: true, how: "passed", tail: "" });
+      results.push({ ...ran, ok: true, how: "passed", tail: "" });
       continue;
     }
     // The whole output is redacted before it is cut, so a value cut in half at the tail's start cannot slip through.
     const whole = redact(stripAnsi(`${r.stdout}${r.stderr}`), o.redact);
-    const failed = { command: [...cmd], ok: false, how: exitText(r), tail: cutTail(whole, o.redact) };
+    const failed = { ...ran, ok: false, how: exitText(r), tail: cutTail(whole, o.redact) };
     results.push(failed);
     return { results, failed };
   }
@@ -182,7 +277,7 @@ function cutTail(text: string, values: readonly string[]): string {
  */
 export function checkedLines(results: readonly CheckResult[], o: { fixed: boolean }): string[] {
   return results.map(
-    (r) => `Checked before push: \`${commandText(r.command)}\` ${r.how}${o.fixed ? " (after one fix step)" : ""}`,
+    (r) => `Checked before push: \`${commandText(ranEntry(r))}\` ${r.how}${o.fixed ? " (after one fix step)" : ""}`,
   );
 }
 
@@ -193,11 +288,11 @@ export function checkedLines(results: readonly CheckResult[], o: { fixed: boolea
  * its reason go to `log` before any command runs, then one line per test picked by a read; a selection that cannot be made (git failed) is full.
  */
 export async function selectedChecks(
-  repo: Pick<FactoryConfig["repo"], "test_command" | "test_selection">, commands: readonly (readonly string[])[], git: TrustedGit, baseSha: string, log: (line: string) => void,
+  repo: Pick<FactoryConfig["repo"], "test_command" | "test_selection">, commands: readonly GateEntry[], git: TrustedGit, baseSha: string, log: (line: string) => void,
   mode: SelectionMode,
-): Promise<{ commands: string[][]; selection: TestSelection | null }> {
-  const same = (c: readonly string[]) => c.length === repo.test_command.length && c.every((a, i) => a === repo.test_command[i]);
-  if (!repo.test_selection || !commands.some(same)) return { commands: commands.map((c) => [...c]), selection: null };
+): Promise<{ commands: GateEntry[]; selection: TestSelection | null }> {
+  const same = (c: GateEntry) => isTestCommand(repo.test_command, c);
+  if (!repo.test_selection || !commands.some(same)) return { commands: commands.map(copyEntry), selection: null };
   let s: TestSelection;
   try {
     s = await selectTests(git, baseSha, repo.test_selection);
@@ -206,7 +301,12 @@ export async function selectedChecks(
   }
   log(`test selection (${mode}): ${s.reason}${s.full ? "" : `: ${s.files.join(" ")}`}`);
   for (const r of s.full ? [] : (s.reads ?? [])) log(`test selection (${mode}): ${r.test} reads ${r.path}`);
-  return { commands: commands.map((c) => (same(c) && !s.full && mode === "enforce" ? withTestFiles(c, s.files) : [...c])), selection: s };
+  return { commands: commands.map((c) => (same(c) && !s.full && mode === "enforce" ? withTestFiles(c, s.files) : copyEntry(c))), selection: s };
+}
+
+/** Whether `c` is `repo.test_command` itself, `extra` arguments after it allowed: a plain argv only (a folder entry is another command). */
+function isTestCommand(test: readonly string[], c: GateEntry, extra = false): boolean {
+  return gateDir(c) === undefined && (extra || gateArgv(c).length === test.length) && test.every((a, i) => gateArgv(c)[i] === a);
 }
 
 /**
@@ -230,7 +330,7 @@ export class PrePushSelection {
     return new PrePushSelection(repo.test_selection ? await selectionMode(store, project) : "shadow", repo, log);
   }
 
-  async commands(commands: readonly (readonly string[])[], git: TrustedGit, baseSha: string): Promise<string[][]> {
+  async commands(commands: readonly GateEntry[], git: TrustedGit, baseSha: string): Promise<GateEntry[]> {
     const s = await selectedChecks(this.repo, commands, git, baseSha, this.log, this.mode);
     this.last = s.selection ?? this.last;
     return s.commands;
@@ -238,8 +338,7 @@ export class PrePushSelection {
 
   /** A round's result, noted: whether the test command ran, and in shadow mode its failing files outside the selection. */
   saw<R extends CheckRound>(round: R): R {
-    const t = this.repo.test_command;
-    const test = round.results.find((r) => t.every((a, i) => r.command[i] === a));
+    const test = round.results.find((r) => isTestCommand(this.repo.test_command, ranEntry(r), true));
     if (!this.last || !test) return round;
     this.ran = true;
     if (this.mode === "shadow" && !test.ok && !this.last.full) for (const f of uncovered(this.last.files, failingTestFiles(test.tail))) this.missed.add(f);
@@ -284,7 +383,7 @@ export interface DoneCheckResult {
 }
 
 /** The argv of one done check: its repo check command, `repo.test_command` on its test file only, or null (manual). */
-function doneCheckArgv(repo: FactoryConfig["repo"], c: DoneCheck): string[] | null {
+function doneCheckArgv(repo: FactoryConfig["repo"], c: DoneCheck): GateEntry | null {
   if ("manual" in c) return null;
   if ("test_file" in c) return withTestFiles(repo.test_command, [c.test_file]);
   return checkCommands(repo).find((cmd) => commandText(cmd) === c.command) ?? null;
@@ -298,7 +397,7 @@ function doneCheckArgv(repo: FactoryConfig["repo"], c: DoneCheck): string[] | nu
  * makes that failure say the file does not exist when `present` (the branch's files) lacks it. Null done_checks: the check list as before.
  */
 export function doneCheckRound(repo: FactoryConfig["repo"], checks: readonly DoneCheck[] | null): {
-  commands: string[][]; mark<R extends CheckRound>(round: R): R; results(round: CheckRound): DoneCheckResult[] | undefined;
+  commands: GateEntry[]; mark<R extends CheckRound>(round: R): R; results(round: CheckRound): DoneCheckResult[] | undefined;
   testFile(round: CheckRound): string | null; missing<R extends CheckRound>(round: R, present: readonly string[]): R;
 } {
   const commands = checkCommands(repo);
