@@ -13,9 +13,6 @@ import type { UiDeps } from "./deps.js";
 const DAY_MS = 86_400_000;
 /** Recent actions shown per actor. */
 export const RECENT_PER_ACTOR = 10;
-/** Rows read once for every actor (the store's own cap). */
-const READ_LIMIT = 200;
-
 /** An actor's words: its name, what it does, and what it says while it has no action to show. */
 export interface ActorWords { name: string; about: string; idle: string }
 
@@ -58,12 +55,13 @@ export async function readActivity(d: Pick<UiDeps, "store" | "clock">) {
   const { ACTIVITY_RETENTION_DAYS } = await import("../impl/store/sql/activity.js");
   const now = d.clock.now();
   const since = new Date(now.getTime() - ACTIVITY_RETENTION_DAYS * DAY_MS).toISOString();
-  // One read for every actor; rows past the retention window are cut here, whether or not the retention pass has run.
-  const rows = (await d.store.listActivity({ limit: READ_LIMIT })).filter((a) => String(a.at) >= since);
   const sched = await scheduleState(d);
-  const actors = BACKGROUND_JOBS.map((job) => {
+  // One read per actor, by the kind only its job writes, so a busy actor never pushes a quieter one's rows out of the
+  // window; rows past the retention window are cut here, whether or not the retention pass has run.
+  const actors = await Promise.all(BACKGROUND_JOBS.map(async (job) => {
     const words = ACTOR_WORDS[job.kind];
-    const mine = rows.filter((a) => a.actor_id === job.actor_id);
+    const mine = (await d.store.listActivity({ kind: job.kind, limit: RECENT_PER_ACTOR }))
+      .filter((a) => a.actor_id === job.actor_id && String(a.at) >= since);
     const last = mine[0] ?? null;
     const running = job.kind === "schedule_run" ? sched.running : null;
     const state: "idle" | "running" | "attention" = running !== null ? "running" : last !== null && /fail/.test(last.outcome) ? "attention" : "idle";
@@ -72,9 +70,9 @@ export async function readActivity(d: Pick<UiDeps, "store" | "clock">) {
       state, now: running !== null ? `Running ${running}` : words.idle,
       last_at: last === null ? null : String(last.at), next_run_at: job.kind === "schedule_run" ? sched.next : null,
       transcript: last === null ? null : linkOf(last.ref),
-      actions: mine.slice(0, RECENT_PER_ACTOR).map(actionOf),
+      actions: mine.map(actionOf),
     };
-  });
+  }));
   const alerts = (await openAlarms(d.store, now)).map((a) => ({ alert_id: a.id, text: alarmText(a), created_at: String(a.created_at) }));
   return { as_of: now.toISOString(), retention_days: ACTIVITY_RETENTION_DAYS, actors, alerts };
 }

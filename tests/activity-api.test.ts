@@ -1,11 +1,8 @@
-// @ts-nocheck -- tsconfig.test.json has no DOM or JSX; like the other ui tests this file typechecks under the web config.
-// Node environment: the store (node:sqlite) cannot load under jsdom, so the page renders here to static markup and
-// its click behaviour is in tests/activity.test.ts.
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+// @ts-nocheck -- the read's rows are checked loosely, like the other ui tests.
+// Node environment: the store (node:sqlite) cannot load under jsdom; the page's DOM tests, Clear included, are in
+// tests/activity.test.ts.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import { DECLARATIONS, REGISTRY } from "../src/api/index.js";
 import { BACKGROUND_JOBS } from "../src/controller/background-jobs.js";
@@ -13,11 +10,10 @@ import { ALERT_DEDUPE_MS } from "../src/core/alarms.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { ACTIVITY_RETENTION_DAYS } from "../src/impl/store/sql/activity.js";
 import { ACTOR_WORDS, readActivity } from "../src/ui/activity-api.js";
-import { ActivityBody } from "../web/src/views/activity/page.js";
 import { newStore } from "./helpers/store.js";
 
 // The Activity read (design 09-dashboard-activity): one entry per autonomous actor, its recent actions with outcome,
-// reason and a Transcript or log link, none older than the retention days; the capability that serves it; the page.
+// reason and a Transcript or log link, none older than the retention days; the alerts the owner clears; the capability.
 
 const ROOT = join(import.meta.dirname, "..");
 const DAY = 86_400_000;
@@ -45,6 +41,14 @@ describe("the Activity read", () => {
     expect(run).toMatchObject({ outcome: "started", reason: "due", link: { kind: "transcript", href: "/app/items/wi_1/runs/run_1" } });
     expect(log).toMatchObject({ outcome: "failed", reason: "no slot", link: { kind: "log", href: null, text: "controller: schedule skipped" } });
     expect(schedule.state).toBe("attention");
+  });
+
+  it("gives a quiet actor its own recent actions when a busy one fills the newest rows", async () => {
+    const { store, clock } = await newStore(new FakeClock(T0));
+    await store.recordActivity({ actor_id: "system:cleanup", kind: "cleanup", subject: "quiet", outcome: "removed", reason: "unused", ref: null });
+    for (let i = 0; i < 205; i++) await store.recordActivity({ actor_id: "system:schedule", kind: "schedule_run", subject: `s${i}`, outcome: "started", reason: "due", ref: null });
+    const v = await readActivity({ store, clock });
+    expect(v.actors.find((a) => a.actor_id === "system:cleanup")).toMatchObject({ last_at: T0, actions: [{ subject: "quiet" }] });
   });
 
   it("returns no entry older than 30 days", async () => {
@@ -80,24 +84,5 @@ describe("the Activity capability", () => {
     expect(readFileSync(join(ROOT, "web/src/api/activity.ts"), "utf8")).toContain("activityActors");
     expect(readFileSync(join(ROOT, "src/api/capabilities/activity.ts"), "utf8")).toContain("readActivity");
     for (const f of ["web/src/api/activity.ts", "web/src/views/activity/page.tsx"]) expect(readFileSync(join(ROOT, f), "utf8")).not.toMatch(/fetch\(\s*["'`]\/api\/v1\/activity/);
-  });
-});
-
-const VIEW = {
-  as_of: T0, retention_days: 30,
-  actors: [
-    { actor_id: "system:schedule", name: "Schedules", about: "Starts work.", state: "attention", now: "Waiting", last_at: T0, next_run_at: null, transcript: { kind: "transcript", href: "/app/items/wi_1/runs/run_1", text: TRANSCRIPT },
-      actions: [{ seq: 1, kind: "schedule_run", subject: "s1", outcome: "failed", reason: "no slot", at: T0, link: { kind: "transcript", href: "/app/items/wi_1/runs/run_1", text: TRANSCRIPT } }] },
-    { actor_id: "system:cleanup", name: "Workspace cleanup", about: "Cleans.", state: "idle", now: "Waiting", last_at: null, next_run_at: null, transcript: null, actions: [] },
-  ],
-  alerts: [{ alert_id: "al_1", text: "Zero tokens", created_at: T0 }],
-};
-
-describe("the Activity page", () => {
-  it("clears a factory alert with a Dismiss button labelled Clear", () => {
-    const client = new QueryClient();
-    client.setQueryData(["/api/v1/session"], { csrf_token: "tok" });
-    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ActivityBody, { view: VIEW, now: Date.parse(T0) })));
-    expect(html).toMatch(/<button[^>]*aria-label="Clear alert[^"]*"[^>]*>Clear<\/button>/);
   });
 });
