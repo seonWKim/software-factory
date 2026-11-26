@@ -8,11 +8,11 @@ import type { HookDescriptor } from "../shared/hook.js";
 import { type RoleCatalog, SqlHookAudit, loadHooks, loadRoles, runHooks } from "../runtime/index.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { PACK_TOOL_REFUSED, type PackRefusal as PackGrantRefusal, checkPackGrants, packRefusalMessage } from "../packs/pack-grants.js";
-import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor, readOnlyOverlaps, readOnlyRunFields } from "../core/config.js";
+import { type FactoryConfig, type GateEntry, type Prompts, STALL_DEFAULTS, grantsFor, readOnlyOverlaps, readOnlyRunFields } from "../core/config.js";
 import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
 import { errorText, type LogFields } from "../core/log.js";
-import { type CheckRound, checkCommands, commandText, failingTestFiles, mergeMiss, runChecks, withTestFiles } from "../core/checks.js";
+import { type CheckRound, checkCommands, commandText, failingTestFiles, installCommands, mergeMiss, ranEntry, runChecks, withTestFiles } from "../core/checks.js";
 import { FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, wipBranchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, failureClass, SETUP_MISSING } from "../core/policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
 import type { MergeIO } from "../core/mechanical.js";
@@ -38,7 +38,7 @@ export class Worker {
   readonly live: LiveSettings;
 
   /** The check helpers the merge-check run uses, injected so the run imports no legacy core module. */
-  readonly checkTools: MergeCheckTools = { checkCommands, failingTestFiles, withTestFiles, mergeMiss };
+  readonly checkTools: MergeCheckTools = { checkCommands, commandText, failingTestFiles, withTestFiles, ranEntry, mergeMiss };
 
   /** The settings of the run being executed, read once at its claim. Scratch for one run, like `meters`. */
   cfg: FactoryConfig;
@@ -642,13 +642,23 @@ export class Worker {
    * The check list in the run folder (or `o.cwd` inside it) with the check env: the tool env and the slot env
    * (worker index, test workers), plus `o.env`. That env never reaches an agent. Stops at the first failure. `o.commands`: the list to run; absent, the configured checks.
    */
-  async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal, o: { commands?: string[][]; cwd?: string; env?: Record<string, string> } = {}): Promise<CheckRound> {
+  async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal, o: { commands?: readonly GateEntry[]; cwd?: string; env?: Record<string, string> } = {}): Promise<CheckRound> {
     const round = await runChecks({
       sandbox: this.d.sandbox, handle, commands: o.commands ?? checkCommands(this.cfg.repo), ...(o.cwd === undefined ? {} : { cwd: o.cwd }),
       env: { ...this.d.toolEnv, ...this.slotEnv(), ...o.env }, timeout_ms: this.cfg.run_timeout_ms, signal, redact: [],
     });
     if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
     return round;
+  }
+
+  /**
+   * The install step in `handle`'s run folder (design 04-gate-commands): `repo.install_commands` in order, each in its
+   * folder, run as they are; else `repo.install_command` through the run-side install cache (install-cache.ts), which
+   * stands in only for that one command. `run` runs the entries it is given; null: the cache stood in for the install.
+   */
+  async installStep<R extends { failed: unknown }>(handle: SandboxHandle, run: (commands: GateEntry[]) => Promise<R>): Promise<R | null> {
+    const commands = installCommands(this.cfg.repo);
+    return this.cfg.repo.install_commands ? run(commands) : cachedInstall(this, handle, () => run(commands));
   }
 
   /**
