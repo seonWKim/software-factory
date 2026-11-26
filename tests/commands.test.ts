@@ -377,7 +377,8 @@ describe("command table", () => {
     for (const phase of COMMAND_PHASES.filter((p) => p !== "agent_needs_human")) expect(applies(hold, { phase, has_pr: false, local: true }), phase).toBe(false);
     expect(applies(hold, { phase: "agent_needs_human", has_pr: false, asked_by: "implement" })).toBe(false);
     expect(applies(hold, { ...local, has_pr: true, asked_by: "implement" })).toBe(false);
-    expect(commandTableMarkdown()).toContain(`| \`/hold <id>\` | ${hold.description} | on a local item with no PR: blocked: the agent asked for a human |`);
+    expect(commandTableMarkdown()).toContain(`| \`/hold <id>\` | ${hold.description}. ${hold.table_note} | on a local item with no PR: blocked: the agent asked for a human |`);
+    expect(hold.table_note).toContain("implement run is queued and not started");
     expect(helpReply({ ...local, asked_by: "implement" })).toContain("`/hold <id>` **(now)**: Hold until <id> merges");
   });
 

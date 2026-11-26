@@ -1,6 +1,7 @@
 import type { TriagePhase } from "./outputs.js";
 import type { Run, SourceRef, StateChangeDetail, WorkItem, WorkItemId } from "./types.js";
 import { type SizeCapChanges, itemSizeCaps, sizeCaps } from "./size-cap.js";
+import { dependsOnIds, withDependsOn } from "./task-build.js";
 export { itemSizeCaps, sizeCaps }; // an item's size caps, for the size readers that import the split rule
 
 // Split specs (design 2026-11-01): when triage estimates a change near the size caps, it proposes 2 to 4
@@ -357,4 +358,12 @@ export function suggestedSplit(detail: string, paths: readonly string[], limits:
   });
   out.push("");
   return out;
+}
+
+/**
+ * A local phase's problem text: `text` with each `Depends on:` wi_/tk_ id of its split parent's problem and filed text
+ * (`task create --depends-on`), so its implement run waits for what the parent waited for (design 05-dependencies, 2026-11-26).
+ */
+export function withParentDependsOn(text: string, parent: Pick<WorkItem, "problem" | "issue_text">): string {
+  return withDependsOn(text, [...dependsOnIds(parent.problem), ...dependsOnIds(parent.issue_text ?? "")]);
 }

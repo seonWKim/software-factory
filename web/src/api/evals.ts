@@ -2,7 +2,7 @@
 // /versions and /diff?a=&b=, the same fields as the CLI's --json, and Run now's POST /api/v1/evals/<skill>/runs. <skill> is the
 // skill_ref, URL-encoded. A null figure means none was recorded, never 0. The Plugins page's Evals card (design
 // 09-dashboard-settings) also reads /suite and writes through POST /api/v1/evals/write (postEvalWrite), with
-// GET /api/v1/pauses's csrf_token. The evals page's Judge checks card reads /calibration and labels a check with
+// GET /api/v1/pauses's csrf_token, and reads GET /api/v1/evals's `starter` for Draft starter cases. The evals page's Judge checks card reads /calibration and labels a check with
 // postEvalWrite's label.set.
 
 import { useQuery } from "@tanstack/react-query";
@@ -108,8 +108,11 @@ export interface EvalCalibration {
 /** The skill's judge agreement and judged checks; read with the page and again after each label. */
 export const useEvalCalibration = (skill: string) => useApi<EvalCalibration>(base(skill, "calibration"), POLL_MS);
 
-/** The skill_refs that have a suite (GET /api/v1/evals); read once when the page opens, never polled. */
-export const useEvalSuites = () => useApi<{ skills: string[] }>("/api/v1/evals", false);
+/**
+ * The skill_refs that have a suite (GET /api/v1/evals) and why Draft starter cases is off (null: on; absent from an
+ * older server); read once when the page opens, never polled.
+ */
+export const useEvalSuites = () => useApi<{ skills: string[]; starter?: string | null }>("/api/v1/evals", false);
 
 /** Run now's options, as `factory eval run`'s flags: the model class as stored (never a model ID), its judge class, replays. */
 export interface EvalRunOptions {
@@ -172,13 +175,24 @@ export type EvalWrite =
   | { op: "case.delete"; case: string }
   | { op: "case.try"; case: string }
   | { op: "import"; skill: string }
-  | { op: "label.set"; run: string; case: string; replay: number; check: string; label: "right" | "wrong" };
+  | { op: "label.set"; run: string; case: string; replay: number; check: string; label: "right" | "wrong" }
+  | { op: "starter.draft"; skill: string }
+  | { op: "starter.accept"; skill: string; cases: StarterCase[] };
 
-/** The answer's fields: `runs` after a suite delete, `tried` after a try, `added` and `kept` after an import. */
+/** One drafted starter case (src/core/skill-eval-starter.ts): its kind and title are shown; accept stores its input and expected. */
+export interface StarterCase {
+  kind: "typical" | "edge" | "refuse";
+  title: string;
+  input: string;
+  expected: unknown;
+}
+
+/** The answer's fields: `runs` after a suite delete, `tried` after a try, `added` and `kept` after an import, `cases` after a starter draft. */
 export interface EvalWritten {
   op: EvalWrite["op"];
   runs?: number;
   tried?: TriedCase;
+  cases?: StarterCase[];
   added?: string[];
   kept?: string[];
 }

@@ -4,7 +4,7 @@
 import { type TriageOutput, type TriagePhase, parseJudge, parseTriage } from "../../../core/outputs.js";
 import { failureClass, runKey, sameStep, takenOver } from "../../../core/policy.js";
 import { specDecisionDetail } from "../../../core/standing.js";
-import { PHASE_HOLD, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, atSizeCheckpoint, goalLinesText, itemSizeCaps, parseSubIssues, phaseIssueBody, phaseLinkDetail, phaseMarker, phaseTitle } from "../../../core/split.js";
+import { PHASE_HOLD, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, atSizeCheckpoint, goalLinesText, itemSizeCaps, parseSubIssues, phaseIssueBody, phaseLinkDetail, phaseMarker, phaseTitle, withParentDependsOn } from "../../../core/split.js";
 import { type Actor, type Run, type SourceRef, type StateChange, type StateChangeDetail, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
 import type { ActionRow } from "../../../outbound/index.js";
 import { type Decision, DELIVERY_FAILED, type Refusal, SYSTEM, completed, splitFiling, splitOpen, footerAfter } from "../support.js";
@@ -218,10 +218,13 @@ export class PhasesUnit {
     return this.takeIn(it, claim.actor, f, { type: it.source.type, id: a.delivered_ref, link: a.delivered_url ?? "" });
   }
 
-  /** Phase `f.index` taken in as a work item under `ref`, linked to its parent, held after the first; keyed on `ref`. */
+  /**
+   * Phase `f.index` taken in as a work item under `ref`, linked to its parent, held after the first; keyed on `ref`.
+   * A local phase inherits its parent's `Depends on:` lines (withParentDependsOn).
+   */
   private async takeIn(it: WorkItem, actor: Actor, f: PhaseFiling, ref: SourceRef): Promise<SourceRef> {
     const title = phaseTitle(f.index, f.total, f.phase.title);
-    const body = phaseBody(it, f);
+    const body = ref.type === "local" ? withParentDependsOn(phaseBody(it, f), it) : phaseBody(it, f);
     const requester = actor.kind === "user" ? actor.id : it.requester_id;
     const hold = f.prev ? { hold: { blocked_on: "upstream" as const, blocked_reason: PHASE_HOLD } } : {};
     const { item, created } = await this.c.k.d.store.createWorkItem(
