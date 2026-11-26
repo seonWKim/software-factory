@@ -126,28 +126,43 @@ interface VersionCasesRow {
   failed: boolean;
 }
 
-/** "Add as a new case" for one case that failed in `run`: a Dialog that posts case.from_run, then reads the page again. */
-function AddFromRun({ run, row }: { run: string; row: VersionCasesRow }) {
+/**
+ * One write from this page: `busy` while it posts; `post` answers the server's refusal (shown as `error`) or null;
+ * a throw shows `failed`. On success every read loads again, then `done` runs (a Dialog closes).
+ */
+function useEvalPost(failed: string) {
   const client = useQueryClient();
-  const token = useApi<Session>(API.session, false).data?.csrf_token ?? null;
-  const button = useRef<HTMLButtonElement>(null);
-  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const send = async () => {
-    if (token === null) return;
+  const send = async (post: () => Promise<string | null>, done?: () => void): Promise<void> => {
     setBusy(true);
     setError(null);
     try {
-      const r = await postEvalWrite(token, { op: "case.from_run", run, case: row.key });
-      if (!r.ok) return setError(r.error);
+      const refused = await post();
+      if (refused !== null) return setError(refused);
       await client.invalidateQueries();
-      setOpen(false);
+      done?.();
     } catch {
-      setError(t("evals.fromRunFailed"));
+      setError(failed);
     } finally {
       setBusy(false);
     }
+  };
+  return { busy, error, setError, send };
+}
+
+/** A write's refusal text, or null when it went through. */
+const refusalOf = (r: { ok: true } | { ok: false; error: string | null }, fallback: string): string | null => (r.ok ? null : (r.error ?? fallback));
+
+/** "Add as a new case" for one case that failed in `run`: a Dialog that posts case.from_run, then reads the page again. */
+function AddFromRun({ run, row }: { run: string; row: VersionCasesRow }) {
+  const token = useApi<Session>(API.session, false).data?.csrf_token ?? null;
+  const button = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const { busy, error, setError, send: post } = useEvalPost(t("evals.fromRunFailed"));
+  const send = async () => {
+    if (token === null) return;
+    await post(async () => refusalOf(await postEvalWrite(token, { op: "case.from_run", run, case: row.key }), t("evals.fromRunFailed")), () => setOpen(false));
   };
   return (
     <>
@@ -324,28 +339,17 @@ export function HeldCases({ held }: { held: HeldVersion }) {
  * the Dialog and a refusal shows in it, or (for Use this version) on its own line under the buttons.
  */
 export function HeldVersionActions({ held, skill, size = "md" }: { held: HeldVersion; skill: string; size?: "sm" | "md" }) {
-  const client = useQueryClient();
   const token = useApi<Session>(API.session, false).data?.csrf_token ?? null;
   const keepButton = useRef<HTMLButtonElement>(null);
   const [keeping, setKeeping] = useState(false);
   const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<{ on: "use" | "keep"; text: string } | null>(null);
+  const [on, setOn] = useState<"use" | "keep">("use");
+  const { busy, error: refused, setError, send } = useEvalPost(t("evals.heldFailed"));
+  const error = refused === null ? null : { on, text: refused };
   const settle = async (decision: "approve" | "reject") => {
     if (token === null) return;
-    const on = decision === "approve" ? "use" : "keep";
-    setBusy(true);
-    setError(null);
-    try {
-      const refused = await postSettle(token, held, decision);
-      if (refused !== null) return setError({ on, text: refused });
-      await client.invalidateQueries();
-      setKeeping(false);
-    } catch {
-      setError({ on, text: t("evals.heldFailed") });
-    } finally {
-      setBusy(false);
-    }
+    setOn(decision === "approve" ? "use" : "keep");
+    await send(() => postSettle(token, held, decision), () => setKeeping(false));
   };
   return (
     <>
@@ -408,22 +412,10 @@ function Agreement({ labels, agreement }: { labels: number; agreement: number | 
  * its first label, so both buttons are off once it has one. A refusal shows on its own line under the buttons.
  */
 function JudgeCheckRow({ c, n, replays, token }: { c: JudgedCheck & { run: string }; n: number; replays: boolean; token: string | null }) {
-  const client = useQueryClient();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { busy, error, send } = useEvalPost(t("evals.labelFailed"));
   const label = async (verdict: "right" | "wrong") => {
     if (token === null) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await postEvalWrite(token, { op: "label.set", run: c.run, case: c.case_id, replay: c.replay, check: c.check, label: verdict });
-      if (!r.ok) return setError(r.error);
-      await client.invalidateQueries();
-    } catch {
-      setError(t("evals.labelFailed"));
-    } finally {
-      setBusy(false);
-    }
+    await send(async () => refusalOf(await postEvalWrite(token, { op: "label.set", run: c.run, case: c.case_id, replay: c.replay, check: c.check, label: verdict }), t("evals.labelFailed")));
   };
   const where = replays ? t("evals.judgeCaseReplay", { n, replay: c.replay }) : t("evals.judgeCase", { n });
   const said = t("evals.judgeSaid", { answer: c.answer === "yes" ? t("evals.answerYes") : c.answer === "no" ? t("evals.answerNo") : c.answer });
@@ -482,27 +474,14 @@ function JudgeChecks({ skill }: { skill: string }) {
 
 /** Run now: model class, its judge class (follows the model) and replay count; the run is stored before it closes. */
 function RunNowDialog({ skill, onClose, returnFocusTo }: { skill: string; onClose: () => void; returnFocusTo: RefObject<HTMLButtonElement | null> }) {
-  const client = useQueryClient();
   const token = useApi<Session>(API.session, false).data?.csrf_token ?? null;
   const [model, setModel] = useState("standard");
   const [replays, setReplays] = useState("1");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { busy, error, send: post } = useEvalPost(t("evals.runFailed"));
   const judge = judgeOf(model);
   const send = async () => {
     if (token === null) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await postEvalRun(token, skill, { model_class: model, judge_model_class: judge, replays: Number(replays) });
-      if (!r.ok) return setError(r.error ?? t("evals.runFailed"));
-      await client.invalidateQueries();
-      onClose();
-    } catch {
-      setError(t("evals.runFailed"));
-    } finally {
-      setBusy(false);
-    }
+    await post(async () => refusalOf(await postEvalRun(token, skill, { model_class: model, judge_model_class: judge, replays: Number(replays) }), t("evals.runFailed")), onClose);
   };
   return (
     <Dialog
