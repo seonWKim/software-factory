@@ -19,8 +19,15 @@ import { useNow } from "./common.js";
 // 15 minutes) and its recent actions, newest first. One read: GET /api/v1/coordinator, the `coordinator.status`
 // capability. Built from Card, ListRow, Switch, Badge and EmptyState; each action's menu holds its transcript.
 
-const OUTCOMES = ["requested", "refused", "skipped", "failed"] as const;
-const outcomeText = (o: string) => ((OUTCOMES as readonly string[]).includes(o) ? t(`coordinator.outcome.${o}` as MessageKey) : o);
+const outcomeText = (o: string): string => {
+  switch (o) {
+    case "requested": return t("coordinator.outcome.requested");
+    case "refused": return t("coordinator.outcome.refused");
+    case "skipped": return t("coordinator.outcome.skipped");
+    case "failed": return t("coordinator.outcome.failed");
+    default: return o;
+  }
+};
 
 /** What the coordinator is doing: off, waiting for its first check, or checking every interval. */
 function activityText(v: CoordinatorView): string {
