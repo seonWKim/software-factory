@@ -27,7 +27,9 @@ import { localDateTime, localShortDate } from "../lib/format.js";
 // The evals page at evals/<skill> (design 09-dashboard-evals): the header (title and Run now, the one primary Button), the
 // Versions Card (a ListRow per version, newest first, the current one with a Badge, its pass rate, 95% band in words and
 // cost per run), the Cases Card (a DataTable: a row per case, a column per version), a ButtonRow with Compare (opens a
-// ModalPanel: two version Selects, the unified DiffView of their SKILL.md texts and each case's result) and the Trend Card. Plain words only: folder hashes
+// ModalPanel: two version Selects, the unified DiffView of their SKILL.md texts and each case's result) and the Trend Card.
+// A case that failed in the newest finished run (its verdict in that run's version row) has "Add as a new case" in the
+// Cases table's last column: a Dialog that posts case.from_run (a new dev case copying it) and shows a refusal in it. Plain words only: folder hashes
 // and run IDs show only inside a version row's Details. Run now opens a Dialog that starts one run
 // (POST /api/v1/evals/<skill>/runs); the server's refusal (403 owner check, 409 refused run) shows in it. A version the
 // gate holds is a Card above Versions: its pass rates, the cases that got worse, "Keep the current version" (a Dialog
@@ -117,18 +119,71 @@ function Versions({ versions }: { versions: ReturnType<typeof useSkillVersions> 
 
 interface VersionCasesRow {
   key: string;
+  n: number;
   name: string;
   results: Map<number, string | null>;
+  /** The case failed in the newest finished run (its verdict in that run's version row). */
+  failed: boolean;
 }
 
-/** One row per case (numbered, never by ID), one column per version newest first; a cell is the case's result in that version. */
-function Cases({ versions }: { versions: ReturnType<typeof useSkillVersions> }) {
+/** "Add as a new case" for one case that failed in `run`: a Dialog that posts case.from_run, then reads the page again. */
+function AddFromRun({ run, row }: { run: string; row: VersionCasesRow }) {
+  const client = useQueryClient();
+  const token = useApi<Session>(API.session, false).data?.csrf_token ?? null;
+  const button = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const send = async () => {
+    if (token === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await postEvalWrite(token, { op: "case.from_run", run, case: row.key });
+      if (!r.ok) return setError(r.error);
+      await client.invalidateQueries();
+      setOpen(false);
+    } catch {
+      setError(t("evals.fromRunFailed"));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <Button ref={button} size="sm" onClick={() => { setError(null); setOpen(true); }}>{t("evals.fromRun")}</Button>
+      {open && (
+        <Dialog
+          title={t("evals.fromRunTitle", { n: row.n })}
+          consequence={t("evals.fromRunConsequence", { n: row.n })}
+          confirmLabel={busy ? t("evals.fromRunAdding") : t("evals.fromRunConfirm")}
+          confirmDisabled={busy || token === null}
+          error={error}
+          onConfirm={() => void send()}
+          onClose={() => setOpen(false)}
+          returnFocusTo={button}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * One row per case (numbered, never by ID), one column per version newest first; a cell is the case's result in that
+ * version. When a case failed in the newest finished run (`run`), a last column holds its "Add as a new case".
+ */
+function Cases({ versions, run }: { versions: ReturnType<typeof useSkillVersions>; run: string | null }) {
   const list = versions.data?.versions ?? [];
   const ids = [...new Set(list.flatMap((v) => (v.cases ?? []).map((c) => c.case_id)))].sort();
-  const rows = ids.map((id, i): VersionCasesRow => ({ key: id, name: t("evals.caseN", { n: i + 1 }), results: new Map(list.map((v) => [v.version, v.cases?.find((c) => c.case_id === id)?.verdict ?? null])) }));
+  const newest = run === null ? undefined : list.find((v) => v.run_id === run);
+  const rows = ids.map((id, i): VersionCasesRow => ({
+    key: id, n: i + 1, name: t("evals.caseN", { n: i + 1 }), results: new Map(list.map((v) => [v.version, v.cases?.find((c) => c.case_id === id)?.verdict ?? null])),
+    failed: newest?.cases?.some((c) => c.case_id === id && c.verdict === "fail") ?? false,
+  }));
   const columns: Column<VersionCasesRow>[] = [
     { key: "name", header: t("evals.caseColumn") },
     ...list.map((v): Column<VersionCasesRow> => ({ key: `v${v.version}`, header: t("evals.versionN", { n: v.version }), render: (r) => verdictText(r.results.get(v.version) ?? null) })),
+    ...(run !== null && rows.some((r) => r.failed) ? [{ key: "actions", header: t("evals.colActions"), render: (r: VersionCasesRow) => (r.failed ? <AddFromRun run={run} row={r} /> : null) }] : []),
   ];
   return (
     <Card title={t("evals.cases")}>
@@ -505,7 +560,7 @@ export function EvalsPage({ skill }: { skill: string }) {
           <HeldVersions skill={skill} />
           <Versions versions={versions} />
         </div>
-        <Cases versions={versions} />
+        <Cases versions={versions} run={runs.data.runs.find((r) => r.status !== "running")?.id ?? null} />
         <CompareVersions skill={skill} versions={versions.data?.versions ?? []} />
         <Trend runs={runs.data.runs} />
         <JudgeChecks skill={skill} />
