@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { LiveSettings, OWNER_KEYS, PERMISSION_MODES, SETTABLE_DEFAULTS, SETTABLE_KEYS, type SettingsBase, baseFromConfig, parseSettable } from "../src/core/settings.js";
+import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -98,7 +99,7 @@ describe.each(BACKENDS)("permission_mode through factory settings: $name", ({ ma
 });
 
 describe("permission_mode through the settings API", () => {
-  async function setup(owner: string | null) {
+  async function setup(owner: UserId | null) {
     const clock = new FakeClock("2026-11-27T03:00:00.000Z");
     const { store } = await newStore(clock);
     await saveProjectLabel(store, PROJECT);
@@ -106,13 +107,13 @@ describe("permission_mode through the settings API", () => {
     const settings: UiSettings = { base, repo: REPO, actor: "local:me", resolveProject: storeProjectResolver(store, REPO), csrfToken: newCsrfToken() };
     const d: PauseDeps = {
       store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock), settings,
-      pauses: { principal: async () => "local:me", authorize: async () => ({ allow: true }), csrfToken: settings.csrfToken, log: silent },
+      pauses: { principal: async () => "local:me" as UserId, authorize: async () => ({ allow: true }), csrfToken: settings.csrfToken, log: silent },
     };
     return { store, d, settings };
   }
 
   it("reads ask_irreversible with nothing stored, and the owner's set is read back", async () => {
-    const { store, d, settings } = await setup("local:me");
+    const { store, d, settings } = await setup("local:me" as UserId);
     expect(await effectiveGlobal(d, KEY)).toEqual({ value: "ask_irreversible", source: "default" });
     expect(JSON.stringify((await readSettings(d, settings)).keys)).toContain(KEY);
     expect((await writeSettings(d, settings, { action: "set", key: KEY, value: '"ask_all"' })).status).toBe(200);
@@ -121,7 +122,7 @@ describe("permission_mode through the settings API", () => {
   });
 
   it("refuses a set and a reset from someone who is not the owner", async () => {
-    const { store, d, settings } = await setup("local:owner");
+    const { store, d, settings } = await setup("local:owner" as UserId);
     await store.setSettingOverride({ key: KEY, project: "", value: '"ask_all"', actor: "local:owner" });
     for (const body of [{ action: "set", key: KEY, value: '"full"' }, { action: "reset", key: KEY }]) {
       const r = await writeSettings(d, settings, body);
