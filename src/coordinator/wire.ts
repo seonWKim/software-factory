@@ -10,7 +10,8 @@ import type { FactoryConfig } from "../core/config.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { type AgentDeps, COORDINATOR_PROMPT, coordinatorAgent } from "./agent.js";
-import { COORDINATOR_LEASE, Coordinator, type CoordinatorPorts } from "./cycle.js";
+import type { CoordinatorPorts } from "../core/controller-deps.js";
+import { COORDINATOR_LEASE, Coordinator } from "./cycle.js";
 import { CoordinatorStore } from "./store.js";
 
 /** How long the cycle's lease outlasts one agent call. */

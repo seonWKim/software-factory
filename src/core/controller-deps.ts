@@ -8,7 +8,7 @@ import { type Logger, errorText } from "./log.js";
 import { type CheckPageStore, type RoutineRunStore, queueRoutineRun, runDueCheckPages } from "./check-page.js";
 import { type CheckpointStore, type Schedule, type ScheduleRun, checkpointAnswer, runDueSchedules } from "./schedule.js";
 import type { LearnedSettingsSource, LiveSettings } from "./settings.js";
-import type { Timestamp } from "./types.js";
+import type { Timestamp, WorkItem, WorkItemId } from "./types.js";
 import type { AuthAction, AuthDecision, AuthProvider } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
@@ -21,7 +21,6 @@ import type { Sandbox } from "../interfaces/sandbox.js";
 import type { SourceAdapter } from "../interfaces/source-adapter.js";
 import type { TacitLedger } from "../interfaces/tacit-ledger.js";
 import type { ChildRestart } from "../interfaces/updater.js";
-import type { CoordinatorPorts, TickResult } from "../coordinator/cycle.js";
 
 /**
  * The forge's core rate limit as one process sees it (design §5 Sources, call budget): the forge's limit,
@@ -163,7 +162,17 @@ export interface ControllerDeps {
    */
   schedule_action?: ScheduledAction;
   /** The coordinator cycle (design 05-coordinator), bound by the coordinator unit to its ports. Absent: no cycle runs. */
-  coordinator?: (ports: CoordinatorPorts) => { tick(): Promise<TickResult> };
+  coordinator?: (ports: CoordinatorPorts) => { tick(): Promise<unknown> };
+}
+
+/** What the controller unit binds for the coordinator cycle: the live settings, the waiting items and the existing local merge. */
+export interface CoordinatorPorts {
+  /** Read at each tick: the `coordinator` switch and `auto_merge_max_tier`. */
+  settings(): Promise<{ on: boolean; max_tier: number }>;
+  /** The items waiting for a merge, of any source. */
+  waiting(): Promise<readonly WorkItem[]>;
+  /** The existing local merge as auto mode runs it, keyed on `key`: the refusal, or null when the change is queued. */
+  merge(id: WorkItemId, key: string): Promise<string | null>;
 }
 
 /** A ScheduleAction bound to the store's claim pass: what the schedule unit calls with each tick's time. */

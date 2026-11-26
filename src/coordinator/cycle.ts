@@ -6,6 +6,7 @@
 // 2, and only up to `auto_merge_max_tier`, are merged.
 
 import { errorText, type Logger } from "../core/log.js";
+import type { CoordinatorPorts } from "../core/controller-deps.js";
 import type { StoreLease } from "../core/lease.js";
 import type { WorkItem, WorkItemId } from "../core/types.js";
 import type { ActionOutcome, CoordinatorAction, CoordinatorStore } from "./store.js";
@@ -46,16 +47,6 @@ export interface CoordinatorParts {
   /** The injected Clock (compose passes the factory's); the cycle reads only its time. */
   clock: { now(): Date };
   log: Logger;
-}
-
-/** What the controller unit binds: the live settings, the waiting items and the existing local merge. */
-export interface CoordinatorPorts {
-  /** Read at each tick: the `coordinator` switch and `auto_merge_max_tier`. */
-  settings(): Promise<{ on: boolean; max_tier: number }>;
-  /** The items waiting for a merge, of any source. */
-  waiting(): Promise<readonly WorkItem[]>;
-  /** The existing local merge as auto mode runs it, keyed on `key`: the refusal, or null when the change is queued. */
-  merge(id: WorkItemId, key: string): Promise<string | null>;
 }
 
 export type TickResult =
