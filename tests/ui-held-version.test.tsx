@@ -163,10 +163,15 @@ describe("the held-version alarm", () => {
 });
 
 describe("the held version on the Evals page", () => {
-  it("is above the versions list with its rates, the cases that got worse and both buttons", async () => {
+  it("is a warn Notice above the Versions Card with its rates, the cases that got worse and both buttons", async () => {
     const { block, versions } = await evalsPage();
     expect(block.compareDocumentPosition(versions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Version 4 is waiting for your decision" })).toBeTruthy();
+    // A warn Notice above the Versions Card, not a Card of its own.
+    const notice = within(block).getByRole("alert");
+    expect(notice.getAttribute("data-tone")).toBe("warn");
+    expect(notice.textContent).toContain("Version 4 is waiting for your decision");
+    expect(block.compareDocumentPosition(screen.getByRole("region", { name: "Versions" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Versions", "Cases", "Compare", "SKILL.md diff"]);
     expect(block.textContent).toContain("Pass rate 40%, down from 80% on version 3");
     expect(within(block).getByRole("list", { name: "Cases that got worse" }).querySelectorAll("li").length).toBeGreaterThan(0);
     expect(within(block).getAllByRole("button").map((b) => b.textContent)).toEqual(["Keep the current version", "Use this version"]);
