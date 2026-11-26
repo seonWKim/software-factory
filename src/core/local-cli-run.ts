@@ -9,7 +9,7 @@ import { CONFIRM_COMMAND } from "./interpret.js";
 import { needsDueDate } from "./quick-add.js"; import { type Project, projectSlug } from "./projects.js";
 export { storedProjectCaps } from "./size-cap.js"; // the project's size caps for `approve` (LocalCliDeps.caps), for the CLI handler
 import { ProjectRefused, projectRefusal, taskLine } from "./tasks.js";
-import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask, dependsOnId, localItemOf, withDependsOn } from "./task-build.js";
+import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask, dependsOnId, localItemOf, recordDependsOn, withDependsOn } from "./task-build.js";
 import { type DraftTerminal, runScheduleWords } from "./schedule-draft.js";
 import { ANONYMOUS_USER, CLI_KEY_PREFIX, type CliIdentity, DEFAULT_CLI_NAME } from "./local-cli-identity.js";
 import { type CliAction as ParsedAction, parseLocalCliArgs } from "./local-cli-parse.js";
@@ -37,7 +37,7 @@ async function orRefused(fail: (line: string) => CliResult, run: () => Promise<C
 export interface LocalCliDeps extends DraftTerminal { // DraftTerminal: `schedule draft` and `improve`'s model, scanner and y/N ask
   store: Pick<
     FactoryStore,
-    "createWorkItem" | "getWorkItem" | "findWorkItemIds" | "listWorkItems" | "listPhases" | "listRuns" | "listStateChanges" | "listItemMessages" | "appendCliCommand"
+    "createWorkItem" | "getWorkItem" | "findWorkItemIds" | "replaceDependencyEdges" | "listWorkItems" | "listPhases" | "listRuns" | "listStateChanges" | "listItemMessages" | "appendCliCommand"
     | "claimOwner" | "addTask" | "listTasks" | "completeTask" | "reopenTask" | "listCommandProposals"
     | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
     | "createProject" | "listProjects" | "renameProject" | "archiveProject" | "restoreProject" | "deleteProject" | "getProjectBySlug"
@@ -90,17 +90,24 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       const project = await d.project();
       if (project === null) return fail(NO_PROJECT_KEY);
       const dep = a.depends_on === undefined ? null : await localItemOf(d.store, a.depends_on);
-      if (a.depends_on !== undefined && !dep) return fail(`--depends-on ${a.depends_on} names no local work item or built task, so nothing was created`);
+      if (a.depends_on !== undefined && !dep) {
+        const several = /^wi_[0-9a-f]+$/.test(a.depends_on) ? (await d.store.findWorkItemIds(a.depends_on)).length : 0;
+        return fail(several > 1
+          ? `--depends-on ${a.depends_on} names ${several} work items; give more of its ID, so nothing was created`
+          : `--depends-on ${a.depends_on} names no local work item or built task, so nothing was created`);
+      }
       // The line names the item's full wi_ ID, so a short ID given here resolves the same way for the local source.
       const body = withDependsOn((await d.read(a.bodyFile)).trim(), a.depends_on !== undefined && dep ? [dependsOnId(a.depends_on, dep)] : []);
       if (a.project !== undefined) {
         const r = await createProjectTask(d.store, { task_id: `tk_${d.newId()}`, title: a.title, body, slug: a.project, project, user });
         if (!r.ok) return fail(r.reason);
+        if (dep) await recordDependsOn(d.store, r.item, dep);
         await claim();
         return created(r.item.id, `task ${r.task.id} in +${a.project}`);
       }
       await claim();
       const { item } = await createLocalItem(d.store, { source_id: `local-${d.newId()}`, title: a.title, body, project, user });
+      if (dep) await recordDependsOn(d.store, item, dep);
       return created(item.id);
     }
     case "build": {
@@ -218,7 +225,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       // a command typed in the item's own thread is already there. A verdict changes no state and a merge answers on
       // its own (design 04-gate-commands), so neither is mirrored.
       const mirror = a.command !== "verdict" && a.command !== MERGE_COMMAND && item.source.type !== "local" && item.source.type !== d.origin;
-      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}) });
+      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}), write_origin: "human_command" });
       const decisions = "answers" in d.answers.detail(ans.answers) ? ans.answers.map((x, i) => `${i + 1}. ${x.question} → ${x.answer === null ? "(no answer and no default)" : `${x.answer} (${x.accepted_default ? "default taken" : "your answer"})`}`) : [];
       return { code: 0, lines: [`stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`${cli} task show ${item.id}\``, ...decisions] };
     }
@@ -231,7 +238,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       // The controller's confirm path (src/controller/units/commands/proposals.ts) claims and applies each pending row,
       // and answers a refusal in the thread of the first pending command's item.
       const args = { item: pending[0]!.work_item_id, proposal: a.proposal };
-      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: CONFIRM_COMMAND, args });
+      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: CONFIRM_COMMAND, args, write_origin: "human_command" });
       const n = pending.length === 1 ? "its pending command" : `its ${pending.length} pending commands`;
       return { code: 0, lines: [`stored \`${cli} confirm ${a.proposal}\` as ${user} (command ${command.seq}); the controller applies ${n} on its next poll`] };
     }

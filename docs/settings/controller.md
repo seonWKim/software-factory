@@ -27,6 +27,7 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `mode` | controller | runtime | project | free | dial (approve_merge) | `"manual"` | Manual waits for a person at every spec and merge; auto approves and merges what it may itself. |
 | `notice_kinds` | controller | runtime | global | free |  | `["spec","merge","failure","other","finished"]` | Which notices are raised: spec, merge, failure, other, finished; a kind left out raises none. |
 | `notify_channels` | controller | runtime | global | free |  | `[]` | Source plugins that also get the owner's notices, e.g. slack; one without notifyOwner gets none. |
+| `permission_mode` | controller | runtime | global | tighten-only |  | `"ask_irreversible"` | What a write asks the owner first: every write, only irreversible ones, or none (full). |
 | `phases_auto_approve` | controller | runtime | global | tighten-only |  | `false` | Whether a phase spec of an approved split needs no approval of its own. |
 | `probe_interval_ms` | controller | runtime | global | free |  | `600000` | How often a stall pause probes the cheap model; a failed probe moves the pause this much later. |
 | `quiet_hours` | controller | runtime | global | free |  | `""` | Local window, HH:MM-HH:MM, that holds notices until it ends, then sends one summary; empty is off. |

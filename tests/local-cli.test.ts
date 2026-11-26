@@ -7,7 +7,7 @@ import { parseLocalCliArgs as parseArgs } from "../src/core/local-cli-parse.js";
 import type { WorkItemId } from "../src/core/types.js";
 import { COMMAND_TABLE, SENTENCE_FORM, cliUsageOf } from "../src/core/command-table.js";
 import { VERDICT_USAGE } from "../src/core/verdict.js";
-import { PROJECT_KEY, issue, system } from "./helpers/store.js";
+import { PROJECT_KEY, issue, system, w1 } from "./helpers/store.js";
 import { USER, at, setup, snapshot } from "./helpers/local-cli.js";
 
 // The writer side of local intake (issue #200): CLI commands that create local items, append item commands to
@@ -189,7 +189,64 @@ describe("task create --depends-on (design 05-dependencies, 2026-11-20)", () => 
     }
     expect(await snapshot(store)).toEqual(before);
   });
+
+  // Found 2026-11-27: the edge was written only by the coordination pass, so an implement run queued by the spec's
+  // approval was claimed before that pass and ran before its dependency merged.
+  it("records the edge to the named item's source key at once, so a queued implement run is held before any coordination pass", async () => {
+    const { store, run } = await setup();
+    const first = (await run({ action: "create", title: "First", bodyFile: "a.md" })).lines[0] as WorkItemId;
+    const firstSource = (await store.getWorkItem(first))!.source.id;
+    for (const given of [first.slice(0, 11), first.slice(3, 11)]) {
+      const id = (await run({ action: "create", title: "Second", bodyFile: "b.md", depends_on: parseDependsOn(given) })).lines[0] as WorkItemId;
+      expect(await store.listDependencyEdges({ work_item_id: id }), given).toMatchObject([{ depends_on: firstSource, kind: "depends_on", state: "open" }]);
+    }
+    const second = (await run({ action: "create", title: "Third", bodyFile: "b.md", depends_on: first.slice(0, 11) })).lines[0] as WorkItemId;
+    await at(store, second, { stage: "RUNNING", tier: 2, allowed_paths: ["lib/"], files_to_change: ["lib/a.ts"] });
+    await store.enqueueRun({ work_item_id: second, kind: "implement", idempotency_key: `${second}:implement` });
+    expect(await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: 60_000 })).toBeNull();
+  });
+
+  it("a --project task's edge names the dependency's task source key; a tk_ ID still writes its line as given", async () => {
+    const { store, run } = await setup();
+    await store.createProject({ id: "pj_home", name: "Home", created_by: USER });
+    const a = await run({ action: "create", title: "First", bodyFile: "a.md", project: "home" });
+    const tk = a.lines[2]!.split(" ")[1]!;
+    const firstSource = (await store.getWorkItem(a.lines[0] as WorkItemId))!.source.id;
+    expect(firstSource).toBe(`local-task-${tk}`);
+    for (const depends_on of [tk, (a.lines[0] as string).slice(0, 11)]) {
+      const r = await run({ action: "create", title: "Second", bodyFile: "b.md", project: "home", depends_on });
+      expect(r.code, depends_on).toBe(0);
+      const id = r.lines[0] as WorkItemId;
+      expect((await store.getWorkItem(id))!.problem, depends_on).toBe(`Second\n\nthe body\n\nDepends on: ${depends_on.startsWith("tk_") ? tk : a.lines[0]}`);
+      expect(await store.listDependencyEdges({ work_item_id: id }), depends_on).toMatchObject([{ depends_on: firstSource, kind: "depends_on" }]);
+    }
+  });
+
+  it("refuses a prefix of several items' IDs, naming how many, and an unknown bare short ID, with nothing written", async () => {
+    const { store, run } = await setup();
+    const ids: string[] = [];
+    for (let i = 0; i < 17; i++) ids.push((await run({ action: "create", title: `Item ${i}`, bodyFile: "a.md" })).lines[0]!);
+    // 17 IDs over 16 hex digits: at least two share their first one.
+    const shared = [...new Set(ids.map((id) => id.slice(0, 4)))].find((p) => ids.filter((id) => id.startsWith(p)).length > 1)!;
+    const count = ids.filter((id) => id.startsWith(shared)).length;
+    const before = await snapshot(store);
+    expect(await run({ action: "create", title: "Second", bodyFile: "b.md", depends_on: shared })).toEqual({
+      code: 1, lines: [`--depends-on ${shared} names ${count} work items; give more of its ID, so nothing was created`],
+    });
+    const unknown = parseDependsOn("0000000000");
+    expect(await run({ action: "create", title: "Second", bodyFile: "b.md", depends_on: unknown })).toEqual({
+      code: 1, lines: ["--depends-on wi_0000000000 names no local work item or built task, so nothing was created"],
+    });
+    expect(await snapshot(store)).toEqual(before);
+  });
 });
+
+/** The `--depends-on` value `task create` parses `given` to. */
+function parseDependsOn(given: string): string {
+  const a = parseLocalCliArgs("task", ["create", "--title", "T", "--body-file", "b.md", "--depends-on", given]);
+  if ("error" in a || a.action !== "create" || a.depends_on === undefined) throw new Error(`--depends-on ${given} did not parse`);
+  return a.depends_on;
+}
 
 describe("task list and task show", () => {
   it("list prints each local item's ID, short ID, title, stage and blocked reason; GitHub items are left out", async () => {

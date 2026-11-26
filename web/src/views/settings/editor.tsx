@@ -3,16 +3,25 @@ import type { SettingRow } from "../../api.js";
 import { Button } from "../../components/ui/button.js";
 import { ButtonRow } from "../../components/ui/button-row.js";
 import { Input } from "../../components/ui/input.js";
+import { SegmentedControl } from "../../components/ui/segmented-control.js";
 import { Select } from "../../components/ui/select.js";
 import { Switch } from "../../components/ui/switch.js";
 import { Textarea } from "../../components/ui/textarea.js";
+import type { MessageKey } from "../../i18n/en.js";
 import { t } from "../../i18n/index.js";
 import { Outcome, StringListControl, useWrite } from "../settings-file-keys.js";
 import { HOLD_CHOICE, HOLD_CHOICES, HOLD_MODES, SHORT_OBJECT, type HoldChoice, type HoldDraft, asObject, entries, holdOf, pretty, stringItems, stringOf, summaryOf } from "./values.js";
 import { Disclosure } from "../../components/ui/disclosure.js";
 import { ModeDialog, type ModeTarget } from "./mode-dialog.js";
+import type { PermissionMode } from "../../../../src/controller/settings/permission-mode.setting.js";
 
 const TIERS = ["cheap", "standard", "strong"] as const;
+/** permission_mode's values, tightest first (design 08-permissions), with their segment labels; the type keeps them in step with the server's. */
+const PERMISSION_SEGMENTS = [
+  { id: "ask_all", label: "settings.permissionMode.ask_all" },
+  { id: "ask_irreversible", label: "settings.permissionMode.ask_irreversible" },
+  { id: "full", label: "settings.permissionMode.full" },
+] as const satisfies readonly { id: PermissionMode; label: MessageKey }[];
 /** message_style (design 04-agents): what it does in one line, and an example. */
 const STYLE_HINT = t("settings.styleHint");
 const STYLE_EXAMPLE = t("settings.styleExample");
@@ -60,6 +69,16 @@ export function Editor({ row, label, value, token, project }: { row: SettingRow;
           />
         )}
       </span>
+    );
+  } else if (row.key === "permission_mode") {
+    // One segment per mode (design 09-dashboard-settings): a press saves it; a move toward Full the server checks for approve_merge.
+    control = (
+      <SegmentedControl
+        label={label}
+        options={PERMISSION_SEGMENTS.map((m) => ({ id: m.id, label: t(m.label) }))}
+        value={stringOf(value) as PermissionMode}
+        onChange={(m) => void (!busy && m !== stringOf(value) && save(JSON.stringify(m)))}
+      />
     );
   } else if (row.kind === "boolean") {
     control = <Switch aria-label={label} checked={value === "true"} disabled={busy} onCheckedChange={(next) => void save(String(next))} />;

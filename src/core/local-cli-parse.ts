@@ -113,8 +113,10 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
       const title = flags["--title"]?.trim();
       const bodyFile = flags["--body-file"];
       if (!title || !bodyFile) return bad("task create needs --title <t> and --body-file <f>");
-      const dependsOn = flags["--depends-on"]?.trim();
-      if (dependsOn !== undefined && !LOCAL_ID.test(dependsOn)) return bad("task create: --depends-on needs a work item (wi_…) or task (tk_…) ID");
+      // A bare short ID (the dashboard's 8 hex characters, or more) names a work item, as `wi_` + it.
+      const given = flags["--depends-on"]?.trim();
+      const dependsOn = given !== undefined && /^[0-9a-f]{8,32}$/.test(given) ? `wi_${given}` : given;
+      if (dependsOn !== undefined && !LOCAL_ID.test(dependsOn)) return bad("task create: --depends-on needs a work item (wi_… or its short ID) or task (tk_…) ID");
       const project = flags["--project"] === undefined ? undefined : projectSlug(flags["--project"].replace(/^\+/, ""));
       if (project === null) return bad("task create: --project needs a project slug, e.g. home-repairs");
       return { action: "create", title, bodyFile, ...(project !== undefined ? { project } : {}), ...(dependsOn !== undefined ? { depends_on: dependsOn } : {}) };
