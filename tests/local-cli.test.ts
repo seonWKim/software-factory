@@ -170,12 +170,20 @@ describe("task create --depends-on (design 05-dependencies, 2026-11-20)", () => 
     expect(item.issue_text).toBe(item.problem);
   });
 
+  it("takes a work item's short ID (the 11-char `wi_` prefix) and writes the item's full ID", async () => {
+    const { store, run } = await setup();
+    const first = (await run({ action: "create", title: "First", bodyFile: "a.md" })).lines[0] as WorkItemId;
+    const r = await run({ action: "create", title: "Second", bodyFile: "b.md", depends_on: first.slice(0, 11) });
+    expect(r.code).toBe(0);
+    expect((await store.getWorkItem(r.lines[0] as WorkItemId))!.problem).toBe(`Second\n\nthe body\n\nDepends on: ${first}`);
+  });
+
   it("refuses an ID that names no local item, with a message and nothing written", async () => {
     const { store, run } = await setup();
     await store.createWorkItem(issue(9), system);
     const gh = (await store.listWorkItems(10))[0]!.id;
     const before = await snapshot(store);
-    for (const id of ["wi_nosuch", "tk_nosuch", gh]) {
+    for (const id of ["wi_nosuch", "tk_nosuch", gh, "wi_"]) {
       const r = await run({ action: "create", title: "Second", bodyFile: "b.md", depends_on: id });
       expect(r, id).toEqual({ code: 1, lines: [`--depends-on ${id} names no local work item or built task, so nothing was created`] });
     }

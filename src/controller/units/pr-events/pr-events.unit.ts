@@ -231,11 +231,11 @@ export class PrEventsUnit {
   private readonly titleMisses = new Map<UnreviewedMergeId, number>();
 
   /**
-   * The title backfill of unreviewed merges recorded with none (design 09-dashboard-tasks-needs, 2026-11-26), after
-   * each poll: at most TITLE_FILLS of this project's untitled rows, newest first, take the title of the work item with
-   * their change_ref, else one read of the PR's title when the selected forge has one (GitHub; not with no forge or
-   * the local forge). A row that gets neither is left alone for MISS_RETRY_MS; a failed read also ends the pass, so a
-   * rate limit costs one read. The page never waits on this: it shows what is stored.
+   * The title backfill of unreviewed merges recorded with none (design 09-dashboard-tasks-needs, 2026-11-26), the
+   * "merge titles" step of each poll interval: at most TITLE_FILLS of this project's untitled rows, newest first, take
+   * the title of the work item with their change_ref, else one read of the PR's title when the selected forge has one
+   * (GitHub; not with no forge or the local forge). A row that gets neither is left alone for MISS_RETRY_MS; a failed
+   * read also ends the pass, so a rate limit costs one read. The page never waits on this: it shows what is stored.
    */
   async fillMergeTitles(): Promise<void> {
     const { d, forge } = this.c.k;
@@ -400,4 +400,5 @@ export default controllerUnit({
     change_open: (u, e) => u.prOpen(e),
     change_unmergeable: (u, e) => u.unmergeable(e),
   },
+  steps: [{ name: "merge titles", every: "poll", order: 35, run: (u) => u.fillMergeTitles() }],
 });
