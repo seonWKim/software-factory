@@ -211,7 +211,7 @@ describe("item page: links and runs", () => {
     expect(document.querySelector("[data-commands-none]")).toBeNull();
     expect(screen.queryByText(/^Closed: rejected$/)).toBeNull();
     const facts = [...document.querySelectorAll("[data-item-facts] dt")].map((d) => d.textContent);
-    expect(facts).toEqual(["State", "Source", "Tokens", "Updated"]);
+    expect(facts).toEqual(["State", "Source", "Updated"]);
     expect(document.querySelector("[data-item-facts]")!.textContent).not.toContain("–");
   });
 
