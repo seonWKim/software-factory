@@ -6,7 +6,6 @@ import { runLocalCli } from "../src/core/local-cli.js";
 import { githubCommand } from "../src/core/command-inbox.js";
 import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
-import { retry } from "../src/controller/units/support.js";
 import { FakeSource } from "./helpers/fakes/source.js";
 import { cleanScanner, config, issueRef, silent } from "./helpers/fakes/config.js";
 import { newStore, PROJECT_KEY, system } from "./helpers/store.js";

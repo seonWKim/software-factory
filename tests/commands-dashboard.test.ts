@@ -3,7 +3,6 @@ import { parseCommandPaths } from "../src/core/commands.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { UserId, WorkItem, WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import type { AuthProvider } from "../src/interfaces/auth-provider.js";
-import { retry } from "../src/controller/units/support.js";
 import { FakeSource } from "./helpers/fakes/source.js";
 import { cleanScanner, config, issueRef, silent } from "./helpers/fakes/config.js";
 import { newStore, PROJECT_KEY, system, w1 } from "./helpers/store.js";

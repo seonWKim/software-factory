@@ -4,7 +4,6 @@ import { COMMANDS, COMMAND_PHASES, type CommandPhase, applies, appliesOnPr, chat
 import { itemCommands } from "../src/ui/commands.js";
 import { COMMAND_TABLE, cliHelpLine, cliUsageOf } from "../src/core/command-table.js";
 import type { WorkItem } from "../src/core/types.js";
-import { retry } from "../src/controller/units/support.js";
 import { alice, issueRef } from "./helpers/fakes/config.js";
 
 describe("command table", () => {

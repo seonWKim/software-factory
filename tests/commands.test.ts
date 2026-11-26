@@ -3,7 +3,6 @@ import { type CommandName, commandTableMarkdown, helpReply, parseCommandPaths, p
 import { itemCommands, resolveScopePaths } from "../src/ui/commands.js";
 import { resolveScopeDetail } from "../src/worker/support.js";
 import type { WorkItem } from "../src/core/types.js";
-import { retry } from "../src/controller/units/support.js";
 
 describe("parseComment", () => {
   const cmd = (name: CommandName, text = "") => ({ kind: "command", name, text });

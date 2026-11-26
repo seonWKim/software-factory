@@ -7,7 +7,6 @@ import { runLocalCli } from "../src/core/local-cli.js";
 import { githubCommand } from "../src/core/command-inbox.js";
 import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import { answersDetail, splitAnswers, storedAnswers } from "../src/shared/command-notes.js";
-import { retry } from "../src/controller/units/support.js";
 import { FakeAuth } from "./helpers/fakes/runner.js";
 import { FakeSlackPollSource, FakeSource } from "./helpers/fakes/source.js";
 import { alice, cleanScanner, config, issueRef, silent, slackRef, triageSpec } from "./helpers/fakes/config.js";
