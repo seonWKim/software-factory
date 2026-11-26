@@ -1,8 +1,10 @@
 // Chat messages (docs/plugins/llm-provider.md): the store methods of ChatMessageStore over controller_chat_messages
-// (src/state/migrations/20261126T1200-state-chat-sessions), kept out of sql-factory-store.ts so that file stays within
+// (src/state/migrations/20261126T1200-state-chat-sessions) and controller_chat_spend (design 04-chat-agent,
+// src/state/migrations/20261126T1300-state-chat-spend), kept out of sql-factory-store.ts so that file stays within
 // its line budget. Store data only: no model call, no sync plugin.
 
 import type { Timestamp } from "../../../core/types.js";
+import type { ChatSpend } from "../../../core/spend.js";
 import type { ChatMessageRecord, NewChatMessage } from "../../../interfaces/factory-store.js";
 import type { LLMToolCall } from "../../../interfaces/llm-provider.js";
 import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
@@ -43,4 +45,19 @@ function rowToMessage(r: Row): ChatMessageRecord {
 export async function listChatMessages(db: SqlExecutor, session_id: string): Promise<ChatMessageRecord[]> {
   const rows = await db.all("SELECT * FROM controller_chat_messages WHERE session_id = ? ORDER BY seq", [session_id]);
   return rows.map(rowToMessage);
+}
+
+const INSERT_SPEND = `INSERT INTO controller_chat_spend (session_id, seq, day, cost_usd, tokens, created_at) VALUES (?, ?, ?, ?, ?, ?)`;
+
+/** One turn's spend; false, nothing written, when (session, seq) is counted already. */
+export async function recordChatSpend(db: SqlDriver, s: ChatSpend, at: Timestamp): Promise<boolean> {
+  return insertOnce(db, db, INSERT_SPEND, [s.session_id, s.seq, s.day, s.cost_usd, s.tokens, at]);
+}
+
+/** The turns of the UTC days `from` to `to`, both inclusive, by day, session and seq. Read-only. */
+export async function listChatSpendBetween(db: SqlExecutor, from: string, to: string): Promise<ChatSpend[]> {
+  const rows = await db.all("SELECT * FROM controller_chat_spend WHERE day >= ? AND day <= ? ORDER BY day, session_id, seq", [from, to]);
+  return rows.map((r) => ({
+    session_id: String(r.session_id), seq: Number(r.seq), day: String(r.day), cost_usd: r.cost_usd == null ? null : Number(r.cost_usd), tokens: Number(r.tokens),
+  }));
 }

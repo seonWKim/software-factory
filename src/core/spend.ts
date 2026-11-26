@@ -1,7 +1,8 @@
 // Spend (design 06-spend): what the factory's agent runs cost, read from the outcomes the store already holds.
 // Each run's cost is the harness's own figure (`outcomeCost`), never computed here; a run with none counts as
 // unknown, apart, never as 0. Days and weeks are UTC: a day starts at 00:00 UTC, a week on Monday 00:00 UTC.
-// Pure, apart from readSpend's one store read. No table of its own and no migration.
+// Chat turns (design 04-chat-agent) are no runs: their spend is stored per turn (controller_chat_spend) and totalled
+// apart, under `chat`, never added to the run totals. Pure, apart from readSpend's two store reads.
 
 import { type Run, type RunKind, type Timestamp, type WorkItemId, outcomeCost, runTokenCount } from "./types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -41,6 +42,26 @@ export interface Spend {
   days: SpendDay[];
   /** Each item with a counted run, by cost (highest first), then by ID. */
   items: SpendItem[];
+  /** The chat turns of the range, apart from the runs. */
+  chat: ChatSpendTotals;
+}
+
+/** One chat turn's stored spend (controller_chat_spend). */
+export type ChatSpend = Parameters<FactoryStore["recordChatSpend"]>[0];
+
+/** Totals over chat turns: the known cost, the tokens, the turns, and the turns with no known cost. */
+export interface ChatSpendTotals { cost_usd: number; tokens: number; turns: number; unknown: number }
+
+/** The totals of these chat turns; a turn with no known cost is counted apart, never as 0. */
+export function chatSpendTotals(turns: readonly ChatSpend[]): ChatSpendTotals {
+  const t: ChatSpendTotals = { cost_usd: 0, tokens: 0, turns: 0, unknown: 0 };
+  for (const c of turns) {
+    t.turns++;
+    t.tokens += c.tokens;
+    if (c.cost_usd === null) t.unknown++;
+    else t.cost_usd += c.cost_usd;
+  }
+  return t;
 }
 
 const zero = (): SpendTotals => ({ cost_usd: 0, tokens: 0, runs: 0, unknown: 0 });
@@ -74,8 +95,8 @@ export function spendTotals(runs: readonly Run[]): SpendTotals {
 const byCostThenId = (a: { cost_usd: number; work_item_id: WorkItemId }, b: { cost_usd: number; work_item_id: WorkItemId }): number =>
   b.cost_usd - a.cost_usd || (a.work_item_id < b.work_item_id ? -1 : 1);
 
-/** Spend of `runs` over the UTC days `from` to `to` (both inclusive, YYYY-MM-DD), by day and by item. */
-export function summarizeSpend(runs: readonly Run[], from: string, to: string): Spend {
+/** Spend of `runs` and chat `turns` over the UTC days `from` to `to` (both inclusive, YYYY-MM-DD), by day and by item. */
+export function summarizeSpend(runs: readonly Run[], from: string, to: string, turns: readonly ChatSpend[]): Spend {
   const days = new Map<string, SpendDay>();
   for (let ms = Date.parse(`${from}T00:00:00.000Z`); ms <= Date.parse(`${to}T00:00:00.000Z`); ms += DAY_MS) {
     days.set(utcDay(ms), { day: utcDay(ms), ...zero(), top: [] });
@@ -106,14 +127,14 @@ export function summarizeSpend(runs: readonly Run[], from: string, to: string): 
     days.get(day)!.top = top.sort(byCostThenId).slice(0, SPEND_DAY_TOP);
   }
   const byCost = [...items.values()].sort(byCostThenId);
-  return { from, to, total, days: [...days.values()], items: byCost };
+  return { from, to, total, days: [...days.values()], items: byCost, chat: chatSpendTotals(turns) };
 }
 
-/** Spend over the UTC days `from` to `to` (both inclusive), from the runs that finished in them: one store read. */
-export async function readSpend(store: Pick<FactoryStore, "listRunsFinishedBetween">, from: string, to: string): Promise<Spend> {
+/** Spend over the UTC days `from` to `to` (both inclusive): the runs that finished in them and the chat turns, two store reads. */
+export async function readSpend(store: Pick<FactoryStore, "listRunsFinishedBetween" | "listChatSpendBetween">, from: string, to: string): Promise<Spend> {
   const start = `${from}T00:00:00.000Z` as Timestamp;
   const end = new Date(Date.parse(`${to}T00:00:00.000Z`) + DAY_MS).toISOString() as Timestamp;
-  return summarizeSpend(await store.listRunsFinishedBetween(start, end), from, to);
+  return summarizeSpend(await store.listRunsFinishedBetween(start, end), from, to, await store.listChatSpendBetween(from, to));
 }
 
 /** A budget setting's value: a positive dollar amount (12.50), or null for no budget. Throws the loader's message. */
