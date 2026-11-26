@@ -129,7 +129,8 @@ describe("the triage branch and taken migration timestamps", () => {
   it("gives a spec draft naming a taken timestamp the next free one before it is shown", async () => {
     const r = await autoTriage(draft("20261122T1200"), base);
     expect(listed).toContainEqual({ ref: config.repo.base_branch, path: "src/" });
-    expect(r.it.allowed_paths).toEqual([mig("20261122T1202"), "tests/20261122T1202-controller-new-thing.test.ts"]);
+    // Companion rules may add paths after the drafted ones (the schema snapshot for a migration).
+    expect(r.it.allowed_paths.slice(0, 2)).toEqual([mig("20261122T1202"), "tests/20261122T1202-controller-new-thing.test.ts"]);
     expect(r.it.files_to_change).toEqual([mig("20261122T1202"), "tests/20261122T1202-controller-new-thing.test.ts"]);
     const spec = r.source.comments.find((c) => c.marker.includes("spec:"))!.body;
     expect(spec).toContain(mig("20261122T1202"));
@@ -138,7 +139,7 @@ describe("the triage branch and taken migration timestamps", () => {
 
   it("leaves a spec whose migration timestamps are all free unchanged", async () => {
     const r = await autoTriage(draft("20261123T0900"), base);
-    expect(r.it.allowed_paths).toEqual(draft("20261123T0900").allowed_paths);
+    expect(r.it.allowed_paths.slice(0, 2)).toEqual(draft("20261123T0900").allowed_paths);
     expect(r.it.files_to_change).toEqual(draft("20261123T0900").files_to_change);
   });
 });
