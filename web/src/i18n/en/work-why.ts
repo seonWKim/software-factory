@@ -34,6 +34,7 @@ export const workWhy = {
   "needs.allowResolveNotes": "Notes for the resolve run (optional)",
   "needs.checking": "Checking…",
   "needs.addCredential": "Add model credential",
+  "needs.credentialWhy": "No model credential is saved yet, so agent runs wait until one is added.",
   "needs.credentialTitle": "Add a model credential",
   "needs.credentialConsequence": "Saved on this computer for the agents only. It is never shown again. Waiting runs start on their own within seconds.",
   "needs.credentialOneOf": "Fill in one of these.",
