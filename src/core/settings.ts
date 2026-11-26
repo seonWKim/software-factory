@@ -286,7 +286,7 @@ export const SETTABLE_KEYS = [
   "phases_auto_approve", "hold_policy", "auto_grant_test_paths", "test_globs",
   "alarm_repeat_count", "alarm_window_minutes", "alarm_restart_count",
   "standing_approvals.threshold",
-  "mode", "auto_merge_max_tier",
+  "mode", "auto_merge_max_tier", "permission_mode",
   "message_style", "notice_kinds", "quiet_hours", "review_time", "summary_morning_time", "summary_evening_time", "notify_channels", "integrations", "calendar",
   "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label", "spend.daily_budget_usd", "spend.weekly_budget_usd", "spend.coordinator_daily_usd", "tool_grants", "conflict_hotspot_threshold",
   "worker_kinds", "agent_stop_check_ms", "coordinator",
@@ -303,12 +303,18 @@ export type GlobalSettableKey = Exclude<SettableKey, ProjectSettableKey>;
 /** The factory's two modes (design 03-risk): `manual` waits for a person at both gates; `auto` may pass them itself. */
 export const MODES = ["manual", "auto"] as const;
 export type Mode = (typeof MODES)[number];
+/** `permission_mode`'s values, tightest first (design 08-permissions): ask before every write, before irreversible ones only, or never. */
+export const PERMISSION_MODES = ["ask_all", "ask_irreversible", "full"] as const;
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
 /** The highest `auto_merge_max_tier` the setting takes: tier 4 and up never merge automatically. */
 export const AUTO_MERGE_TIER_MAX = 3;
 /** Keys whose change needs `approve_merge` on the project (design 08-settings): they decide what merges without a person. */
 export const APPROVE_MERGE_KEYS: readonly SettableKey[] = ["mode", "auto_merge_max_tier"];
-/** Keys only the owner changes, free and with no grant (design 08-settings): `integrations` and `calendar` switch plugins the factory runs. */
-export const OWNER_KEYS: readonly SettableKey[] = ["integrations", "calendar"];
+/**
+ * Keys only the owner changes (design 08-settings): `integrations` and `calendar` switch plugins the factory runs, free
+ * and with no grant; `permission_mode` decides what the factory asks before a write, and a set toward `full` also needs approve_merge (08-permissions).
+ */
+export const OWNER_KEYS: readonly SettableKey[] = ["integrations", "calendar", "permission_mode"];
 
 /** Keys that change only by a reviewed PR to factory.config.json (guards and secrets included). */
 export const PR_ONLY_KEYS = [
@@ -342,6 +348,7 @@ export interface SettableValues {
   "standing_approvals.threshold": number; "spend.daily_budget_usd": number | null; "spend.weekly_budget_usd": number | null; "spend.coordinator_daily_usd": number; // dollars; null: no budget (the coordinator's daily limit is never null, design 06-spend)
   mode: Mode;
   auto_merge_max_tier: number;
+  permission_mode: PermissionMode;
   message_style: string;
   notice_kinds: NoticeKind[]; quiet_hours: string; review_time: string; summary_morning_time: string; summary_evening_time: string; notify_channels: string[];
   integrations: Readonly<Record<string, string>>; calendar: readonly string[]; // interface → plugin name (no entry: the config's choice); calendar plugin names
@@ -372,6 +379,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   "standing_approvals.threshold": 10, "spend.daily_budget_usd": null, "spend.weekly_budget_usd": null, "spend.coordinator_daily_usd": coordinatorDaily.default!,
   mode: "manual",
   auto_merge_max_tier: 0,
+  permission_mode: "ask_irreversible",
   message_style: "",
   notice_kinds: [...NOTICE_KINDS], quiet_hours: "", review_time: "09:00", summary_morning_time: summaryMorning.default, summary_evening_time: summaryEvening.default, notify_channels: [], integrations: {}, calendar: [],
   stall_ms: STALL_DEFAULTS.stall_ms, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms, conflict_hotspot_threshold: DEFAULT_HOTSPOT_THRESHOLD,
@@ -459,6 +467,9 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
       if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > AUTO_MERGE_TIER_MAX) {
         throw new Error(`auto_merge_max_tier must be a whole number from 0 to ${AUTO_MERGE_TIER_MAX}; tier 4 and the gate list never merge automatically`);
       }
+      return value as SettableValues[K];
+    case "permission_mode":
+      if (!(PERMISSION_MODES as readonly unknown[]).includes(value)) throw new Error(`permission_mode must be ${PERMISSION_MODES.map((m) => `"${m}"`).join(", ")}`);
       return value as SettableValues[K];
     case "message_style":
       return parseMessageStyle(value) as SettableValues[K];

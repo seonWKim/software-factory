@@ -361,7 +361,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     const item = await this.itemOf(source, pr);
     // The author as the account's numeric ID, never the login: the audit of who wrote a refused command too.
     if (item) await this.store.recordItemMessage({ work_item_id: item, marker: githubCommentKey(cm.id), body: cm.body, actor: `github:${cm.user.id}` });
-    if (command) await this.store.appendCliCommand(command);
+    if (command) await this.store.appendCliCommand({ ...command, write_origin: "human_command" });
     return plain;
   }
 
