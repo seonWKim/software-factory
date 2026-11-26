@@ -107,6 +107,25 @@ CREATE TABLE controller_command_proposals (
     PRIMARY KEY (proposal_id, idx)
   );
 
+CREATE TABLE controller_coordinator_actions (
+    cycle_id         TEXT NOT NULL,
+    seq              INTEGER NOT NULL,
+    work_item_id     TEXT,
+    command          TEXT NOT NULL,
+    outcome          TEXT NOT NULL,
+    reason           TEXT NOT NULL,
+    transcript_link  TEXT,
+    recorded_at      TEXT NOT NULL,
+    PRIMARY KEY (cycle_id, seq)
+  );
+
+CREATE TABLE controller_coordinator_due (
+    name        TEXT PRIMARY KEY,
+    due_at      TEXT NOT NULL,
+    cycle_id    TEXT,
+    updated_at  TEXT NOT NULL
+  );
+
 CREATE TABLE controller_dependency_edges (
     work_item_id  TEXT NOT NULL REFERENCES controller_work_items(id),
     depends_on    TEXT NOT NULL,

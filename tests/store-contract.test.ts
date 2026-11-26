@@ -2417,6 +2417,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_schedule_suggestions", // routine suggestions copied to schedules (design 08-schedules): 20261124T1100-controller-routines-into-schedules
       "controller_activity", // one row per autonomous action (design 08-schedules-actions): 20261126T1201-state-controller-activity
       "controller_chat_messages", // chat messages and tool calls (docs/plugins/llm-provider.md): src/state/migrations/20261126T1200-state-chat-sessions
+      "controller_coordinator_actions", "controller_coordinator_due", // the coordinator (design 05-coordinator): the *-controller-coordinator-actions migration
       "controller_chat_spend", // chat turn spend (design 04-chat-agent): src/state/migrations/20261126T1300-state-chat-spend
       "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
