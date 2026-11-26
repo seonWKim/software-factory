@@ -10,6 +10,12 @@ import { isFeatureMapPath } from "../src/api/feature-map.js";
 import { type Declared, type Registry, buildRegistry, declare, registryReads, registryWrites } from "../src/api/registry.js";
 import { object, string } from "../src/api/schema.js";
 import { ITEM_ROW } from "../src/api/schemas/items.js";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import type { UiDeps } from "../src/ui/deps.js";
+import { HealthMonitor } from "../src/ui/health.js";
+import { readApi } from "../src/ui/read-routes.js";
+import { cleanScanner } from "./helpers/fakes/config.js";
+import { issue, newStore, system } from "./helpers/store.js";
 
 const REPO = join(import.meta.dirname, "..");
 const read = (p: string) => readFileSync(join(REPO, p), "utf8");
@@ -105,6 +111,18 @@ describe("the schedules and items routes", () => {
     expect(tier.parse(2)).toMatchObject({ ok: true });
     expect(tier.parse(null)).toMatchObject({ ok: true });
     expect(tier.parse("2")).toMatchObject({ ok: false });
+  });
+
+  it("answer a list with a tier with 200 through the registry", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const item = (await store.createWorkItem(issue(1), system)).item;
+    const t = await store.transition({ id: item.id, expected_version: item.version, patch: { tier: 2 }, actor: system, reason: "x" });
+    expect(t.ok).toBe(true);
+    const deps: UiDeps = { store, scanner: cleanScanner, clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], clock) };
+    const r = await readApi(deps, new URL("http://127.0.0.1/api/v1/items"), { method: "GET", url: "/api/v1/items", host: "127.0.0.1" });
+    expect(r.status).toBe(200);
+    expect((r.value as { items: { id: string; tier: unknown }[] }).items).toContainEqual(expect.objectContaining({ id: item.id, tier: 2 }));
   });
 
   it("have no hand-wired entry left in read-routes.ts, write-routes-owner.ts or api.ts", () => {
