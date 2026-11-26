@@ -5,11 +5,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { EvalRun, EvalRunSummary, SkillVersionDiff, SkillVersionRow } from "../web/src/api/evals.js";
+import type { EvalCalibration, EvalRun, EvalRunSummary, SkillVersionDiff, SkillVersionRow } from "../web/src/api/evals.js";
 import { BASE, evalsRoute, routeFor } from "../web/src/pages.js";
 
 // The evals page at evals/<skill> (design 09-dashboard-evals): header, Versions, Compare Button, Grid and Trend in that
-// order, "no run" in an empty grid cell, plain words only (hashes and run IDs only under a version's Details), Compare's
+// order, then Judge checks last, "no run" in an empty grid cell, plain words only (hashes and run IDs only under a version's Details), Compare's
 // ModalPanel with its DiffView, and Run now in the header, whose Dialog posts one run.
 // The reads and the POST are a fake fetch.
 
@@ -49,6 +49,15 @@ const DIFF = (a: string, b: string): SkillVersionDiff => ({
   cases: [{ case_id: "case_one1", a: "pass", b: "fail" }, { case_id: "case_two2", a: null, b: "errored" }],
 });
 let versions: SkillVersionRow[] = VERSIONS;
+const CALIBRATION: EvalCalibration = {
+  labels: 4, agreement: 0.75, calibrated: false, run: "run_zzz9",
+  checks: [
+    { case_id: "case_one1", replay: 1, check: "Names the riskiest step", answer: "yes", label: null },
+    { case_id: "case_one1", replay: 1, check: "Explains why", answer: "no", label: "right" },
+    { case_id: "case_two2", replay: 1, check: "Says yes or no", answer: "no", label: null },
+  ],
+};
+let calibration: EvalCalibration = CALIBRATION;
 let fail = false;
 let urls: string[] = [];
 let posts: { url: string; body: unknown; token: string | null }[] = [];
@@ -70,6 +79,7 @@ beforeEach(() => {
     if (url === `/api/v1/evals/${enc}/runs`) return json(200, { runs });
     if (url === `/api/v1/evals/${enc}/grid`) return json(200, { rows: grid });
     if (url === `/api/v1/evals/${enc}/versions`) return json(200, { versions, unlinked: [] });
+    if (url === `/api/v1/evals/${enc}/calibration`) return json(200, calibration);
     if (url.startsWith(`/api/v1/evals/${enc}/diff?`)) {
       const q = new URL(url, "http://x").searchParams;
       return json(200, DIFF(q.get("a")!, q.get("b")!));
@@ -82,6 +92,7 @@ afterEach(() => {
   runs = RUNS;
   grid = GRID;
   versions = VERSIONS;
+  calibration = CALIBRATION;
   fail = false;
   postAnswer = () => json(200, { run_id: "run_new1", status: "passed" });
   cleanup();
@@ -112,11 +123,12 @@ describe("evals route", () => {
 });
 
 describe("evals page", () => {
-  it("shows the header, Versions, the Compare Button, the Grid and Trend in that order, with Run now as the one primary Button", async () => {
+  it("shows the header, Versions, the Compare Button, the Grid, Trend and Judge checks in that order, with Run now as the one primary Button", async () => {
     const { container } = show();
     await screen.findByRole("list", { name: "Versions of this skill, newest first" }, SLOW);
+    await screen.findByRole("list", { name: "Checks the judge answered" }, SLOW);
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("review-plan");
-    expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Versions", "Latest run per version and model class", "Pass rate over time"]);
+    expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Versions", "Latest run per version and model class", "Pass rate over time", "Judge checks"]);
     const header = container.querySelector("header")!;
     expect(within(header).getAllByRole("button").map((b) => b.textContent)).toEqual(["Run now"]);
     const primary = [...container.querySelectorAll("button")].filter((b) => b.className.includes("bg-accent"));
@@ -249,6 +261,92 @@ describe("evals page", () => {
     const alert = await screen.findByRole("alert", undefined, SLOW);
     expect(alert.textContent).not.toContain("review-plan");
     expect(alert.textContent).not.toContain("HTTP");
+  });
+});
+
+describe("Judge checks", () => {
+  const card = () => screen.getByRole("region", { name: "Judge checks" });
+  const rows = async () => [...(await screen.findByRole("list", { name: "Checks the judge answered" }, SLOW)).querySelectorAll("[data-judge-check]")] as HTMLElement[];
+
+  it("is the last Card and lists each judged check of the newest finished run with the judge's answer, in plain words", async () => {
+    show();
+    const listed = await rows();
+    const regions = screen.getAllByRole("region");
+    expect(regions.at(-1)).toBe(card());
+    expect(listed.map((r) => r.querySelector("p")!.textContent)).toEqual(["Names the riskiest step", "Explains why", "Says yes or no"]);
+    expect(listed[0]!.textContent).toContain("Case 1");
+    expect(listed[0]!.textContent).toContain("Judge said Yes");
+    expect(listed[1]!.textContent).toContain("Judge said No");
+    expect(listed[1]!.textContent).toContain("You marked it right");
+    expect(listed[2]!.textContent).toContain("Case 2");
+    expect(card().textContent).not.toMatch(/run_|case_/);
+  });
+
+  it("each check has a ButtonRow with a Right and a Wrong Button; a labelled check has both off", async () => {
+    show();
+    const listed = await rows();
+    for (const row of listed) {
+      const buttons = within(row).getAllByRole("button");
+      expect(buttons.map((b) => b.textContent)).toEqual(["Right", "Wrong"]);
+      expect(buttons[0]!.parentElement!.className).toContain("flex flex-wrap items-center gap-2");
+      expect(buttons[0]!.parentElement).toBe(buttons[1]!.parentElement);
+    }
+    await vi.waitFor(() => expect((within(listed[0]!).getByRole("button", { name: "Right" }) as HTMLButtonElement).disabled).toBe(false), SLOW);
+    expect(within(listed[1]!).getAllByRole("button").every((b) => (b as HTMLButtonElement).disabled)).toBe(true);
+  });
+
+  it("a press posts label.set with the session token and then reads the page's data again", async () => {
+    postAnswer = () => json(200, { op: "label.set", label: "wrong" });
+    show();
+    const [first] = await rows();
+    const wrong = within(first!).getByRole("button", { name: "Wrong" }) as HTMLButtonElement;
+    await vi.waitFor(() => expect(wrong.disabled).toBe(false), SLOW);
+    const reads = urls.filter((u) => u.endsWith("/calibration")).length;
+    fireEvent.click(wrong);
+    await vi.waitFor(() => expect(posts).toHaveLength(1), SLOW);
+    expect(posts[0]).toEqual({
+      url: "/api/v1/evals/write", token: "tok",
+      body: { op: "label.set", run: "run_zzz9", case: "case_one1", replay: 1, check: "Names the riskiest step", label: "wrong" },
+    });
+    await vi.waitFor(() => expect(urls.filter((u) => u.endsWith("/calibration")).length).toBeGreaterThan(reads), SLOW);
+  });
+
+  it("shows a refusal under the row's buttons", async () => {
+    postAnswer = () => json(409, { error: "The judge did not answer that check in this replay, so nothing was labelled." });
+    show();
+    const [first] = await rows();
+    const right = within(first!).getByRole("button", { name: "Right" }) as HTMLButtonElement;
+    await vi.waitFor(() => expect(right.disabled).toBe(false), SLOW);
+    fireEvent.click(right);
+    expect((await within(first!).findByRole("alert", undefined, SLOW)).textContent).toContain("nothing was labelled");
+  });
+
+  it("shows agreement as a whole percentage with the label count, and a warn Notice below 80%", async () => {
+    show();
+    await rows();
+    expect(card().textContent).toContain("The judge agrees with you on 75% of 4 labelled checks.");
+    const notice = within(card()).getByRole("alert");
+    expect(notice.textContent).toContain("The judge agrees with you less than 80% of the time");
+  });
+
+  it("shows no Notice at 80% or more, and says so in words with no labels", async () => {
+    calibration = { ...CALIBRATION, labels: 5, agreement: 0.8, calibrated: true };
+    show();
+    await rows();
+    expect(card().textContent).toContain("80% of 5 labelled checks");
+    expect(within(card()).queryByRole("alert")).toBeNull();
+    cleanup();
+    calibration = { ...CALIBRATION, labels: 0, agreement: null, checks: CALIBRATION.checks.map((c) => ({ ...c, label: null })) };
+    show();
+    await rows();
+    expect(card().textContent).toContain("No checks are labelled yet");
+    expect(within(card()).queryByRole("alert")).toBeNull();
+  });
+
+  it("says when the newest finished run has no judged checks", async () => {
+    calibration = { labels: 0, agreement: null, calibrated: false, run: null, checks: [] };
+    show();
+    expect(await screen.findByText("The newest finished run has no checks the judge answered.", undefined, SLOW)).toBeTruthy();
   });
 });
 
