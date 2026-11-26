@@ -154,6 +154,7 @@ export interface TransitionInput {
    * attempt record closes as `cancelled`.
    */
   cancel_running_runs?: boolean;
+  /** An Activity row (design 08-schedules-actions) written in this transaction, as an auto-grant's; nothing on a refusal. */ activity?: NewActivity;
 }
 
 /** How a base push finished: `pushed` (the remote base contains the merge) or `conflict` (it moved and does not merge). */
@@ -349,7 +350,12 @@ export interface ChatMessageStore {
   listChatMessages(session_id: string): Promise<ChatMessageRecord[]>;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore, SkillDraftStore, AttachmentStore, AlertDismissalStore, RoutineStore, ChatMessageStore {
+/** One autonomous action (design 08-schedules-actions): `kind` as src/controller/background-jobs.ts lists it; `ref` a run's transcript path or a `log:<component>:<message>` reference (null: none); `at` the store's time. */
+export interface Activity { seq: number; actor_id: string; kind: string; subject: string; outcome: string; reason: string; ref: string | null; at: Timestamp }
+export type NewActivity = Omit<Activity, "seq" | "at">;
+/** Most rows are written by the store in their change's transaction (expireLeases, the prunes, a schedule claim, a transition's `activity`, a migration); recordActivity is for a change outside the store (a cleanup pass). listActivity: newest first, at most `limit` (200). */
+export interface ActivityStore { recordActivity(a: NewActivity): Promise<Activity>; listActivity(opts?: { kind?: string; limit?: number }): Promise<Activity[]> }
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore, SkillDraftStore, AttachmentStore, AlertDismissalStore, RoutineStore, ChatMessageStore, ActivityStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
@@ -709,8 +715,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** Ends the lease now if `token` is still current, so another replica can take it at once. */
   releaseListenerLease(source_type: SourceType, token: number): Promise<void>;
 
-  // Sync leases (design 05-coordination, sync lease): one replica per `sync:<type>:<project>` polls a sync source's
-  // inbox and delivers its outbox. Same rules as the listener lease, keyed by name; `listener_leases` is its own table.
+  // Sync leases (design 05-coordination, sync lease): one replica per `sync:<type>:<project>` polls a sync source's inbox and delivers its outbox. Same rules as the listener lease, keyed by name; `listener_leases` is its own table.
 
   /**
    * Takes lease `name` for `owner` if nobody holds it, the holder's lease expired, or `owner` already holds it
@@ -728,8 +733,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   pruneDeliveredOutbox(older_than_ms: number, limit: number): Promise<Record<string, number>>;
   pruneHandledCommands(older_than_ms: number, limit: number): Promise<Record<string, number>>;
   pruneHistory(older_than_ms: number, limit: number): Promise<Record<string, number>>;
-  // Forge budget (design 05-sources, call budget): the forge's rate limit as its last response anywhere reported it,
-  // one row per (project, plugin), shared by every replica.
+  // Forge budget (design 05-sources, call budget): the forge's rate limit as its last response anywhere reported it, one row per (project, plugin), shared by every replica.
 
   /** The row of `project` and `plugin`, or null. Read-only. */
   getForgeBudget(project: string, plugin: string): Promise<ForgeBudget | null>;
@@ -788,8 +792,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** Audit rows, newest first, at most `limit`. Read-only. */
   listSettingChanges(limit: number): Promise<SettingChange[]>;
 
-  // Worker processes (design §5 Coordination, 2026-11-07). One row per running WorkerPool, keyed by its
-  // `process_id`, written once per tick, so a reader on any host sees every process's slots.
+  // Worker processes (design §5 Coordination, 2026-11-07). One row per running WorkerPool, keyed by its `process_id`, written once per tick, so a reader on any host sees every process's slots.
 
   /**
    * Writes the snapshot of one process, keyed by `process_id`: a repeat write replaces the row. `reported_at`
@@ -827,8 +830,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** The newest alerts first (created_at, then id, both descending), at most `limit`, with their pattern's `dismissed_at`. Read-only. */
   listAlerts(opts: { limit: number }): Promise<Alert[]>;
 
-  // Restart history (design 05-restarts): one row per unexpected child exit, so the restart alarm's count and
-  // window survive a restart of the factory and every replica on a shared store sees every host's restarts.
+  // Restart history (design 05-restarts): one row per unexpected child exit, so the restart alarm's count and window survive a restart of the factory and every replica on a shared store sees every host's restarts.
 
   /**
    * Stores one child restart unless the same restart (its time and reason) is stored already: one conditional
@@ -883,8 +885,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** The stored label states of the given source ids, in no set order. Read-only. */
   listLabelStates(source_ids: readonly string[]): Promise<LabelState[]>;
 
-  // The item thread and the command inbox (issues #198, #281, #282): every message the controller sends about an
-  // item, and the commands the CLI and the app send, which the controller reads by seq.
+  // The item thread and the command inbox (issues #198, #281, #282): every message the controller sends about an item, and the commands the CLI and the app send, which the controller reads by seq.
 
   /**
    * Stores one message for `work_item_id`. `marker` identifies it within the item: a marker already stored
@@ -917,8 +918,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    */
   markCliCommandMirrored(key: string): Promise<boolean>;
 
-  // The outbox (issue #282, design 05-sources "Thread first"): every factory message is a thread entry first; an
-  // entry written with `delivery` gets one outbox row, which the controller's outbox step delivers to its target
+  // The outbox (issue #282, design 05-sources "Thread first"): every factory message is a thread entry first; an entry written with `delivery` gets one outbox row, which the controller's outbox step delivers to its target
   // source once, retrying with backoff. Delivery never changes the item's stage, blocked fields or version.
 
   /**

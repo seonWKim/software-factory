@@ -3,8 +3,10 @@
 // (decided 2026-11-16: a ratchet list or a path under allowed_paths), a plain retry that says they are allowed. A
 // checks_failed run's failing test files that quote text the branch removed get the same once-per-item grant (checksGrant, 2026-11-25).
 // Kept out of run-results.unit.ts, which may not grow (file budget); the path check (src/core/auto-grant.ts) is
-// reached through the live settings, so no new legacy import.
+// reached through the live settings, so no new legacy import. Each grant's transition carries its `auto_grant`
+// Activity row (design 08-schedules-actions), written in the transition's transaction.
 
+import { activityOf, transcriptRef } from "../../background-jobs.js";
 import type { Ctx } from "../context.js";
 import { type Decision, type Run, type WipRef, type WorkItem, SYSTEM, footerAfter, keptWip, retry } from "../support.js";
 import type { needsHuman } from "./notices.js";
@@ -51,7 +53,8 @@ export async function autoGrant(c: Ctx, stopped: Stop[1], run: Stop[2], ask: Ask
   if (!(await c.k.d.scanner.scan("comment", body)).clean) return undefined;
   await c.unit("outbox").comment(stopped, `auto-grant:${run.id}`, body);
   c.k.d.log.info(t.log, { work_item_id: stopped.id, run_id: run.id, paths: (covered ? ask.named : ask.asked).join(" ") });
-  return { ...d, patch: { ...d.patch, token_cost: tokens }, detail: { ...d.detail, run_id: run.id, [AUTO_GRANT]: true }, ack_run: run.id };
+  const activity = activityOf("auto_grant", { subject: stopped.id, outcome: "granted", reason: t.note, ref: transcriptRef(stopped.id, run.id) });
+  return { ...d, patch: { ...d.patch, token_cost: tokens }, detail: { ...d.detail, run_id: run.id, [AUTO_GRANT]: true }, ack_run: run.id, activity };
 }
 
 /** A test file the worker found grantable on `checks_failed` (implement-checks.ts grantTests), with the removed text it quotes. */
@@ -100,7 +103,8 @@ export async function checksGrant(c: Ctx, it: WorkItem, run: Run): Promise<Decis
   if (!(await c.k.d.scanner.scan("comment", body)).clean) return undefined;
   await c.unit("outbox").comment(stopped, `auto-grant:${run.id}`, body);
   c.k.d.log.info("failing test files granted automatically because they quote text the change removed", { work_item_id: it.id, run_id: run.id, paths: files.join(" ") });
-  return { ...d, detail: { ...d.detail, run_id: run.id, error_code: "checks_failed", [AUTO_GRANT]: true }, ack_run: run.id };
+  const activity = activityOf("auto_grant", { subject: it.id, outcome: "granted", reason: note, ref: transcriptRef(it.id, run.id) });
+  return { ...d, detail: { ...d.detail, run_id: run.id, error_code: "checks_failed", [AUTO_GRANT]: true }, ack_run: run.id, activity };
 }
 
 const ONCE = "This happens once per item: a later ask waits for you.";

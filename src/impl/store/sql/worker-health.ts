@@ -7,6 +7,7 @@ import type { HostSleep, Timestamp, WorkerId, WorkItemId } from "../../../core/t
 import type { WorkerProcess, WorkerProcessReport } from "../../../interfaces/factory-store.js";
 import type { ChildRestart } from "../../../interfaces/updater.js";
 import type { Row, SqlDriver, SqlValue } from "../../../state/index.js";
+import { activityOf, insertActivity, logRef } from "./activity.js";
 import { rowToHostSleep } from "./rows.js";
 import { type StoreTime, insertOnce } from "./store-steps.js";
 
@@ -71,14 +72,20 @@ async function selectHostSleep(db: SqlDriver, worker_id: WorkerId, woke_at: Time
 }
 
 // Restart history (design 05-restarts): the key is the restart's time and a hash of its reason, so the same
-// restart read again from the supervisor's file, on this replica or another, is one row.
+// restart read again from the supervisor's file, on this replica or another, is one row. A new row writes the
+// supervisor's `restart` Activity row (design 08-schedules-actions) in the same transaction, at the restart's time.
 
 export async function recordChildRestart(db: SqlDriver, restart: ChildRestart): Promise<{ created: boolean }> {
   const key = `${restart.at}:${createHash("sha256").update(restart.reason).digest("hex").slice(0, 16)}`;
-  const created = await insertOnce(db, db, "INSERT INTO runtime_child_restarts (restart_key, at, reason) VALUES (?, ?, ?)", [
-    key, restart.at, restart.reason,
-  ]);
-  return { created };
+  return db.transaction(async (tx) => {
+    const created = await insertOnce(db, tx, "INSERT INTO runtime_child_restarts (restart_key, at, reason) VALUES (?, ?, ?)", [key, restart.at, restart.reason]);
+    if (created) {
+      await insertActivity(tx, restart.at as Timestamp, activityOf("restart", {
+        subject: "dev child", outcome: "restarted", reason: `the supervised child exited unexpectedly: ${restart.reason}`, ref: logRef("supervisor", "child exited unexpectedly; restarting on the next poll"),
+      }));
+    }
+    return { created };
+  });
 }
 
 export async function listChildRestartsWithin(db: SqlDriver, time: StoreTime, window_ms: number): Promise<ChildRestart[]> {
