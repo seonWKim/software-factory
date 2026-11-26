@@ -77,6 +77,15 @@ CREATE TABLE controller_chat_spend (
     created_at  TEXT NOT NULL
   );
 
+CREATE TABLE controller_chat_turns (
+    turn_id      TEXT NOT NULL PRIMARY KEY,
+    session_id   TEXT NOT NULL,
+    status       TEXT NOT NULL,
+    reason       TEXT,
+    created_at   TEXT NOT NULL,
+    finished_at  TEXT
+  );
+
 CREATE TABLE controller_claim_decisions (
     run_id               TEXT PRIMARY KEY,
     work_item_id         TEXT NOT NULL REFERENCES controller_work_items(id),
@@ -654,6 +663,8 @@ CREATE INDEX controller_attachments_item ON controller_attachments (work_item_id
 CREATE INDEX controller_budget_checkpoints_work_item ON controller_budget_checkpoints (work_item_id, created_at);
 
 CREATE INDEX controller_chat_spend_day ON controller_chat_spend (day);
+
+CREATE INDEX controller_chat_turns_created ON controller_chat_turns (created_at);
 
 CREATE INDEX controller_claim_decisions_work_item ON controller_claim_decisions (work_item_id, at);
 
