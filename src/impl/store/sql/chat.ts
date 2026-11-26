@@ -47,17 +47,17 @@ export async function listChatMessages(db: SqlExecutor, session_id: string): Pro
   return rows.map(rowToMessage);
 }
 
-const INSERT_SPEND = `INSERT INTO controller_chat_spend (session_id, seq, day, cost_usd, tokens, created_at) VALUES (?, ?, ?, ?, ?, ?)`;
+const INSERT_SPEND = `INSERT INTO controller_chat_spend (turn_id, session_id, day, cost_usd, tokens, created_at) VALUES (?, ?, ?, ?, ?, ?)`;
 
-/** One turn's spend; false, nothing written, when (session, seq) is counted already. */
+/** One turn's spend; false, nothing written, when its turn id is counted already. */
 export async function recordChatSpend(db: SqlDriver, s: ChatSpend, at: Timestamp): Promise<boolean> {
-  return insertOnce(db, db, INSERT_SPEND, [s.session_id, s.seq, s.day, s.cost_usd, s.tokens, at]);
+  return insertOnce(db, db, INSERT_SPEND, [s.turn_id, s.session_id, s.day, s.cost_usd, s.tokens, at]);
 }
 
-/** The turns of the UTC days `from` to `to`, both inclusive, by day, session and seq. Read-only. */
+/** The turns of the UTC days `from` to `to`, both inclusive, by day, session and turn id. Read-only. */
 export async function listChatSpendBetween(db: SqlExecutor, from: string, to: string): Promise<ChatSpend[]> {
-  const rows = await db.all("SELECT * FROM controller_chat_spend WHERE day >= ? AND day <= ? ORDER BY day, session_id, seq", [from, to]);
+  const rows = await db.all("SELECT * FROM controller_chat_spend WHERE day >= ? AND day <= ? ORDER BY day, session_id, turn_id", [from, to]);
   return rows.map((r) => ({
-    session_id: String(r.session_id), seq: Number(r.seq), day: String(r.day), cost_usd: r.cost_usd == null ? null : Number(r.cost_usd), tokens: Number(r.tokens),
+    turn_id: String(r.turn_id), session_id: String(r.session_id), day: String(r.day), cost_usd: r.cost_usd == null ? null : Number(r.cost_usd), tokens: Number(r.tokens),
   }));
 }

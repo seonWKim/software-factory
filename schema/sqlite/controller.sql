@@ -58,13 +58,12 @@ CREATE TABLE controller_chat_messages (
   );
 
 CREATE TABLE controller_chat_spend (
+    turn_id     TEXT NOT NULL PRIMARY KEY,
     session_id  TEXT NOT NULL,
-    seq         INTEGER NOT NULL,
     day         TEXT NOT NULL,
     cost_usd    REAL,
     tokens      INTEGER NOT NULL,
-    created_at  TEXT NOT NULL,
-    PRIMARY KEY (session_id, seq)
+    created_at  TEXT NOT NULL
   );
 
 CREATE TABLE controller_claim_decisions (

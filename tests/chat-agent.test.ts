@@ -227,7 +227,8 @@ async function turnDeps(llm: LLMProvider, broker: ToolBroker = new ChatToolBroke
   const clock = new FakeClock("2026-11-26T09:00:00.000Z");
   const store = new SqlFactoryStore(new SqliteDriver(dbFile()), clock);
   await store.migrate();
-  return { store, d: { store, llm, broker, clock, scanner: new PatternEgressScanner(async () => []) } };
+  let n = 0;
+  return { store, d: { store, llm, broker, clock, scanner: new PatternEgressScanner(async () => []), newTurnId: () => `ct_${n++}` } };
 }
 
 describe("chatTurn", () => {
@@ -241,14 +242,14 @@ describe("chatTurn", () => {
       expect(llm.seen[1]!.messages).toContainEqual(tool);
       const stored = (await store.listChatMessages("s1")).map((m) => [m.seq, m.role, m.content]);
       expect(stored).toEqual([[0, "user", "What areas are there?"], [1, "assistant", ""], [2, "tool", tool.content], [3, "assistant", "One area: store."]]);
-      expect(await store.listChatSpendBetween("2026-11-26", "2026-11-26")).toEqual([{ session_id: "s1", seq: 0, day: "2026-11-26", cost_usd: 0.02, tokens: 30 }]);
+      expect(await store.listChatSpendBetween("2026-11-26", "2026-11-26")).toEqual([{ turn_id: "ct_0", session_id: "s1", day: "2026-11-26", cost_usd: 0.02, tokens: 30 }]);
 
       // The next turn sends the stored history and takes the next seqs.
       const again = scripted([{ text: "Still one." }]);
       expect(await chatTurn({ ...d, llm: again }, "s1", "And now?")).toEqual({ ok: true, reply: "Still one." });
       expect(again.seen[0]!.messages.map((m) => m.content)).toEqual(["What areas are there?", "", tool.content, "One area: store.", "And now?"]);
       expect((await store.listChatMessages("s1")).map((m) => m.seq)).toContain(5);
-      expect((await store.listChatSpendBetween("2026-11-26", "2026-11-26")).map((s) => s.seq)).toEqual([0, 4]);
+      expect((await store.listChatSpendBetween("2026-11-26", "2026-11-26")).map((s) => s.turn_id)).toEqual(["ct_0", "ct_1"]);
     } finally {
       await store.close();
     }
@@ -338,10 +339,24 @@ describe("chatTurn", () => {
     }
   });
 
+  it("a failed turn takes no seq, and the next turn's spend is still counted", async () => {
+    const llm = scripted([{ text: "", stop_reason: "error", usage: { input_tokens: 1, output_tokens: 0, cost_usd: null } }, { text: "Hello." }]);
+    const { d, store } = await turnDeps(llm);
+    try {
+      expect(await chatTurn(d, "s1", "Hi")).toEqual({ ok: false, reason: "model_error" });
+      expect(await chatTurn(d, "s1", "Hi again")).toEqual({ ok: true, reply: "Hello." });
+      expect((await store.listChatMessages("s1")).map((m) => m.seq)).toEqual([0, 1]);
+      const spend = await store.listChatSpendBetween("2026-11-26", "2026-11-26");
+      expect(spend.map((s) => [s.turn_id, s.session_id])).toEqual([["ct_0", "s1"], ["ct_1", "s1"]]);
+    } finally {
+      await store.close();
+    }
+  });
+
   it("a spend row already stored for the turn is not stored twice", async () => {
     const { store } = await turnDeps(scripted([]));
     try {
-      const row = { session_id: "s1", seq: 0, day: "2026-11-26", cost_usd: 0.5, tokens: 9 };
+      const row = { turn_id: "ct_9", session_id: "s1", day: "2026-11-26", cost_usd: 0.5, tokens: 9 };
       expect(await store.recordChatSpend(row)).toBe(true);
       expect(await store.recordChatSpend({ ...row, cost_usd: 1 })).toBe(false);
       expect(await store.listChatSpendBetween("2026-11-26", "2026-11-26")).toEqual([row]);

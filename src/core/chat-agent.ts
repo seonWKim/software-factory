@@ -4,8 +4,8 @@
 // (channel tool_result) before the model sees it, and the owner's message and each reply pass it (channel ui) before
 // any of it is stored or returned; a finding stores no message and returns nothing (design 04-chat-commands). The
 // turn's messages are stored in one append keyed by (session, seq), so a turn written twice is stored once. Every
-// turn that called the model stores one spend row (`chat`, design 06-spend), withheld turns too, since their cost
-// was spent.
+// turn that called the model stores one spend row (`chat`, design 06-spend) under its own turn id, withheld and
+// failed turns too, since their cost was spent; a failed turn takes no seq, so the spend key is never a seq.
 
 import type { EgressChannel, EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore, NewChatMessage } from "../interfaces/factory-store.js";
@@ -31,6 +31,8 @@ export interface ChatDeps {
   scanner: EgressScanner;
   /** The injected clock (prod SystemClock, tests FakeClock): the turn's UTC day. */
   clock: { now(): Date };
+  /** A new id per turn, the key of its spend row (prod `ct_<uuid>`, tests a counter). */
+  newTurnId: () => string;
 }
 
 export type ChatTurnResult =
@@ -116,7 +118,8 @@ export async function chatTurn(d: ChatDeps, session_id: string, text: string): P
     }
   }
 
-  await d.store.recordChatSpend({ session_id, seq, day: utcDay(d.clock.now().getTime()), cost_usd: usage.cost_usd, tokens: usage.tokens });
+  const turn_id = d.newTurnId();
+  await d.store.recordChatSpend({ turn_id, session_id, day: utcDay(d.clock.now().getTime()), cost_usd: usage.cost_usd, tokens: usage.tokens });
   if (!result.ok) return result;
   const rows: NewChatMessage[] = turn.map((m, i) => ({ ...m, seq: seq + i }));
   return (await d.store.appendChatMessages(session_id, rows)) ? result : { ok: false, reason: "seq_taken" };

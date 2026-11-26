@@ -35,10 +35,10 @@ describe("spend counts chat turns apart", () => {
   it("readSpend and GET /api/v1/spend answer a chat total of the range's turns, unknown cost apart, and leave the run totals alone", async () => {
     const clock = new FakeClock("2026-11-26T09:00:00.000Z");
     const { store } = await newStore(clock);
-    await store.recordChatSpend({ session_id: "s1", seq: 0, day: "2026-11-25", cost_usd: 0.5, tokens: 100 });
-    await store.recordChatSpend({ session_id: "s1", seq: 4, day: "2026-11-26", cost_usd: 0.25, tokens: 40 });
-    await store.recordChatSpend({ session_id: "s2", seq: 0, day: "2026-11-26", cost_usd: null, tokens: 7 });
-    await store.recordChatSpend({ session_id: "s3", seq: 0, day: "2026-11-27", cost_usd: 9, tokens: 1 });
+    await store.recordChatSpend({ turn_id: "t1", session_id: "s1", day: "2026-11-25", cost_usd: 0.5, tokens: 100 });
+    await store.recordChatSpend({ turn_id: "t2", session_id: "s1", day: "2026-11-26", cost_usd: 0.25, tokens: 40 });
+    await store.recordChatSpend({ turn_id: "t3", session_id: "s2", day: "2026-11-26", cost_usd: null, tokens: 7 });
+    await store.recordChatSpend({ turn_id: "t4", session_id: "s3", day: "2026-11-27", cost_usd: 9, tokens: 1 });
 
     const spend = await readSpend(store, "2026-11-25", "2026-11-26");
     expect(spend.chat).toEqual({ cost_usd: 0.75, tokens: 147, turns: 3, unknown: 1 });
