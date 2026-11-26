@@ -409,7 +409,7 @@ export async function gatedImport<T>(
     await store.migrate();
     const { result, refPath } = await step({ store, clock, scanner });
     const signal = new AbortController().signal;
-    await runSkillVersionGates({ store, scanner, clock, config: skillImproveConfig(loaded.file), wiring: gateWiring(wiringOf(store, loaded), refPath), signal });
+    await runSkillVersionGates({ store, scanner, clock, wiring: gateWiring(wiringOf(store, loaded), refPath), signal });
     return result;
   } finally {
     await store.close();
