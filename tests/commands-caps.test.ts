@@ -22,6 +22,9 @@ import { tickAt } from "../src/shared/ticks/tick-generator.js";
 import { scheduledAction } from "../src/core/controller-deps.js";
 import { newStore, PROJECT_KEY, system, w1 } from "./helpers/store.js";
 
+// An over-cap /approve at too_large (design 04-split-specs, 2026-11-24): the too_large comment names it; with no note one
+// refusal, the same from a comment and from `factory approve`, and nothing stored; with a note `/retry`'s implement run
+// and the one-time cap with its size_cap_approved record, in one transition.
 describe("/approve over the cap at too_large", () => {
   const ME = "github:1" as UserId;
   const CAPS = { max_diff_lines: 1500, max_diff_files: 40 };

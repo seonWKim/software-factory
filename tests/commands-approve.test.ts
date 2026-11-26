@@ -289,7 +289,3 @@ describe("the footer of a spec auto mode approved (issue #586)", () => {
     expect(utcMinute("soon")).toBe("soon");
   });
 });
-
-// An over-cap /approve at too_large (design 04-split-specs, 2026-11-24): the too_large comment names it; with no note one
-// refusal, the same from a comment and from `factory approve`, and nothing stored; with a note `/retry`'s implement run
-// and the one-time cap with its size_cap_approved record, in one transition.
