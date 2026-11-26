@@ -1,5 +1,7 @@
 ## History
 
+- **Empty facts were hidden only on closed items** (decision changed 2026-11-27, the empty-facts decision at the top of 09-dashboard-item.md). Before: `ItemFacts` kept a fact when it had a value or the item was open, so an open item showed "–" for a tier, PR or plan and 0 for review loops, restarts and tokens; a closed item showed only facts with a value.
+
 - **The facts grid sat on the page** (decision changed 2026-11-24, the facts Card decision at the top of 09-dashboard-item.md). Before: `ItemFacts` and the IDs Disclosure sat under the decision card with no box, `mt-3`, their left edge on the cards' outer edge (192px at 1280) instead of their content edge (217px).
 
 - **Work showed Issue and PR columns and the item ID when an item had no title** (until 2026-11-22, wi_37bb601c; replaced by the ItemRow rows in the Item tables decision of 09-dashboard-item.md). Was: "In Needs you and Work items the title links to `/app/items/<id>` (the item id when there is no title) and the Item cell has no GitHub link; the Issue column (`#N` linked, or a dash) shows only when `plugins.issues` is `"github"`; the PR column and the tree's PR chip always show, since the link is whatever the store keeps. Running now and Queue keep their title component and its GitHub link on the source id."

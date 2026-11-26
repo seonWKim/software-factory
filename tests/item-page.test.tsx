@@ -215,15 +215,18 @@ describe("item page: links and runs", () => {
     expect(document.querySelector("[data-item-facts]")!.textContent).not.toContain("–");
   });
 
-  it("an open item keeps every fact, a dash where there is no value", async () => {
+  it("an open item shows only the facts with a value: no dash, no zero", async () => {
     mount("/app/items/wi_live");
     const facts = await waitFor(() => {
       const dts = [...document.querySelectorAll("[data-item-facts] dt")].map((d) => d.textContent);
       expect(dts.length).toBeGreaterThan(0);
       return dts;
     });
-    expect(facts).toContain("PR");
-    expect(facts).toContain("Plan");
+    expect(facts).toContain("State");
+    expect(facts).toContain("Updated");
+    const dds = [...document.querySelectorAll("[data-item-facts] dd")].map((d) => d.textContent);
+    expect(dds).not.toContain("–");
+    expect(dds).not.toContain("0");
     expect(document.querySelector("[data-closed-status]")).toBeNull();
   });
 
