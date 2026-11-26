@@ -5,7 +5,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { FakeAuth } from "./helpers/fakes/runner.js";
 import { FakeForge } from "./helpers/fakes/forge.js";
 import { FakeSource } from "./helpers/fakes/source.js";
-import { cleanScanner, config, recordingLog } from "./helpers/fakes/config.js";
+import { cleanScanner, config, recordingLog, waitFor } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, human, issue, newStore } from "./helpers/store.js";
 
 // The title backfill of unreviewed merges recorded with none (design 09-dashboard-tasks-needs, 2026-11-26): the
@@ -48,6 +48,18 @@ describe("unreviewed merge titles", () => {
     expect(f.forge.reads).toEqual([436]); // the item's title, no forge read for #60
     await f.controller.tickIntake();
     expect(f.forge.reads).toEqual([436]); // stored: not read again
+  });
+
+  it("the running controller fills them in its poll steps, not only in a manual intake tick", async () => {
+    const f = await factory(true);
+    f.forge.titles.set(436, "Show PR titles on the Tasks page");
+    await f.merge(436);
+    const ac = new AbortController();
+    const running = f.controller.run(ac.signal);
+    await waitFor(async () => (await f.titles())["436"] !== null, "title filled");
+    ac.abort();
+    await running;
+    expect(await f.titles()).toEqual({ "436": "Show PR titles on the Tasks page" });
   });
 
   it(`reads at most ${TITLE_FILLS} titles a pass, the rest on the next`, async () => {
