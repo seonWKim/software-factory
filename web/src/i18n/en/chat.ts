@@ -28,7 +28,6 @@ export const chat = {
   "chat.turns": "Recent chat turns",
   "chat.turnsNone": "No chat turns yet",
   "chat.turnsNoneBody": "Questions asked in the chat panel show here with how each ended.",
-  "chat.turnsFailed": "Could not load the chat turns.",
   "chat.outcome.answered": "Answered",
   "chat.outcome.refused": "Held back",
   "chat.outcome.failed": "Failed",
@@ -47,7 +46,4 @@ export const chat = {
   "chat.transcriptTitle": "Chat transcript",
   "chat.transcriptFor": "Transcript of the turn started {when}",
   "chat.transcriptEmpty": "This turn has no stored messages.",
-  "chat.transcriptFailed": "Could not load the transcript.",
-  "chat.loadingTurns": "Chat turns",
-  "chat.loadingTranscript": "Chat transcript",
 } as const;

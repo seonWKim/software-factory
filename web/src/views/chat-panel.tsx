@@ -12,7 +12,6 @@ import { ModalPanel } from "../components/ui/dialog.js";
 import { Textarea } from "../components/ui/textarea.js";
 import { EmptyState, PageHeader } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
-import { type MessageKey, en } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { localDateTime, relativeTime } from "../lib/format.js";
 import { useNow } from "./display.js";
@@ -106,9 +105,23 @@ function contextLine(page: string, item: { title: string | null; state_label: st
 const withoutContext = (text: string): string => text.replace(/^Open page: [^\n]*\n\n/, "");
 
 function reasonWords(reason: string | null | undefined): string {
-  const key = `chat.reason.${reason ?? "other"}`;
-  return key in en ? t(key as MessageKey) : t("chat.reason.other");
+  const words: Record<string, () => string> = {
+    withheld: () => t("chat.reason.withheld"),
+    model_error: () => t("chat.reason.model_error"),
+    too_many_steps: () => t("chat.reason.too_many_steps"),
+    seq_taken: () => t("chat.reason.seq_taken"),
+    error: () => t("chat.reason.error"),
+  };
+  const word = words[reason ?? ""];
+  return word === undefined ? t("chat.reason.other") : word();
 }
+
+const OUTCOME_WORDS: Record<"running" | "answered" | "refused" | "failed", () => string> = {
+  running: () => t("chat.outcome.running"),
+  answered: () => t("chat.outcome.answered"),
+  refused: () => t("chat.outcome.refused"),
+  failed: () => t("chat.outcome.failed"),
+};
 
 /**
  * The chat side panel (design 09-dashboard-chat): beside the page, which stays visible. Kept mounted while closed, so the
@@ -210,7 +223,7 @@ function TranscriptDialog({ turn, onClose }: { turn: Turn; onClose: () => void }
       {q.isError ? (
         <ErrorNote error={q.error} />
       ) : !q.data ? (
-        <Loading rows={2} label="chat.loadingTranscript" onRetry={() => void q.refetch()} />
+        <Loading rows={2} label="loading.transcript" onRetry={() => void q.refetch()} />
       ) : shown.length === 0 ? (
         <EmptyState title={t("chat.transcriptEmpty")} />
       ) : (
@@ -243,7 +256,7 @@ export function ChatCard(): ReactNode {
       {q.isError ? (
         <ErrorNote error={q.error} />
       ) : !q.data ? (
-        <Loading rows={2} label="chat.loadingTurns" onRetry={() => void q.refetch()} />
+        <Loading rows={2} label="loading.running" onRetry={() => void q.refetch()} />
       ) : (
         <div className="space-y-4">
           <p data-testid="chat-activity" className="text-sm">
@@ -256,7 +269,7 @@ export function ChatCard(): ReactNode {
             empty={<EmptyState title={t("chat.turnsNone")} description={t("chat.turnsNoneBody")} />}
             columns={[
               { key: "when", header: t("chat.colWhen"), render: (x) => <span title={localDateTime(x.created_at)}>{relativeTime(x.created_at, now)}</span> },
-              { key: "outcome", header: t("chat.colOutcome"), render: (x) => <Badge level={OUTCOME_TONE[x.status]}>{t(`chat.outcome.${x.status}` as MessageKey)}</Badge> },
+              { key: "outcome", header: t("chat.colOutcome"), render: (x) => <Badge level={OUTCOME_TONE[x.status]}>{OUTCOME_WORDS[x.status]()}</Badge> },
               { key: "reason", header: t("chat.colReason"), render: (x) => (x.reason === null ? "" : reasonWords(x.reason)) },
               {
                 key: "transcript",
