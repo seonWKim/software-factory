@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Timestamp, UserId, WorkerId } from "../src/core/types.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
@@ -8,6 +11,8 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { ACTIVITY_RETENTION_DAYS, prunedWithActivity } from "../src/impl/store/sql/activity.js";
+import { migrateSqlite } from "../src/impl/store/sqlite/rehearse.js";
+import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { MIGRATIONS_TABLE } from "../src/state/index.js";
 import { Worker } from "../src/worker/index.js";
@@ -205,5 +210,26 @@ describe("a migration", () => {
     expect(rows[0]!.reason).toContain("additive");
     await store.migrate();
     expect(await store.listActivity({ kind: "migration" })).toHaveLength(1);
+  });
+
+  it("applied by npm run migrate writes one migration row with its reason", async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "sf-activity-migrate-")), "factory.db");
+    const id = "20261126T1200-state-controller-activity";
+    const setup = new SqliteDriver(file);
+    await setup.migrate();
+    await setup.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE id = ?`, [id]); // pending again; the migration is safe to rerun
+    await setup.close();
+    const noSteps = { topicTables: async () => undefined, projectKeys: async () => 0 };
+    expect(await migrateSqlite(file, "apply", noSteps, () => undefined)).toBe(0);
+    const read = new SqliteDriver(file);
+    try {
+      const rows = await read.all("SELECT * FROM controller_activity WHERE kind = 'migration'");
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ actor_id: actorOf("migration"), subject: id, outcome: "applied" });
+      expect(String(rows[0]!.reason)).toContain("npm run migrate");
+      expect(String(rows[0]!.at)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    } finally {
+      await read.close();
+    }
   });
 });

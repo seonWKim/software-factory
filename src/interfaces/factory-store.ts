@@ -353,7 +353,7 @@ export interface NoticeMessageStore {
 /** One autonomous action (design 08-schedules-actions): `kind` as src/controller/background-jobs.ts lists it; `ref` a run's transcript path or a `log:<component>:<message>` reference (null: none); `at` the store's time. */
 export interface Activity { seq: number; actor_id: string; kind: string; subject: string; outcome: string; reason: string; ref: string | null; at: Timestamp }
 export type NewActivity = Omit<Activity, "seq" | "at">;
-/** Most rows are written by the store in their change's transaction (expireLeases, the prunes, a schedule claim, a transition's `activity`, a migration); recordActivity is for a change outside the store (a cleanup pass, a supervised restart). listActivity: newest first, at most `limit` (200). */
+/** Most rows are written by the store in their change's transaction (expireLeases, the prunes, a schedule claim, a transition's `activity`, a migration); recordActivity is for a change outside the store (a cleanup pass). listActivity: newest first, at most `limit` (200). */
 export interface ActivityStore { recordActivity(a: NewActivity): Promise<Activity>; listActivity(opts?: { kind?: string; limit?: number }): Promise<Activity[]> }
 export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore, SkillDraftStore, AttachmentStore, AlertDismissalStore, RoutineStore, ActivityStore {
   migrate(): Promise<void>;

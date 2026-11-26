@@ -2,8 +2,8 @@
 // write here takes the caller's executor, so a store method writes the row in the transaction of its change: the
 // reaper's lease expiry (expireLeases), a retention batch (prunedWithActivity), a schedule claim (schedules.ts), an
 // auto-grant (a transition's `activity`). A migration's row follows the migrations an open or `npm run migrate`
-// applied (migrateWithActivity); past actions get none. A cleanup pass and a supervised restart, changes outside the
-// store, write theirs with recordActivity.
+// applied (migrateWithActivity); past actions get none. A cleanup pass, a change outside the store, writes its row
+// with recordActivity; a supervised restart's row is written by recordChildRestart (worker-health.ts).
 
 import type { ActivityKind, ActorOf } from "../../../controller/background-jobs.js";
 import type { AbandonedAttempt, Activity, ActivityStore, NewActivity } from "../../../interfaces/factory-store.js";
@@ -98,8 +98,9 @@ export function prunedWithActivity(
  * Runs the driver's migrations, then writes one `migration` row per migration this call applied, with its reason. None
  * on a fresh database (no migration recorded before): building it is not a change to stored data, and past
  * migrations get no row. The rows are written after the migrations commit; a migration runs outside any one transaction.
+ * `via` names the path that applied them: a store open, or `npm run migrate` (the only path for breaking migrations).
  */
-export async function migrateWithActivity(db: SqlDriver, now: () => Timestamp): Promise<void> {
+export async function migrateWithActivity(db: SqlDriver, now: () => Timestamp, via: "open" | "npm run migrate"): Promise<void> {
   const applied = async () => (await db.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [MIGRATIONS])).length === 0
     ? [] : db.all(`SELECT id, component, change_kind FROM ${MIGRATIONS} ORDER BY id`);
   const before = new Set((await applied()).map((r) => String(r.id)));
@@ -111,7 +112,7 @@ export async function migrateWithActivity(db: SqlDriver, now: () => Timestamp): 
     for (const r of added) {
       await insertActivity(tx, now(), activityOf("migration", {
         subject: String(r.id), outcome: "applied", ref: logRef("store", "migration applied"),
-        reason: `${String(r.change_kind)} migration of ${String(r.component)}, pending in this revision, applied when the store opened`,
+        reason: `${String(r.change_kind)} migration of ${String(r.component)}, pending in this revision, applied ${via === "open" ? "when the store opened" : "by npm run migrate"}`,
       }));
     }
   });

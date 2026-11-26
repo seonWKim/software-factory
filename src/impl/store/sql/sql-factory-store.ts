@@ -134,7 +134,7 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
    * never runs on unmigrated rows. `npm run migrate` rewrites them.
    */
   async migrate(): Promise<void> {
-    await migrateWithActivity(this.db, () => this.now()); // each migration this open applies gets its Activity row (./activity.ts)
+    await migrateWithActivity(this.db, () => this.now(), "open"); // each migration this open applies gets its Activity row (./activity.ts)
     const legacy = await countLegacyProjectRows(this.db);
     if (legacy > 0) throw migrationPendingError(legacyRowsMessage(legacy));
   }
