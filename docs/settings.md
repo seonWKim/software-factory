@@ -57,6 +57,7 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `review_time` | controller | runtime | global | free |  | `"09:00"` | Local time, HH:MM, until which asks that are no merge and block nothing are held; empty is off. |
 | `run_timeout_ms` | worker | runtime | global | free |  | `2700000` | Longest an agent run may take before it is stopped. |
 | `secrets` | guards | review | global | tighten-only | guard |  | Which secret store tools read credentials from; agents never see them. |
+| `spend.coordinator_daily_usd` | controller | runtime | global | free |  | `5` | Dollars per UTC day the coordinator's cycles may spend on model calls. |
 | `spend.daily_budget_usd` | controller | runtime | global | free |  |  | Dollars per UTC day; spend at 80% and 100% of it alerts once each in Needs you. None: no budget. |
 | `spend.weekly_budget_usd` | controller | runtime | global | free |  |  | Dollars per week from Monday UTC; spend at 80% and 100% of it alerts once each. None: no budget. |
 | `stall_ms` | worker | runtime | global | free |  | `300000` | Longest an agent run may go with no model output and no open tool call before it counts as stalled. |

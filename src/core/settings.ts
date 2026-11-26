@@ -9,7 +9,7 @@ import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TI
 import { usdBudget } from "./spend.js"; import { fewOrdinaryPaths, testPathsOnly } from "./auto-grant.js";
 import type { RunId, RunKind, Tier, Timestamp } from "./types.js";
 import type { SettingOverride } from "../interfaces/factory-store.js";
-import maxRestart from "../controller/settings/max-restart.setting.js"; import retryBase from "../controller/settings/retry-base-ms.setting.js"; import retryMax from "../controller/settings/retry-max-ms.setting.js"; import summaryMorning from "../controller/settings/summary-morning-time.setting.js"; import summaryEvening from "../controller/settings/summary-evening-time.setting.js";
+import maxRestart from "../controller/settings/max-restart.setting.js"; import retryBase from "../controller/settings/retry-base-ms.setting.js"; import retryMax from "../controller/settings/retry-max-ms.setting.js"; import summaryMorning from "../controller/settings/summary-morning-time.setting.js"; import summaryEvening from "../controller/settings/summary-evening-time.setting.js"; import coordinatorDaily from "../controller/settings/spend-coordinator-daily-usd.setting.js";
 import lease from "../worker/settings/lease-ms.setting.js"; import runTimeout from "../worker/settings/run-timeout-ms.setting.js"; import { AGENT_STOP_CHECK_MS_DEFAULT } from "./config.js";
 
 // Per-project settings in layers (design 2026-11-01, "Settings resolve in layers"). Pure: the parse and
@@ -288,7 +288,7 @@ export const SETTABLE_KEYS = [
   "standing_approvals.threshold",
   "mode", "auto_merge_max_tier",
   "message_style", "notice_kinds", "quiet_hours", "review_time", "summary_morning_time", "summary_evening_time", "notify_channels", "integrations", "calendar",
-  "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label", "spend.daily_budget_usd", "spend.weekly_budget_usd", "tool_grants", "conflict_hotspot_threshold",
+  "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label", "spend.daily_budget_usd", "spend.weekly_budget_usd", "spend.coordinator_daily_usd", "tool_grants", "conflict_hotspot_threshold",
   "worker_kinds", "agent_stop_check_ms", "coordinator",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
@@ -339,7 +339,7 @@ export interface SettableValues {
   alarm_repeat_count: number;
   alarm_window_minutes: number;
   alarm_restart_count: number;
-  "standing_approvals.threshold": number; "spend.daily_budget_usd": number | null; "spend.weekly_budget_usd": number | null; // dollars; null: no budget
+  "standing_approvals.threshold": number; "spend.daily_budget_usd": number | null; "spend.weekly_budget_usd": number | null; "spend.coordinator_daily_usd": number; // dollars; null: no budget (the coordinator's daily limit is never null, design 06-spend)
   mode: Mode;
   auto_merge_max_tier: number;
   message_style: string;
@@ -369,7 +369,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   phases_auto_approve: false,
   hold_policy: DEFAULT_COORDINATION.hold_policy, auto_grant_test_paths: true, test_globs: ["tests/**", "**/*.test.*"],
   ...ALARM_DEFAULTS,
-  "standing_approvals.threshold": 10, "spend.daily_budget_usd": null, "spend.weekly_budget_usd": null,
+  "standing_approvals.threshold": 10, "spend.daily_budget_usd": null, "spend.weekly_budget_usd": null, "spend.coordinator_daily_usd": coordinatorDaily.default!,
   mode: "manual",
   auto_merge_max_tier: 0,
   message_style: "",
@@ -473,7 +473,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
       return value as SettableValues[K];
     }
     case "intake_label": return (value === null ? null : intakeLabel(value)) as SettableValues[K]; // null: none, the file's applies
-    case "spend.daily_budget_usd": case "spend.weekly_budget_usd": return usdBudget(key, value) as SettableValues[K];
+    case "spend.daily_budget_usd": case "spend.weekly_budget_usd": return usdBudget(key, value) as SettableValues[K]; case "spend.coordinator_daily_usd": if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) throw new Error(`${key} must be a positive dollar amount, such as 5; it has no "none"`); return value as SettableValues[K]; // a limit, never null (design 06-spend)
     case "worker_kinds": return workerKinds(value) as SettableValues[K];
     default:
       return positiveInteger(key, value) as SettableValues[K];

@@ -22,7 +22,7 @@ export type AdvancedGroupId = (typeof ADVANCED_GROUPS)[number]["id"];
 export const GROUP_KEYS: Readonly<Record<AdvancedGroupId, readonly string[]>> = {
   limits: [
     // How much runs at once, and how far auto mode goes on its own.
-    "workers", "worker_kinds", "mode", "auto_merge_max_tier", "spend.daily_budget_usd", "spend.weekly_budget_usd", "hold_policy",
+    "workers", "worker_kinds", "mode", "auto_merge_max_tier", "spend.daily_budget_usd", "spend.weekly_budget_usd", "spend.coordinator_daily_usd", "hold_policy",
     "phases_auto_approve", "coordinator", "standing_approvals.threshold",
     // The size and time limits of one run.
     "max_diff_lines", "max_diff_files", "run_timeout_ms", "agent_stop_check_ms", "stall_ms", "first_output_ms", "probe_interval_ms",
