@@ -75,7 +75,7 @@ CREATE TABLE controller_chat_spend (
     cost_usd    REAL,
     tokens      INTEGER NOT NULL,
     created_at  TEXT NOT NULL
-  );
+  , kind TEXT NOT NULL DEFAULT 'chat' CHECK (kind IN ('chat', 'coordinator')));
 
 CREATE TABLE controller_chat_turns (
     turn_id      TEXT NOT NULL PRIMARY KEY,
