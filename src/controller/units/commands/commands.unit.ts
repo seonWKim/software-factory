@@ -9,7 +9,7 @@ import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import { latestSpec, overCap, overCapApproval,
   APPROVED_RUN_QUEUED, APP_REQUEST, CHECKPOINT_REFUSAL, CLOSED_REFUSAL, HOLD_PATHS, RECHECK_PATHS_REFUSAL, appliesLocally, noFilesRefusal, appliesOnPr, approveCheck, approvesHold, awaitingSpec, commandFooter, commandNote, commandPhase, commandSpec,
   commandState, failedRunKind, floorCommand, floorTierNeeded, floorWip, helpReply, parseLink, phaseLabel, refusalText, ruleOfTwoCommand, scanNote, specDecision,
-  specNotWaiting, unknownCommandReply, withTag, CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity, specKind, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge, mergeCheckAgain, mergeCheckRetryRefusal, mergeCheckStopped, LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND,
+  specNotWaiting, unknownCommandReply, withTag, CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity, specKind, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge, mergeCheckAgain, mergeCheckRetryRefusal, mergeCheckStopped, LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND, type WriteRequest, authorizeWrite,
 } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, syncedCommand } from "../../../core/command-inbox.js";
@@ -21,7 +21,7 @@ import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, SYSTEM, retry, retryWip, footerAfter, alreadyAllowed } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
-import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js"; import { gateAgentWrite } from "./held-writes.js"; import { RUN_NEXT_COMMAND, runNext } from "./run-next.js";
+import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js"; import { writeGateDeps } from "./held-writes.js"; import { RUN_NEXT_COMMAND, runNext } from "./run-next.js";
 import { FEEDBACK_REQUIRED, applyQueued, queueRevise, replyQueued } from "./queued-revise.js"; import { scanClean } from "./scan.js"; import { recheckRetry } from "./premise-recheck.js"; import { commandText, pathsCommand } from "./paths.js"; import { noteCommand, noteOnSource } from "./note.js";
 import { PR_REVISE, type PrFeedbackDeps, handlePrReview, itemOfPr, prFeedback } from "./pr-feedback.js"; import { RETRY, answerCheckpoint } from "./checkpoint.js"; import { type InfoSay, handleInfo, handleLink } from "./replies.js";
 
@@ -102,13 +102,20 @@ export class CommandsUnit {
    * merge_queued goes back to merge_pending with the refusal on its state change, so the dashboard's row shows why
    * and offers Merge again. Any other item changes nothing (a `factory merge` or auto mode's merge never left it).
    */
-  /** An agent write (a coordinator step) through the guards and the permission gate: run, held for `confirm <id>`, or refused. */
-  gateAgentWrite(w: Parameters<typeof gateAgentWrite>[1]) {
-    return gateAgentWrite(this.c, w);
-  }
-
   async mergeReturned(id: WorkItemId, refusal: string): Promise<void> {
     await this.c.unit("transitions").decide(id, (it) => mergeReturned(it, refusal, SYSTEM));
+  }
+
+  /**
+   * An agent write (a coordinator step, design 08-permissions) through the guards and the permission gate, as the
+   * service `agent` (`service:<agent>`): run, held once per key for the owner's `confirm <id>`, or refused; a held or
+   * refused write is logged with its mode or reason.
+   */
+  async gateAgentWrite(w: Omit<WriteRequest, "origin" | "actor"> & { agent: string }) {
+    const d = await authorizeWrite(writeGateDeps(this.c), { ...w, origin: "agent", actor: `service:${w.agent}` as UserId });
+    if (d.outcome === "held") this.c.k.d.log.info("agent write held", { command: w.command, held_write: d.id, mode: d.mode });
+    if (d.outcome === "refused") this.c.k.d.log.warn("agent write refused", { command: w.command, reason: d.reason });
+    return d;
   }
 
   /**

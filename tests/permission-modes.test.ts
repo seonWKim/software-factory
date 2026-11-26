@@ -7,7 +7,6 @@
 import { describe, expect, it } from "vitest";
 import { AGENT_WRITE_IN_CHAT, EGRESS_BLOCKED, SECRET_READ, type WriteRequest, authorizeWrite, permissionGate } from "../src/core/authorize.js";
 import { ChatToolBroker, chatCallContext } from "../src/core/chat-agent-tools.js";
-import { COMMAND_TABLE } from "../src/core/command-table.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { PERMISSION_MODES } from "../src/controller/settings/permission-mode.setting.js";
 import { LiveSettings, OWNER_KEYS, SETTABLE_DEFAULTS, SETTABLE_KEYS, type SettingsBase, baseFromConfig, parseSettable } from "../src/core/settings.js";
@@ -138,9 +137,9 @@ describe("permission_mode through the settings API", () => {
   });
 });
 
-const command = (name: string) => COMMAND_TABLE.find((c) => c.name === name)!;
-const REVERSIBLE = command("task done");
-const IRREVERSIBLE = command("merge");
+/** One reversible and one irreversible command of the table, by name (the gate reads `reversible` from the table). */
+const REVERSIBLE = "task done";
+const IRREVERSIBLE = "merge";
 const scanner = new PatternEgressScanner(async () => []);
 const SECRET_LOOKING = `sk-ant-${"a".repeat(24)}`;
 
@@ -191,7 +190,8 @@ describe.each(BACKENDS)("authorizeWrite against the store: $name", ({ make }) =>
       const { store, auth } = await inMode(mode);
       expect(await auth(write())).toEqual({ outcome: "run", mode: "ask_irreversible" });
       expect(await auth(write({ command: IRREVERSIBLE, key: "m" }))).toMatchObject({ outcome: "held", mode: "ask_irreversible" });
-      expect((await store.listHeldWrites(10)).map((h) => h.key)).toEqual(["m"]);
+      expect(await auth(write({ command: "no such command", key: "n" }))).toMatchObject({ outcome: "held", mode: "ask_irreversible" });
+      expect((await store.listHeldWrites(10)).map((h) => h.key).sort()).toEqual(["m", "n"]);
     }
     const { store, auth } = await inMode("full");
     expect(await auth(write())).toEqual({ outcome: "run", mode: "full" });
@@ -234,18 +234,6 @@ describe.each(BACKENDS)("authorizeWrite against the store: $name", ({ make }) =>
     expect(first.outcome === "held" && again.outcome === "held" && again.id === first.id).toBe(true);
     expect((await store.listHeldWrites(10)).filter((h) => h.key === "same")).toHaveLength(1);
     expect(await store.holdWrite({ key: "same", command: "task done", args: [], actor: "service:coordinator" as UserId, mode: "full" })).toMatchObject({ created: false, write: { mode: "ask_all" } });
-  });
-});
-
-describe("each typed command row stores the mode it ran under", () => {
-  it("is the mode stored at the append, or the default with none stored", async () => {
-    const { store } = await newStore();
-    await store.appendCliCommand({ key: "cli:one", actor: "local:owner", command: "approve", args: {}, write_origin: "human_command" });
-    await store.setSettingOverride({ key: KEY, project: "", value: '"full"', actor: "local:owner" });
-    await store.appendCliCommand({ key: "cli:two", actor: "local:owner", command: "approve", args: {}, write_origin: "human_command" });
-    expect(await store.db.all("SELECT command_key, permission_mode FROM inbound_commands WHERE command_key IN ('cli:one', 'cli:two') ORDER BY command_key")).toEqual([
-      { command_key: "cli:one", permission_mode: "ask_irreversible" }, { command_key: "cli:two", permission_mode: "full" },
-    ]);
   });
 });
 

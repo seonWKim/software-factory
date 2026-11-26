@@ -4,18 +4,12 @@
 // merge it asks is an agent write: after the passport check it passes the permission gate (design 08-permissions),
 // which holds it for the owner's `confirm <id>` once per item, however many ticks ask it again.
 
-import type { UserId } from "../../../core/types.js";
-import { COMMAND_TABLE } from "../../../core/command-table.js";
 import { awaitingMerge } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
 /** Items waiting for a merge read per cycle. */
 const WAITING_BATCH = 50;
-/** The command table's `merge`, the one write the coordinator asks. */
-const MERGE = COMMAND_TABLE.find((c) => c.name === "merge")!;
-/** Who a held coordinator merge names as its writer. */
-const COORDINATOR_ACTOR = "service:coordinator" as UserId;
 
 export class CoordinatorUnit {
   private readonly cycle: { tick(): Promise<unknown> } | null;
@@ -32,7 +26,7 @@ export class CoordinatorUnit {
         const refusal = item ? await this.c.unit("auth").automatic("approve_merge", item) : "the work item was not found";
         if (refusal !== null) return refusal;
         const gate = await this.c.unit("commands").gateAgentWrite({
-          command: MERGE, args: [id], actor: COORDINATOR_ACTOR, in_chat_turn: false, key: `coordinator:merge:${id}`,
+          command: "merge", args: [id], agent: "coordinator", in_chat_turn: false, key: `coordinator:merge:${id}`,
         });
         return gate.outcome === "run" ? this.c.unit("local-merge").mergeLocal(id, { auto: true }, key, { coordinator: key }) : gate.reply;
       },

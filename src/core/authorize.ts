@@ -1,5 +1,5 @@
 import type { Timestamp, UserId } from "./types.js";
-import type { TableCommand } from "./command-table.js";
+import { COMMAND_TABLE } from "./command-table.js";
 import permissionMode, { PERMISSION_MODES, type PermissionMode } from "../controller/settings/permission-mode.setting.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { AuthAction, AuthDecision, AuthProvider, AuthResource, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
@@ -127,11 +127,7 @@ export function permissionGate(i: { mode: PermissionMode; reversible: boolean | 
 
 /** The mode in force, read from the store's override at each write (never a process cache); none, or a bad one, is the default. */
 export async function readPermissionMode(store: Pick<FactoryStore, "listSettingOverrides">): Promise<PermissionMode> {
-  return permissionModeOf((await store.listSettingOverrides()).find((r) => r.key === "permission_mode" && r.project === "")?.value);
-}
-
-/** The mode a stored global override's JSON names; none, or a bad one, is the default. */
-export function permissionModeOf(json: string | undefined): PermissionMode {
+  const json = (await store.listSettingOverrides()).find((r) => r.key === "permission_mode" && r.project === "")?.value;
   let value: unknown = null;
   try {
     value = json === undefined ? null : JSON.parse(json);
@@ -148,9 +144,9 @@ export interface HeldWriteStore {
   listHeldWrites(limit: number): Promise<HeldWrite[]>;
 }
 
-/** One write to authorize: the command table's entry, its arguments, who wrote it, and the key that makes it the same write again. */
+/** One write to authorize: the command table's name (`merge`), its arguments, who wrote it, and the key that makes it the same write again. */
 export interface WriteRequest {
-  command: Pick<TableCommand, "name" | "reversible">;
+  command: string;
   args: readonly string[];
   actor: UserId;
   origin: WriteOrigin;
@@ -169,13 +165,13 @@ export type WriteDecision =
 
 /** The guards, then the mode read now, then the gate; a held write is stored once and answered with `confirm <id>`. */
 export async function authorizeWrite(d: WriteGateDeps, w: WriteRequest): Promise<WriteDecision> {
-  const refused = (reason: string, why: string): WriteDecision => ({ outcome: "refused", reason, reply: `\`${w.command.name}\` was refused: ${why}` });
+  const refused = (reason: string, why: string): WriteDecision => ({ outcome: "refused", reason, reply: `\`${w.command}\` was refused: ${why}` });
   if (w.reads_secret === true) return refused(SECRET_READ, "it reads a secret");
-  if (!(await d.scanner.scan("tool_result", [w.command.name, ...w.args].join(" "))).clean) return refused(EGRESS_BLOCKED, "the egress scan flagged it");
+  if (!(await d.scanner.scan("tool_result", [w.command, ...w.args].join(" "))).clean) return refused(EGRESS_BLOCKED, "the egress scan flagged it");
   const mode = await readPermissionMode(d.store);
-  const gate = permissionGate({ mode, reversible: w.command.reversible, origin: w.origin, in_chat_turn: w.in_chat_turn });
+  const gate = permissionGate({ mode, reversible: COMMAND_TABLE.find((c) => c.name === w.command)?.reversible, origin: w.origin, in_chat_turn: w.in_chat_turn });
   if (gate.outcome === "refuse") return refused(gate.reason, "an agent may not write from a chat turn; type the command instead");
   if (gate.outcome === "run") return { outcome: "run", mode };
-  const { write } = await d.store.holdWrite({ key: w.key, command: w.command.name, args: w.args, actor: w.actor, mode });
-  return { outcome: "held", mode: write.mode, id: write.id, reply: `\`${w.command.name}\` is held under permission_mode ${write.mode}: confirm it with \`confirm ${write.id}\`` };
+  const { write } = await d.store.holdWrite({ key: w.key, command: w.command, args: w.args, actor: w.actor, mode });
+  return { outcome: "held", mode: write.mode, id: write.id, reply: `\`${w.command}\` is held under permission_mode ${write.mode}: confirm it with \`confirm ${write.id}\`` };
 }

@@ -3,7 +3,7 @@ import migration from "../src/state/migrations/20261127T1000-state-coordinator-s
 import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver } from "../src/state/index.js";
 import type { CoordinatorPorts } from "../src/core/controller-deps.js";
 import type { WorkItem, WorkItemId } from "../src/core/types.js";
-import { gateAgentWrite } from "../src/controller/units/commands/held-writes.js";
+import { CommandsUnit } from "../src/controller/units/commands/commands.unit.js";
 import coordinatorUnit, { type CoordinatorUnit } from "../src/controller/units/coordinator/coordinator.unit.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -79,7 +79,7 @@ describe("the coordinator's merge through the permission gate", () => {
       unit: (name: string): unknown => name === "auth"
         ? { automatic: async () => null }
         : name === "commands"
-          ? { gateAgentWrite: (w: Parameters<typeof gateAgentWrite>[1]) => gateAgentWrite(ctx as never, w) }
+          ? new CommandsUnit(ctx as never)
           : { mergeLocal: async (id: string) => (merged.push(id), null) },
     };
     await (coordinatorUnit.create(ctx as never) as CoordinatorUnit).step();
