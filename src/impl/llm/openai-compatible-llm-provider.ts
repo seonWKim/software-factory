@@ -1,4 +1,4 @@
-import type { LLMProvider, LLMRequest, LLMResponse } from "../../interfaces/llm-provider.js";
+import type { LLMMessage, LLMProvider, LLMRequest, LLMResponse } from "../../interfaces/llm-provider.js";
 import { type SecretName, type SecretStore, secretName } from "../../interfaces/secret-store.js";
 import { type ChatMessage, type ChatRequest, chatCompletion } from "../openai/chat-client.js";
 import type { OpenAICompatibleConfig } from "../openai/config.js";
@@ -8,7 +8,8 @@ export const OPENAI_COMPATIBLE_API_KEY: SecretName = secretName("OPENAI_COMPATIB
 
 /**
  * Any OpenAI-style chat completions endpoint (`openai_compatible.base_url`), through the shared client in
- * src/impl/openai/. No tools, one request per call, no retries. The API key is read from the SecretStore on
+ * src/impl/openai/. One request per call, no retries. Tools are sent as `function` tools and the reply's tool calls
+ * returned; the provider never runs a tool. The API key is read from the SecretStore on
  * each call, never from the environment. An output_schema is sent as `response_format` json_schema (strict)
  * and the reply is checked against it here, so a provider that ignores response_format still yields "error".
  *
@@ -44,12 +45,15 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
 
     const messages: ChatMessage[] = [
       ...(req.system ? [{ role: "system" as const, content: req.system }] : []),
-      ...req.messages.map((m) => ({ role: m.role, content: m.content })),
+      ...req.messages.map(toChatMessage),
     ];
     const request: ChatRequest = {
       model: config.models[req.model_class],
       messages,
       max_tokens: req.max_tokens,
+      ...(req.tools !== undefined && req.tools.length > 0 && {
+        tools: req.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })),
+      }),
       ...(req.output_schema !== undefined && {
         response_format: { type: "json_schema", json_schema: { name: "output", schema: req.output_schema, strict: true } },
       }),
@@ -64,7 +68,9 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
 
     usage.input_tokens = r.usage.input_tokens;
     usage.output_tokens = r.usage.output_tokens;
-    if (req.output_schema === undefined) return { text: r.text, stop_reason: "end", usage };
+    const tool_calls = r.tool_calls.map((c) => ({ id: c.id, name: c.function.name, arguments: c.function.arguments }));
+    const calls = tool_calls.length > 0 ? { tool_calls } : {};
+    if (req.output_schema === undefined || tool_calls.length > 0) return { text: r.text, ...calls, stop_reason: "end", usage };
 
     let parsed: unknown;
     try {
@@ -79,4 +85,16 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
     }
     return { text: r.text, parsed, stop_reason: "end", usage };
   }
+}
+
+/** An LLMMessage as the chat completions API takes it: tool calls as `function` calls, a tool result with its call's id. */
+function toChatMessage(m: LLMMessage): ChatMessage {
+  return {
+    role: m.role,
+    content: m.content,
+    ...(m.tool_calls !== undefined && m.tool_calls.length > 0 && {
+      tool_calls: m.tool_calls.map((c) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: c.arguments } })),
+    }),
+    ...(m.tool_call_id !== undefined && { tool_call_id: m.tool_call_id }),
+  };
 }
