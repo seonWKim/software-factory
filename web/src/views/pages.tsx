@@ -46,6 +46,7 @@ import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { Tooltip } from "../components/ui/menu.js";
 import { HostSleeps, sleptMinutes } from "./host-sleeps.js";
 import { ActivityActorsPage } from "./activity/page.js";
+import { CoordinatorCard } from "./coordinator-card.js";
 
 /** The Activity page of the autonomous actors (design 09-dashboard-activity): registered here with the other pages. */
 export { ActivityActorsPage };
@@ -348,6 +349,7 @@ export function ItemsPage() {
         </div>
       )}
       {rateLimit?.ends_at && <Notice tone="warn">{t("items.rateLimit", { state: t("items.ratePaused", { time: rateLimit.ends_at }) })}</Notice>}
+      <CoordinatorCard />
       <div className="min-w-0">
       {queuedView ? (
         <Card title={t("queue.title")} count={queue.data?.queue.length}>
