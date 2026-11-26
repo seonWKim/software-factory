@@ -209,9 +209,9 @@ interface JudgedCheck {
 function judgedChecks(r: Pick<SkillEvalReplay, "case_id" | "replay" | "detail">): JudgedCheck[] {
   const answers = (r.detail as { answers?: unknown } | null)?.answers;
   if (!Array.isArray(answers)) return [];
-  return (answers as { check?: unknown; answer?: unknown; kind?: unknown }[])
+  return (answers as { check?: unknown; answer?: unknown; kind?: unknown; reason?: unknown }[])
     .filter((a) => JUDGED_KINDS.includes(a.kind) && typeof a.check === "string" && typeof a.answer === "string")
-    .map((a) => ({ case_id: r.case_id, replay: r.replay ?? 0, check: a.check as string, answer: a.answer as string }));
+    .map((a) => ({ case_id: r.case_id, replay: r.replay ?? 0, check: a.check as string, answer: a.answer as string, reason: typeof a.reason === "string" ? a.reason : "" }));
 }
 
 /** A label's key: run, case, replay and check. */
