@@ -1,6 +1,8 @@
 // The coordinator step (design 05-coordinator): at each tick it hands the coordinator cycle (src/coordinator/, built by
 // compose as `coordinator`) the live settings, the items waiting for a merge and the existing local merge, as auto
-// mode runs it under the controller's service passport. The cycle decides whether a cycle is due and runs it.
+// mode runs it under the controller's service passport. The cycle decides whether a cycle is due and runs it. At the
+// daily limit it stores the cycle's owner question, scanned as UI text, through the kernel's `alert` write (design
+// 06-spend).
 
 import { awaitingMerge } from "../support.js";
 import type { Ctx } from "../context.js";
@@ -16,7 +18,11 @@ export class CoordinatorUnit {
     this.cycle = c.k.d.coordinator?.({
       settings: async () => {
         const v = this.c.k.live.values();
-        return { on: v.coordinator, max_tier: v.auto_merge_max_tier };
+        return { on: v.coordinator, max_tier: v.auto_merge_max_tier, daily_usd: v["spend.coordinator_daily_usd"] };
+      },
+      limitReached: async ({ alert, dedupe_ms }) => {
+        const clean = (await this.c.k.reader.scan("ui", alert.detail)).clean;
+        await this.c.k.commit({ writes: [{ kind: "alert", alert: { ...alert, detail: clean ? alert.detail : null }, dedupe_ms }] });
       },
       waiting: async () => (await this.c.k.reader.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: WAITING_BATCH })).filter(awaitingMerge),
       merge: async (id, key) => {

@@ -2,6 +2,7 @@
 // interfaces it is given, and the forge budget it reports. It goes with FactoryStore and the other legacy
 // interfaces (M11).
 
+import type { CoordinatorLimitAlert } from "./alarms.js";
 import type { FactoryConfig } from "./config.js";
 import type { TickLease } from "./lease.js";
 import { type Logger, errorText } from "./log.js";
@@ -165,10 +166,18 @@ export interface ControllerDeps {
   coordinator?: (ports: CoordinatorPorts) => { tick(): Promise<unknown> };
 }
 
-/** What the controller unit binds for the coordinator cycle: the live settings, the waiting items and the existing local merge. */
+/**
+ * What the controller unit binds for the coordinator cycle: the live settings, the waiting items, the existing local
+ * merge and the daily limit's owner question.
+ */
 export interface CoordinatorPorts {
-  /** Read at each tick: the `coordinator` switch and `auto_merge_max_tier`. */
-  settings(): Promise<{ on: boolean; max_tier: number }>;
+  /** Read at each tick: the `coordinator` switch, `auto_merge_max_tier` and `spend.coordinator_daily_usd`. */
+  settings(): Promise<{ on: boolean; max_tier: number; daily_usd: number }>;
+  /**
+   * Stores the UTC day's one owner question at the daily limit (coordinatorLimitAlert, design 06-spend): the unit scans
+   * its text as UI text and commits it through the kernel's `alert` write, deduped for `dedupe_ms`.
+   */
+  limitReached(q: CoordinatorLimitAlert): Promise<void>;
   /** The items waiting for a merge, of any source. */
   waiting(): Promise<readonly WorkItem[]>;
   /** The existing local merge as auto mode runs it, keyed on `key`: the refusal, or null when the change is queued. */

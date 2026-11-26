@@ -5,6 +5,7 @@ import type { UserId, WorkItemId } from "../src/core/types.js";
 import { SENTENCE_FORM } from "../src/core/command-table.js";
 import { helpReply, itemCommandState, refusalText, specNotWaiting } from "../src/core/commands.js";
 import { OwnerAuth } from "../src/core/authorize.js";
+import { coordinatorLimitAlert } from "../src/core/alarms.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { FakeSource } from "./helpers/fakes/source.js";
@@ -247,5 +248,51 @@ describe("a local resolve command at the controller", () => {
     const refusals = (await f.store.listItemMessages(f.id)).filter((m) => m.marker.startsWith("<!-- factory:refused:"));
     expect(refusals.map((m) => m.body)).toEqual([expect.stringContaining("`/resolve` was not applied")]);
     expect(refusals[0]!.body).toContain("waiting for a human merge");
+  });
+});
+
+describe("a bare approve <usd> or reject answers the coordinator limit question (design 06-spend)", () => {
+  /** setup() with a clock on 2026-01-01, and that day's limit question raised. */
+  async function open(day = "2026-01-01") {
+    const f = await setup();
+    const { alert, dedupe_ms } = coordinatorLimitAlert({ day, limit_usd: 5, spent_usd: 6, unknown: 0 });
+    await f.store.recordAlert(alert, dedupe_ms);
+    const clock = new FakeClock();
+    const d = { ...f.d, clock: async () => clock };
+    return { ...f, run: (a: Parameters<typeof runLocalCli>[1]) => runLocalCli(d, a), as: (user: string) => (a: Parameters<typeof runLocalCli>[1]) => runLocalCli({ ...d, identity: { user: user as UserId, from: "git user.email" } }, a) };
+  }
+  const limitRows = async (store: Awaited<ReturnType<typeof setup>>["store"]) => (await store.listCliCommandsAfter(0, 100)).filter((c) => "coordinator_limit" in c.args);
+
+  it("parses `approve 10` as the common approve with a value; any other word stays the item command", () => {
+    expect(parseLocalCliArgs("approve", ["10"])).toEqual({ action: "settle", command: "approve", value: "10" });
+    expect(parseLocalCliArgs("approve", ["$12.50"])).toEqual({ action: "settle", command: "approve", value: "$12.50" });
+    expect(parseLocalCliArgs("approve", ["wi_a"])).not.toMatchObject({ action: "settle" });
+  });
+
+  it("approve 10 and reject each store one command naming today's question, for the controller to apply", async () => {
+    const { store, run } = await open();
+    expect(await run({ action: "settle", command: "approve", value: "10" })).toMatchObject({ code: 0, lines: [expect.stringContaining("sets spend.coordinator_daily_usd to $10.00")] });
+    expect((await limitRows(store)).map((c) => [c.command, c.args])).toEqual([["approve", { coordinator_limit: "coordinator_limit:2026-01-01", text: "10" }]]);
+    // The CLI writes no setting itself: the controller does.
+    expect((await store.listSettingOverrides()).find((o) => o.key === "spend.coordinator_daily_usd")).toBeUndefined();
+
+    const other = await open();
+    expect(await other.run({ action: "settle", command: "reject" })).toMatchObject({ code: 0, lines: [expect.stringContaining("stay stopped until the UTC day ends")] });
+    expect((await limitRows(other.store)).map((c) => [c.command, c.args])).toEqual([["reject", { coordinator_limit: "coordinator_limit:2026-01-01" }]]);
+  });
+
+  it("a bare approve with no amount is refused while the question is open, and another person cannot answer", async () => {
+    const { store, run, as } = await open();
+    expect(await run({ action: "settle", command: "approve" })).toMatchObject({ code: 1, lines: [expect.stringContaining("positive dollar amount")] });
+    await run({ action: "create", title: "claims the owner", bodyFile: "b" });
+    expect(await as("local:someone-else")({ action: "settle", command: "approve", value: "10" })).toMatchObject({ code: 1, lines: [expect.stringContaining("only the owner")] });
+    expect(await limitRows(store)).toEqual([]);
+  });
+
+  it("an earlier day's open question takes no answer: a bare approve or reject keeps its held-skill-version meaning", async () => {
+    const { store, run } = await open("2025-12-31");
+    expect((await run({ action: "settle", command: "reject" })).lines.join("\n")).not.toContain("coordinator");
+    expect((await run({ action: "settle", command: "approve" })).lines.join("\n")).not.toContain("positive dollar amount");
+    expect(await limitRows(store)).toEqual([]);
   });
 });

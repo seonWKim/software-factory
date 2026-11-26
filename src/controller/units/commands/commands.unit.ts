@@ -9,7 +9,7 @@ import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import { latestSpec, overCap, overCapApproval,
   APPROVED_RUN_QUEUED, APP_REQUEST, CHECKPOINT_REFUSAL, CLOSED_REFUSAL, HOLD_PATHS, RECHECK_PATHS_REFUSAL, appliesLocally, noFilesRefusal, appliesOnPr, approveCheck, approvesHold, awaitingSpec, commandFooter, commandNote, commandPhase, commandSpec,
   commandState, failedRunKind, floorCommand, floorTierNeeded, floorWip, helpReply, parseLink, phaseLabel, refusalText, ruleOfTwoCommand, scanNote, specDecision,
-  specNotWaiting, unknownCommandReply, withTag, CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity, specKind, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge, mergeCheckAgain, mergeCheckRetryRefusal, mergeCheckStopped, LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND,
+  specNotWaiting, unknownCommandReply, withTag, COORDINATOR_LIMIT_KEY, LIMIT_ALERTS_SCAN, coordinatorLimitAnswer, CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity, specKind, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge, mergeCheckAgain, mergeCheckRetryRefusal, mergeCheckStopped, LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND,
 } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, syncedCommand } from "../../../core/command-inbox.js";
@@ -148,6 +148,7 @@ export class CommandsUnit {
       else if (e) await this.c.k.guard(`event:${e.kind}`, () => this.c.dispatch(e));
       return;
     }
+    if (typeof c.args.coordinator_limit === "string") return this.answerLimit(c, c.args.coordinator_limit);
     const id = c.args.item; if (typeof id !== "string" || id === "") return;
     // Any source's item (design 05-sources, CLI intake): identity provider `local`, judged by the local auth plugin; never waits on its source.
     const item = await this.c.k.reader.getWorkItem(id as WorkItemId); if (!item) return;
@@ -158,6 +159,28 @@ export class CommandsUnit {
     if (c.command === "hold") return void (await this.c.unit("coordination").holdCommand(item, { who: localIdentity(c.actor) }, c.key, String(c.args.text ?? "")));
     if (c.command === "note") return noteCommand(this.c, item, localIdentity(c.actor), c.key, String(c.args.text ?? ""), { say: refusalText, closed: CLOSED_REFUSAL });
     const e = commandEvent(c, item.source); if (e) await this.c.dispatch(e);
+  }
+
+  /**
+   * A bare `approve <usd>` or `reject` stored for the coordinator limit question with key `question` (design 06-spend;
+   * the CLI's storeLimitAnswer): the owner check `/approve` uses, then coordinatorLimitAnswer on today's question, then
+   * one `coordinator_limit_answer` write (the setting through the settings path, the alert dismissed by the owner). A
+   * question no longer open (answered, or its UTC day ended) or a refusal changes nothing and is logged. Safe to run
+   * twice: a second run finds the question answered.
+   */
+  async answerLimit(c: CliCommand, question: string): Promise<void> {
+    const log = this.c.k.d.log, fields = { command_key: c.key, command: c.command, by: c.actor, question };
+    if (c.command !== "approve" && c.command !== "reject") return;
+    const principal = await this.c.unit("auth").allowed({ user_id: c.actor as UserId }, "approve_spec", question);
+    if ("refuse" in principal) return log.warn("coordinator limit answer refused", { ...fields, reason: principal.refuse });
+    const r = coordinatorLimitAnswer(await this.c.k.reader.listAlerts({ limit: LIMIT_ALERTS_SCAN }), this.c.k.nowMs(), c.command, typeof c.args.text === "string" ? c.args.text : null);
+    if (r === null || r.alert.pattern_key !== question) return log.info("coordinator limit answer not applied: the question is not open", fields);
+    if ("refused" in r) return log.warn("coordinator limit answer refused", { ...fields, reason: r.refused });
+    const setting = r.set_usd === null ? null : { key: COORDINATOR_LIMIT_KEY, value: r.set_usd };
+    await this.c.k.commit({ writes: [
+      { kind: "coordinator_limit_answer", alert_id: r.alert.id, setting, actor: principal.user_id },
+      { kind: "log", level: "info", msg: "coordinator limit question answered", fields: { ...fields, set_usd: r.set_usd } },
+    ] });
   }
 
   /**

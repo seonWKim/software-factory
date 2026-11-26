@@ -2,7 +2,8 @@
 // in a fresh read-only checkout with the read-only tools Read, Glob and Grep, the standing instructions of
 // prompts/coordinator.md as its system prompt, and the waiting items as its prompt. Its answer is a list of proposed
 // actions, which the cycle checks in code before it carries any out. The transcript is scanned (G5) and stored under
-// `transcripts/coordinator/<cycle>.json`; the link is null when the scan flagged it or no storage is given.
+// `transcripts/coordinator/<cycle>.json`; the link is null when the scan flagged it or no storage is given. The answer
+// carries the run's cost and tokens from the runner's own report (cost null when it gave none, design 06-spend).
 
 import type { FactoryConfig } from "../core/config.js";
 import type { ToolSpec } from "../core/tools/types.js";
@@ -62,7 +63,7 @@ export function proposedActions(output: unknown): ProposedAction[] {
 export function coordinatorAgent(d: AgentDeps): CoordinatorAgent {
   return async ({ cycle_id, items }) => {
     const system_prompt = await d.prompt();
-    if (system_prompt === null) return { status: "failed", actions: [], transcript_link: null, error: `${COORDINATOR_PROMPT} cannot be read` };
+    if (system_prompt === null) return { status: "failed", actions: [], transcript_link: null, cost_usd: null, tokens: 0, error: `${COORDINATOR_PROMPT} cannot be read` };
     const tools = readOnlyTools(d.tools);
     const handle = await d.sandbox.create({ repo: d.config.repo.path, branch: null, base_ref: d.config.repo.base_branch });
     try {
@@ -91,7 +92,8 @@ export function coordinatorAgent(d: AgentDeps): CoordinatorAgent {
         await d.storage.put(key, new TextEncoder().encode(result.transcript));
         transcript_link = `storage:${key}`;
       }
-      return { status: result.status, actions: proposedActions(result.output), transcript_link, ...(result.error ? { error: result.error.slice(0, 500) } : {}) };
+      const { cost_usd, input_tokens, output_tokens } = result.usage;
+      return { status: result.status, actions: proposedActions(result.output), transcript_link, cost_usd, tokens: input_tokens + output_tokens, ...(result.error ? { error: result.error.slice(0, 500) } : {}) };
     } finally {
       await d.sandbox.destroy(handle);
     }

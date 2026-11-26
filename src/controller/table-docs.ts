@@ -3,9 +3,9 @@
 // tests/data-table-docs.test.ts fails on a table with none, or a line for a table or column that does not exist.
 
 export const TABLE_DOCS: Readonly<Record<string, string>> = {
-  controller_activity: "One row per action the factory took on its own (a lease expiry, retention, cleanup, auto-grant, schedule run, restart or migration), with its reason; kept 30 days.",
+  controller_activity: "One row per action the factory took on its own (a lease expiry, retention, cleanup, auto-grant, schedule run, restart, coordinator cycle or migration), with its reason; kept 30 days.",
   "controller_activity.actor_id": "The background job's system actor ID (src/controller/background-jobs.ts), never a display name.",
-  "controller_activity.kind": "The job's Activity kind: lease_expiry, retention, cleanup, auto_grant, schedule_run, restart or migration.",
+  "controller_activity.kind": "The job's Activity kind: lease_expiry, retention, cleanup, auto_grant, schedule_run, restart, coordinator or migration.",
   "controller_activity.ref": "Where to read more: a run's transcript path, a schedule's run list or a log:<component>:<message> reference; empty when none.",
   controller_alert_patterns: "When each alarm pattern last alerted, so a repeat inside its quiet window stays silent.",
   controller_alerts: "Stored alarms (failure bursts, spend budgets and others) that show in Needs you.",
@@ -16,7 +16,7 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   controller_command_proposals: "Commands the factory read from a message, waiting for the owner to confirm or cancel them.",
   controller_design_learnings: "Owner corrections to dashboard changes, one line each, as design-system/learnings.md shows them.",
   "controller_design_learnings.capture_key": "The item and the comment, verdict or review finding the line came from; one line per key.",
-  controller_coordinator_actions: "One row per action a coordinator cycle took, refused or skipped, with its outcome, reason and the link to the cycle's transcript.",
+  controller_coordinator_actions: "One row per action a coordinator cycle took, refused or skipped, with its outcome, reason and the link to the cycle's transcript; a cycle the gates skipped (nothing waiting, the daily limit reached) stores one skipped cycle row.",
   controller_coordinator_due: "When the next coordinator cycle is due, one row, so every replica reads the same time.",
   controller_dependency_edges: "Links between work items (one depends on another) and whether each is met.",
   controller_file_conflicts: "Files a change conflicted on, per project, used to weigh coordination cost.",
