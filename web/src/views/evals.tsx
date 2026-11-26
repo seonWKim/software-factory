@@ -420,7 +420,7 @@ function HeldVersions({ skill }: { skill: string }) {
       {held.map((h) => (
         <div key={`${h.ref_id}:${h.version}`} data-held-version={h.version}>
           <Notice tone="warn" title={t("evals.heldTitle", { n: h.version })}>
-            <div className="mt-1 flex flex-col gap-3">
+            <div className="flex flex-col gap-3">
               <p>{heldRates(h)}</p>
               <div className="space-y-1">
                 <p className="font-medium">{t("evals.heldWorse")}</p>
@@ -477,20 +477,22 @@ function JudgeChecks({ calibration }: { calibration: ReturnType<typeof useEvalCa
   const replays = data?.checks.some((c) => c.replay > 1) ?? false;
   return (
     <Disclosure data-judge-checks summary={t("evals.judge")}>
-      <p className="mb-3 text-sm text-pretty text-text-2">{t("evals.judgeIntro")}</p>
-      {calibration.isError ? (
-        <ErrorNote error={new Error(t("evals.judgeFailed"))} />
-      ) : !data ? (
-        <Loading rows={3} label="loading.evalRuns" onRetry={() => void calibration.refetch()} />
-      ) : data.run === null || data.checks.length === 0 ? (
-        <EmptyState title={t("evals.judgeEmpty")} />
-      ) : (
-        <ul aria-label={t("evals.judgeChecksLabel")} className="divide-y divide-border rounded-box border border-border">
-          {data.checks.map((c) => (
-            <JudgeCheckRow key={JSON.stringify([c.case_id, c.replay, c.check])} c={{ ...c, run: data.run! }} n={cases.indexOf(c.case_id) + 1} replays={replays} token={token} />
-          ))}
-        </ul>
-      )}
+      <div className="flex flex-col gap-3">
+        <p className="text-sm text-pretty text-text-2">{t("evals.judgeIntro")}</p>
+        {calibration.isError ? (
+          <ErrorNote error={new Error(t("evals.judgeFailed"))} />
+        ) : !data ? (
+          <Loading rows={3} label="loading.evalRuns" onRetry={() => void calibration.refetch()} />
+        ) : data.run === null || data.checks.length === 0 ? (
+          <EmptyState title={t("evals.judgeEmpty")} />
+        ) : (
+          <ul aria-label={t("evals.judgeChecksLabel")} className="divide-y divide-border rounded-box border border-border">
+            {data.checks.map((c) => (
+              <JudgeCheckRow key={JSON.stringify([c.case_id, c.replay, c.check])} c={{ ...c, run: data.run! }} n={cases.indexOf(c.case_id) + 1} replays={replays} token={token} />
+            ))}
+          </ul>
+        )}
+      </div>
     </Disclosure>
   );
 }
