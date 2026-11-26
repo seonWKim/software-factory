@@ -5,9 +5,8 @@ import { WEB_REV } from "./overview.js";
 export const API = {
   // The app's own revision goes along, so the server lists a mismatch in Needs you.
   overview: WEB_REV ? `/api/v1/overview?rev=${encodeURIComponent(WEB_REV)}` : "/api/v1/overview",
+  /** The items list's query key (items.ts useItems calls generated.ts itemsList). */
   items: "/api/v1/items",
-  /** The items read, kept to the work items whose source task is in that task project when `project` is a slug. */
-  itemsIn: (project: string | null) => (project === null ? "/api/v1/items" : `/api/v1/items?project=${encodeURIComponent(project)}`),
   item: (id: string) => `/api/v1/items/${encodeURIComponent(id)}`,
   itemCommands: (id: string) => `/api/v1/items/${encodeURIComponent(id)}/commands`,
   /** The item's changed files (the Changes tab); with `path`, that file's diff too. */
@@ -63,14 +62,12 @@ export const API = {
   calendarSync: "/api/v1/calendar/sync",
   /** The Calendar page's read of the stored events of the local days `from` through `to` (YYYY-MM-DD, inclusive). */
   calendarEvents: (from: string, to: string) => `/api/v1/calendar/events?from=${from}&to=${to}`,
-  /** The Schedules page's read of every schedule. */
+  /** The Schedules page's read of every schedule; the schedule reads' query keys (schedules.ts calls generated.ts). */
   schedules: "/api/v1/schedules",
   /** One schedule's run rows. */
   scheduleRuns: (id: string) => `/api/v1/schedules/runs?schedule=${encodeURIComponent(id)}`,
   /** One Check a page schedule's suggestions. */
   scheduleSuggestions: (id: string) => `/api/v1/schedules/suggestions?schedule=${encodeURIComponent(id)}`,
-  /** One of the Schedules page's writes (owner only). */
-  scheduleWrite: (verb: ScheduleVerb) => `/api/v1/schedules/${verb}`,
   taskBuild: "/api/v1/tasks/build",
   taskAction: (action: TaskAction) => `/api/v1/tasks/${action}`,
   dataTables: "/api/v1/data/tables",
@@ -84,6 +81,3 @@ export const API = {
 
 /** A Tasks page row action: the path segment of its route. */
 export type TaskAction = "edit" | "done" | "reopen" | "delete" | "sub";
-
-/** A Schedules page write: the path segment of its route. */
-export type ScheduleVerb = "add" | "edit" | "pause" | "resume" | "run" | "delete";
