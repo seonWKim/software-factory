@@ -8,7 +8,8 @@
 // Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The write routes, among them POST
 // /api/v1/settings (settings-api.ts), POST /api/v1/items/:id/commands (commands.ts), POST /api/v1/pauses/resume
 // (pause-api.ts) and POST /api/v1/standing (standing-api.ts), are handled behind server.ts's write guards;
-// GET /api/v1/settings, /session, /pauses and /standing are here.
+// GET /api/v1/settings, /session, /pauses and /standing are here. GET /api/v1/items is the API registry's capability
+// items.list (src/api/capabilities/items.ts), which runs listItems.
 
 import { phaseOf } from "../core/phase.js";
 import type { SplitLimits } from "../core/split.js";
@@ -44,6 +45,7 @@ import { Withholder } from "./withhold.js";
 import { itemGraph, windowRuns } from "./graph.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
 import { baseCommittedAt, changesHead, mergeCheckRow, needsRecheck, overlapsOf } from "./changes.js";
+import { type Refusal, refuse } from "../api/registry.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Host sleeps on /health (design §9): the newest ten. */
@@ -60,6 +62,13 @@ export interface ApiResult {
 const ok = (value: unknown): ApiResult => ({ status: 200, value });
 export const apiError = (status: number, error: string): ApiResult => ({ status, value: { error } });
 
+/** A handler's result as a capability's answer (design 09-api-registry): its value on a 200, else refuse(status, error). */
+export function answerOf<T>(r: ApiResult): T | Refusal {
+  if (r.status === 200) return r.value as T;
+  const error = (r.value as { error?: unknown } | null)?.error;
+  return refuse(r.status, typeof error === "string" ? error : "Refused.");
+}
+
 /** True for /api/v1 and everything under it. */
 export function isApiPath(pathname: string): boolean {
   return pathname === "/api/v1" || pathname.startsWith("/api/v1/");
@@ -75,7 +84,6 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
   switch (path) {
     case "/overview":
       return ok(await overview(c, url.searchParams));
-    case "/items": return (await projectFilterRefusal(d.store, url.searchParams.get("project"))) ?? items(c, url.searchParams);
     case "/runs": return windowRuns({ store: d.store, text: (v, ch) => c.text(v, ch), now: c.now }, url.searchParams.get("window"), (r) => runRow(c, r));
     case "/queue": return ok(await queue(c));
     case "/workers": return ok(await workers(c));
@@ -279,6 +287,11 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     },
     unreviewed_merges_7d: await s.countUnreviewedMergesSince(new Date(c.now.getTime() - 7 * DAY_MS).toISOString() as Timestamp),
   };
+}
+
+/** GET /api/v1/items (the capability items.list, src/api/capabilities/items.ts): the ranked list, filtered. */
+export async function listItems(d: ApiDeps, params: URLSearchParams): Promise<ApiResult> {
+  return (await projectFilterRefusal(d.store, params.get("project"))) ?? items(new ApiCtx(d), params);
 }
 
 async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {

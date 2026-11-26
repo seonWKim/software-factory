@@ -3,8 +3,10 @@
 // (registryRead and registryWrite, wired by one READ_ROUTES and one WRITE_ROUTES entry), the OpenAPI document
 // (openApi), the typed client (clientText) and the feature map (feature-map.ts). A write route is reached only behind
 // write-routes.ts's guards (Origin, Content-Type, CSRF token, body size); every string a route answers goes through
-// the Withholder by its output schema. The permission is declared only in this phase: no guard reads it yet.
-// Only type imports outside src/api/, so scripts/gen-api.mjs loads it with Node's type stripping.
+// the Withholder by its output schema. The permission is declared only: no guard reads it yet.
+// scripts/gen-api.mjs loads the declarations (src/api/index.ts) through its resolve hook with Node's type stripping: this
+// file imports outside src/api/ only as types, and a declaration file imports code outside src/api/ inside its run
+// (a dynamic import), so the script never loads a handler.
 
 import type { ApiResult } from "../ui/api.js";
 import type { ServerDeps } from "../ui/server.js";
