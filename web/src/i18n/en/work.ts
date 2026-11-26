@@ -155,7 +155,6 @@ export const work = {
   "run.routine": "Routine",
   "coordinator.title": "Coordinator",
   "coordinator.label": "Coordinator",
-  "coordinator.loading": "Loading the coordinator",
   "coordinator.switch": "Coordinator on",
   "coordinator.setting": "Changes with factory settings set coordinator.",
   "coordinator.every": "Checks every 15 minutes.",

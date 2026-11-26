@@ -76,7 +76,7 @@ export function CoordinatorCard() {
   const q = useCoordinator();
   return (
     <Card title={t("coordinator.title")} label={t("coordinator.label")}>
-      {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={2} label="coordinator.loading" onRetry={() => void q.refetch()} /> : (
+      {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={2} label="loading.coordinator" onRetry={() => void q.refetch()} /> : (
         <>
           <Body view={q.data} now={now} />
           {q.data.actions.length === 0 && <EmptyState title={t("coordinator.noActions")} />}
