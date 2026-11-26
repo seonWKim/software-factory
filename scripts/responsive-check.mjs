@@ -85,19 +85,13 @@ const PREPARE = {
  * Opens the Evals page of `skill` in place, as the dashboard's own links do: the server answers 404 to a full load of
  * /app/evals/<skill>, since a skill ref is a folder path and an /app path segment may not decode to hold "/". So the
  * entry loads `data` (the page the sidebar marks for an evals page) and moves to evals/<skill> with pushState and a
- * popstate. It waits for the Compare Button to be enabled (the versions loaded); with `compare` it presses it, waits for
- * dialog[open], then for the dialog's case table (the diff loaded).
+ * popstate. It waits for the SKILL.md diff (the versions and the diff loaded, so the Compare Card is drawn too).
  */
-const openEvals = (skill, compare) => `(async () => {
+const openEvals = (skill) => `(async () => {
   const wait = async (find) => { for (const end = Date.now() + 3000; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) { const el = find(); if (el) return el; } return null; };
   history.pushState(null, "", ${JSON.stringify(`/app/evals/${encodeURIComponent(skill)}`)});
   dispatchEvent(new PopStateEvent("popstate"));
-  const button = await wait(() => document.querySelector('[data-capture-open="evals-compare"]:not(:disabled)'));
-  if (${compare}) {
-    button?.click();
-    await wait(() => document.querySelector("dialog[open]"));
-    await wait(() => document.querySelector("dialog[open] table"));
-  }
+  await wait(() => document.querySelector("[data-skill-diff]"));
   await new Promise((r) => setTimeout(r, 150));
 })()`;
 const OPEN_DETAILS =`document.querySelectorAll("details").forEach((d) => (d.open = true))`;
@@ -129,13 +123,12 @@ async function main() {
     { name: "popover-week", path: "calendar" },
     { name: "popover-month", path: "calendar" },
     { name: "popover-more", path: "calendar" },
-    // The Evals page of the fixture skill (two versions, the newer one current) and its open Compare dialog, reached
-    // from Data in place (openEvals: a full load of evals/<skill> is a 404).
+    // The Evals page of the fixture skill (two versions, the newer one current) with its Compare and SKILL.md diff
+    // Cards, reached from Data in place (openEvals: a full load of evals/<skill> is a 404).
     { name: "evals", path: "data" },
-    { name: "evals-compare", path: "data" },
     { name: "dialog-new-event", path: "calendar" },
   ].filter((p) => only === null || p.name === only);
-  const prepare = { ...PREPARE, evals: openEvals(fixture.pages.skill, false), "evals-compare": openEvals(fixture.pages.skill, true) };
+  const prepare = { ...PREPARE, evals: openEvals(fixture.pages.skill) };
 
   await rm(SHOTS, { recursive: true, force: true });
   await mkdir(SHOTS, { recursive: true });
