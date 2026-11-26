@@ -9,6 +9,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "build:tokens": "node scripts/build-tokens.mjs",
+    "gen:api": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/gen-api.mjs",
     "i18n:catalog": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/i18n-catalog.ts",
     "build:icons": "node scripts/build-icons.mjs",
     "build:desktop:macos": "node scripts/build-desktop-macos.mjs",

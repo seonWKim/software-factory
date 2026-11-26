@@ -30,7 +30,7 @@ export function unitOf(path: string): Unit | null {
   if (path.startsWith("web/src/")) return { kind: "web", name: "web" };
   if (!path.startsWith("src/")) return null;
   // The plugin API is the contract plugins implement, so it is kernel, not the composition root.
-  if (path.startsWith("src/shared/") || path.startsWith("src/interfaces/") || path === "src/core/types.ts" || path === "src/plugin-api.ts") return { kind: "kernel", name: "kernel" };
+  if (path.startsWith("src/shared/") || path.startsWith("src/interfaces/") || path === "src/core/types.ts" || path.startsWith("src/core/types/") || path === "src/plugin-api.ts") return { kind: "kernel", name: "kernel" };
   if (/^src\/[^/]+\.tsx?$/.test(path) || UI_ROOT.has(path)) return { kind: "root", name: "root" };
   const impl = /^src\/impl\/([^/]+)\//.exec(path);
   if (impl) return { kind: "adapter", name: `impl/${impl[1]}` };

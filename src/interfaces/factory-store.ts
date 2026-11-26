@@ -1,28 +1,20 @@
 import type { TierHistory } from "../core/budget.js";
-import type { ChildRestart } from "./updater.js";
-import type { CoordinationSettings, DependencyLink } from "../core/coordination.js";
+import type { ChildRestart } from "./updater.js"; import type { CoordinationSettings, DependencyLink } from "../core/coordination.js";
 import type {
   Actor, BlockedOn, BudgetAnswer, BudgetCheckpoint, BudgetCheckpointId, ClaimDecision, ClaimPauseName, DependencyEdge, DependencyState, Tier, Handoff,
   FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, Run, RunAttempt, RunId, RunInput, RunKind, RunOutcome, RunResume,
   RunStatus, SessionFinish, SourceRef, SourceType, StandingGate, StandingProposal, StandingRule, StateChange, StateChangeDetail, Stage, Timestamp,
   UnreviewedMerge, UnreviewedMergeId, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId, WorkItemPatch, WorkerId, WorkerPause } from "../core/types.js";
-import type { AuthAction, AuthResource, LinkedAccount } from "./auth-provider.js";
-import type { SourceEvent } from "./source-adapter.js";
-import type { StatsRecord } from "../core/stats.js";
-import type { MergeEvaluation, MergeWindow } from "../core/merge-evaluation.js";
-import type { LearnedSettingsStore } from "../core/learned-settings.js";
-import type { CommandProposalStore } from "../core/interpret.js";
-import type { TaskStore } from "../core/tasks.js";
-import type { NoticeStore } from "../core/notifications.js";
-import type { DesignLearningStore } from "../core/design-learnings.js";
-import type { PostedCommentReads } from "../core/reaction-verdict.js";
-import type { RunOutputStore } from "../core/stall.js";
-import type { SessionReservation, SessionReservationStore } from "../core/session.js";
-import type { ProposalStore } from "../core/proposals.js";
-import type { StandingChangeStore } from "../core/standing.js";
+import type { AuthAction, AuthResource, LinkedAccount } from "./auth-provider.js"; import type { SourceEvent } from "./source-adapter.js";
+import type { StatsRecord } from "../core/stats.js"; import type { MergeEvaluation, MergeWindow } from "../core/merge-evaluation.js";
+import type { LearnedSettingsStore } from "../core/learned-settings.js"; import type { CommandProposalStore } from "../core/interpret.js";
+import type { TaskStore } from "../core/tasks.js"; import type { NoticeStore } from "../core/notifications.js";
+import type { DesignLearningStore } from "../core/design-learnings.js"; import type { PostedCommentReads } from "../core/reaction-verdict.js";
+import type { RunOutputStore } from "../core/stall.js"; import type { SessionReservation, SessionReservationStore } from "../core/session.js";
+import type { ProposalStore } from "../core/proposals.js"; import type { StandingChangeStore } from "../core/standing.js";
 import type { ScheduleStore } from "../core/schedule.js"; import type { AttachmentStore } from "../core/attachments.js"; import type { RoutineStore } from "../core/check-page.js";
 import type { SkillEvalStore } from "./skill-eval-store.js"; import type { SkillDraftStore } from "./skill-draft-store.js";
-import type { AlertDismissalStore } from "../core/alarms.js";
+import type { AlertDismissalStore } from "../core/alarms.js"; import type { LLMMessage } from "./llm-provider.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -349,13 +341,21 @@ export interface NoticeMessageStore {
   recordNoticeQuestion(q: Omit<NoticeQuestion, "created_at">): Promise<boolean>;
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
+/** A chat message to store (controller_chat_messages): `seq` orders a session's messages; the rest as on LLMMessage. */
+export interface NewChatMessage extends LLMMessage { seq: number }
+export interface ChatMessageRecord extends NewChatMessage { session_id: string; created_at: Timestamp }
+/** A chat session's messages: an append writes the whole batch, or nothing (false) when one of its seqs is the session's already. */
+export interface ChatMessageStore {
+  appendChatMessages(session_id: string, messages: readonly NewChatMessage[]): Promise<boolean>;
+  listChatMessages(session_id: string): Promise<ChatMessageRecord[]>;
+}
 
 /** One autonomous action (design 08-schedules-actions): `kind` as src/controller/background-jobs.ts lists it; `ref` a run's transcript path or a `log:<component>:<message>` reference (null: none); `at` the store's time. */
 export interface Activity { seq: number; actor_id: string; kind: string; subject: string; outcome: string; reason: string; ref: string | null; at: Timestamp }
 export type NewActivity = Omit<Activity, "seq" | "at">;
 /** Most rows are written by the store in their change's transaction (expireLeases, the prunes, a schedule claim, a transition's `activity`, a migration); recordActivity is for a change outside the store (a cleanup pass). listActivity: newest first, at most `limit` (200). */
 export interface ActivityStore { recordActivity(a: NewActivity): Promise<Activity>; listActivity(opts?: { kind?: string; limit?: number }): Promise<Activity[]> }
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore, SkillDraftStore, AttachmentStore, AlertDismissalStore, RoutineStore, ActivityStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore, SkillDraftStore, AttachmentStore, AlertDismissalStore, RoutineStore, ChatMessageStore, ActivityStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes

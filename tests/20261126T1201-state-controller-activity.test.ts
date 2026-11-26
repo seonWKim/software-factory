@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import migration from "../src/state/migrations/20261126T1200-state-controller-activity.migration.js";
+import migration from "../src/state/migrations/20261126T1201-state-controller-activity.migration.js";
 import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver } from "../src/state/index.js";
 import { newStore } from "./helpers/store.js";
 
 // The Activity record (design 08-schedules-actions): a new controller_activity table, and controller_schedule_runs
 // gains nullable reason and ref. No row is backfilled: a stored run keeps null in both. A rerun changes nothing.
 
-const ID = "20261126T1200-state-controller-activity";
+const ID = "20261126T1201-state-controller-activity";
 const mdb = (db: SqlDriver): MigrationDb => ({ dialect: "sqlite", all: (q, p) => db.all(q, p), run: (q, p) => db.run(q, p) });
 const RUN = `INSERT INTO controller_schedule_runs (schedule_id, occurrence_at, outcome, recorded_at) VALUES ('sch_1', '2026-11-25T09:00:00.000Z', 'fired', '2026-11-25T09:00:01.000Z')`;
 

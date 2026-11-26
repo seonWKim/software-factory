@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { GUIDANCE_MAX, PackGuidance, learningEntries } from "../src/impl/capability/project-guidance.js";
-import type { Pack } from "../src/packs/packs.js";
 
 /** A throwaway layer folder holding `files` (layer-relative path → content). */
 function layer(files: Record<string, string>): string {
@@ -57,27 +56,66 @@ describe("project guidance: rules and learnings of every layer", () => {
     expect(g).toEqual({ text: "", dropped: 0 });
   });
 
-  it("caps rules and learnings together at 8000 characters; the rest is dropped and counted", async () => {
+  it("keeps each entry whole under the 8000-character cap, leaves out the rest and says how many", async () => {
     expect(GUIDANCE_MAX).toBe(8000);
     const rule = `# Big\n\n${"r".repeat(6000)}`;
-    const entry = `## Late learning\n${"l".repeat(3000)}`;
-    const dir = layer({ "rules/big.md": rule, "learnings.md": entry, "rules/zz.md": "# Last rule\n" });
-    const packs: Pack[] = [{ layer: "base", dir }];
-    const g = await new PackGuidance(packs).collect();
-    // Rules first: big (6000) and zz (12) in full, then 1988 characters of the learning.
-    expect(g.text).toContain(rule);
-    expect(g.text).toContain("# Last rule");
-    const kept = GUIDANCE_MAX - rule.length - "# Last rule".length;
-    expect(g.text).toContain(entry.slice(0, kept));
-    expect(g.text).not.toContain(entry.slice(0, kept + 1));
-    expect(g.dropped).toBe(entry.length - kept);
+    const first = `## Early learning\n${"e".repeat(500)}`;
+    const late = `## Late learning\n${"l".repeat(3000)}`;
+    const after = "## After\nshort";
+    const dir = layer({ "rules/big.md": rule, "learnings.md": [first, late, after].join("\n\n"), "rules/zz.md": "# Last rule\n" });
+    const g = await new PackGuidance([{ layer: "base", dir }]).collect();
+    // Rules first: big and zz whole, then the early learning; the late one does not fit, so it and the short one after it are left out.
+    const kept = [rule, "# Last rule", first];
+    for (const k of kept) expect(g.text).toContain(k);
+    expect([...kept.map((k) => g.text.indexOf(k))].sort((x, y) => x - y)).toEqual(kept.map((k) => g.text.indexOf(k)));
+    expect(g.text).not.toContain("## Late learning");
+    expect(g.text).not.toContain("## After");
+    expect(g.dropped).toBe(2);
+    expect(g.text.endsWith(`\n\n${first}\n\n2 more rule or learning entries were left out because of the 8000-character cap.`)).toBe(true);
   });
 
-  it("a rule past the cap is left out with its heading", async () => {
+  it("a long entry that does not fit leaves out every later entry, even a short one", async () => {
+    const dir = layer({ "rules/a.md": "a".repeat(GUIDANCE_MAX + 1), "rules/b.md": "bbb", "learnings.md": "## Tiny\nx" });
+    const g = await new PackGuidance([{ layer: "base", dir }]).collect();
+    expect(g.text).not.toContain("rules/a.md");
+    expect(g.text).not.toContain("rules/b.md");
+    expect(g.text).not.toContain("## Tiny");
+    expect(g.dropped).toBe(3);
+    expect(g.text).toBe(
+      [
+        "## Rules and learnings",
+        "Rules and learnings from the factory's packs. Follow them unless the work item says otherwise.",
+        "3 more rule or learning entries were left out because of the 8000-character cap.",
+      ].join("\n\n"),
+    );
+  });
+
+  it("a rule exactly at the cap is kept whole; the next entry is left out", async () => {
     const dir = layer({ "rules/a.md": "a".repeat(GUIDANCE_MAX), "rules/b.md": "bbb" });
     const g = await new PackGuidance([{ layer: "base", dir }]).collect();
+    expect(g.text).toContain(`### Rule: \`rules/a.md\`\n\n${"a".repeat(GUIDANCE_MAX)}\n\n1 more rule`);
     expect(g.text).not.toContain("rules/b.md");
-    expect(g.dropped).toBe(3);
+    expect(g.dropped).toBe(1);
+  });
+
+  it("under the cap the section is exactly the source, with no note line", async () => {
+    const base = layer({ "rules/a.md": "# Rule A\n\nAlways A.\n", "learnings.md": LEARNINGS });
+    const org = layer({ "rules/org.md": "# Org rule\n\nNo force pushes.\n", "learnings.md": "## Org learning\nKeep it short.\n" });
+    const g = await new PackGuidance([{ layer: "base", dir: base }, { layer: "org", dir: org }]).collect();
+    expect(g.dropped).toBe(0);
+    expect(g.text).toBe(
+      [
+        "## Rules and learnings",
+        "Rules and learnings from the factory's packs. Follow them unless the work item says otherwise.",
+        "### Rule: `rules/a.md`",
+        "# Rule A\n\nAlways A.",
+        `### Rule: \`${join(org, "rules", "org.md")}\``,
+        "# Org rule\n\nNo force pushes.",
+        "### Learnings",
+        "## Run tests through npm scripts\nstatus: active\nThe sandbox needs the flags in the scripts.",
+        "## Org learning\nKeep it short.",
+      ].join("\n\n"),
+    );
   });
 
   it("collect(): a read failure other than a missing file rejects", async () => {
@@ -96,7 +134,8 @@ describe("project guidance: rules and learnings of every layer", () => {
 describe("project guidance: best effort", () => {
   const recording = () => {
     const warnings: string[] = [];
-    return { warnings, info: () => {}, warn: (msg: string) => warnings.push(msg), error: () => {} };
+    const fields: unknown[] = [];
+    return { warnings, fields, info: () => {}, warn: (msg: string, f?: unknown) => (warnings.push(msg), fields.push(f)), error: () => {} };
   };
 
   it("read() logs a failed read and gives no section instead of rejecting", async () => {
@@ -107,11 +146,13 @@ describe("project guidance: best effort", () => {
     expect(log.warnings).toEqual(["rules and learnings could not be read; none in the prompt"]);
   });
 
-  it("read() logs a warning when text is dropped at the cap, and none under it", async () => {
+  it("read() logs a warning with the entries left out at the cap, and none under it", async () => {
     const log = recording();
-    const over = await new PackGuidance([{ layer: "base", dir: layer({ "rules/a.md": "a".repeat(GUIDANCE_MAX + 1) }) }]).read(log);
-    expect(over).toContain("a".repeat(GUIDANCE_MAX));
+    const over = await new PackGuidance([{ layer: "base", dir: layer({ "rules/a.md": "a".repeat(GUIDANCE_MAX + 1), "rules/b.md": "b" }) }]).read(log);
+    expect(over).not.toContain("a".repeat(GUIDANCE_MAX));
+    expect(over).toContain("2 more rule or learning entries were left out because of the 8000-character cap.");
     expect(log.warnings).toEqual(["rules and learnings over their cap; the rest was dropped"]);
+    expect(log.fields).toEqual([{ dropped_entries: 2, cap: GUIDANCE_MAX }]);
     const quiet = recording();
     await new PackGuidance([{ layer: "base", dir: layer({ "rules/a.md": "a" }) }]).read(quiet);
     expect(quiet.warnings).toEqual([]);

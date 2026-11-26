@@ -201,7 +201,7 @@ describe("a supervised restart", () => {
 describe("a migration", () => {
   it("applied on an open writes one migration row with its reason", async () => {
     const { store } = await newStore();
-    const id = "20261126T1200-state-controller-activity";
+    const id = "20261126T1201-state-controller-activity";
     await store.db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE id = ?`, [id]); // pending again; the migration is safe to rerun
     await store.migrate();
     const rows = await store.listActivity({ kind: "migration" });
@@ -214,7 +214,7 @@ describe("a migration", () => {
 
   it("applied by npm run migrate writes one migration row with its reason", async () => {
     const file = join(mkdtempSync(join(tmpdir(), "sf-activity-migrate-")), "factory.db");
-    const id = "20261126T1200-state-controller-activity";
+    const id = "20261126T1201-state-controller-activity";
     const setup = new SqliteDriver(file);
     await setup.migrate();
     await setup.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE id = ?`, [id]); // pending again; the migration is safe to rerun
