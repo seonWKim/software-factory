@@ -15,6 +15,7 @@
 // entry to READ_ROUTES, not a line in server.ts.
 
 import { judgeAgreement, judgeCalibrated } from "../core/skill-eval-calibration.js";
+import { wilsonInterval } from "../core/skill-eval-stats.js";
 import { caseResults, compareSkillEvalRuns, latestLinkedRun, lineDiff, skillEvalGrid, skillVersionRows, unlinkedRuns } from "../core/skill-eval-compare.js";
 import { type ApiResult, api, apiError } from "./api.js";
 import { staleCsrf } from "./commands.js";
@@ -66,7 +67,7 @@ const READ_ROUTES: readonly ReadRoute[] = [
   { path: CALENDAR_EVENTS_PATH, run: (d, u) => readCalendarEvents(d, u.searchParams.get("from"), u.searchParams.get("to")) },
   { path: SCREENSHOT_PATH, run: (d, u) => readScreenshot(d, u.searchParams) },
   { path: EVALS_LIST_PATH, run: (d) => readEvalSuites(d) },
-  { path: EVALS_VERSIONS_PATH, run: (d, u) => readSkillVersions(d, { skillVersionRows, unlinkedRuns, latestLinkedRun, lineDiff, caseResults, skillOf }, u) },
+  { path: EVALS_VERSIONS_PATH, run: (d, u) => readSkillVersions(d, { skillVersionRows, unlinkedRuns, latestLinkedRun, lineDiff, caseResults, wilsonInterval, skillOf }, u) },
   { path: EVALS_PATH, run: (d, u) => readSkillEvals(d, { grid: skillEvalGrid, compare: compareSkillEvalRuns, agreement: judgeAgreement, calibrated: judgeCalibrated }, u) },
   // After every route above, before api.ts's paths: a capability declares a new path, or one whose route it replaces.
   { path: (d, p) => registryReads(registryOf(d), p), run: (d, u) => registryRead(registryOf(d), d, u, new Withholder(d.scanner)) },

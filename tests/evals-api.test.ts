@@ -282,10 +282,10 @@ describe("GET /api/v1/evals/<skill>/calibration", () => {
     const c = await s.calibration();
     expect(c).toMatchObject({ labels: 0, agreement: null, calibrated: false, run: "new" });
     expect(c.checks).toEqual([
-      { case_id: "c1", replay: 1, check: "Names a test", answer: "yes", label: null },
-      { case_id: "c1", replay: 1, check: "Explains why", answer: "no", label: null },
-      { case_id: "c2", replay: 1, check: "Says LEAK", answer: "yes", label: null },
-      { case_id: "c2", replay: 1, check: "Explains why", answer: "no", label: null },
+      { case_id: "c1", replay: 1, check: "Names a test", answer: "yes", reason: "ok", label: null },
+      { case_id: "c1", replay: 1, check: "Explains why", answer: "no", reason: "thin", label: null },
+      { case_id: "c2", replay: 1, check: "Says LEAK", answer: "yes", reason: "ok", label: null },
+      { case_id: "c2", replay: 1, check: "Explains why", answer: "no", reason: "thin", label: null },
     ]);
     expect(await tables(s.store)).toEqual(before);
   });

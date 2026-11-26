@@ -52,8 +52,29 @@ export type DailyImproveQueue = (occurrence_at: string) => Promise<{ run: { id: 
  */
 export type RoutineQueue = (schedule_id: string, occurrence_at: string) => Promise<{ run: { id: string; idempotency_key: string }; created: boolean }>;
 
+/** One summary slot (design 08-schedules-actions): the morning or the evening post of a local date. */
+export type SummarySlotName = "morning" | "evening";
+/** The window one summary covers: from the slot before it (`since`) to its own time (`until`), ISO times. */
+export interface SummaryWindow { slot: SummarySlotName; since: string; until: string; exclude_schedule: string }
+/** A summary's button: the command its line asks for, on its item (null: open the item). */
+export interface SummaryButton { work_item_id: string; label: string; command: string | null }
+
+/**
+ * What the summary action works through; compose binds it (summaryDeps, src/core/summary.ts, which matches it by
+ * shape: core imports nothing outside core). `times` reads both time settings now (each run), `build` the window's
+ * summary from the store (null: nothing to report), `scan` the egress scanner's findings (empty: clean), `post` one
+ * outbound delivery on the owner's chat, keyed on `key`: a key already stored stores nothing (`created` false).
+ * `post` throws while the channel is down.
+ */
+export interface SummaryDeps {
+  times(): Promise<{ morning: string; evening: string }>;
+  build(w: SummaryWindow): Promise<{ text: string; buttons: readonly SummaryButton[] } | null>;
+  scan(text: string): Promise<readonly string[]>;
+  post(d: { key: string; text: string; buttons: readonly SummaryButton[] }): Promise<{ created: boolean }>;
+}
+
 /** One action: runs a fired occurrence of `schedule`, due at `occurrence_at`. Safe to run twice for one occurrence. */
 export type ScheduleActionRoute = (schedule: ActionSchedule, occurrence_at: string, ports: ActionPorts) => Promise<void>;
 
 /** One route per action kind (src/core/schedule.ts ScheduleActionKind). */
-export type ScheduleActionRoutes = Readonly<Record<"build" | "agent" | "feedback" | "improve" | "check_page", ScheduleActionRoute>>;
+export type ScheduleActionRoutes = Readonly<Record<"build" | "agent" | "feedback" | "improve" | "check_page" | "summary", ScheduleActionRoute>>;

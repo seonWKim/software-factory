@@ -11,8 +11,8 @@ export const CADENCE_KINDS = ["interval", "daily", "weekly", "cron"] as const;
 export type CadenceKind = (typeof CADENCE_KINDS)[number];
 /** The kinds the New and Edit form offer: `schedule add` and `edit` write only these (design 08-schedules). */
 export const ACTION_KINDS = ["build", "agent", "feedback", "check_page"] as const;
-/** Every stored kind: setup adds an `improve` schedule (the daily improve run), which no form can pick. */
-export type ActionKind = (typeof ACTION_KINDS)[number] | "improve";
+/** Every stored kind: setup adds an `improve` schedule (the daily improve run) and `summary` ones (the owner's summary), which no form can pick. */
+export type ActionKind = (typeof ACTION_KINDS)[number] | "improve" | "summary";
 /** Whether the form can write a kind; the Edit form shows any other as a disabled choice and never sends it. */
 export const isWritableKind = (k: ActionKind): k is (typeof ACTION_KINDS)[number] => (ACTION_KINDS as readonly string[]).includes(k);
 

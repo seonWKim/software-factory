@@ -120,6 +120,33 @@ describe("GET /api/v1/evals/<skill>/versions", () => {
     expect(versions.find((v) => v.version === 1)).toMatchObject({ folder_hash: h1, current: false, run_id: r1.id, pass_rate: 0.5 });
   });
 
+  it("gives each version's 95% band, its cost per run and each case's verdict, from its newest linked run", async () => {
+    const { store, skill, run, h1, h2 } = await setup();
+    await run(h1);
+    const r2 = await run();
+    await store.db.run("UPDATE controller_skill_eval_replays SET cost_usd = 0.25 WHERE run_id = ?", [r2.id]);
+    const { versions } = (await get(store, versionsPath(skill))).value as { versions: { version: number; band: { low: number; high: number } | null; cost_usd: number | null; cases: { case_id: string; verdict: string }[] }[] };
+    const v1 = versions.find((v) => v.version === 1)!, v2 = versions.find((v) => v.version === 2)!;
+    expect(v2.cost_usd).toBe(0.5);
+    expect(v2.cases).toEqual([{ case_id: "c1", verdict: "pass" }, { case_id: "c2", verdict: "pass" }]);
+    expect(v1.cases).toEqual([{ case_id: "c1", verdict: "pass" }, { case_id: "c2", verdict: "fail" }]);
+    // A run with no recorded cost has none; the band brackets the pass rate (1 of 2 replays passed for v1).
+    expect(v1.cost_usd).toBeNull();
+    expect(v1.band!.low).toBeLessThan(0.5);
+    expect(v1.band!.high).toBeGreaterThan(0.5);
+    expect(v2.band!.high).toBe(1);
+  });
+
+  it("gives a version with no linked run no band, no cost and no cases, and sends the case IDs through the Withholder", async () => {
+    const { store, skill, run } = await setup();
+    await run();
+    const { versions } = (await get(store, versionsPath(skill))).value as { versions: { version: number; band: unknown; cost_usd: unknown; cases: unknown[] }[] };
+    expect(versions.find((v) => v.version === 1)).toMatchObject({ band: null, cost_usd: null, cases: [] });
+    await store.db.run("UPDATE controller_skill_eval_replays SET case_id = 'LEAK-case' WHERE case_id = 'c1'");
+    const leaked = await get(store, versionsPath(skill), FLAGGING);
+    expect(JSON.stringify(leaked.value)).not.toContain("LEAK");
+  });
+
   it("marks the version the gate makes current: a pending, held or rejected newest version is not; an approved one is", async () => {
     const { store, skill, run, h1 } = await setup();
     await run(h1);

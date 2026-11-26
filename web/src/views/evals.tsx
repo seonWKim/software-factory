@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useRef, useState } from "react";
 import { postJson, useApi } from "../api/client.js";
-import { type EvalRun, type EvalRunSummary, type JudgedCheck, type SkillVersionRow, postEvalRun, postEvalWrite, useEvalCalibration, useEvalGrid, useEvalRuns, useSkillDiff, useSkillVersions } from "../api/evals.js";
+import { type EvalRun, type JudgedCheck, type SkillVersionRow, postEvalRun, postEvalWrite, useEvalCalibration, useEvalRuns, useSkillDiff, useSkillVersions } from "../api/evals.js";
 import type { Session } from "../api/overview.js";
 import { API } from "../api/routes.js";
 import { Badge } from "../components/ui/badge.js";
@@ -25,9 +25,9 @@ import { t } from "../i18n/index.js";
 import { localDateTime, localShortDate } from "../lib/format.js";
 
 // The evals page at evals/<skill> (design 09-dashboard-evals): the header (title and Run now, the one primary Button), the
-// Versions Card (a ListRow per version, newest first, the current one with a Badge), a ButtonRow with Compare (opens a
-// ModalPanel: two version Selects, the unified DiffView of their SKILL.md texts and each case's result), the Grid Card
-// (the case results: the newest run per version and model class) and the Trend Card. Plain words only: folder hashes
+// Versions Card (a ListRow per version, newest first, the current one with a Badge, its pass rate, 95% band in words and
+// cost per run), the Cases Card (a DataTable: a row per case, a column per version), a ButtonRow with Compare (opens a
+// ModalPanel: two version Selects, the unified DiffView of their SKILL.md texts and each case's result) and the Trend Card. Plain words only: folder hashes
 // and run IDs show only inside a version row's Details. Run now opens a Dialog that starts one run
 // (POST /api/v1/evals/<skill>/runs); the server's refusal (403 owner check, 409 refused run) shows in it. A version the
 // gate holds is a Card above Versions: its pass rates, the cases that got worse, "Keep the current version" (a Dialog
@@ -45,9 +45,6 @@ export function skillName(ref: string): string {
 const percent = (rate: number): string => `${Math.round(rate * 100)}%`;
 const rateText = (rate: number | null): string => (rate === null ? t("evals.noRate") : percent(rate));
 const points = (n: number): string => t("evals.points", { sign: n < 0 ? "−" : "+", n: Math.abs(Math.round(n * 100)) });
-
-/** A run's state as the state table's key: a finished run passed or failed, an errored one failed. */
-const levelOf = (status: string): string => (status === "passed" ? "succeeded" : status === "errored" ? "failed" : status);
 
 /** Pass rate by run date, oldest first, skipping runs with no pass rate. */
 function Trend({ runs }: { runs: readonly EvalRun[] }) {
@@ -67,73 +64,27 @@ function Trend({ runs }: { runs: readonly EvalRun[] }) {
   );
 }
 
-/** The model classes in the order cheap, standard, strong, then any other by name; Run now's model choices. */
+/** The model classes in the order cheap, standard, strong; Run now's model choices. */
 const CLASS_ORDER = ["cheap", "standard", "strong"];
 /** The class a run's judge uses for `model` (src/core/scorer.ts judgeClass): strong grades the others, standard grades strong. */
 const judgeOf = (model: string): string => (model === "strong" ? "standard" : "strong");
-const byClass = (a: string, b: string): number => {
-  const [i, j] = [CLASS_ORDER.indexOf(a), CLASS_ORDER.indexOf(b)];
-  return i < 0 && j < 0 ? a.localeCompare(b) : i < 0 ? 1 : j < 0 ? -1 : i - j;
-};
-
-interface GridRow {
-  key: string;
-  version: string;
-  cells: Map<string, EvalRunSummary>;
-}
-
-/** One row per version, named by its order: the first version the skill had is "Version 1". */
-function gridRows(rows: readonly EvalRunSummary[], runs: readonly EvalRun[]): GridRow[] {
-  const first = new Map<string, string>();
-  for (const r of runs) if (r.skill_version !== null && (first.get(r.skill_version) ?? "￿") > r.started_at) first.set(r.skill_version, r.started_at);
-  const order = [...first].sort((a, b) => (a[1] < b[1] ? -1 : 1)).map(([v]) => v);
-  const out = new Map<string, GridRow>();
-  for (const r of rows) {
-    const key = r.skill_version ?? "";
-    const row = out.get(key) ?? { key, version: r.skill_version === null ? t("evals.versionUnknown") : t("evals.versionN", { n: order.indexOf(r.skill_version) + 1 }), cells: new Map() };
-    row.cells.set(r.model_class ?? "", r);
-    out.set(key, row);
-  }
-  return [...out.values()];
-}
-
-/** One row per skill version, one column per model class; a pair with no run says so. */
-function Grid({ rows, runs }: { rows: readonly EvalRunSummary[]; runs: readonly EvalRun[] }) {
-  const classes = [...new Set(rows.map((r) => r.model_class).filter((c): c is string => c !== null))].sort(byClass);
-  const columns: Column<GridRow>[] = [
-    { key: "version", header: t("evals.version") },
-    ...classes.map((c): Column<GridRow> => ({
-      key: c,
-      header: c,
-      render: (row) => {
-        const run = row.cells.get(c);
-        if (!run) return <span className="text-text-2">{t("evals.noRun")}</span>;
-        return (
-          <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1" data-cell>
-            <Badge level={levelOf(run.status)}>{rateText(run.pass_rate)}</Badge>
-            <span className="text-xs text-text-2">{localShortDate(run.started_at)}</span>
-          </span>
-        );
-      },
-    })),
-  ];
-  return (
-    <Card title={t("evals.grid")}>
-      <DataTable label={t("evals.grid")} columns={columns} rows={gridRows(rows, runs)} rowKey={(r) => r.key} empty={t("evals.gridEmpty")} />
-    </Card>
-  );
-}
 
 /** The change since the previous version as +N points or −N points; a version with no change to show says so. */
 const changeText = (change: number | null): string => (change === null ? t("evals.noChange") : t("evals.changeOf", { change: points(change) }));
 
-/** One version: Version N, a Badge on the current one, its pass rate, change and date; hash and run ID under Details. */
+/** The 95% band of a version's pass rate as words ("between 70% and 90%"); none says so. */
+const bandText = (band: SkillVersionRow["band"]): string => (band == null ? t("evals.noBand") : t("evals.bandOf", { low: percent(band.low), high: percent(band.high) }));
+/** A version's cost per run in dollars, to the cent (less than a cent shows as "<$0.01"); none says so. */
+const costText = (cost: number | null | undefined): string =>
+  cost == null ? t("evals.noCost") : t("evals.costOf", { cost: cost > 0 && cost < 0.01 ? "<$0.01" : `$${cost.toFixed(2)}` });
+
+/** One version: Version N, a Badge on the current one, its pass rate, band, cost, change and date; hash and run ID under Details. */
 function VersionRow({ v }: { v: SkillVersionRow }) {
   return (
     <ListRow
       data-version={v.version}
       title={<span className="flex items-center gap-2"><span className={ROW_TITLE}>{t("evals.versionN", { n: v.version })}</span>{v.current && <Badge level="succeeded">{t("evals.current")}</Badge>}</span>}
-      details={<><span>{t("evals.rateOf", { rate: rateText(v.pass_rate) })}</span><span>{changeText(v.change)}</span><span>{t("evals.versionDate", { date: localShortDate(v.created_at) })}</span></>}
+      details={<><span>{t("evals.rateOf", { rate: rateText(v.pass_rate) })}</span><span>{bandText(v.band)}</span><span>{costText(v.cost_usd)}</span><span>{changeText(v.change)}</span><span>{t("evals.versionDate", { date: localShortDate(v.created_at) })}</span></>}
     >
       <Disclosure summary={t("evals.details")} lazy>
         <KeyValue items={[
@@ -159,6 +110,34 @@ function Versions({ versions }: { versions: ReturnType<typeof useSkillVersions> 
         <ul aria-label={t("evals.versionsLabel")} className="divide-y divide-border rounded-box border border-border">
           {versions.data.versions.map((v) => <VersionRow key={v.folder_hash} v={v} />)}
         </ul>
+      )}
+    </Card>
+  );
+}
+
+interface VersionCasesRow {
+  key: string;
+  name: string;
+  results: Map<number, string | null>;
+}
+
+/** One row per case (numbered, never by ID), one column per version newest first; a cell is the case's result in that version. */
+function Cases({ versions }: { versions: ReturnType<typeof useSkillVersions> }) {
+  const list = versions.data?.versions ?? [];
+  const ids = [...new Set(list.flatMap((v) => (v.cases ?? []).map((c) => c.case_id)))].sort();
+  const rows = ids.map((id, i): VersionCasesRow => ({ key: id, name: t("evals.caseN", { n: i + 1 }), results: new Map(list.map((v) => [v.version, v.cases?.find((c) => c.case_id === id)?.verdict ?? null])) }));
+  const columns: Column<VersionCasesRow>[] = [
+    { key: "name", header: t("evals.caseColumn") },
+    ...list.map((v): Column<VersionCasesRow> => ({ key: `v${v.version}`, header: t("evals.versionN", { n: v.version }), render: (r) => verdictText(r.results.get(v.version) ?? null) })),
+  ];
+  return (
+    <Card title={t("evals.cases")}>
+      {versions.isError ? (
+        <ErrorNote error={new Error(t("evals.versionsFailed"))} />
+      ) : !versions.data ? (
+        <Loading rows={3} label="loading.evalRuns" onRetry={() => void versions.refetch()} />
+      ) : (
+        <DataTable label={t("evals.casesLabel")} columns={columns} rows={rows} rowKey={(r) => r.key} empty={t("evals.casesEmpty")} />
       )}
     </Card>
   );
@@ -403,6 +382,7 @@ function JudgeCheckRow({ c, n, replays, token }: { c: JudgedCheck & { run: strin
           <span>{said}</span>
           {c.label !== null && <span>{t(c.label === "right" ? "evals.markedRight" : "evals.markedWrong")}</span>}
         </p>
+        {c.reason !== undefined && c.reason !== "" && <p className="text-xs text-pretty break-words text-text-2">{t("evals.judgeReason", { reason: c.reason })}</p>}
         {error !== null && <p data-row-error role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">{error}</p>}
       </div>
       <ButtonRow className="shrink-0">
@@ -509,14 +489,13 @@ function RunNow({ skill }: { skill: string }) {
   );
 }
 
-/** The evals page of one skill (`skill` is its skill_ref): Run now in the header, then any held version, Versions, Compare, Grid, Trend, Judge checks. */
+/** The evals page of one skill (`skill` is its skill_ref): Run now in the header, then any held version, Versions, Cases, Compare, Trend, Judge checks. */
 export function EvalsPage({ skill }: { skill: string }) {
   const runs = useEvalRuns(skill);
-  const grid = useEvalGrid(skill);
   const versions = useSkillVersions(skill);
   const header = <PageHeader title={skillName(skill)} description={t("evals.description")} actions={<RunNow skill={skill} />} />;
-  if (runs.isError || grid.isError) return <>{header}<ErrorNote error={new Error(t("evals.loadFailed"))} /></>;
-  if (!runs.data || !grid.data) return <>{header}<Loading label="loading.evalRuns" onRetry={() => { void runs.refetch(); void grid.refetch(); }} /></>;
+  if (runs.isError) return <>{header}<ErrorNote error={new Error(t("evals.loadFailed"))} /></>;
+  if (!runs.data) return <>{header}<Loading label="loading.evalRuns" onRetry={() => void runs.refetch()} /></>;
   if (runs.data.runs.length === 0) return <>{header}<EmptyState title={t("evals.empty")} description={t("evals.emptyHelp")} /></>;
   return (
     <>
@@ -526,8 +505,8 @@ export function EvalsPage({ skill }: { skill: string }) {
           <HeldVersions skill={skill} />
           <Versions versions={versions} />
         </div>
+        <Cases versions={versions} />
         <CompareVersions skill={skill} versions={versions.data?.versions ?? []} />
-        <Grid rows={grid.data.rows} runs={runs.data.runs} />
         <Trend runs={runs.data.runs} />
         <JudgeChecks skill={skill} />
       </div>
