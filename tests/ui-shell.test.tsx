@@ -285,9 +285,9 @@ describe("top bar", () => {
     expect(within(header).getByRole("button", { name: "Search" }).closest(".shrink-0")).toBeTruthy();
   });
 
-  it("holds only the mode, Stop all agents, Search and More (Refresh, the Appearance choices): no revision or Theme button (issue #79)", async () => {
+  it("holds only the mode, Stop all agents, Search, Chat and More (Refresh, the Appearance choices): no revision or Theme button (issue #79)", async () => {
     await atWidth(1024, async (header) => {
-      expect(within(header).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Stop all agents", "Search", "More"]);
+      expect(within(header).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Stop all agents", "Search", "Chat", "More"]);
       fireEvent.click(within(header).getByRole("button", { name: "More" }));
       const menu = within(header).getByRole("menu");
       expect(within(menu).getAllByRole("menuitem").map((m) => [m.textContent, m.getAttribute("aria-keyshortcuts")])).toEqual([["Refresh", "r"]]);
