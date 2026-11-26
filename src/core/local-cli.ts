@@ -29,7 +29,7 @@ export { type SentenceDeps, parseSentence, runSentence } from "./local-cli-sente
 
 import { parseLocalCliArgs as parseArgs } from "./local-cli-parse.js";
 import type { CliAction } from "./local-cli-run.js";
-import { COORDINATOR_USD } from "./commands.js";
+import { COORDINATOR_USD } from "./local-cli-run.js";
 
 /**
  * The action, or an error line (parseArgs in local-cli-parse.ts). A bare `approve` or `reject`, with no work item ID,

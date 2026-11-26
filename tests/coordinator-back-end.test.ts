@@ -53,7 +53,6 @@ function replica(store: FactoryStore, clock: FakeClock, owner: string, live: { o
   const lease = new StoreLease(syncLeaseOps(store, COORDINATOR_LEASE), clock, LEASE, owner);
   const ports: CoordinatorPorts = {
     settings: async () => ({ daily_usd: 5, ...live }),
-    activity: async () => undefined,
     limitReached: async () => undefined,
     waiting: async () => (await store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: 50 })).filter(awaitingMerge),
     merge: async (id) => {

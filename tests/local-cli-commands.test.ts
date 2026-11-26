@@ -5,7 +5,7 @@ import type { UserId, WorkItemId } from "../src/core/types.js";
 import { SENTENCE_FORM } from "../src/core/command-table.js";
 import { helpReply, itemCommandState, refusalText, specNotWaiting } from "../src/core/commands.js";
 import { OwnerAuth } from "../src/core/authorize.js";
-import { coordinatorLimitQuestion } from "../src/core/alarms.js";
+import { coordinatorLimitAlert } from "../src/core/alarms.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { FakeSource } from "./helpers/fakes/source.js";
@@ -253,7 +253,10 @@ describe("a local resolve command at the controller", () => {
 
 describe("a bare approve <usd> or reject answers the coordinator limit question (design 06-spend)", () => {
   const raise = (store: Awaited<ReturnType<typeof setup>>["store"]) =>
-    coordinatorLimitQuestion({ store, scanner: cleanScanner, log: silent }, { day: "2026-01-01", limit_usd: 5, spent_usd: 6, unknown: 0 });
+{
+    const { alert, dedupe_ms } = coordinatorLimitAlert({ day: "2026-01-01", limit_usd: 5, spent_usd: 6, unknown: 0 });
+    return store.recordAlert(alert, dedupe_ms);
+  };
 
   it("parses `approve 10` as the common approve with a value; any other word stays the item command", () => {
     expect(parseLocalCliArgs("approve", ["10"])).toEqual({ action: "settle", command: "approve", value: "10" });

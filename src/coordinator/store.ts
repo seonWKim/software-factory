@@ -31,8 +31,6 @@ export type StoredAction = CoordinatorAction & { recorded_at: string };
 
 /** The session every coordinator spend row names: the cycles share one, as a chat's turns share theirs. */
 export const SPEND_SESSION = "coordinator";
-/** The coordinator's daily limit setting (design 06-spend), which the limit question's `approve <usd>` sets. */
-export const COORDINATOR_LIMIT_KEY = "spend.coordinator_daily_usd";
 
 /** One cycle's spend: its UTC day, its cost (null: the runner reported none) and its tokens. */
 export interface CycleSpend {
@@ -88,6 +86,15 @@ export class CoordinatorStore {
     }));
   }
 
+  /** How many cycles of UTC day `day` stopped at the daily limit: skipped `cycle` records whose reason starts `prefix`. */
+  async limitStopsOn(day: string, prefix: string): Promise<number> {
+    const [row] = await this.db.all(
+      "SELECT COUNT(*) AS n FROM controller_coordinator_actions WHERE command = 'cycle' AND outcome = 'skipped' AND substr(recorded_at, 1, 10) = ? AND substr(reason, 1, ?) = ?",
+      [day, prefix.length, prefix],
+    );
+    return Number(row?.n ?? 0);
+  }
+
   /**
    * Stores cycle `s.cycle_id`'s spend row: kind `coordinator`, `turn_id` the cycle id, session `coordinator`. Keyed on
    * the cycle id, so a rerun stores nothing more; false when it was stored already.
@@ -104,7 +111,7 @@ export class CoordinatorStore {
   /** Stores a cycle's `coordinator` Activity record (job `coordinator`, design 06-spend), its reason giving the cost. */
   async recordActivity(a: { subject: string; outcome: string; reason: string }, now: string): Promise<void> {
     // The row insertActivity (src/impl/store/sql/activity.ts) writes; not imported, as that module pulls in the whole
-    // SQL store and alarms.ts reads COORDINATOR_LIMIT_KEY from this one.
+    // SQL store.
     const r = activityOf("coordinator", { ...a, ref: logRef("controller", "coordinator cycle done") });
     await this.db.run("INSERT INTO controller_activity (actor_id, kind, subject, outcome, reason, ref, at) VALUES (?, ?, ?, ?, ?, ?, ?)", [
       r.actor_id, r.kind, r.subject, r.outcome, r.reason, r.ref, now,

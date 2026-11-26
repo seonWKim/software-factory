@@ -1,8 +1,7 @@
 import type { UserId, WorkItem, WorkItemId } from "./types.js";
 import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
-import { COORDINATOR_LIMIT_KEY } from "../coordinator/store.js";
 import { MERGE_COMMAND } from "./local-merge.js";
-import { CLOSED_REFUSAL, approveRefusal, settleHeldSkillVersion, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText } from "./commands.js";
+import { CLOSED_REFUSAL, COORDINATOR_LIMIT_KEY, approveRefusal, settleHeldSkillVersion, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText } from "./commands.js";
 import type { NoteAnswers } from "./request-transition.js";
 import { verdictRefusal } from "./verdict.js";
 import { CONFIRM_COMMAND } from "./interpret.js";

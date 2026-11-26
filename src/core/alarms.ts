@@ -15,7 +15,7 @@
 // dismissed spend threshold does not alert again in its period. No forge, LLM or sandbox call; every text is scanned
 // first.
 
-import { COORDINATOR_LIMIT_KEY } from "../coordinator/store.js";
+import { COORDINATOR_LIMIT_KEY } from "./commands.js";
 import { groupFailures, normalizeDetail, patternKey, sleptRuns } from "./improver.js";
 import type { Logger } from "./log.js";
 import { AGENT_STALLED, INTERACTIVE, MODEL_STALL, SESSION_ABANDONED } from "./policy.js";
@@ -546,7 +546,7 @@ export interface CoordinatorLimitAlert {
  * The coordinator limit's owner question (design 06-spend), built here; the coordinator unit scans `detail` as UI text
  * and stores it through the kernel's `alert` write. One Needs-you alert, pattern `coordinator_limit`, key
  * `coordinator_limit:<UTC day>`, with the current and the proposed limit, deduped for one day on a key that names the
- * day: exactly one per UTC day, answered or not. The answer is answerCoordinatorLimit (src/core/local-cli-run.ts).
+ * day; the cycle raises it only on the day's first stop, so there is one per UTC day, answered or not. The answer is answerCoordinatorLimit (src/core/local-cli-run.ts).
  */
 export function coordinatorLimitAlert(q: CoordinatorLimit): CoordinatorLimitAlert {
   const proposed = proposedLimit(q.limit_usd);

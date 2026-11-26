@@ -9,12 +9,13 @@
 // calls the agent stores one `coordinator` spend row and one Activity record with its cost.
 
 import { coordinatorLimitAlert } from "../core/alarms.js";
+import { COORDINATOR_LIMIT_KEY } from "../core/commands.js";
 import { errorText, type Logger } from "../core/log.js";
 import type { CoordinatorPorts } from "../core/controller-deps.js";
 import type { StoreLease } from "../core/lease.js";
 import { utcDay } from "../core/spend.js";
 import type { WorkItem, WorkItemId } from "../core/types.js";
-import { type ActionOutcome, COORDINATOR_LIMIT_KEY, type CoordinatorAction, type CoordinatorStore, type DaySpend } from "./store.js";
+import { type ActionOutcome, type CoordinatorAction, type CoordinatorStore, type DaySpend } from "./store.js";
 
 /** How often a cycle is due (owner answer 3). */
 export const CYCLE_MS = 15 * 60_000;
@@ -123,8 +124,10 @@ export class Coordinator {
     const day = utcDay(this.p.clock.now().getTime());
     const today = await this.p.store.spendOn(day);
     if (today.cost_usd >= settings.daily_usd) {
+      // One question per UTC day: only the day's first stop asks, so an answered question is not asked again that day.
+      const first = (await this.p.store.limitStopsOn(day, LIMIT_REACHED)) === 0;
       await skipCycle(limitReason(day, settings.daily_usd, today));
-      await this.ports.limitReached(coordinatorLimitAlert({ day, limit_usd: settings.daily_usd, spent_usd: today.cost_usd, unknown: today.unknown }));
+      if (first) await this.ports.limitReached(coordinatorLimitAlert({ day, limit_usd: settings.daily_usd, spent_usd: today.cost_usd, unknown: today.unknown }));
       this.p.log.warn("the coordinator reached its daily limit", { cycle_id, day, limit_usd: settings.daily_usd });
       return out;
     }
@@ -185,8 +188,11 @@ export function costReason(cost_usd: number | null, day: string, limit_usd: numb
   return `${cost}; ${usd(today.cost_usd)} of the ${usd(limit_usd)} coordinator daily limit spent (UTC day ${day})${notCounted(today.unknown)}`;
 }
 
+/** How the skipped record's reason at the daily limit starts (limitStopsOn counts them). */
+const LIMIT_REACHED = "the coordinator daily limit is reached";
+
 /** The skipped record's reason at the daily limit: the limit, today's spend, and how cycles resume. */
 export function limitReason(day: string, limit_usd: number, today: DaySpend): string {
-  return `the coordinator daily limit is reached: ${usd(today.cost_usd)} spent of ${COORDINATOR_LIMIT_KEY} ${usd(limit_usd)} (UTC day ${day})${notCounted(today.unknown)}; `
+  return `${LIMIT_REACHED}: ${usd(today.cost_usd)} spent of ${COORDINATOR_LIMIT_KEY} ${usd(limit_usd)} (UTC day ${day})${notCounted(today.unknown)}; `
     + "no agent call until the owner raises the limit (approve <usd>) or the UTC day ends";
 }

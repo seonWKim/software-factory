@@ -4,18 +4,17 @@
 
 import { describe, expect, it } from "vitest";
 import { coordinatorLimitKey } from "../src/core/alarms.js";
-import { answerCoordinatorLimit } from "../src/core/commands.js";
+import { answerCoordinatorLimit } from "../src/core/local-cli-run.js";
 import type { CoordinatorPorts } from "../src/core/controller-deps.js";
 import { COORDINATOR_LEASE, CYCLE, CYCLE_MS, Coordinator, type CoordinatorAgent, NOTHING_TO_DO, type TickResult } from "../src/coordinator/cycle.js";
 import { CoordinatorStore } from "../src/coordinator/store.js";
-import { coordinatorLimitQuestion } from "../src/core/alarms.js";
 import { StoreLease, syncLeaseOps } from "../src/core/lease.js";
 import { awaitingMerge } from "../src/core/request-transition.js";
 import type { UserId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { storeSql } from "../src/impl/store/sql/store-sql.js";
 import type { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { cleanScanner, silent } from "./helpers/fakes/config.js";
+import { silent } from "./helpers/fakes/config.js";
 import { PROJECT_KEY, newStore, system } from "./helpers/store.js";
 
 const KEY = "spend.coordinator_daily_usd";
@@ -43,8 +42,7 @@ function coordinator(store: FactoryStore, clock: FakeClock, cost = 3) {
     },
     waiting: async () => (await store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: 50 })).filter(awaitingMerge),
     merge: async () => null,
-    activity: async () => undefined,
-    limitReached: async (q) => void (await coordinatorLimitQuestion({ store, scanner: cleanScanner, log: silent }, q)),
+    limitReached: async ({ alert, dedupe_ms }) => void (await store.recordAlert(alert, dedupe_ms)),
   };
   const lease = new StoreLease(syncLeaseOps(store, COORDINATOR_LEASE), clock, { lease_ms: 60_000, heartbeat_ms: 10_000 }, "a");
   const c = new Coordinator({ store: new CoordinatorStore(storeSql(store)), lease, agent, clock, log: silent }, ports);
