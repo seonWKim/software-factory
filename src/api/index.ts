@@ -5,12 +5,13 @@
 
 import type { ServerDeps } from "../ui/server.js";
 import { type Declared, type Registry, type RegistryDeps, buildRegistry } from "./registry.js";
+import { ACTIVITY } from "./capabilities/activity.js";
 import { CHAT } from "./capabilities/chat.js";
 import { ITEMS } from "./capabilities/items.js";
 import { SCHEDULES } from "./capabilities/schedules.js";
 
 /** Every declared capability. */
-export const DECLARATIONS: readonly Declared[] = [...CHAT, ...ITEMS, ...SCHEDULES];
+export const DECLARATIONS: readonly Declared[] = [...ACTIVITY, ...CHAT, ...ITEMS, ...SCHEDULES];
 
 export const REGISTRY: Registry = buildRegistry(DECLARATIONS);
 
