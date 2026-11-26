@@ -22,6 +22,13 @@ const CHECKS_PENDING = "checks_pending";
  * also the reason of the state change that records the rerun, its detail's `rerun_head` the head rerun.
  */
 const CHECKS_RERUN = "checks_rerun";
+/**
+ * Reruns of checks that were only cancelled or timed out, per PR head (design 05-ci-gate, Cancelled checks); after
+ * them the item waits on checks_pending with a `ci_rerun_failed` alert.
+ */
+const MAX_CANCELLED_RERUNS = 3;
+/** One `ci_rerun_failed` alert per item and head in this window, the alarms' 6 hours (core/alarms.ts, ALERT_DEDUPE_MS). */
+const RERUN_ALERT_DEDUPE_MS = 6 * 3_600_000;
 /** Failing tests, and characters, of a failed job's log kept for the implement run's input. */
 const MAX_FAILING_TESTS = 10;
 const MAX_FAILING_CHARS = 4000;
@@ -93,7 +100,7 @@ export class ChecksGateUnit {
         ...ack,
       };
     }
-    if (checks.state === "failed") return this.checksFailed(it, review, checks.failed, fields, ack);
+    if (checks.state === "failed") return this.checksFailed(it, review, checks, fields, ack);
     // Every change waits here for a merge; in auto mode the auto-merge step merges a local one it may (design 03-risk).
     // An incomplete PR (its implementer reported missing work, issue #229) is never auto-merged, and the comment says so first.
     const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "merge_pending" };
@@ -123,6 +130,7 @@ export class ChecksGateUnit {
    * branch, and every failing test the PR head's failed job log names also fails in the base head's log (when both
    * logs name tests), the item waits in REVIEW on `main is red: <first name>` (no run, no loop); the checks step reads
    * it again. Tests failing on both are main's: the sent-back comment and `ci_failing_tests` name only the others.
+   * Checks that were all cancelled or timed out (no update due) are no code failure: rerunCancelled, never a loop.
    * A first failure on the reviewed head reruns its failed jobs once and waits in REVIEW on `checks_rerun` (no run, no
    * loop); back to implement after that rerun, the run's input carries the failing tests of the failed job's log. A
    * review that skipped an unchanged head blocks on a human with `unchanged_head` (no run, no loop). Otherwise
@@ -132,10 +140,11 @@ export class ChecksGateUnit {
   async checksFailed(
     it: WorkItem,
     review: Run,
-    failed: readonly string[],
+    checks: { failed: readonly string[]; cancelled?: readonly string[] },
     fields: { tier?: Tier; token_cost?: number },
     ack: { ack_run?: RunId },
   ): Promise<Decision> {
+    const { failed } = checks;
     const reviewRunId = review.id;
     const data = review.outcome?.status === "succeeded" ? review.outcome.data : {};
     const names = failed.slice(0, MAX_CHECK_NAMES).map((n) => n.slice(0, MAX_CHECK_NAME_CHARS));
@@ -162,6 +171,7 @@ export class ChecksGateUnit {
       };
     }
     const head = typeof data.head_sha === "string" ? data.head_sha : "";
+    if (failed.length > 0 && failed.every((n) => checks.cancelled?.includes(n))) return this.rerunCancelled(it, reviewRunId, head, names, fields, detail, ack);
     let prLog: Promise<string | null> | null = null;
     const readPrLog = () => (prLog ??= this.readLog(it, head));
     const red = await this.redMain(it, failed, readPrLog);
@@ -226,7 +236,7 @@ export class ChecksGateUnit {
   private async rerunOnce(it: WorkItem, head: string): Promise<"rerun" | "reran" | "none"> {
     const forge = this.c.k.reader.forge;
     if (!forge?.rerunFailedJobs || head === "") return "none";
-    const reran = (await this.c.k.reader.listStateChanges(it.id)).some((c) => c.reason === CHECKS_RERUN && c.detail?.rerun_head === head);
+    const reran = (await this.c.k.reader.listStateChanges(it.id)).some((c) => c.reason === CHECKS_RERUN && c.detail?.rerun_head === head && c.detail.cancelled !== true);
     if (reran) return "reran";
     try {
       await forge.rerunFailedJobs(head);
@@ -235,6 +245,59 @@ export class ChecksGateUnit {
       this.c.k.d.log.warn("rerunning failed CI jobs failed", { work_item_id: it.id, head_sha: head, error: errorText(err) });
       return "none";
     }
+  }
+
+  /**
+   * Checks that were all cancelled or timed out (design 05-ci-gate, Cancelled checks): a stopped job, not a code
+   * failure, so no loop is counted and `max_loops` is never reached this way. Up to MAX_CANCELLED_RERUNS times per
+   * head the cancelled jobs rerun (the forge's rerunFailedJobs reruns cancelled jobs too) and the item waits on
+   * `checks_rerun`, the state change's detail `cancelled: true` so the rerun-once of a real failure stays its own.
+   * No rerun (no forge rerun, no head, the cap reached, or a rerun that throws, logged): the item waits on
+   * `checks_pending` with one `ci_rerun_failed` alert per item and head; the checks step tries again each tick.
+   */
+  private async rerunCancelled(
+    it: WorkItem,
+    reviewRunId: RunId,
+    head: string,
+    names: string[],
+    fields: { tier?: Tier; token_cost?: number },
+    detail: NonNullable<NonNullable<Decision>["detail"]>,
+    ack: { ack_run?: RunId },
+  ): Promise<Decision> {
+    const forge = this.c.k.reader.forge;
+    const prior = (await this.c.k.reader.listStateChanges(it.id))
+      .filter((c) => c.reason === CHECKS_RERUN && c.detail?.rerun_head === head && c.detail.cancelled === true).length;
+    let why: string | null = null;
+    if (!forge?.rerunFailedJobs) why = "the forge cannot rerun CI jobs";
+    else if (head === "") why = "the review recorded no head commit";
+    else if (prior >= MAX_CANCELLED_RERUNS) why = `they were cancelled again after ${prior} reruns`;
+    else {
+      try {
+        await forge.rerunFailedJobs(head);
+      } catch (err) {
+        why = errorText(err);
+        this.c.k.d.log.warn("rerunning cancelled CI jobs failed", { work_item_id: it.id, head_sha: head, error: why });
+      }
+    }
+    if (why === null) {
+      await this.checksComment(it, `checks-cancelled:${reviewRunId}:${prior + 1}`, names, (list) =>
+        `PR #${it.change_ref} passed review but its checks were cancelled${list}. That is no code failure: the factory reran the cancelled jobs on the same head (rerun ${prior + 1} of ${MAX_CANCELLED_RERUNS}) and waits for them, with no loop counted.`);
+      return {
+        patch: { ...fields, blocked_on: "ci", blocked_reason: CHECKS_RERUN },
+        actor: SYSTEM,
+        reason: CHECKS_RERUN,
+        detail: { ...detail, rerun_head: head, cancelled: true },
+        ...ack,
+      };
+    }
+    const text = `The cancelled CI jobs of PR #${it.change_ref} (${it.id}) at ${head.slice(0, 12) || "an unknown head"} were not rerun: ${why}. The item waits on its checks with no loop counted; rerun them on the forge or push a new commit.`;
+    const scan = await this.c.k.reader.scan("ui", text);
+    await this.c.k.commit({ writes: [{
+      kind: "alert", dedupe_ms: RERUN_ALERT_DEDUPE_MS,
+      alert: { pattern: "ci_rerun_failed", pattern_key: `ci_rerun_failed:${it.id}:${head}`, error_code: "ci_rerun_failed", count: prior, detail: scan.clean ? text : null },
+    }] });
+    if (!ack.ack_run && it.blocked_on === "ci" && it.blocked_reason === CHECKS_PENDING) return null;
+    return { patch: { ...fields, blocked_on: "ci", blocked_reason: CHECKS_PENDING }, actor: SYSTEM, reason: CHECKS_PENDING, detail, ...ack };
   }
 
   /**
@@ -460,7 +523,7 @@ export class ChecksGateUnit {
       await this.c.k.guard("checks", () => this.c.unit("transitions").decide(w.id, async (it) => {
         if (!(await this.stalled(it))) return null;
         const checks = await this.readChecks(it);
-        return checks.state === "failed" ? this.checksFailed(it, review, checks.failed, {}, {}) : null;
+        return checks.state === "failed" ? this.checksFailed(it, review, checks, {}, {}) : null;
       }).then(() => undefined));
     }
   }
