@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -362,6 +362,29 @@ describe("built-in companion rules", () => {
     const web = ["web/src/i18n/en/settings.ts", "web/src/views/settings/advanced-groups.ts"];
     for (const file of ["src/core/settings-base.ts", "src/runtime/settings/catalog.ts", "src/ui/settings-api.ts", "src/controller/settings/sub/x.setting.ts", "src/settings-cmd.ts"]) {
       expect(allowedAfter([file]).added.filter((a) => web.includes(a.path))).toEqual([]);
+    }
+  });
+
+  // wi_b228bcc9 (permission_mode) stopped on scope_violation for docs/settings/controller.md: since the catalog split
+  // into one page per owner (86752000), a new setting also regenerates its owner's page.
+  it.each([
+    ["src/controller/settings/permission-mode.setting.ts", "docs/settings/controller.md"],
+    ["src/worker/settings/stall-ms.setting.ts", "docs/settings/worker.md"],
+    ["src/runtime/settings/", "docs/settings/runtime.md"],
+  ])("a setting declaration %s adds its owner's catalog page %s, and not the index or another page", (file, page) => {
+    const { paths, added } = allowedAfter([file]);
+    expect(paths).toContain(page);
+    expect(added).toContainEqual({ path: page, because: file });
+    expect(paths.filter((p) => p.startsWith("docs/settings"))).toEqual([page]);
+    expect(kindNote([file], "a setting change regenerates its owner's catalog page docs/settings/<owner>.md (npm run settings:catalog)")).toHaveLength(1);
+  });
+
+  it("every settings folder's catalog page exists, and a file that is not a declaration adds none", () => {
+    const owners = readdirSync(join(REPO_ROOT, "src")).filter((o) => existsSync(join(REPO_ROOT, "src", o, "settings")) && readdirSync(join(REPO_ROOT, "src", o, "settings")).some((f) => f.endsWith(".setting.ts")));
+    expect(owners.length).toBeGreaterThan(0);
+    expect(owners.filter((o) => !existsSync(join(REPO_ROOT, "docs", "settings", `${o}.md`)))).toEqual([]);
+    for (const file of ["src/core/settings.ts", "src/runtime/settings/catalog.ts", "src/controller/settings/sub/x.setting.ts", "docs/settings/worker.md"]) {
+      expect(allowedAfter([file]).added.filter((a) => a.path.startsWith("docs/settings/"))).toEqual([]);
     }
   });
 
