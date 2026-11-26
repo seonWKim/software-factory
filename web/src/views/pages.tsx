@@ -44,6 +44,7 @@ import { Disclosure } from "../components/ui/disclosure.js";
 import { Card, SUB_TITLE } from "../components/ui/card.js";
 import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { Tooltip } from "../components/ui/menu.js";
+import { ChatCard } from "./chat-panel.js";
 import { HostSleeps, sleptMinutes } from "./host-sleeps.js";
 
 /** "host slept N min" for a host sleep's gap, on the item timeline. */
@@ -743,6 +744,7 @@ export function RunnersTab() {
           </ul>
         )}
       </Card>
+      <ChatCard />
     </div>
   );
 }

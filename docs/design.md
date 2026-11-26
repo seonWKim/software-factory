@@ -88,6 +88,7 @@ Read this index, then only the topics you touch. Add a line here only for a new 
 - [09-api-registry.md](design/09-api-registry.md): capability registry, feature map, OpenAPI.
 - [09-dashboard-activity.md](design/09-dashboard-activity.md): Activity page.
 - [09-dashboard-runners.md](design/09-dashboard-runners.md): Runners page.
+- [09-dashboard-chat.md](design/09-dashboard-chat.md): chat panel, Chat Card.
 - [09-dashboard-tasks.md](design/09-dashboard-tasks.md): Tasks list, row.
 - [09-dashboard-tasks-needs.md](design/09-dashboard-tasks-needs.md): Needs you.
 - [09-dashboard-tasks-quick-add.md](design/09-dashboard-tasks-quick-add.md): Quick add.
