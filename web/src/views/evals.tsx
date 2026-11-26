@@ -27,7 +27,9 @@ import { localDateTime, localShortDate } from "../lib/format.js";
 // The evals page at evals/<skill> (design 09-dashboard-evals): the header (title and Run now, the one primary Button), the
 // Versions Card (a ListRow per version, newest first, the current one with a Badge, its pass rate, 95% band in words and
 // cost per run), the Cases Card (a DataTable: a row per case, a column per version), a ButtonRow with Compare (opens a
-// ModalPanel: two version Selects, the unified DiffView of their SKILL.md texts and each case's result) and the Trend Card. Plain words only: folder hashes
+// ModalPanel: two version Selects, the unified DiffView of their SKILL.md texts and each case's result) and the Trend Card.
+// A case that failed in the newest finished run (its verdict in that run's version row) has "Add as a new case" in the
+// Cases table's last column: a Dialog that posts case.from_run (a new dev case copying it) and shows a refusal in it. Plain words only: folder hashes
 // and run IDs show only inside a version row's Details. Run now opens a Dialog that starts one run
 // (POST /api/v1/evals/<skill>/runs); the server's refusal (403 owner check, 409 refused run) shows in it. A version the
 // gate holds is a Card above Versions: its pass rates, the cases that got worse, "Keep the current version" (a Dialog
@@ -117,18 +119,86 @@ function Versions({ versions }: { versions: ReturnType<typeof useSkillVersions> 
 
 interface VersionCasesRow {
   key: string;
+  n: number;
   name: string;
   results: Map<number, string | null>;
+  /** The case failed in the newest finished run (its verdict in that run's version row). */
+  failed: boolean;
 }
 
-/** One row per case (numbered, never by ID), one column per version newest first; a cell is the case's result in that version. */
-function Cases({ versions }: { versions: ReturnType<typeof useSkillVersions> }) {
+/**
+ * One write from this page: `busy` while it posts; `post` answers the server's refusal (shown as `error`) or null;
+ * a throw shows `failed`. On success every read loads again, then `done` runs (a Dialog closes).
+ */
+function useEvalPost(failed: string) {
+  const client = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const send = async (post: () => Promise<string | null>, done?: () => void): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const refused = await post();
+      if (refused !== null) return setError(refused);
+      await client.invalidateQueries();
+      done?.();
+    } catch {
+      setError(failed);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { busy, error, setError, send };
+}
+
+/** A write's refusal text, or null when it went through. */
+const refusalOf = (r: { ok: true } | { ok: false; error: string | null }, fallback: string): string | null => (r.ok ? null : (r.error ?? fallback));
+
+/** "Add as a new case" for one case that failed in `run`: a Dialog that posts case.from_run, then reads the page again. */
+function AddFromRun({ run, row }: { run: string; row: VersionCasesRow }) {
+  const token = useApi<Session>(API.session, false).data?.csrf_token ?? null;
+  const button = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const { busy, error, setError, send: post } = useEvalPost(t("evals.fromRunFailed"));
+  const send = async () => {
+    if (token === null) return;
+    await post(async () => refusalOf(await postEvalWrite(token, { op: "case.from_run", run, case: row.key }), t("evals.fromRunFailed")), () => setOpen(false));
+  };
+  return (
+    <>
+      <Button ref={button} size="sm" onClick={() => { setError(null); setOpen(true); }}>{t("evals.fromRun")}</Button>
+      {open && (
+        <Dialog
+          title={t("evals.fromRunTitle", { n: row.n })}
+          consequence={t("evals.fromRunConsequence", { n: row.n })}
+          confirmLabel={busy ? t("evals.fromRunAdding") : t("evals.fromRunConfirm")}
+          confirmDisabled={busy || token === null}
+          error={error}
+          onConfirm={() => void send()}
+          onClose={() => setOpen(false)}
+          returnFocusTo={button}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * One row per case (numbered, never by ID), one column per version newest first; a cell is the case's result in that
+ * version. When a case failed in the newest finished run (`run`), a last column holds its "Add as a new case".
+ */
+function Cases({ versions, run }: { versions: ReturnType<typeof useSkillVersions>; run: string | null }) {
   const list = versions.data?.versions ?? [];
   const ids = [...new Set(list.flatMap((v) => (v.cases ?? []).map((c) => c.case_id)))].sort();
-  const rows = ids.map((id, i): VersionCasesRow => ({ key: id, name: t("evals.caseN", { n: i + 1 }), results: new Map(list.map((v) => [v.version, v.cases?.find((c) => c.case_id === id)?.verdict ?? null])) }));
+  const newest = run === null ? undefined : list.find((v) => v.run_id === run);
+  const rows = ids.map((id, i): VersionCasesRow => ({
+    key: id, n: i + 1, name: t("evals.caseN", { n: i + 1 }), results: new Map(list.map((v) => [v.version, v.cases?.find((c) => c.case_id === id)?.verdict ?? null])),
+    failed: newest?.cases?.some((c) => c.case_id === id && c.verdict === "fail") ?? false,
+  }));
   const columns: Column<VersionCasesRow>[] = [
     { key: "name", header: t("evals.caseColumn") },
     ...list.map((v): Column<VersionCasesRow> => ({ key: `v${v.version}`, header: t("evals.versionN", { n: v.version }), render: (r) => verdictText(r.results.get(v.version) ?? null) })),
+    ...(run !== null && rows.some((r) => r.failed) ? [{ key: "actions", header: t("evals.colActions"), render: (r: VersionCasesRow) => (r.failed ? <AddFromRun run={run} row={r} /> : null) }] : []),
   ];
   return (
     <Card title={t("evals.cases")}>
@@ -269,28 +339,17 @@ export function HeldCases({ held }: { held: HeldVersion }) {
  * the Dialog and a refusal shows in it, or (for Use this version) on its own line under the buttons.
  */
 export function HeldVersionActions({ held, skill, size = "md" }: { held: HeldVersion; skill: string; size?: "sm" | "md" }) {
-  const client = useQueryClient();
   const token = useApi<Session>(API.session, false).data?.csrf_token ?? null;
   const keepButton = useRef<HTMLButtonElement>(null);
   const [keeping, setKeeping] = useState(false);
   const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<{ on: "use" | "keep"; text: string } | null>(null);
+  const [on, setOn] = useState<"use" | "keep">("use");
+  const { busy, error: refused, setError, send } = useEvalPost(t("evals.heldFailed"));
+  const error = refused === null ? null : { on, text: refused };
   const settle = async (decision: "approve" | "reject") => {
     if (token === null) return;
-    const on = decision === "approve" ? "use" : "keep";
-    setBusy(true);
-    setError(null);
-    try {
-      const refused = await postSettle(token, held, decision);
-      if (refused !== null) return setError({ on, text: refused });
-      await client.invalidateQueries();
-      setKeeping(false);
-    } catch {
-      setError({ on, text: t("evals.heldFailed") });
-    } finally {
-      setBusy(false);
-    }
+    setOn(decision === "approve" ? "use" : "keep");
+    await send(() => postSettle(token, held, decision), () => setKeeping(false));
   };
   return (
     <>
@@ -353,22 +412,10 @@ function Agreement({ labels, agreement }: { labels: number; agreement: number | 
  * its first label, so both buttons are off once it has one. A refusal shows on its own line under the buttons.
  */
 function JudgeCheckRow({ c, n, replays, token }: { c: JudgedCheck & { run: string }; n: number; replays: boolean; token: string | null }) {
-  const client = useQueryClient();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { busy, error, send } = useEvalPost(t("evals.labelFailed"));
   const label = async (verdict: "right" | "wrong") => {
     if (token === null) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await postEvalWrite(token, { op: "label.set", run: c.run, case: c.case_id, replay: c.replay, check: c.check, label: verdict });
-      if (!r.ok) return setError(r.error);
-      await client.invalidateQueries();
-    } catch {
-      setError(t("evals.labelFailed"));
-    } finally {
-      setBusy(false);
-    }
+    await send(async () => refusalOf(await postEvalWrite(token, { op: "label.set", run: c.run, case: c.case_id, replay: c.replay, check: c.check, label: verdict }), t("evals.labelFailed")));
   };
   const where = replays ? t("evals.judgeCaseReplay", { n, replay: c.replay }) : t("evals.judgeCase", { n });
   const said = t("evals.judgeSaid", { answer: c.answer === "yes" ? t("evals.answerYes") : c.answer === "no" ? t("evals.answerNo") : c.answer });
@@ -427,27 +474,14 @@ function JudgeChecks({ skill }: { skill: string }) {
 
 /** Run now: model class, its judge class (follows the model) and replay count; the run is stored before it closes. */
 function RunNowDialog({ skill, onClose, returnFocusTo }: { skill: string; onClose: () => void; returnFocusTo: RefObject<HTMLButtonElement | null> }) {
-  const client = useQueryClient();
   const token = useApi<Session>(API.session, false).data?.csrf_token ?? null;
   const [model, setModel] = useState("standard");
   const [replays, setReplays] = useState("1");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { busy, error, send: post } = useEvalPost(t("evals.runFailed"));
   const judge = judgeOf(model);
   const send = async () => {
     if (token === null) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await postEvalRun(token, skill, { model_class: model, judge_model_class: judge, replays: Number(replays) });
-      if (!r.ok) return setError(r.error ?? t("evals.runFailed"));
-      await client.invalidateQueries();
-      onClose();
-    } catch {
-      setError(t("evals.runFailed"));
-    } finally {
-      setBusy(false);
-    }
+    await post(async () => refusalOf(await postEvalRun(token, skill, { model_class: model, judge_model_class: judge, replays: Number(replays) }), t("evals.runFailed")), onClose);
   };
   return (
     <Dialog
@@ -505,7 +539,7 @@ export function EvalsPage({ skill }: { skill: string }) {
           <HeldVersions skill={skill} />
           <Versions versions={versions} />
         </div>
-        <Cases versions={versions} />
+        <Cases versions={versions} run={runs.data.runs.find((r) => r.status !== "running")?.id ?? null} />
         <CompareVersions skill={skill} versions={versions.data?.versions ?? []} />
         <Trend runs={runs.data.runs} />
         <JudgeChecks skill={skill} />

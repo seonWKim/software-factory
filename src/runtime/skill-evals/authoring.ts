@@ -95,6 +95,41 @@ export interface TriedCase {
   error: string | null;
 }
 
+/** A case as `case from-run` copies it: its seed and MCP servers, and the split the copy gets. */
+export interface CopiedCase extends AuthoredCase { seed?: string | null; mcp?: readonly string[] | null; split?: "dev" | "held-out" }
+
+/** The SkillEvalStore calls `caseFromRun` makes. */
+export interface SkillEvalFromRunStore {
+  listSkillEvalReplays(run_id: string): Promise<readonly { case_id: string; verdict: string }[]>;
+  getSkillEvalCase(id: string): Promise<CopiedCase | null>;
+  addSkillEvalCase(c: CopiedCase): Promise<AuthoredCase>;
+}
+
+/** The refusal of `caseFromRun`, with no run or case id so a page can show it as it is. */
+const NO_FAILED_REPLAY = "That case has no failed replay in that run: nothing written.";
+
+/** The id of the dev case added from `case_id` of `run_id`: one per run and case, so a repeat adds nothing. */
+const fromRunCaseId = (run_id: string, case_id: string): string => `from-run:${run_id}:${case_id}`;
+
+/**
+ * `eval case from-run` and the write op `case.from_run` (design 07-self-improvement): a new `dev` case in the case's
+ * suite copying its input, expected, seed and MCP servers, only when the case has a replay with verdict `fail` in the
+ * run; else refused, nothing written. The new id is derived from the run and the case: a repeat returns the stored
+ * case and writes nothing.
+ */
+export async function caseFromRun(store: SkillEvalFromRunStore, run_id: string, case_id: string): Promise<Authored<AuthoredCase>> {
+  const [replays, c] = await Promise.all([store.listSkillEvalReplays(run_id), store.getSkillEvalCase(case_id)]);
+  if (!c || !replays.some((r) => r.case_id === case_id && r.verdict === "fail")) return { refused: NO_FAILED_REPLAY };
+  const id = fromRunCaseId(run_id, case_id);
+  const stored = await store.getSkillEvalCase(id);
+  if (stored) return { value: stored };
+  return {
+    value: await store.addSkillEvalCase({
+      id, suite_id: c.suite_id, input: c.input, expected: c.expected, split: "dev", ...(c.seed != null ? { seed: c.seed } : {}), ...(c.mcp != null ? { mcp: c.mcp } : {}),
+    }),
+  };
+}
+
 /** Replays and checks one case through the engine's judgeCase (judge reasons pass the egress scan); writes nothing. */
 export async function tryCase(d: Omit<SkillEvalEngineDeps, "store"> & { store: Pick<SkillEvalAuthoringStore, "getSkillEvalCase"> }, id: string, signal: AbortSignal): Promise<Authored<TriedCase>> {
   const c = await d.store.getSkillEvalCase(id);
@@ -104,13 +139,15 @@ export async function tryCase(d: Omit<SkillEvalEngineDeps, "store"> & { store: P
   return { value: { verdict, checks: answers ?? [], ...(threshold !== undefined ? { score: score ?? null, threshold } : {}), error: error ?? null } };
 }
 
-/** The authoring calls the CLI makes, with ids already bound (src/skill-evals.ts skillEvalAuthoring). */
+/** The authoring calls the CLI and the evals write route make, with ids already bound (src/skill-evals.ts skillEvalAuthoring). */
 export interface SkillEvalAuthoring {
   addSuite(store: SkillEvalAuthoringStore, r: { skill: string; title?: string; created_by: string }): Promise<Authored<AuthoredSuite>>;
   renameSuite(store: SkillEvalAuthoringStore, skill: string, title: string): Promise<Authored<AuthoredSuite>>;
   deleteSuite(store: SkillEvalAuthoringStore, skill: string, announce: (runs: number) => void): Promise<Authored<{ runs: number }>>;
   addCase(store: SkillEvalAuthoringStore, skill: string, f: CaseFields): Promise<Authored<AuthoredCase>>;
   editCase(store: SkillEvalAuthoringStore, id: string, f: CaseFields): Promise<Authored<AuthoredCase>>;
+  /** `eval case from-run` and the write op `case.from_run` (caseFromRun). */
+  caseFromRun(store: SkillEvalFromRunStore, run_id: string, case_id: string): Promise<Authored<AuthoredCase>>;
   /** `eval import` over the configured SkillEvalSource and egress scanner (import.ts, wired by main.ts); absent: it refuses. */
   importCases?(store: SkillEvalImportStore, r: SkillEvalImportRequest): Promise<Authored<ImportedCases>>;
 }
