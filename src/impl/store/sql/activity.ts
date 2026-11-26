@@ -2,18 +2,20 @@
 // write here takes the caller's executor, so a store method writes the row in the transaction of its change: the
 // reaper's lease expiry (expireLeases), a retention batch (prunedWithActivity), a schedule claim (schedules.ts), an
 // auto-grant (a transition's `activity`). A migration's row follows the migrations an open or `npm run migrate`
-// applied (migrationActivity); past actions get none.
+// applied (migrateWithActivity); past actions get none. A cleanup pass and a supervised restart, changes outside the
+// store, write theirs with recordActivity.
 
 import { type ActivityKind, activityActor } from "../../../controller/background-jobs.js";
-import type { Activity, NewActivity } from "../../../interfaces/factory-store.js";
+import type { AbandonedAttempt, Activity, ActivityStore, NewActivity } from "../../../interfaces/factory-store.js";
 import type { Timestamp } from "../../../core/types.js";
 import { MIGRATIONS_TABLE, tableExists, type Row, type SqlDriver, type SqlExecutor } from "../../../state/index.js";
+import { SqlRunOutputStore } from "./run-output.js";
 
 const TABLE = "controller_activity";
 const DAY_MS = 86_400_000;
 
 /** A run's transcript path, as the dashboard's transcript route serves it. */
-export const transcriptRef = (work_item_id: string, run_id: string): string => `/items/${work_item_id}/runs/${run_id}/transcript`;
+export const transcriptRef = (work_item_id: string, run_id: string): string => `/api/v1/items/${work_item_id}/runs/${run_id}/transcript`;
 /** A log reference: the component's log and the message of the line the action wrote. */
 export const logRef = (component: string, message: string): string => `log:${component}:${message}`;
 
@@ -33,6 +35,23 @@ export async function listActivity(db: SqlExecutor, opts: { kind?: string; limit
   const limit = Math.max(0, Math.floor(opts.limit ?? 200));
   const rows = await db.all(`SELECT * FROM ${TABLE}${where} ORDER BY seq DESC LIMIT ${limit}`, opts.kind === undefined ? [] : [opts.kind]);
   return rows.map(rowToActivity);
+}
+
+const EXPIRY_OUTCOME: Record<AbandonedAttempt["outcome"], string> = {
+  queued: "requeued", failed: "failed", cancelled: "cancelled",
+};
+
+/** One `lease_expiry` row per run the reaper moved, on its transaction's executor, linking the run's transcript. */
+export async function leaseExpiryActivity(tx: SqlExecutor, now: Timestamp, moved: readonly AbandonedAttempt[], max_attempts: number): Promise<void> {
+  for (const a of moved) {
+    const why = a.outcome === "cancelled" ? "its item is closed"
+      : a.outcome === "queued" ? `attempt ${a.attempt} of ${max_attempts}, retried`
+      : a.attempt >= max_attempts ? `attempt ${a.attempt} was the last of ${max_attempts}` : "an interactive session is never requeued";
+    await insertActivity(tx, now, activityOf("lease_expiry", {
+      subject: a.run_id, outcome: EXPIRY_OUTCOME[a.outcome], ref: transcriptRef(a.work_item_id, a.run_id),
+      reason: `the run's lease expired with no heartbeat (last at ${a.ended_at ?? "never"}); ${why}`,
+    }));
+  }
 }
 
 /** The retention classes, as each Activity row's subject names them. */
@@ -59,30 +78,41 @@ export function prunedWithActivity(
   });
 }
 
-/** The ids of the timestamped migrations applied so far; null on a store with none (a fresh database). Read-only. */
-export async function appliedMigrations(db: SqlExecutor): Promise<Set<string> | null> {
-  if (!(await tableExists({ dialect: "sqlite", all: (q, p) => db.all(q, p), run: (q, p) => db.run(q, p) }, MIGRATIONS_TABLE))) return null;
-  const ids = (await db.all(`SELECT id FROM ${MIGRATIONS_TABLE}`)).map((r) => String(r.id));
-  return ids.length === 0 ? null : new Set(ids);
-}
-
 /**
- * One `migration` row per migration applied since `before` (appliedMigrations' read before the migrations ran), with
- * `how` in its reason. None on a fresh database (`before` null): building it is not a change to stored data.
+ * Runs the driver's migrations, then writes one `migration` row per migration this call applied, with its reason. None
+ * on a fresh database (no migration recorded before): building it is not a change to stored data, and past
+ * migrations get no row. The rows are written after the migrations commit; a migration runs outside any one transaction.
  */
-export async function migrationActivity(db: SqlDriver, now: Timestamp, before: Set<string> | null, how: string): Promise<void> {
-  if (before === null) return;
-  const rows = await db.all(`SELECT id, component, change_kind FROM ${MIGRATIONS_TABLE} ORDER BY id`);
-  const added = rows.filter((r) => !before.has(String(r.id)));
+export async function migrateWithActivity(db: SqlDriver, now: () => Timestamp): Promise<void> {
+  const applied = async () => (await tableExists({ dialect: db.dialect.name, all: (q, p) => db.all(q, p), run: (q, p) => db.run(q, p) }, MIGRATIONS_TABLE)) ? await db.all(`SELECT id, component, change_kind FROM ${MIGRATIONS_TABLE} ORDER BY id`) : [];
+  const before = new Set((await applied()).map((r) => String(r.id)));
+  await db.migrate();
+  if (before.size === 0) return;
+  const added = (await applied()).filter((r) => !before.has(String(r.id)));
   if (added.length === 0) return;
   await db.transaction(async (tx) => {
     for (const r of added) {
-      await insertActivity(tx, now, activityOf("migration", {
-        subject: String(r.id), outcome: "applied", ref: null,
-        reason: `${String(r.change_kind)} migration of ${String(r.component)} pending in this revision, applied ${how}`,
+      await insertActivity(tx, now(), activityOf("migration", {
+        subject: String(r.id), outcome: "applied", ref: logRef("store", "migration applied"),
+        reason: `${String(r.change_kind)} migration of ${String(r.component)}, pending in this revision, applied when the store opened`,
       }));
     }
   });
+}
+
+/** ActivityStore over a SqlDriver, in the store's class chain so its methods add no line to sql-factory-store.ts. */
+export class SqlActivityStore extends SqlRunOutputStore implements ActivityStore {
+  constructor(db: SqlDriver, private readonly activityStamp: () => Timestamp) {
+    super(db, activityStamp);
+  }
+
+  recordActivity(a: NewActivity): Promise<Activity> {
+    return insertActivity(this.db, this.activityStamp(), a);
+  }
+
+  listActivity(opts: { kind?: string; limit?: number } = {}): Promise<Activity[]> {
+    return listActivity(this.db, opts);
+  }
 }
 
 function rowToActivity(row: Row): Activity {

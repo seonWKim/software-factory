@@ -84,7 +84,7 @@ import { diffPatch, newId, newWorkItem, rowToBudgetCheckpoint, rowToRun, rowToRu
 import * as filed from "./filed-patterns.js";
 import * as settingsSql from "./settings.js";
 import { PAUSE_END_INSERT, PAUSE_INSERT_ROW, pauseAt, placeholders, pruneDeliveredOutbox, pruneHandledCommands, pruneHistory } from "./retention.js";
-import { appliedMigrations, insertActivity, leaseExpiryActivity, migrationActivity, prunedWithActivity } from "./activity.js";
+import { insertActivity, leaseExpiryActivity, migrateWithActivity, prunedWithActivity } from "./activity.js";
 import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
@@ -134,9 +134,7 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
    * never runs on unmigrated rows. `npm run migrate` rewrites them.
    */
   async migrate(): Promise<void> {
-    const before = await appliedMigrations(this.db); // each migration this open applies gets its Activity row
-    await this.db.migrate();
-    await migrationActivity(this.db, this.now(), before, "on open");
+    await migrateWithActivity(this.db, () => this.now()); // each migration this open applies gets its Activity row (./activity.ts)
     const legacy = await countLegacyProjectRows(this.db);
     if (legacy > 0) throw migrationPendingError(legacyRowsMessage(legacy));
   }
