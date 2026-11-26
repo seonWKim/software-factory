@@ -7,9 +7,10 @@ import { announceStatus } from "../components/ui/dialog.js";
 import { ROW_TITLE, ListRow } from "../components/ui/list-row.js";
 import { type MenuItem, OverflowMenu } from "../components/ui/menu.js";
 import { EmptyState } from "../components/ui/notice.js";
-import { ErrorNote, Loading } from "../components/ui/parts.js";
+import { ErrorNote, LIST_BOX, Loading } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
 import { t } from "../i18n/index.js";
+import { cn } from "../lib/cn.js";
 import { localDateTime, relativeTime } from "../lib/format.js";
 import { useNow } from "./common.js";
 
@@ -60,7 +61,7 @@ function ActionRow({ a, now }: { a: CoordinatorAction; now: number }) {
 function Body({ view, now }: { view: CoordinatorView; now: number }) {
   const next = view.on && view.next_check_at !== null ? t("coordinator.next", { time: relativeTime(view.next_check_at, now) }) : null;
   return (
-    <ul aria-label={t("coordinator.label")} className="divide-y divide-border rounded-box border border-border">
+    <ul aria-label={t("coordinator.label")} className={cn("divide-y divide-border", LIST_BOX)}>
       <ListRow
         data-coordinator-status
         leading={<Switch checked={view.on} readOnly onCheckedChange={() => undefined} aria-label={t("coordinator.switch")} />}

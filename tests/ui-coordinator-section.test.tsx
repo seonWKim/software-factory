@@ -93,5 +93,8 @@ describe("the Coordinator card", () => {
     expect(src).not.toMatch(/<(button|input|select|textarea|table|h[1-6])\b/);
     for (const name of ["Card", "ListRow", "Switch", "Badge", "EmptyState", "OverflowMenu"]) expect(src).toContain(`<${name}`);
     expect(src).not.toMatch(/>\s*[A-Z][a-z]+ [a-z]+[^<{]*</);
+    // The list box is the shared LIST_BOX (its phone border handling), not a hand-written copy of its classes.
+    expect(src).toContain("LIST_BOX");
+    expect(src).not.toMatch(/className="[^"]*\bborder border-border/);
   });
 });
