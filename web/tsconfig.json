@@ -14,5 +14,5 @@
     "isolatedModules": true,
     "skipLibCheck": true
   },
-  "include": ["src", "vite.config.ts", "../tests/ui-shell.test.tsx", "../tests/ui-shell-fixtures.tsx", "../tests/ui-shell-pages.test.tsx", "../tests/ui-shell-items.test.tsx", "../tests/ui-shell-commands.test.tsx", "../tests/ui-shell-needs.test.tsx"]
+  "include": ["src", "vite.config.ts", "../tests/ui-shell.test.tsx", "../tests/ui-shell-fixtures.tsx", "../tests/ui-shell-pages.test.tsx", "../tests/ui-shell-revisions.test.tsx", "../tests/ui-shell-items.test.tsx", "../tests/ui-shell-commands.test.tsx", "../tests/ui-shell-needs.test.tsx"]
 }
