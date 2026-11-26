@@ -3,6 +3,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+import { SCHEDULE_ACTION_KINDS, type ScheduleActionKind } from "../src/core/schedule.js";
+import { PAGES } from "../web/src/pages.js";
 
 const ROOT = join(import.meta.dirname, "..");
 const WEB_SRC = join(ROOT, "web", "src");
@@ -434,5 +436,28 @@ describe("page blocks are stacked by the page's gap-6 column", () => {
     expect(flagged("pages.tsx", '<div className="mt-[10px]">')).toHaveLength(1);
     expect(flagged("pages.tsx", '<div className="mb-[2rem] flex">')).toHaveLength(1);
     expect(flagged("pages.tsx", '<div className="mt-2">')).toEqual([]);
+  });
+});
+
+// design-system/patterns.md "Autonomous work is visible": the page where each schedule action kind (a persona is a
+// feedback schedule, the daily improve run an improve one) shows what it does and its runs.
+const AUTONOMOUS_SURFACES: Record<ScheduleActionKind, string> = {
+  build: "schedules",
+  agent: "schedules",
+  feedback: "schedules",
+  improve: "schedules",
+  check_page: "schedules",
+};
+
+describe("autonomous work is visible", () => {
+  it("every schedule action kind has a page in AUTONOMOUS_SURFACES, and the Schedules page names it and says what it does", () => {
+    expect(Object.keys(AUTONOMOUS_SURFACES).sort()).toEqual([...SCHEDULE_ACTION_KINDS].sort());
+    const paths = PAGES.map((p) => p.path);
+    for (const page of Object.values(AUTONOMOUS_SURFACES)) expect(paths).toContain(page);
+    const labels = readFileSync(join(WEB_SRC, "views", "schedules", "labels.ts"), "utf8");
+    const keysOf = (name: string) => [...(new RegExp(`${name}: Record<ActionKind, MessageKey> = \\{([^}]*)\\}`).exec(labels)?.[1] ?? "").matchAll(/^\s*(\w+):/gm)].map((m) => m[1]);
+    for (const map of ["ACTION_TEXT", "ACTION_ABOUT"]) {
+      expect(keysOf(map), `web/src/views/schedules/labels.ts ${map} names every schedule action kind`).toEqual(expect.arrayContaining([...SCHEDULE_ACTION_KINDS]));
+    }
   });
 });
