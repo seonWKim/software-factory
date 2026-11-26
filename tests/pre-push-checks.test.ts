@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { Floor } from "../src/core/settings.js";
-import { failingTestFiles, withTestFiles } from "../src/core/checks.js";
+import { type GateEntry, failingTestFiles, withTestFiles } from "../src/core/checks.js";
 import { MODE_KEY, SELECTION_ACTOR, cleanCursor } from "../src/core/test-selection.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkItem, WorkerId } from "../src/core/types.js";
@@ -128,7 +128,7 @@ const repos = gitTemplate((root) => {
  * step (the prompt's "## Checks failed before push") runs `fix`.
  */
 async function setup(opts: {
-  checks?: string[][];
+  checks?: GateEntry[];
   implement?: AgentStep;
   fix?: AgentStep;
   scanner?: PatternEgressScanner;
@@ -309,6 +309,19 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
     expect(comments.map((c) => c.marker)).toEqual([`<!-- factory:checks:${run.id} -->`]);
     expect(comments[0]!.body).toContain("`tests/flaky.test.ts`");
     expect(f.broker.pushes()).toEqual([`factory/wip/${item.id}/${run.id}`]);
+  });
+
+  it("a folder check's base rerun runs in that folder of the base worktree, and the comment names the folder", async () => {
+    const FLAKY = ["sh", "-c", "echo ' FAIL  tests/flaky.test.ts > times out'; echo \"a is: $(cat a.txt)\"; exit 1", "flaky"];
+    const f = await setup({ checks: [{ dir: "src", argv: FLAKY }], fix: () => undefined });
+    const item = await f.approveAndImplement();
+    const run = (await f.implementRuns(item.id))[0]!;
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: "checks_env" });
+    const onBase = f.checkExecs().filter((e) => e.cwd === ".factory-base/src");
+    expect(onBase.map((e) => e.cmd)).toEqual([`${FLAKY.join(" ")} tests/flaky.test.ts`]);
+    expect(onBase[0]!.stdout).toContain("a is: a\n");
+    const comments = (await runComments(f.store, item.id)).filter((c) => c.marker.includes("factory:checks:"));
+    expect(comments[0]!.body).toContain(`\`${FLAKY.join(" ")} (in src/)\``);
   });
 
   it("the checks_failed detail names the failing vitest tests as file > name, at most 10; the output tail keeps the FAIL lines", async () => {

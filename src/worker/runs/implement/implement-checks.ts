@@ -29,7 +29,7 @@ export async function checksBeforePush(w: Worker, run: Run, item: WorkItem, hand
   if (!first.failed) return { results: first.results, fixed: false, done: done.results(first) };
   // A missing install is the host's, not the branch's: no fix step, and an infra failure (issue #229).
   const missing = toolchainMissing(first.failed.tail);
-  if (missing) throw new RunFailure(TOOLCHAIN_MISSING, `\`${commandText(first.failed.command)}\` could not start its tools: ${missing}`.slice(0, 500), true, { output_tail: first.failed.tail });
+  if (missing) throw new RunFailure(TOOLCHAIN_MISSING, `\`${ranText(w, first.failed)}\` could not start its tools: ${missing}`.slice(0, 500), true, { output_tail: first.failed.tail });
   await fixStep(w, run, item, handle, signal, s, first.failed);
   await cleanTree(w, handle);
   const second = await round();
@@ -60,7 +60,7 @@ async function failsOnBase(w: Worker, run: Run, handle: SandboxHandle, signal: A
     return cannotStart(err instanceof Error ? err.message : "unknown");
   }
   try {
-    const round = await w.runCheckList(run, handle, signal, { commands: [withTestFiles(failed.command, files)], cwd: BASE_CHECKOUT_DIR });
+    const round = await w.runCheckList(run, handle, signal, { commands: [withTestFiles(w.checkTools.ranEntry(failed), files)], cwd: BASE_CHECKOUT_DIR });
     if (!round.failed) return null;
     const missing = round.failed.how.startsWith("could not run") ? round.failed.how : toolchainMissing(round.failed.tail);
     if (missing) return cannotStart(missing);
@@ -91,7 +91,7 @@ export async function fixStep(
   failed: CheckResult | PackRefusal,
 ): Promise<void> {
   const output = await outputLines(w, "check" in failed ? failed.reason : failed.tail);
-  const cmd = "check" in failed ? failed.check : commandText(failed.command);
+  const cmd = "check" in failed ? failed.check : ranText(w, failed);
   const result = await w.agent(run, item, handle, signal, {
     prompt: [
       renderWorkItem(item, { includeSpec: true }),
@@ -121,8 +121,11 @@ function missingNote(m: NonNullable<CheckResult["missing"]>): string {
   return `The test file \`${m.file}\` does not exist on this branch, so the check found no tests to run.${closest} Otherwise create \`${m.file}\` with the tests for its done-when line.`;
 }
 
+/** A check result's command as it is shown: its argv, then `(in <dir>/)` for a folder entry (design 04-gate-commands). */
+const ranText = (w: Worker, r: CheckResult) => commandText(w.checkTools.ranEntry(r));
+
 /** A failed check as the outcome says it: a missing test file's text with its command, else the command and how it failed. */
-const failedText = (r: CheckResult) => (r.missing ? `${r.how} (\`${commandText(r.command)}\`)` : `\`${commandText(r.command)}\` ${r.how}`);
+const failedText = (w: Worker, r: CheckResult) => (r.missing ? `${r.how} (\`${ranText(w, r)}\`)` : `\`${ranText(w, r)}\` ${r.how}`);
 
 /** The architecture ratchet lists, and the env under which the pre-push checks lower (never raise) them (design §4). */
 export const RATCHET_LISTS = "tests/architecture/known-violations/";
@@ -153,8 +156,8 @@ async function grantTests(w: Worker, handle: SandboxHandle, baseSha: string, ite
 
 /** `checks_failed` (a task failure): one comment naming the command, keyed on the run; nothing is pushed. */
 async function checksFailed(w: Worker, run: Run, item: WorkItem, first: CheckResult, second: CheckResult, done: DoneCheckResult[] | undefined, grant: GrantTest[] | undefined): Promise<never> {
-  const cmd = commandText(second.command);
-  const before = commandText(first.command);
+  const cmd = ranText(w, second);
+  const before = ranText(w, first);
   const body = [
     "## Factory pre-push checks: push blocked",
     "",
@@ -166,7 +169,7 @@ async function checksFailed(w: Worker, run: Run, item: WorkItem, first: CheckRes
   // The failing tests by name (design §5 Restarts), so the detail says what broke, not only the exit code.
   const tests = failingTestNames(second.tail);
   const named = tests.length > 0 ? `; failing tests: ${tests.join(", ")}` : "";
-  throw new RunFailure(CHECKS_FAILED_RUN, `${failedText(second)} after one fix step${checkedLinesText(second)} (before it: ${failedText(first)})${named}`.slice(0, 500), false, {
+  throw new RunFailure(CHECKS_FAILED_RUN, `${failedText(w, second)} after one fix step${checkedLinesText(second)} (before it: ${failedText(w, first)})${named}`.slice(0, 500), false, {
     output_tail: second.tail, ...(done ? { done_checks: done } : {}), // each done-when line's result, on the failed outcome
     ...(grant ? { grant_tests: grant } : {}), // the test files the controller may grant once (auto-grant.ts checksGrant)
   } as RunFailure["extra"]);
@@ -178,7 +181,7 @@ async function checksFailed(w: Worker, run: Run, item: WorkItem, first: CheckRes
  * or a restart, at most CHECKS_ENV_LIMIT times per item.
  */
 async function checksEnv(w: Worker, run: Run, item: WorkItem, failed: CheckResult, files: string[]): Promise<never> {
-  const cmd = commandText(failed.command);
+  const cmd = ranText(w, failed);
   const body = [
     "## Factory pre-push checks: failing on the base branch too",
     "",

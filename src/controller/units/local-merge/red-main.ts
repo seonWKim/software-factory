@@ -55,7 +55,8 @@ async function checkTip(c: Ctx, where: string): Promise<Round> {
         env: { ...c.k.d.check_env }, timeout_ms: c.k.cfg.run_timeout_ms, signal: new AbortController().signal, redact: [],
       });
       if (!round.failed) return { tip, failed: null, command: null, how: null };
-      const { dir } = round.failed; // a folder entry is named as commandText names it
+      // Named as core/checks.ts commandText names a folder entry; this unit reaches core only through core/local-merge.js.
+      const { dir } = round.failed;
       const command = `${round.failed.command.join(" ")}${dir === undefined ? "" : ` (in ${dir}/)`}`;
       return {
         tip, command, how: round.failed.how, failed: `\`${command}\` ${round.failed.how} on ${where} of \`${repo.base_branch}\``,
