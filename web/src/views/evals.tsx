@@ -1,41 +1,42 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { type RefObject, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useRef, useState } from "react";
 import { postJson, useApi } from "../api/client.js";
-import { type EvalRun, type JudgedCheck, type SkillVersionRow, postEvalRun, postEvalWrite, useEvalCalibration, useEvalRuns, useSkillDiff, useSkillVersions } from "../api/evals.js";
+import { type DiffLine, type JudgedCheck, type SkillVersionDiff, type SkillVersionRow, postEvalRun, postEvalWrite, useEvalCalibration, useEvalRuns, useSkillDiff, useSkillVersions } from "../api/evals.js";
 import type { Session } from "../api/overview.js";
 import { API } from "../api/routes.js";
 import { Badge } from "../components/ui/badge.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
-import { CARD_INTRO, Card } from "../components/ui/card.js";
+import { Card } from "../components/ui/card.js";
 import { Chart } from "../components/ui/chart.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
-import { Dialog, ModalPanel } from "../components/ui/dialog.js";
-import { DiffView } from "../components/ui/diff-view.js";
+import { Dialog } from "../components/ui/dialog.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
-import { KeyValue } from "../components/ui/key-value.js";
+import { KeyValue, ValueBlock } from "../components/ui/key-value.js";
 import { ROW_TITLE, ListRow } from "../components/ui/list-row.js";
 import { EmptyState, Notice, PageHeader } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Select } from "../components/ui/select.js";
+import { STAT_NOTE, StatTile } from "../components/ui/stat-tile.js";
 import { Textarea } from "../components/ui/textarea.js";
 import { t } from "../i18n/index.js";
-import { localDateTime, localShortDate } from "../lib/format.js";
+import { localShortDate } from "../lib/format.js";
 
-// The evals page at evals/<skill> (design 09-dashboard-evals): the header (title and Run now, the one primary Button), the
-// Versions Card (a ListRow per version, newest first, the current one with a Badge, its pass rate, 95% band in words and
-// cost per run), the Cases Card (a DataTable: a row per case, a column per version), a ButtonRow with Compare (opens a
-// ModalPanel: two version Selects, the unified DiffView of their SKILL.md texts and each case's result) and the Trend Card.
-// A case that failed in the newest finished run (its verdict in that run's version row) has "Add as a new case" in the
-// Cases table's last column: a Dialog that posts case.from_run (a new dev case copying it) and shows a refusal in it. Plain words only: folder hashes
+// The evals page at evals/<skill> (design 09-dashboard-evals, owner answer 4): the header (title and Run now, the one
+// primary Button), then four Cards. Versions: a Chart of pass rate by version, the judge's agreement with the owner's
+// labels in a StatTile (a warn Notice below 80%) and a ListRow per version, newest first, the current one with a Badge,
+// its pass rate, 95% band in words and cost per run. Cases: a DataTable (a row per case, a column per version, a Badge in
+// each cell); a case that failed in the newest finished run (its verdict in that run's version row) has "Add as a new
+// case" in the last column, a Dialog that posts case.from_run; under the table a Disclosure "Judge checks" lists each
+// check the judge answered in the newest finished run with its reason, Right and Wrong (op label.set). Compare: two
+// version Selects and a DataTable of the second's wins, losses and ties over the first, the diff read's verdict last.
+// SKILL.md diff: the two versions' SKILL.md lines in a ValueBlock, − removed, + added. Plain words only: folder hashes
 // and run IDs show only inside a version row's Details. Run now opens a Dialog that starts one run
 // (POST /api/v1/evals/<skill>/runs); the server's refusal (403 owner check, 409 refused run) shows in it. A version the
-// gate holds is a Card above Versions: its pass rates, the cases that got worse, "Keep the current version" (a Dialog
-// with an optional reason, not stored) and "Use this version"; the held-version alarm in Needs you uses the same actions.
-// The Judge checks Card comes last: the judge's agreement with the owner's labels (a warn Notice below 80%) and each
-// check the judge answered in the newest finished run, with Right and Wrong in a ButtonRow (op label.set).
+// gate holds is a warn Notice above Versions: its pass rates, the cases that got worse, "Keep the current version" (a
+// Dialog with an optional reason, not stored) and "Use this version"; the held-version alarm in Needs you uses the same actions.
 
 /** The skill's name from its skill_ref (`skills/review/SKILL.md` → "review"): the last part, not the file's name. */
 export function skillName(ref: string): string {
@@ -47,24 +48,6 @@ export function skillName(ref: string): string {
 const percent = (rate: number): string => `${Math.round(rate * 100)}%`;
 const rateText = (rate: number | null): string => (rate === null ? t("evals.noRate") : percent(rate));
 const points = (n: number): string => t("evals.points", { sign: n < 0 ? "−" : "+", n: Math.abs(Math.round(n * 100)) });
-
-/** Pass rate by run date, oldest first, skipping runs with no pass rate. */
-function Trend({ runs }: { runs: readonly EvalRun[] }) {
-  const rated = runs.filter((r) => r.pass_rate !== null).reverse();
-  return (
-    <Card title={t("evals.trend")}>
-      {rated.length === 0 ? (
-        <EmptyState title={t("evals.trendEmpty")} />
-      ) : (
-        <Chart
-          label={t("evals.trendLabel")}
-          max={1}
-          points={rated.map((r) => ({ key: r.id, value: r.pass_rate!, caption: localShortDate(r.started_at), text: t("evals.trendPoint", { date: localDateTime(r.started_at), rate: percent(r.pass_rate!) }) }))}
-        />
-      )}
-    </Card>
-  );
-}
 
 /** The model classes in the order cheap, standard, strong; Run now's model choices. */
 const CLASS_ORDER = ["cheap", "standard", "strong"];
@@ -98,21 +81,50 @@ function VersionRow({ v }: { v: SkillVersionRow }) {
   );
 }
 
-/** The skill's versions, newest first, in one bordered list. */
-function Versions({ versions }: { versions: ReturnType<typeof useSkillVersions> }) {
+/** Pass rate by version, oldest first, skipping a version with no pass rate. */
+function VersionsChart({ versions }: { versions: readonly SkillVersionRow[] }) {
+  const rated = versions.filter((v) => v.pass_rate !== null).reverse();
+  if (rated.length === 0) return null;
+  const name = (v: SkillVersionRow) => t("evals.versionN", { n: v.version });
+  return <Chart label={t("evals.chartLabel")} max={1} points={rated.map((v) => ({ key: v.folder_hash, value: v.pass_rate!, caption: name(v), text: t("evals.chartPoint", { version: name(v), rate: percent(v.pass_rate!) }) }))} />;
+}
+
+/** The judge's agreement with the owner's labels in a StatTile (laid out as Spend's totals), with a warn Notice below 80%. */
+function JudgeAgreement({ calibration }: { calibration: ReturnType<typeof useEvalCalibration> }) {
+  if (calibration.isError) return <ErrorNote error={new Error(t("evals.judgeFailed"))} />;
+  const data = calibration.data;
+  if (!data) return null;
+  return (
+    <>
+      <dl className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <StatTile data-agreement="" label={t("evals.agreementLabel")} value={data.agreement === null ? t("evals.agreementUnknown") : percent(data.agreement)}>
+          <dd className={STAT_NOTE}>{data.agreement === null ? t("evals.agreementNone") : t("evals.agreementOf", { n: data.labels })}</dd>
+        </StatTile>
+      </dl>
+      {data.agreement !== null && data.agreement < 0.8 - 1e-9 && <Notice tone="warn">{t("evals.agreementLow")}</Notice>}
+    </>
+  );
+}
+
+/** The Versions Card: the pass rate Chart, the judge's agreement, then the skill's versions, newest first, in one bordered list. */
+function Versions({ versions, calibration }: { versions: ReturnType<typeof useSkillVersions>; calibration: ReturnType<typeof useEvalCalibration> }) {
   return (
     <Card title={t("evals.versions")}>
-      {versions.isError ? (
-        <ErrorNote error={new Error(t("evals.versionsFailed"))} />
-      ) : !versions.data ? (
-        <Loading rows={3} label="loading.evalRuns" onRetry={() => void versions.refetch()} />
-      ) : versions.data.versions.length === 0 ? (
-        <EmptyState title={t("evals.versionsEmpty")} />
-      ) : (
-        <ul aria-label={t("evals.versionsLabel")} className="divide-y divide-border rounded-box border border-border">
-          {versions.data.versions.map((v) => <VersionRow key={v.folder_hash} v={v} />)}
-        </ul>
-      )}
+      <div className="flex flex-col gap-4">
+        {versions.data && <VersionsChart versions={versions.data.versions} />}
+        <JudgeAgreement calibration={calibration} />
+        {versions.isError ? (
+          <ErrorNote error={new Error(t("evals.versionsFailed"))} />
+        ) : !versions.data ? (
+          <Loading rows={3} label="loading.evalRuns" onRetry={() => void versions.refetch()} />
+        ) : versions.data.versions.length === 0 ? (
+          <EmptyState title={t("evals.versionsEmpty")} />
+        ) : (
+          <ul aria-label={t("evals.versionsLabel")} className="divide-y divide-border rounded-box border border-border">
+            {versions.data.versions.map((v) => <VersionRow key={v.folder_hash} v={v} />)}
+          </ul>
+        )}
+      </div>
     </Card>
   );
 }
@@ -187,7 +199,7 @@ function AddFromRun({ run, row }: { run: string; row: VersionCasesRow }) {
  * One row per case (numbered, never by ID), one column per version newest first; a cell is the case's result in that
  * version. When a case failed in the newest finished run (`run`), a last column holds its "Add as a new case".
  */
-function Cases({ versions, run }: { versions: ReturnType<typeof useSkillVersions>; run: string | null }) {
+function Cases({ versions, run, calibration }: { versions: ReturnType<typeof useSkillVersions>; run: string | null; calibration: ReturnType<typeof useEvalCalibration> }) {
   const list = versions.data?.versions ?? [];
   const ids = [...new Set(list.flatMap((v) => (v.cases ?? []).map((c) => c.case_id)))].sort();
   const newest = run === null ? undefined : list.find((v) => v.run_id === run);
@@ -197,7 +209,7 @@ function Cases({ versions, run }: { versions: ReturnType<typeof useSkillVersions
   }));
   const columns: Column<VersionCasesRow>[] = [
     { key: "name", header: t("evals.caseColumn") },
-    ...list.map((v): Column<VersionCasesRow> => ({ key: `v${v.version}`, header: t("evals.versionN", { n: v.version }), render: (r) => verdictText(r.results.get(v.version) ?? null) })),
+    ...list.map((v): Column<VersionCasesRow> => ({ key: `v${v.version}`, header: t("evals.versionN", { n: v.version }), render: (r) => <VerdictBadge verdict={r.results.get(v.version) ?? null} /> })),
     ...(run !== null && rows.some((r) => r.failed) ? [{ key: "actions", header: t("evals.colActions"), render: (r: VersionCasesRow) => (r.failed ? <AddFromRun run={run} row={r} /> : null) }] : []),
   ];
   return (
@@ -207,82 +219,103 @@ function Cases({ versions, run }: { versions: ReturnType<typeof useSkillVersions
       ) : !versions.data ? (
         <Loading rows={3} label="loading.evalRuns" onRetry={() => void versions.refetch()} />
       ) : (
-        <DataTable label={t("evals.casesLabel")} columns={columns} rows={rows} rowKey={(r) => r.key} empty={t("evals.casesEmpty")} />
+        <div className="flex flex-col gap-4">
+          <DataTable label={t("evals.casesLabel")} columns={columns} rows={rows} rowKey={(r) => r.key} empty={t("evals.casesEmpty")} />
+          <JudgeChecks calibration={calibration} />
+        </div>
       )}
     </Card>
   );
 }
 
-interface CaseRow {
-  key: string;
-  name: string;
-  a: string;
-  b: string;
-}
-
-const VERDICT: Readonly<Record<string, "evals.verdictPass" | "evals.verdictFail" | "evals.verdictErrored">> = { pass: "evals.verdictPass", fail: "evals.verdictFail", errored: "evals.verdictErrored" };
-const verdictText = (v: string | null): string => {
-  const key = v === null ? undefined : VERDICT[v];
-  return v === null ? t("evals.noResult") : key ? t(key) : v;
+const VERDICT: Readonly<Record<string, { text: "evals.verdictPass" | "evals.verdictFail" | "evals.verdictErrored"; level?: string }>> = {
+  pass: { text: "evals.verdictPass", level: "succeeded" },
+  fail: { text: "evals.verdictFail", level: "failed" },
+  errored: { text: "evals.verdictErrored" },
 };
 
-/** The Compare panel's body: two version Selects (the two newest to start), the SKILL.md diff, each case's result in each. */
-function ComparePanel({ skill, versions }: { skill: string; versions: readonly SkillVersionRow[] }) {
-  const [picked, setPicked] = useState<{ a?: string; b?: string }>({});
-  const a = picked.a ?? versions[1]?.folder_hash ?? null;
-  const b = picked.b ?? versions[0]?.folder_hash ?? null;
-  const diff = useSkillDiff(skill, a, b);
-  const options = versions.map((v) => <option key={v.folder_hash} value={v.folder_hash}>{t("evals.versionN", { n: v.version })}</option>);
-  const columns: Column<CaseRow>[] = [
-    { key: "name", header: t("evals.caseColumn") },
-    { key: "a", header: t("evals.first") },
-    { key: "b", header: t("evals.second") },
-  ];
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap gap-4">
-        <Field label={t("evals.first")} htmlFor="evals-first">
-          <Select id="evals-first" value={a ?? ""} wrapperClassName="w-48 max-w-full" onChange={(e) => setPicked({ ...picked, a: e.target.value })}>{options}</Select>
-        </Field>
-        <Field label={t("evals.second")} htmlFor="evals-second">
-          <Select id="evals-second" value={b ?? ""} wrapperClassName="w-48 max-w-full" onChange={(e) => setPicked({ ...picked, b: e.target.value })}>{options}</Select>
-        </Field>
-      </div>
-      {diff.isError ? (
-        <ErrorNote error={new Error(t("evals.compareFailed"))} />
-      ) : diff.data ? (
-        <>
-          <DiffView label={t("evals.diffLabel")} empty={t("evals.diffEmpty")} lines={diff.data.lines} />
-          <DataTable
-            label={t("evals.caseResults")}
-            columns={columns}
-            rows={diff.data.cases.map((c, i): CaseRow => ({ key: c.case_id, name: t("evals.caseN", { n: i + 1 }), a: verdictText(c.a), b: verdictText(c.b) }))}
-            rowKey={(r) => r.key}
-            empty={t("evals.noCases")}
-          />
-        </>
-      ) : (
-        <Loading rows={3} label="loading.evalCompare" onRetry={() => void diff.refetch()} />
-      )}
-    </div>
-  );
+/** A case's result in one version as a Badge: Passed (ok), Failed (bad), Could not judge or no result (neutral). */
+function VerdictBadge({ verdict }: { verdict: string | null }) {
+  const known = verdict === null ? undefined : VERDICT[verdict];
+  return <Badge level={known?.level}>{verdict === null ? t("evals.noResult") : known ? t(known.text) : verdict}</Badge>;
 }
 
-/** The Compare Button (secondary, in a ButtonRow under the versions): opens the ModalPanel; needs two versions. */
-function CompareVersions({ skill, versions }: { skill: string; versions: readonly SkillVersionRow[] }) {
-  const [open, setOpen] = useState(false);
-  const button = useRef<HTMLButtonElement>(null);
-  const enough = versions.length >= 2;
+/** The diff read's verdict in words; none (no case counted, or an older server) says so. */
+const TALLY_VERDICT = { better: "evals.verdictBetter", worse: "evals.verdictWorse", "within noise": "evals.verdictNoise" } as const;
+
+/** The diff read with its tally (absent from an older server). */
+type TalliedDiff = SkillVersionDiff & { wins?: number; losses?: number; ties?: number; verdict?: keyof typeof TALLY_VERDICT | null };
+
+interface TallyRow {
+  key: string;
+  outcome: string;
+  value: string;
+}
+
+/** Wins, losses and ties of the second version over the first, then the verdict, one row each. */
+function tallyRows(d: TalliedDiff): TallyRow[] {
+  const count = (n: number | undefined) => (n === undefined ? t("evals.noResult") : String(n));
+  return [
+    { key: "wins", outcome: t("evals.wins"), value: count(d.wins) },
+    { key: "losses", outcome: t("evals.losses"), value: count(d.losses) },
+    { key: "ties", outcome: t("evals.ties"), value: count(d.ties) },
+    { key: "verdict", outcome: t("evals.verdictRow"), value: d.verdict == null ? t("evals.verdictNone") : t(TALLY_VERDICT[d.verdict]) },
+  ];
+}
+
+const DIFF_MARK: Readonly<Record<DiffLine["op"], string>> = { removed: "− ", added: "+ ", same: "  " };
+
+/**
+ * The Compare and SKILL.md diff Cards, which share the two picked versions (the second the newest and the first the one
+ * before, to start): Compare holds the two Selects and the tally table, SKILL.md diff the line diff in a ValueBlock.
+ */
+function Compare({ skill, versions }: { skill: string; versions: ReturnType<typeof useSkillVersions> }) {
+  const list = versions.data?.versions ?? [];
+  const [picked, setPicked] = useState<{ a?: string; b?: string }>({});
+  const enough = list.length >= 2;
+  const a = enough ? (picked.a ?? list[1]!.folder_hash) : null;
+  const b = enough ? (picked.b ?? list[0]!.folder_hash) : null;
+  const diff = useSkillDiff(skill, a, b);
+  const data: TalliedDiff | undefined = diff.data;
+  const options = list.map((v) => <option key={v.folder_hash} value={v.folder_hash}>{t("evals.versionN", { n: v.version })}</option>);
+  const columns: Column<TallyRow>[] = [{ key: "outcome", header: t("evals.outcomeColumn") }, { key: "value", header: t("evals.casesColumn") }];
+  const body = (show: (d: TalliedDiff) => ReactNode) =>
+    !enough ? (
+      <p className="text-sm text-pretty text-text-2">{t("evals.compareNeeds")}</p>
+    ) : diff.isError ? (
+      <ErrorNote error={new Error(t("evals.compareFailed"))} />
+    ) : data ? (
+      show(data)
+    ) : (
+      <Loading rows={3} label="loading.evalCompare" onRetry={() => void diff.refetch()} />
+    );
   return (
     <>
-      <ButtonRow>
-        <Button ref={button} data-capture-open="evals-compare" disabled={!enough} title={enough ? undefined : t("evals.compareNeeds")} onClick={() => setOpen(true)}>{t("evals.compare")}</Button>
-      </ButtonRow>
-      {open && (
-        <ModalPanel title={t("evals.compare")} onClose={() => setOpen(false)} returnFocusTo={button}>
-          <ComparePanel skill={skill} versions={versions} />
-        </ModalPanel>
-      )}
+      <Card title={t("evals.compare")}>
+        <div className="flex flex-col gap-4">
+          {enough && (
+            <div className="flex flex-wrap gap-4">
+              <Field label={t("evals.first")} htmlFor="evals-first">
+                <Select id="evals-first" value={a ?? ""} wrapperClassName="w-48 max-w-full" onChange={(e) => setPicked({ ...picked, a: e.target.value })}>{options}</Select>
+              </Field>
+              <Field label={t("evals.second")} htmlFor="evals-second">
+                <Select id="evals-second" value={b ?? ""} wrapperClassName="w-48 max-w-full" onChange={(e) => setPicked({ ...picked, b: e.target.value })}>{options}</Select>
+              </Field>
+            </div>
+          )}
+          {body((d) => <DataTable label={t("evals.tallyLabel")} columns={columns} rows={tallyRows(d)} rowKey={(r) => r.key} empty={t("evals.verdictNone")} />)}
+        </div>
+      </Card>
+      <Card title={t("evals.diff")}>
+        {body((d) => (
+          <div role="group" aria-label={t("evals.diffLabel")} data-skill-diff className="flex flex-col gap-2">
+            {d.lines.every((l) => l.op === "same") && <p className="text-sm text-pretty text-text-2">{t("evals.diffEmpty")}</p>}
+            <ValueBlock>
+              {d.lines.map((l, i) => <span key={i} data-op={l.op}>{DIFF_MARK[l.op]}{l.text}{"\n"}</span>)}
+            </ValueBlock>
+          </div>
+        ))}
+      </Card>
     </>
   );
 }
@@ -378,31 +411,27 @@ export function HeldVersionActions({ held, skill, size = "md" }: { held: HeldVer
   );
 }
 
-/** The held versions of this skill, each a Card at the top of the page: its rates, the cases that got worse, both actions. */
+/** The held versions of this skill, each a warn Notice at the top of the page: its rates, the cases that got worse, both actions. */
 function HeldVersions({ skill }: { skill: string }) {
   const held = (useHeldVersions().data?.held ?? []).filter((h) => h.skill === skill);
-  return held.map((h) => (
-    <Card key={`${h.ref_id}:${h.version}`} title={t("evals.heldTitle", { n: h.version })}>
-      <div data-held-version={h.version} className="flex flex-col gap-3">
-        <p className="text-sm text-pretty">{heldRates(h)}</p>
-        <div className="space-y-1">
-          <p className="text-sm font-medium">{t("evals.heldWorse")}</p>
-          <HeldCases held={h} />
-        </div>
-        <HeldVersionActions held={h} skill={skill} />
-      </div>
-    </Card>
-  ));
-}
-
-/** The judge's agreement with the owner's labels as a whole percentage with the label count; with none, said in words. */
-function Agreement({ labels, agreement }: { labels: number; agreement: number | null }) {
-  if (agreement === null) return <p className="text-sm text-pretty">{t("evals.agreementNone")}</p>;
+  if (held.length === 0) return null;
   return (
-    <>
-      <p className="text-sm text-pretty">{t("evals.agreement", { rate: percent(agreement), n: labels })}</p>
-      {agreement < 0.8 - 1e-9 && <Notice tone="warn">{t("evals.agreementLow")}</Notice>}
-    </>
+    <div className="flex flex-col gap-3">
+      {held.map((h) => (
+        <div key={`${h.ref_id}:${h.version}`} data-held-version={h.version}>
+          <Notice tone="warn" title={t("evals.heldTitle", { n: h.version })}>
+            <div className="flex flex-col gap-3">
+              <p>{heldRates(h)}</p>
+              <div className="space-y-1">
+                <p className="font-medium">{t("evals.heldWorse")}</p>
+                <HeldCases held={h} />
+              </div>
+              <HeldVersionActions held={h} skill={skill} />
+            </div>
+          </Notice>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -440,35 +469,31 @@ function JudgeCheckRow({ c, n, replays, token }: { c: JudgedCheck & { run: strin
   );
 }
 
-/** The Judge checks Card: the judge's agreement, then each check it answered in the newest finished run. */
-function JudgeChecks({ skill }: { skill: string }) {
-  const calibration = useEvalCalibration(skill);
+/** The Cases Card's Disclosure "Judge checks": each check the judge answered in the newest finished run. */
+function JudgeChecks({ calibration }: { calibration: ReturnType<typeof useEvalCalibration> }) {
   const token = useApi<Session>(API.session, false).data?.csrf_token ?? null;
   const data = calibration.data;
   const cases = [...new Set(data?.checks.map((c) => c.case_id) ?? [])];
   const replays = data?.checks.some((c) => c.replay > 1) ?? false;
   return (
-    <Card title={t("evals.judge")}>
-      <p className={CARD_INTRO}>{t("evals.judgeIntro")}</p>
-      {calibration.isError ? (
-        <ErrorNote error={new Error(t("evals.judgeFailed"))} />
-      ) : !data ? (
-        <Loading rows={3} label="loading.evalRuns" onRetry={() => void calibration.refetch()} />
-      ) : (
-        <div className="flex flex-col gap-4">
-          <Agreement labels={data.labels} agreement={data.agreement} />
-          {data.run === null || data.checks.length === 0 ? (
-            <EmptyState title={t("evals.judgeEmpty")} />
-          ) : (
-            <ul aria-label={t("evals.judgeChecksLabel")} className="divide-y divide-border rounded-box border border-border">
-              {data.checks.map((c) => (
-                <JudgeCheckRow key={JSON.stringify([c.case_id, c.replay, c.check])} c={{ ...c, run: data.run! }} n={cases.indexOf(c.case_id) + 1} replays={replays} token={token} />
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-    </Card>
+    <Disclosure data-judge-checks summary={t("evals.judge")}>
+      <div className="flex flex-col gap-3">
+        <p className="text-sm text-pretty text-text-2">{t("evals.judgeIntro")}</p>
+        {calibration.isError ? (
+          <ErrorNote error={new Error(t("evals.judgeFailed"))} />
+        ) : !data ? (
+          <Loading rows={3} label="loading.evalRuns" onRetry={() => void calibration.refetch()} />
+        ) : data.run === null || data.checks.length === 0 ? (
+          <EmptyState title={t("evals.judgeEmpty")} />
+        ) : (
+          <ul aria-label={t("evals.judgeChecksLabel")} className="divide-y divide-border rounded-box border border-border">
+            {data.checks.map((c) => (
+              <JudgeCheckRow key={JSON.stringify([c.case_id, c.replay, c.check])} c={{ ...c, run: data.run! }} n={cases.indexOf(c.case_id) + 1} replays={replays} token={token} />
+            ))}
+          </ul>
+        )}
+      </div>
+    </Disclosure>
   );
 }
 
@@ -523,10 +548,11 @@ function RunNow({ skill }: { skill: string }) {
   );
 }
 
-/** The evals page of one skill (`skill` is its skill_ref): Run now in the header, then any held version, Versions, Cases, Compare, Trend, Judge checks. */
+/** The evals page of one skill (`skill` is its skill_ref): Run now in the header, then any held version, Versions, Cases, Compare, SKILL.md diff. */
 export function EvalsPage({ skill }: { skill: string }) {
   const runs = useEvalRuns(skill);
   const versions = useSkillVersions(skill);
+  const calibration = useEvalCalibration(skill);
   const header = <PageHeader title={skillName(skill)} description={t("evals.description")} actions={<RunNow skill={skill} />} />;
   if (runs.isError) return <>{header}<ErrorNote error={new Error(t("evals.loadFailed"))} /></>;
   if (!runs.data) return <>{header}<Loading label="loading.evalRuns" onRetry={() => void runs.refetch()} /></>;
@@ -534,15 +560,11 @@ export function EvalsPage({ skill }: { skill: string }) {
   return (
     <>
       {header}
-      <div className="flex flex-col gap-6">
-        <div>
-          <HeldVersions skill={skill} />
-          <Versions versions={versions} />
-        </div>
-        <Cases versions={versions} run={runs.data.runs.find((r) => r.status !== "running")?.id ?? null} />
-        <CompareVersions skill={skill} versions={versions.data?.versions ?? []} />
-        <Trend runs={runs.data.runs} />
-        <JudgeChecks skill={skill} />
+      <div>
+        <HeldVersions skill={skill} />
+        <Versions versions={versions} calibration={calibration} />
+        <Cases versions={versions} run={runs.data.runs.find((r) => r.status !== "running")?.id ?? null} calibration={calibration} />
+        <Compare skill={skill} versions={versions} />
       </div>
     </>
   );

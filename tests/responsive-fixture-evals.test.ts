@@ -1,6 +1,6 @@
 // The Evals part of the responsive fixture (seedSkill in scripts/responsive/fixture.mjs): the fixture skill has two
 // versions with different SKILL.md texts, the newer one current, and a finished run with a pass rate bound to each
-// version's folder hash, so the Evals page and its Compare dialog have something to draw.
+// version's folder hash, so the Evals page's Compare and SKILL.md diff Cards have something to draw.
 // fixture.mjs imports dist/, which a test run has not built: the test loads a copy of it whose dist/ imports point at src/.
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -53,10 +53,14 @@ describe("check:responsive: the Evals entries", () => {
   it("load a page the server serves and move to evals/<skill> in place, since a full load of a folder-path skill is a 404", () => {
     const check = readFileSync(join(ROOT, "scripts", "responsive-check.mjs"), "utf8");
     expect(check).toContain('{ name: "evals", path: "data" }');
-    expect(check).toContain('{ name: "evals-compare", path: "data" }');
-    expect(check).toContain("openEvals(fixture.pages.skill, true)");
+    expect(check).toContain("evals: openEvals(fixture.pages.skill) }");
     expect(check).toMatch(/history\.pushState\(null, "", \$\{JSON\.stringify\(`\/app\/evals\//);
-    expect(check).toContain('[data-capture-open="evals-compare"]');
-    expect(check).toContain('document.querySelector("dialog[open]")');
+    expect(check).toContain('document.querySelector("[data-skill-diff]")');
+  });
+
+  it("have no evals-compare capture: the page's own capture shows Compare, with no Compare Button to press or dialog to wait for", () => {
+    const check = readFileSync(join(ROOT, "scripts", "responsive-check.mjs"), "utf8");
+    expect(check).not.toContain("evals-compare");
+    expect(check).not.toContain("dialog[open] table");
   });
 });

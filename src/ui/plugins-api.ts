@@ -21,7 +21,8 @@
 // factory user); a worker starts the server and stores the names. This process never starts a server.
 // Skill versions under the evals path (design 06-measurement, 2026-11-25): GET /api/v1/evals/<skill>/versions and
 // /diff read the imported skill's `ext_skill_versions` rows, linked to the skill's eval runs by folder hash
-// (skillVersionsOf); src/skill-evals.ts re-runs a version through the same lookup.
+// (skillVersionsOf); src/skill-evals.ts re-runs a version through the same lookup. The diff read adds the second
+// version's wins, losses and ties over the first and the paired verdict (caseResults, design 09-dashboard-evals).
 
 import type { SettingsBase } from "../core/settings.js";
 import type * as Compare from "../core/skill-eval-compare.js";
@@ -272,7 +273,8 @@ type VersionsDeps = { store: Pick<FactoryStore, "listSkillEvalRuns" | "listSkill
  * GET /api/v1/evals/<skill>/versions: { versions, unlinked }, one row per version of the skill (skillVersionRows:
  * latest pass rate, change since the previous version, gate state and the gate's current version marked), newest first, and the ids of the skill's runs
  * linked to no version. GET /api/v1/evals/<skill>/diff?a=<hash>&b=<hash>: each version's row, the unified line diff
- * of their SKILL.md texts and the per-case results of each one's latest linked run; 404 when a hash is no version of
+ * of their SKILL.md texts, the per-case results of each one's latest linked run, and b's wins, losses and ties over a
+ * with the paired verdict (caseResults); 404 when a hash is no version of
  * the skill. Every string leaves through the Withholder; the reads write nothing.
  */
 export async function readSkillVersions(d: VersionsDeps, f: SkillVersionReads, url: URL): Promise<ApiResult> {
@@ -312,7 +314,8 @@ export async function readSkillVersions(d: VersionsDeps, f: SkillVersionReads, u
     return run ? d.store.listSkillEvalReplays(run.id) : [];
   };
   const lines = await Promise.all(f.lineDiff(va.text, vb.text).map(async (l) => ({ op: l.op, text: await text(l.text) })));
-  const cases = await Promise.all(f.caseResults(await replays(a), await replays(b)).map(async (c) => ({ ...c, case_id: await text(c.case_id) })));
+  const { cases: results, ...tally } = f.caseResults(await replays(a), await replays(b));
+  const cases = await Promise.all(results.map(async (c) => ({ ...c, case_id: await text(c.case_id) })));
   const row = (v: SkillVersion) => rows.find((r) => r.version === v.version)!;
-  return { status: 200, value: { a: row(va), b: row(vb), lines, cases } };
+  return { status: 200, value: { a: row(va), b: row(vb), lines, cases, ...tally } };
 }

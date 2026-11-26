@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { lineDiff, skillVersionRows } from "../src/core/skill-eval-compare.js";
+import { caseTally, lineDiff, skillVersionRows } from "../src/core/skill-eval-compare.js";
 import type { Timestamp, UserId } from "../src/core/types.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -218,6 +218,15 @@ describe("GET /api/v1/evals/<skill>/diff", () => {
     expect(value.cases).toEqual([{ case_id: "c1", a: "pass", b: "pass" }, { case_id: "c2", a: "fail", b: "pass" }]);
   });
 
+  it("tallies the second version's wins, losses and ties over the first on their paired cases, with the paired verdict", async () => {
+    const { store, skill, run, h1, h2 } = await setup();
+    await run(h1);
+    await run();
+    // c2 failed on v1 and passed on v2 (a win), c1 passed on both (a tie): one win is within noise.
+    expect((await get(store, diffPath(skill, h1, h2))).value).toMatchObject({ wins: 1, losses: 0, ties: 1, verdict: "within noise" });
+    expect((await get(store, diffPath(skill, h2, h1))).value).toMatchObject({ wins: 0, losses: 1, ties: 1, verdict: "within noise" });
+  });
+
   it("answers 404 for a hash that is no version of the skill and 400 without both hashes", async () => {
     const { store, skill, run, h1 } = await setup();
     await run();
@@ -235,6 +244,15 @@ describe("GET /api/v1/evals/<skill>/diff", () => {
 });
 
 describe("the pure reads", () => {
+  it("caseTally counts only cases with a pass or fail in both versions and gives pairedVerdict's verdict", () => {
+    const n = (k: number, a: string | null, b: string | null) => Array.from({ length: k }, (_, i) => ({ case_id: `${a}-${b}-${i}`, a, b }));
+    expect(caseTally([...n(1, "fail", "pass"), ...n(1, "pass", "fail"), ...n(2, "pass", "pass"), ...n(1, "fail", "fail"), ...n(1, null, "pass"), ...n(1, "errored", "fail")]))
+      .toEqual({ wins: 1, losses: 1, ties: 3, verdict: "within noise" });
+    expect(caseTally(n(8, "fail", "pass"))).toEqual({ wins: 8, losses: 0, ties: 0, verdict: "better" });
+    expect(caseTally(n(8, "pass", "fail"))).toEqual({ wins: 0, losses: 8, ties: 0, verdict: "worse" });
+    expect(caseTally([...n(2, null, "pass"), ...n(1, "pass", null)])).toEqual({ wins: 0, losses: 0, ties: 0, verdict: null });
+  });
+
   it("lineDiff keeps unchanged lines and marks removed lines before added ones", () => {
     expect(lineDiff("a\nb\nc", "a\nx\nc")).toEqual([
       { op: "same", text: "a" }, { op: "removed", text: "b" }, { op: "added", text: "x" }, { op: "same", text: "c" },
