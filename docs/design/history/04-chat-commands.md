@@ -1,5 +1,6 @@
 ## History
 
+- **A top-level `request` answer created no item** (decision changed 2026-11-26, phase 1 of local-task-tk_dd036ba7). Before: a top-level Slack mention the model read as a work request got the model's sentences and a **Make this a task** button, and no item existed until someone pressed it.
 - **The single interpreter read every plain message** (decision changed 2026-11-13, the plain/command classifier). Before: one interpreter call decided both whether a plain message was a command and what it meant, so a plain sentence (a question that named an item or used a command word) could come back as command proposals.
 - **Only a command word was a command after a mention** (decision changed 2026-11-12). Before: `go ahead and merge` after a mention in an item's thread was a plain comment the plain-words reader read, and under a notice a request that made a new item.
 - **A top-level mention read as `request`, or not read, was taken in at once** (decision changed 2026-11-12). Before: the intake unit created a work item for a `request` answer, a `none` answer, a requester without `approve_spec`, no model, and an empty, long or flagged message, with no reply, so triage posted a full spec in the owner's thread even when the owner was only asking; only `unsure` got the Make this a task button, and its press posted no line of its own.
