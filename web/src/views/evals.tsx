@@ -1,13 +1,13 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useRef, useState } from "react";
 import { postJson, useApi } from "../api/client.js";
-import { type EvalRun, type EvalRunSummary, type SkillVersionRow, postEvalRun, useEvalGrid, useEvalRuns, useSkillDiff, useSkillVersions } from "../api/evals.js";
+import { type EvalRun, type EvalRunSummary, type JudgedCheck, type SkillVersionRow, postEvalRun, postEvalWrite, useEvalCalibration, useEvalGrid, useEvalRuns, useSkillDiff, useSkillVersions } from "../api/evals.js";
 import type { Session } from "../api/overview.js";
 import { API } from "../api/routes.js";
 import { Badge } from "../components/ui/badge.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
-import { Card } from "../components/ui/card.js";
+import { CARD_INTRO, Card } from "../components/ui/card.js";
 import { Chart } from "../components/ui/chart.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { Dialog, ModalPanel } from "../components/ui/dialog.js";
@@ -17,7 +17,7 @@ import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { KeyValue } from "../components/ui/key-value.js";
 import { ROW_TITLE, ListRow } from "../components/ui/list-row.js";
-import { EmptyState, PageHeader } from "../components/ui/notice.js";
+import { EmptyState, Notice, PageHeader } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Select } from "../components/ui/select.js";
 import { Textarea } from "../components/ui/textarea.js";
@@ -32,6 +32,8 @@ import { localDateTime, localShortDate } from "../lib/format.js";
 // (POST /api/v1/evals/<skill>/runs); the server's refusal (403 owner check, 409 refused run) shows in it. A version the
 // gate holds is a Card above Versions: its pass rates, the cases that got worse, "Keep the current version" (a Dialog
 // with an optional reason, not stored) and "Use this version"; the held-version alarm in Needs you uses the same actions.
+// The Judge checks Card comes last: the judge's agreement with the owner's labels (a warn Notice below 80%) and each
+// check the judge answered in the newest finished run, with Right and Wrong in a ButtonRow (op label.set).
 
 /** The skill's name from its skill_ref (`skills/review/SKILL.md` → "review"): the last part, not the file's name. */
 export function skillName(ref: string): string {
@@ -355,6 +357,94 @@ function HeldVersions({ skill }: { skill: string }) {
   ));
 }
 
+/** The judge's agreement with the owner's labels as a whole percentage with the label count; with none, said in words. */
+function Agreement({ labels, agreement }: { labels: number; agreement: number | null }) {
+  if (agreement === null) return <p className="text-sm text-pretty">{t("evals.agreementNone")}</p>;
+  return (
+    <>
+      <p className="text-sm text-pretty">{t("evals.agreement", { rate: percent(agreement), n: labels })}</p>
+      {agreement < 0.8 - 1e-9 && <Notice tone="warn">{t("evals.agreementLow")}</Notice>}
+    </>
+  );
+}
+
+/**
+ * One check the judge answered: the check, its case (and replay when a case has more than one) and the judge's answer,
+ * then Right and Wrong in a ButtonRow. A press posts label.set and reads the page's data again; a labelled check keeps
+ * its first label, so both buttons are off once it has one. A refusal shows on its own line under the buttons.
+ */
+function JudgeCheckRow({ c, n, replays, token }: { c: JudgedCheck & { run: string }; n: number; replays: boolean; token: string | null }) {
+  const client = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const label = async (verdict: "right" | "wrong") => {
+    if (token === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await postEvalWrite(token, { op: "label.set", run: c.run, case: c.case_id, replay: c.replay, check: c.check, label: verdict });
+      if (!r.ok) return setError(r.error);
+      await client.invalidateQueries();
+    } catch {
+      setError(t("evals.labelFailed"));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const where = replays ? t("evals.judgeCaseReplay", { n, replay: c.replay }) : t("evals.judgeCase", { n });
+  const said = t("evals.judgeSaid", { answer: c.answer === "yes" ? t("evals.answerYes") : c.answer === "no" ? t("evals.answerNo") : c.answer });
+  const off = busy || token === null || c.label !== null;
+  return (
+    <li data-judge-check className="flex flex-col gap-2 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0 space-y-0.5">
+        <p className="text-sm text-pretty break-words">{c.check}</p>
+        <p className="flex flex-wrap gap-x-3 text-xs text-text-2">
+          <span>{where}</span>
+          <span>{said}</span>
+          {c.label !== null && <span>{t(c.label === "right" ? "evals.markedRight" : "evals.markedWrong")}</span>}
+        </p>
+        {error !== null && <p data-row-error role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">{error}</p>}
+      </div>
+      <ButtonRow className="shrink-0">
+        <Button size="sm" disabled={off} onClick={() => void label("right")}>{t("evals.right")}</Button>
+        <Button size="sm" disabled={off} onClick={() => void label("wrong")}>{t("evals.wrong")}</Button>
+      </ButtonRow>
+    </li>
+  );
+}
+
+/** The Judge checks Card: the judge's agreement, then each check it answered in the newest finished run. */
+function JudgeChecks({ skill }: { skill: string }) {
+  const calibration = useEvalCalibration(skill);
+  const token = useApi<Session>(API.session, false).data?.csrf_token ?? null;
+  const data = calibration.data;
+  const cases = [...new Set(data?.checks.map((c) => c.case_id) ?? [])];
+  const replays = data?.checks.some((c) => c.replay > 1) ?? false;
+  return (
+    <Card title={t("evals.judge")}>
+      <p className={CARD_INTRO}>{t("evals.judgeIntro")}</p>
+      {calibration.isError ? (
+        <ErrorNote error={new Error(t("evals.judgeFailed"))} />
+      ) : !data ? (
+        <Loading rows={3} label="loading.evalRuns" onRetry={() => void calibration.refetch()} />
+      ) : (
+        <div className="flex flex-col gap-4">
+          <Agreement labels={data.labels} agreement={data.agreement} />
+          {data.run === null || data.checks.length === 0 ? (
+            <EmptyState title={t("evals.judgeEmpty")} />
+          ) : (
+            <ul aria-label={t("evals.judgeChecksLabel")} className="divide-y divide-border rounded-box border border-border">
+              {data.checks.map((c) => (
+                <JudgeCheckRow key={JSON.stringify([c.case_id, c.replay, c.check])} c={{ ...c, run: data.run! }} n={cases.indexOf(c.case_id) + 1} replays={replays} token={token} />
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 /** Run now: model class, its judge class (follows the model) and replay count; the run is stored before it closes. */
 function RunNowDialog({ skill, onClose, returnFocusTo }: { skill: string; onClose: () => void; returnFocusTo: RefObject<HTMLButtonElement | null> }) {
   const client = useQueryClient();
@@ -419,7 +509,7 @@ function RunNow({ skill }: { skill: string }) {
   );
 }
 
-/** The evals page of one skill (`skill` is its skill_ref): Run now in the header, then any held version, Versions, Compare, Grid, Trend. */
+/** The evals page of one skill (`skill` is its skill_ref): Run now in the header, then any held version, Versions, Compare, Grid, Trend, Judge checks. */
 export function EvalsPage({ skill }: { skill: string }) {
   const runs = useEvalRuns(skill);
   const grid = useEvalGrid(skill);
@@ -439,6 +529,7 @@ export function EvalsPage({ skill }: { skill: string }) {
         <CompareVersions skill={skill} versions={versions.data?.versions ?? []} />
         <Grid rows={grid.data.rows} runs={runs.data.runs} />
         <Trend runs={runs.data.runs} />
+        <JudgeChecks skill={skill} />
       </div>
     </>
   );
