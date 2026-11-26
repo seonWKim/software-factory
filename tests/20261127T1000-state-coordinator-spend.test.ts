@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import migration from "../src/state/migrations/20261127T1000-state-coordinator-spend.migration.js";
 import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver } from "../src/state/index.js";
-import { newStore } from "./helpers/store.js";
+import type { CoordinatorPorts } from "../src/core/controller-deps.js";
+import type { WorkItem, WorkItemId } from "../src/core/types.js";
+import { gateAgentWrite } from "../src/controller/units/commands/held-writes.js";
+import coordinatorUnit, { type CoordinatorUnit } from "../src/controller/units/coordinator/coordinator.unit.js";
+import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
+import { silent } from "./helpers/fakes/config.js";
+import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // The coordinator spend kind (design 06-spend): controller_chat_spend gains `kind`, `chat` or `coordinator`, default
 // `chat`. Additive: a stored row reads `chat` through the default, nothing else changes, and a rerun changes nothing.
@@ -52,5 +59,52 @@ describe(ID, () => {
     await store.db.run(ROW("t_coord", "coordinator"));
     expect(await store.db.all("SELECT kind FROM controller_chat_spend WHERE turn_id = 't_chat'")).toEqual([{ kind: "chat" }]);
     expect((await store.listChatSpendBetween("2026-11-27", "2026-11-27")).map((s) => s.turn_id)).toEqual(["t_chat"]);
+  });
+});
+
+// The coordinator's merge is an agent write (design 08-permissions, phase 2): after the passport check it passes the
+// permission gate, with the mode read from the store at each tick. Held, it is stored once per item: repeated
+// coordinator ticks that ask the same merge add no row, and the local merge does not run.
+describe("the coordinator's merge through the permission gate", () => {
+  async function coordinator(store: FactoryStore) {
+    let ports: CoordinatorPorts | null = null;
+    const merged: string[] = [];
+    const waiting = { id: "wi_1", stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", project: PROJECT_KEY } as WorkItem;
+    const ctx = {
+      k: {
+        d: { coordinator: (p: CoordinatorPorts) => ((ports = p), { tick: async () => ({ kind: "off" as const }) }), store, scanner: new PatternEgressScanner(async () => []), log: silent },
+        live: { values: () => ({ coordinator: true, auto_merge_max_tier: 2 }) },
+        reader: { listWorkItemsWhere: async () => [waiting], getWorkItem: async (id: string) => (id === "wi_1" ? waiting : null) },
+      },
+      unit: (name: string): unknown => name === "auth"
+        ? { automatic: async () => null }
+        : name === "commands"
+          ? { gateAgentWrite: (w: Parameters<typeof gateAgentWrite>[1]) => gateAgentWrite(ctx as never, w) }
+          : { mergeLocal: async (id: string) => (merged.push(id), null) },
+    };
+    await (coordinatorUnit.create(ctx as never) as CoordinatorUnit).step();
+    return { merge: (key: string) => (ports as unknown as CoordinatorPorts).merge("wi_1" as WorkItemId, key), merged };
+  }
+
+  it("holds the merge once with the mode it ran under, however many ticks ask it, and runs nothing", async () => {
+    const { store } = await newStore();
+    const c = await coordinator(store);
+    const first = await c.merge("tick-1");
+    expect(first).toMatch(/held under permission_mode ask_irreversible: confirm it with `confirm hw_/);
+    expect(await c.merge("tick-2")).toBe(first);
+    expect(await c.merge("tick-3")).toBe(first);
+    expect((await store.listHeldWrites(10)).filter((h) => h.key === "coordinator:merge:wi_1")).toEqual([
+      expect.objectContaining({ command: "merge", args: ["wi_1"], mode: "ask_irreversible", status: "pending" }),
+    ]);
+    expect(c.merged).toEqual([]);
+  });
+
+  it("runs the merge in full permission, read from the store at that tick, and holds nothing", async () => {
+    const { store } = await newStore();
+    const c = await coordinator(store);
+    await store.setSettingOverride({ key: "permission_mode", project: "", value: '"full"', actor: "local:owner" });
+    expect(await c.merge("tick-1")).toBeNull();
+    expect(c.merged).toEqual(["wi_1"]);
+    expect(await store.listHeldWrites(10)).toEqual([]);
   });
 });
