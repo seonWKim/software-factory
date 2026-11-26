@@ -131,6 +131,16 @@ describe("the schedules and items routes", () => {
     expect(owner).not.toMatch(/schedules-api|postSchedule|SCHEDULE_/);
     expect(api).not.toMatch(/case "\/items":/);
   });
+
+  it("leave none of the route-table exports only the removed entries used, and nothing imports them", () => {
+    const gone = /\b(SCHEDULE_RUNS_PATH|SCHEDULE_SUGGESTIONS_PATH|SCHEDULE_WRITE_PATHS|SCHEDULE_DRAFT_PATHS)\b/;
+    const files = (dir: string): string[] =>
+      readdirSync(join(REPO, dir), { withFileTypes: true }).flatMap((e) =>
+        e.name === "node_modules" ? [] : e.isDirectory() ? files(`${dir}/${e.name}`) : /\.(ts|tsx|mjs|js)$/.test(e.name) && e.name !== "api-architecture.test.ts" ? [`${dir}/${e.name}`] : [],
+      );
+    const users = ["src", "tests", "web/src", "scripts"].flatMap(files).filter((f) => gone.test(read(f)));
+    expect(users).toEqual([]);
+  });
 });
 
 describe("every declaration", () => {
