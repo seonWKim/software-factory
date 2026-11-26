@@ -9,7 +9,6 @@ import { type MenuItem, OverflowMenu } from "../components/ui/menu.js";
 import { EmptyState } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
-import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { localDateTime, relativeTime } from "../lib/format.js";
 import { useNow } from "./common.js";
