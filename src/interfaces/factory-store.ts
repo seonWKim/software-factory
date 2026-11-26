@@ -341,15 +341,15 @@ export interface NoticeMessageStore {
   recordNoticeQuestion(q: Omit<NoticeQuestion, "created_at">): Promise<boolean>;
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
-/** A chat message to store (controller_chat_messages): `seq` orders a session's messages; the rest as on LLMMessage. */
-export interface NewChatMessage extends LLMMessage { seq: number }
-export interface ChatMessageRecord extends NewChatMessage { session_id: string; created_at: Timestamp }
-/** A chat session's messages: an append writes the whole batch, or nothing (false) when one of its seqs is the session's already. Its turns' spend (design 04-chat-agent): one row per turn, keyed by the turn's own id (never a message seq, which a failed turn does not take), `cost_usd` null when unknown; a record of a counted turn writes nothing (false); a read takes UTC days, both inclusive. */
+/** A chat message to store (controller_chat_messages): `seq` orders a session's messages; the rest as on LLMMessage. A chat turn's row (controller_chat_turns, design 04-chat-agent): running at its start, then answered, refused or failed, `reason` null when answered. */
+export interface NewChatMessage extends LLMMessage { seq: number } export type ChatTurnStatus = "running" | "answered" | "refused" | "failed";
+export interface ChatMessageRecord extends NewChatMessage { session_id: string; created_at: Timestamp } export interface ChatTurnRecord { turn_id: string; session_id: string; status: ChatTurnStatus; reason: string | null; created_at: Timestamp; finished_at: Timestamp | null }
+/** A chat session's messages: an append writes the whole batch, or nothing (false) when one of its seqs is the session's already. Its turns' spend (design 04-chat-agent): one row per turn, keyed by the turn's own id (never a message seq, which a failed turn does not take), `cost_usd` null when unknown; a record of a counted turn writes nothing (false); a read takes UTC days, both inclusive. Its turns' rows, each method one transaction: a start writes it running (false, nothing written, when the id is stored already); a finish ends only a running turn (false otherwise); a list reads the newest first, at most `limit`. */
 export interface ChatMessageStore {
   appendChatMessages(session_id: string, messages: readonly NewChatMessage[]): Promise<boolean>; listChatMessages(session_id: string): Promise<ChatMessageRecord[]>;
   recordChatSpend(s: { turn_id: string; session_id: string; day: string; cost_usd: number | null; tokens: number }): Promise<boolean>; listChatSpendBetween(from: string, to: string): Promise<Parameters<ChatMessageStore["recordChatSpend"]>[0][]>;
+  startChatTurn(turn_id: string, session_id: string): Promise<boolean>; finishChatTurn(turn_id: string, status: Exclude<ChatTurnStatus, "running">, reason: string | null): Promise<boolean>; listChatTurns(limit: number): Promise<ChatTurnRecord[]>;
 }
-
 /** One autonomous action (design 08-schedules-actions): `kind` as src/controller/background-jobs.ts lists it; `ref` a run's transcript path or a `log:<component>:<message>` reference (null: none); `at` the store's time. */
 export interface Activity { seq: number; actor_id: string; kind: string; subject: string; outcome: string; reason: string; ref: string | null; at: Timestamp }
 export type NewActivity = Omit<Activity, "seq" | "at">;
