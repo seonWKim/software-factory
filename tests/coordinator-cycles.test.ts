@@ -3,8 +3,11 @@
 // that question. The agent is a scripted double with a cost, the clock a FakeClock: no live model.
 
 import { describe, expect, it } from "vitest";
-import { coordinatorLimitKey } from "../src/core/alarms.js";
-import { answerCoordinatorLimit } from "../src/core/local-cli-run.js";
+import { coordinatorLimitKey } from "../src/core/spend.js";
+import { OwnerAuth } from "../src/core/authorize.js";
+import { type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
+import { LocalSource } from "../src/impl/source/local-source.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { CoordinatorPorts } from "../src/core/controller-deps.js";
 import { COORDINATOR_LEASE, CYCLE, CYCLE_MS, Coordinator, type CoordinatorAgent, NOTHING_TO_DO, type TickResult } from "../src/coordinator/cycle.js";
 import { CoordinatorStore } from "../src/coordinator/store.js";
@@ -14,7 +17,8 @@ import type { UserId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { storeSql } from "../src/impl/store/sql/store-sql.js";
 import type { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { silent } from "./helpers/fakes/config.js";
+import { cleanScanner, config, silent } from "./helpers/fakes/config.js";
+import { answers } from "./helpers/local-cli.js";
 import { PROJECT_KEY, newStore, system } from "./helpers/store.js";
 
 const KEY = "spend.coordinator_daily_usd";
@@ -64,8 +68,24 @@ function coordinator(store: FactoryStore, clock: FakeClock, cost = 3) {
 }
 
 const limitAlerts = async (store: FactoryStore) => (await store.listAlerts({ limit: 100 })).filter((a) => a.pattern === "coordinator_limit");
-const answer = (store: FactoryStore, command: "approve" | "reject", value: string | null = null, owner = true) =>
-  answerCoordinatorLimit(store, { command, value, by: OWNER, isOwner: async () => owner });
+/**
+ * The common `approve [<usd>]` or `reject` with no item ID, as the owner (or someone else) types it at the CLI: the CLI
+ * checks and stores the command, and the controller's commands unit applies it on its next poll. The first call claims
+ * the owner for OWNER, as the CLI's first command does.
+ */
+function answerer(store: FactoryStore, clock: FakeClock) {
+  const controller = new ControllerRole({ store, sources: [new LocalSource(store)], auth: new OwnerAuth(store), clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false });
+  let n = 0;
+  const deps = (user: UserId): LocalCliDeps => ({ store, identity: { user, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "b", newId: () => `id${++n}`, clock, answers });
+  const answer = async (command: "approve" | "reject", value: string | null = null, user: UserId = OWNER) => {
+    const r = await runLocalCli(deps(user), { action: "settle", command, ...(value !== null ? { value } : {}) });
+    await controller.tickIntake();
+    return r;
+  };
+  /** OWNER's first CLI command, which claims the owner. */
+  const claim = () => runLocalCli(deps(OWNER), { action: "create", title: "claims the owner", bodyFile: "b" });
+  return Object.assign(answer, { claim });
+}
 
 /** Runs cycles at $3 each until the $5 limit stops one: two calls ($6), then the stopped cycle. */
 async function reachLimit(store: FactoryStore, clock: FakeClock) {
@@ -145,8 +165,8 @@ describe("answering the question with the common /approve and /reject", () => {
   it("/approve 10 sets spend.coordinator_daily_usd to 10, and cycles run again while today's spend is below it", async () => {
     const { store, clock } = await newStore();
     const { calls, next } = await reachLimit(store, clock);
-    const r = await answer(store, "approve", "10");
-    expect(r).toMatchObject({ set_usd: 10 });
+    const r = await answerer(store, clock)("approve", "10");
+    expect(r).toMatchObject({ code: 0, lines: [expect.stringContaining("sets spend.coordinator_daily_usd to $10.00")] });
     const override = (await store.listSettingOverrides()).find((o) => o.key === KEY);
     expect(override).toMatchObject({ project: "", value: "10", set_by: OWNER });
     // The answer is on the alert: it is dismissed by the owner, so it leaves Needs you.
@@ -166,8 +186,13 @@ describe("answering the question with the common /approve and /reject", () => {
   it("/approve needs a positive amount and the owner; a refusal sets nothing", async () => {
     const { store, clock } = await newStore();
     await reachLimit(store, clock);
-    for (const v of [null, "0", "-3", "ten"]) expect(await answer(store, "approve", v)).toMatchObject({ refused: expect.stringContaining("positive dollar amount") });
-    expect(await answer(store, "approve", "10", false)).toMatchObject({ refused: expect.stringContaining("only the owner") });
+    const answer = answerer(store, clock);
+    for (const v of [null, "0", "$0.00"]) expect(await answer("approve", v)).toMatchObject({ code: 1, lines: [expect.stringContaining("positive dollar amount")] });
+    // A bare `approve` with a word that is not an amount is the item command it reads as, which needs an item.
+    expect((await answer("approve", "ten")).code).toBe(1);
+    // OWNER claims the owner with a first command; someone else's answer is refused.
+    await answer.claim();
+    expect(await answer("approve", "10", "local:someone-else" as UserId)).toMatchObject({ code: 1, lines: [expect.stringContaining("only the owner")] });
     expect((await store.listSettingOverrides()).find((o) => o.key === KEY)).toBeUndefined();
     expect((await limitAlerts(store))[0]!.dismissed_at).toBeUndefined();
   });
@@ -175,12 +200,14 @@ describe("answering the question with the common /approve and /reject", () => {
   it("/reject keeps cycles stopped for the rest of the UTC day and leaves spend.coordinator_daily_usd unchanged", async () => {
     const { store, clock } = await newStore();
     const { calls, next } = await reachLimit(store, clock);
-    const r = await answer(store, "reject");
-    expect(r).toMatchObject({ set_usd: null });
+    const answer = answerer(store, clock);
+    const r = await answer("reject");
+    expect(r).toMatchObject({ code: 0, lines: [expect.stringContaining("stay stopped until the UTC day ends")] });
     expect((await store.listSettingOverrides()).find((o) => o.key === KEY)).toBeUndefined();
     expect((await limitAlerts(store))[0]!.dismissed_at).toBeDefined();
     // A second answer finds no open question.
-    expect(await answer(store, "approve", "10")).toBeNull();
+    expect((await answer("approve", "10")).code).toBe(1);
+    expect((await store.listSettingOverrides()).find((o) => o.key === KEY)).toBeUndefined();
     // Every due cycle left that UTC day stops; none asks again.
     for (let i = 0; i < 4; i++) expect((await next()).actions[0]).toMatchObject({ command: CYCLE, outcome: "skipped" });
     expect(calls).toHaveLength(2);

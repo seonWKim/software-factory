@@ -1,5 +1,4 @@
 import type { WorkItem, WorkItemId } from "./types.js";
-import type { Clock } from "../interfaces/clock.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { MERGE_COMMAND } from "./local-merge.js";
 import { CLOSED_REFUSAL, approveRefusal, settleHeldSkillVersion, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText } from "./commands.js";
@@ -57,7 +56,7 @@ export interface LocalCliDeps extends DraftTerminal { // DraftTerminal: `schedul
   caps?: (project: string) => Promise<{ max_diff_lines: number; max_diff_files: number }>; // the project's size caps as the controller reads them (storedProjectCaps): `approve` refuses an over-cap approval with no note before any write; absent (chat): the controller does
   cli?: string; // the hints' command name (cliName); absent: DEFAULT_CLI_NAME, as chat callers leave it
   ui?: { port?: number }; // factory.config.json's `ui` (validated at load): `task create` prints the item's loopback link on its port; absent: no link (chat)
-  clock?: Pick<Clock, "now">; // today's UTC day, for the coordinator limit question a bare `approve <usd>` or `reject` answers (design 06-spend); absent (chat): those settle a held skill version only
+  clock?: { now(): Date }; // today's UTC day, for the coordinator limit question a bare `approve <usd>` or `reject` answers (design 06-spend); absent (chat): those settle a held skill version only
   answers: NoteAnswers<{ question: string; answer: string | null; accepted_default: boolean }>; // splitAnswers, answersDetail (src/shared/command-notes.ts)
 }
 

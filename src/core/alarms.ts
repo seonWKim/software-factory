@@ -545,7 +545,7 @@ export interface CoordinatorLimitAlert {
  * and stores it through the kernel's `alert` write. One Needs-you alert, pattern `coordinator_limit`, key
  * `coordinator_limit:<UTC day>`, with the current and the proposed limit, deduped for one day on a key that names the
  * day; the cycle raises it only on the day's first stop, so there is one per UTC day, answered or not. The answer is
- * coordinatorLimitAnswer (src/core/spend.ts), applied by the commands unit (coordinator-limit.ts).
+ * coordinatorLimitAnswer (src/core/spend.ts), applied by the commands unit (answerLimit).
  */
 export function coordinatorLimitAlert(q: CoordinatorLimit): CoordinatorLimitAlert {
   const proposed = proposedLimit(q.limit_usd);

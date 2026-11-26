@@ -171,7 +171,7 @@ export class CommandsUnit {
   async answerLimit(c: CliCommand, question: string): Promise<void> {
     const log = this.c.k.d.log, fields = { command_key: c.key, command: c.command, by: c.actor, question };
     if (c.command !== "approve" && c.command !== "reject") return;
-    const principal = await this.c.unit("auth").allowed({ user_id: c.actor }, "approve_spec", question);
+    const principal = await this.c.unit("auth").allowed({ user_id: c.actor as UserId }, "approve_spec", question);
     if ("refuse" in principal) return log.warn("coordinator limit answer refused", { ...fields, reason: principal.refuse });
     const r = coordinatorLimitAnswer(await this.c.k.reader.listAlerts({ limit: LIMIT_ALERTS_SCAN }), this.c.k.nowMs(), c.command, typeof c.args.text === "string" ? c.args.text : null);
     if (r === null || r.alert.pattern_key !== question) return log.info("coordinator limit answer not applied: the question is not open", fields);

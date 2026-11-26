@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ALERT_DEDUPE_MS, GRANT_REFUSED_PREFIX, RERAISE_WINDOW_MS, RESTART_WINDOW_MS, alarmStep, coordinatorLimitAlert, detectAlarms, uncountedCycles } from "../src/core/alarms.js";
-import { usd } from "../src/core/commands.js";
+import { usd } from "../src/core/spend.js";
 import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "../src/core/config.js";
 import { type ControllerDeps } from "../src/core/controller-deps.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";

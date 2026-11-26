@@ -252,11 +252,15 @@ describe("a local resolve command at the controller", () => {
 });
 
 describe("a bare approve <usd> or reject answers the coordinator limit question (design 06-spend)", () => {
-  const raise = (store: Awaited<ReturnType<typeof setup>>["store"]) =>
-{
-    const { alert, dedupe_ms } = coordinatorLimitAlert({ day: "2026-01-01", limit_usd: 5, spent_usd: 6, unknown: 0 });
-    return store.recordAlert(alert, dedupe_ms);
-  };
+  /** setup() with a clock on 2026-01-01, and that day's limit question raised. */
+  async function open(day = "2026-01-01") {
+    const f = await setup();
+    const { alert, dedupe_ms } = coordinatorLimitAlert({ day, limit_usd: 5, spent_usd: 6, unknown: 0 });
+    await f.store.recordAlert(alert, dedupe_ms);
+    const d = { ...f.d, clock: new FakeClock() };
+    return { ...f, run: (a: Parameters<typeof runLocalCli>[1]) => runLocalCli(d, a), as: (user: string) => (a: Parameters<typeof runLocalCli>[1]) => runLocalCli({ ...d, identity: { user: user as UserId, from: "git user.email" } }, a) };
+  }
+  const limitRows = async (store: Awaited<ReturnType<typeof setup>>["store"]) => (await store.listCliCommandsAfter(0, 100)).filter((c) => "coordinator_limit" in c.args);
 
   it("parses `approve 10` as the common approve with a value; any other word stays the item command", () => {
     expect(parseLocalCliArgs("approve", ["10"])).toEqual({ action: "settle", command: "approve", value: "10" });
@@ -264,25 +268,30 @@ describe("a bare approve <usd> or reject answers the coordinator limit question 
     expect(parseLocalCliArgs("approve", ["wi_a"])).not.toMatchObject({ action: "settle" });
   });
 
-  it("approve 10 sets spend.coordinator_daily_usd and answers the question; reject sets nothing", async () => {
-    const { store, run } = await setup();
-    await raise(store);
-    expect(await run({ action: "settle", command: "approve", value: "10" })).toMatchObject({ code: 0, lines: [expect.stringContaining("spend.coordinator_daily_usd is now $10.00")] });
-    expect((await store.listSettingOverrides()).find((o) => o.key === "spend.coordinator_daily_usd")).toMatchObject({ value: "10", set_by: USER });
-    expect((await store.listAlerts({ limit: 10 })).find((a) => a.pattern === "coordinator_limit")!.dismissed_at).toBeDefined();
+  it("approve 10 and reject each store one command naming today's question, for the controller to apply", async () => {
+    const { store, run } = await open();
+    expect(await run({ action: "settle", command: "approve", value: "10" })).toMatchObject({ code: 0, lines: [expect.stringContaining("sets spend.coordinator_daily_usd to $10.00")] });
+    expect((await limitRows(store)).map((c) => [c.command, c.args])).toEqual([["approve", { coordinator_limit: "coordinator_limit:2026-01-01", text: "10" }]]);
+    // The CLI writes no setting itself: the controller does.
+    expect((await store.listSettingOverrides()).find((o) => o.key === "spend.coordinator_daily_usd")).toBeUndefined();
 
-    const other = await setup();
-    await raise(other.store);
+    const other = await open();
     expect(await other.run({ action: "settle", command: "reject" })).toMatchObject({ code: 0, lines: [expect.stringContaining("stay stopped until the UTC day ends")] });
-    expect((await other.store.listSettingOverrides()).find((o) => o.key === "spend.coordinator_daily_usd")).toBeUndefined();
+    expect((await limitRows(other.store)).map((c) => [c.command, c.args])).toEqual([["reject", { coordinator_limit: "coordinator_limit:2026-01-01" }]]);
   });
 
   it("a bare approve with no amount is refused while the question is open, and another person cannot answer", async () => {
-    const { store, run, as } = await setup();
-    await raise(store);
+    const { store, run, as } = await open();
     expect(await run({ action: "settle", command: "approve" })).toMatchObject({ code: 1, lines: [expect.stringContaining("positive dollar amount")] });
     await run({ action: "create", title: "claims the owner", bodyFile: "b" });
-    expect((await as("local:someone-else")({ action: "settle", command: "approve", value: "10" })).code).toBe(1);
-    expect((await store.listSettingOverrides()).find((o) => o.key === "spend.coordinator_daily_usd")).toBeUndefined();
+    expect(await as("local:someone-else")({ action: "settle", command: "approve", value: "10" })).toMatchObject({ code: 1, lines: [expect.stringContaining("only the owner")] });
+    expect(await limitRows(store)).toEqual([]);
+  });
+
+  it("an earlier day's open question takes no answer: a bare approve or reject keeps its held-skill-version meaning", async () => {
+    const { store, run } = await open("2025-12-31");
+    expect((await run({ action: "settle", command: "reject" })).lines.join("\n")).not.toContain("coordinator");
+    expect((await run({ action: "settle", command: "approve" })).lines.join("\n")).not.toContain("positive dollar amount");
+    expect(await limitRows(store)).toEqual([]);
   });
 });
