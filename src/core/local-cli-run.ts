@@ -17,8 +17,6 @@ import { type CliAction as ParsedAction, parseLocalCliArgs } from "./local-cli-p
  * the open coordinator limit question, else settles the newest held skill version (parseLocalCliArgs in local-cli.ts).
  */
 export type CliAction = ParsedAction | { action: "settle"; command: "approve" | "reject"; value?: string };
-/** A dollar amount as `approve <usd>` takes it (10, 12.50, $10). */
-export const USD = /^\$?\d+(\.\d+)?$/;
 /** `task create`'s last line: what happens to the new item next. */ export const CREATE_NEXT_STEP = "triage queued; you'll be asked to approve the spec";
 const UI_PORT = 4310; // `ui.port` unset: compose.ts DEFAULT_UI_PORT, which core cannot import
 

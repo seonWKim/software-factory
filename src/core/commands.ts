@@ -3,9 +3,9 @@ import { LOCAL_SOURCE } from "./local-merge.js";
 import { type TriageOutput, parseTriage } from "./outputs.js";
 import { type ItemPhase, isClosedPhase, phaseOf } from "./phase.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, SESSION_RELEASED, blockingRunKind } from "./policy.js";
-import { SCHEDULE_CHECKPOINT } from "./schedule.js"; import type { Run, RunKind, WorkItem } from "./types.js";
+import { SCHEDULE_CHECKPOINT } from "./schedule.js"; import type { Run, RunKind, UserId, WorkItem } from "./types.js"; import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
 import { MERGE_CHECK_HELP_LINE, awaitingSpec } from "./request-transition.js";
-export * from "./request-transition.js"; export { settleHeldSkillVersion } from "./skill-eval-gate.js"; export { answerCoordinatorLimit } from "./alarms.js"; export { AT_TRIAGE, type Attachment, addedContext, attachmentLine } from "./attachments.js"; // the gates' shared checks (design 04-gate-commands); added context and attachments, for triage (02-attachments)
+export * from "./request-transition.js"; export { settleHeldSkillVersion } from "./skill-eval-gate.js"; export { AT_TRIAGE, type Attachment, addedContext, attachmentLine } from "./attachments.js"; // the gates' shared checks (design 04-gate-commands); added context and attachments, for triage (02-attachments)
 
 /**
  * The human commands on a work item (design §4): one table of names, usage, descriptions and the states
@@ -596,4 +596,42 @@ export function latestSpec(runs: readonly Run[]): TriageOutput | null {
   if (run?.outcome?.status !== "succeeded") return null;
   const parsed = parseTriage(run.outcome.data.spec);
   return parsed.ok ? parsed.value : null;
+}
+
+/** The setting the coordinator limit question sets (design 06-spend). */
+export const COORDINATOR_LIMIT_KEY = "spend.coordinator_daily_usd";
+/** A dollar amount as `approve <usd>` takes it on the coordinator limit question (10, 12.50, $10). */
+export const COORDINATOR_USD = /^\$?\d+(\.\d+)?$/;
+/** The newest alerts read to find the open coordinator limit question, as many as the alarm step reads. */
+const ALERTS_SCAN = 100;
+
+/** What an answer to the coordinator limit question did: refused (why), or answered (the limit set, null on reject). */
+export type CoordinatorLimitAnswer = { alert: Alert; refused: string } | { alert: Alert; set_usd: number | null };
+
+/**
+ * A bare `/approve <usd>` or `/reject` on the open coordinator limit question (design 06-spend), the common commands
+ * (no limit-specific one), which the local CLI's bare approve and reject call first; the question is coordinatorLimitQuestion
+ * in alarms.ts, whose module this one cannot import (alarms → improver → standing → commands). Null when no question is open (the newest
+ * `coordinator_limit` alert is answered, or there is none): the caller keeps its other meanings. Only the owner
+ * (`isOwner`) answers. `/approve` needs a positive dollar amount, sets `spend.coordinator_daily_usd` to it through the
+ * settings path (one audit row, as `factory settings set`), so cycles run again once today's spend is below it;
+ * `/reject` changes no setting, so cycles stay stopped until the UTC day ends. Either answer dismisses the alert by
+ * `by`, so the answer stays on the alert and the question leaves Needs you.
+ */
+export async function answerCoordinatorLimit(
+  store: Pick<FactoryStore, "listAlerts" | "dismissAlert" | "setSettingOverride">,
+  a: { command: "approve" | "reject"; value: string | null; by: UserId; isOwner: () => Promise<boolean> },
+): Promise<CoordinatorLimitAnswer | null> {
+  const [alert] = (await store.listAlerts({ limit: ALERTS_SCAN })).filter((x) => x.pattern === "coordinator_limit");
+  if (!alert || (alert.dismissed_at !== undefined && alert.dismissed_at >= alert.created_at)) return null;
+  let set_usd: number | null = null;
+  if (a.command === "approve") {
+    const amount = a.value === null ? NaN : COORDINATOR_USD.test(a.value) ? Number(a.value.replace(/^\$/, "")) : NaN;
+    if (!(amount > 0)) return { alert, refused: `approve needs the new ${COORDINATOR_LIMIT_KEY} as a positive dollar amount, such as approve 10; ${a.value === null ? "none was given" : `${a.value} is not one`}` };
+    set_usd = amount;
+  }
+  if (!(await a.isOwner())) return { alert, refused: `only the owner answers the coordinator limit question; you are ${a.by}` };
+  if (set_usd !== null) await store.setSettingOverride({ key: COORDINATOR_LIMIT_KEY, project: "", value: JSON.stringify(set_usd), actor: a.by });
+  await store.dismissAlert(alert.id, a.by);
+  return { alert, set_usd };
 }

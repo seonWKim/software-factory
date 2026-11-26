@@ -28,7 +28,8 @@ export {
 export { type SentenceDeps, parseSentence, runSentence } from "./local-cli-sentence.js";
 
 import { parseLocalCliArgs as parseArgs } from "./local-cli-parse.js";
-import { type CliAction, USD } from "./local-cli-run.js";
+import type { CliAction } from "./local-cli-run.js";
+import { COORDINATOR_USD } from "./commands.js";
 
 /**
  * The action, or an error line (parseArgs in local-cli-parse.ts). A bare `approve` or `reject`, with no work item ID,
@@ -38,6 +39,6 @@ import { type CliAction, USD } from "./local-cli-run.js";
  */
 export function parseLocalCliArgs(word: string, args: readonly string[]): CliAction | { error: string } {
   if ((word === "approve" || word === "reject") && args.length === 0) return { action: "settle", command: word };
-  if (word === "approve" && args.length === 1 && USD.test(args[0]!)) return { action: "settle", command: word, value: args[0]! };
+  if (word === "approve" && args.length === 1 && COORDINATOR_USD.test(args[0]!)) return { action: "settle", command: word, value: args[0]! };
   return parseArgs(word, args);
 }

@@ -15,6 +15,7 @@
 // dismissed spend threshold does not alert again in its period. No forge, LLM or sandbox call; every text is scanned
 // first.
 
+import { COORDINATOR_LIMIT_KEY } from "./commands.js";
 import { groupFailures, normalizeDetail, patternKey, sleptRuns } from "./improver.js";
 import type { Logger } from "./log.js";
 import { AGENT_STALLED, INTERACTIVE, MODEL_STALL, SESSION_ABANDONED } from "./policy.js";
@@ -527,8 +528,6 @@ export interface CoordinatorLimit {
   unknown: number;
 }
 
-/** The setting the coordinator limit question sets. */
-export const COORDINATOR_LIMIT_KEY = "spend.coordinator_daily_usd";
 /** The coordinator limit question's pattern key: one per UTC day. */
 export const coordinatorLimitKey = (day: string): string => `coordinator_limit:${day}`;
 /** The limit the question proposes: twice the current one. */
@@ -541,7 +540,7 @@ const typed = (n: number): string => (Number.isInteger(n) ? String(n) : n.toFixe
  * The coordinator limit's owner question (design 06-spend): one Needs-you alert, pattern `coordinator_limit`, key
  * `coordinator_limit:<UTC day>`, with the current and the proposed limit, its text scanned as UI text first. One per
  * UTC day: a day whose key is stored already (open or answered) stores nothing, so an answer never brings a second
- * question that day. Returns the stored alert, or null.
+ * question that day. The answer is answerCoordinatorLimit in commands.ts. Returns the stored alert, or null.
  */
 export async function coordinatorLimitQuestion(d: Pick<AlarmDeps, "store" | "scanner" | "log">, q: CoordinatorLimit): Promise<Alert | null> {
   const pattern_key = coordinatorLimitKey(q.day);
@@ -555,34 +554,4 @@ export async function coordinatorLimitQuestion(d: Pick<AlarmDeps, "store" | "sca
   if (!r.created) return null;
   d.log.warn("alarm: the coordinator reached its daily limit", { alert_id: r.alert.id, day: q.day });
   return r.alert;
-}
-
-/** What an answer to the coordinator limit question did: refused (why), or answered (the limit set, null on reject). */
-export type CoordinatorLimitAnswer = { alert: Alert; refused: string } | { alert: Alert; set_usd: number | null };
-
-/**
- * A bare `/approve <usd>` or `/reject` on the open coordinator limit question (design 06-spend), the common commands
- * (no limit-specific one); a shared command, re-exported by commands.ts. Null when no question is open (the newest
- * `coordinator_limit` alert is answered, or there is none): the caller keeps its other meanings. Only the owner
- * (`isOwner`) answers. `/approve` needs a positive dollar amount, sets `spend.coordinator_daily_usd` to it through the
- * settings path (one audit row, as `factory settings set`), so cycles run again once today's spend is below it;
- * `/reject` changes no setting, so cycles stay stopped until the UTC day ends. Either answer dismisses the alert by
- * `by`, so the answer stays on the alert and the question leaves Needs you.
- */
-export async function answerCoordinatorLimit(
-  store: Pick<FactoryStore, "listAlerts" | "dismissAlert" | "setSettingOverride">,
-  a: { command: "approve" | "reject"; value: string | null; by: UserId; isOwner: () => Promise<boolean> },
-): Promise<CoordinatorLimitAnswer | null> {
-  const [alert] = (await store.listAlerts({ limit: ALERTS_READ })).filter((x) => x.pattern === "coordinator_limit");
-  if (!alert || (alert.dismissed_at !== undefined && alert.dismissed_at >= alert.created_at)) return null;
-  let set_usd: number | null = null;
-  if (a.command === "approve") {
-    const amount = a.value === null ? NaN : /^\$?\d+(\.\d+)?$/.test(a.value) ? Number(a.value.replace(/^\$/, "")) : NaN;
-    if (!(amount > 0)) return { alert, refused: `approve needs the new ${COORDINATOR_LIMIT_KEY} as a positive dollar amount, such as approve 10; ${a.value === null ? "none was given" : `${a.value} is not one`}` };
-    set_usd = amount;
-  }
-  if (!(await a.isOwner())) return { alert, refused: `only the owner answers the coordinator limit question; you are ${a.by}` };
-  if (set_usd !== null) await store.setSettingOverride({ key: COORDINATOR_LIMIT_KEY, project: "", value: JSON.stringify(set_usd), actor: a.by });
-  await store.dismissAlert(alert.id, a.by);
-  return { alert, set_usd };
 }

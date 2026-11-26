@@ -3,7 +3,8 @@
 // that question. The agent is a scripted double with a cost, the clock a FakeClock: no live model.
 
 import { describe, expect, it } from "vitest";
-import { answerCoordinatorLimit, coordinatorLimitKey } from "../src/core/alarms.js";
+import { coordinatorLimitKey } from "../src/core/alarms.js";
+import { answerCoordinatorLimit } from "../src/core/commands.js";
 import type { CoordinatorPorts } from "../src/core/controller-deps.js";
 import { COORDINATOR_LEASE, CYCLE, CYCLE_MS, Coordinator, type CoordinatorAgent, NOTHING_TO_DO, type TickResult } from "../src/coordinator/cycle.js";
 import { CoordinatorStore } from "../src/coordinator/store.js";
