@@ -9,6 +9,7 @@ import { REGISTRY } from "../src/api/index.js";
 import { isFeatureMapPath } from "../src/api/feature-map.js";
 import { type Declared, type Registry, buildRegistry, declare, registryReads, registryWrites } from "../src/api/registry.js";
 import { object, string } from "../src/api/schema.js";
+import { ITEM_ROW } from "../src/api/schemas/items.js";
 
 const REPO = join(import.meta.dirname, "..");
 const read = (p: string) => readFileSync(join(REPO, p), "utf8");
@@ -97,6 +98,13 @@ describe("the schedules and items routes", () => {
       expect(registryWrites(REGISTRY, path), path).toBe(true);
     }
     expect(REGISTRY.capabilities.map((c) => c.id)).toEqual(expect.arrayContaining(["items.list", "schedules.list", "schedules.runs", "schedules.suggestions"]));
+  });
+
+  it("type the items list's tier as an integer or null", () => {
+    const tier = ITEM_ROW.fields.tier!;
+    expect(tier.parse(2)).toMatchObject({ ok: true });
+    expect(tier.parse(null)).toMatchObject({ ok: true });
+    expect(tier.parse("2")).toMatchObject({ ok: false });
   });
 
   it("have no hand-wired entry left in read-routes.ts, write-routes-owner.ts or api.ts", () => {
