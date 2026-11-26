@@ -45,6 +45,7 @@ export function alarmText(a: Alert): string {
   if (a.pattern === "red_main") return `Alarm: the base branch fails its checks on its own at \`${redMainSha(a).slice(0, 12)}\`; merge-queue changes wait until it moves`;
   if (a.pattern === "skill_draft_limit") return `Alarm: a skill draft limit was reached (${a.error_code} is ${a.count})`;
   if (a.pattern === "skill_version_gate") return `Alarm: version ${a.count} of a skill is held: its eval pass rate fell`;
+  if (a.pattern === "coordinator_limit") return "Alarm: the coordinator reached its daily spend limit; its cycles are stopped until you answer or the UTC day ends";
   if (a.pattern === "ci_rerun_failed") return "Alarm: an item's cancelled CI jobs could not be rerun; it waits on its checks with no loop counted";
   return `Alarm: the factory restarted ${a.count} times in ${RESTART_WINDOW_MS / 60_000} minutes`;
 }
@@ -163,6 +164,7 @@ export function alarmCommand(a: Alert): string {
   if (a.pattern === "red_main") return `Fix the base branch at ${redMainSha(a)} (a fix item is filed for it); queued changes are checked again once it moves`;
   if (a.pattern === "dead_letter") return `bus_${deadLetterTopic(a).replace(/\./g, "_")}_dead_letters (replay once the cause is fixed)`;
   if (a.pattern === "skill_draft_limit") return `${a.error_code} in factory.config.json`;
+  if (a.pattern === "coordinator_limit") return "factory approve <usd> (sets spend.coordinator_daily_usd and resumes cycles) or factory reject (cycles stay stopped until the UTC day ends)";
   if (a.pattern === "ci_rerun_failed") return "Rerun the cancelled jobs on the PR's checks, or push a new commit; the factory reads the checks again each checks step";
   if (a.pattern === "skill_version_gate") return "Use this version or Keep the current version on the alarm or the skill's Evals page, or factory approve (the newest held version becomes current) or factory reject (the version current before it stays current); factory eval compare shows the held version's gate run against the current version's run";
   return "factory doctor";
@@ -182,8 +184,8 @@ export function alarmsFor(open: readonly Alert[], it: WorkItem, runs: readonly R
     if (a.pattern === "child_restarts") return active;
     // A cancelled-jobs rerun that failed names its item in its key (design 05-ci-gate, Cancelled checks).
     if (a.pattern === "ci_rerun_failed") return a.pattern_key.startsWith(`ci_rerun_failed:${it.id}:`);
-    // A stop of auto mode, a dead letter, a spend alert, red main, a skill draft limit or a held skill version holds up no run of the item: Needs you shows the alarm.
-    if (a.pattern === "auto_stopped" || a.pattern === "dead_letter" || a.pattern === "spend_budget" || a.pattern === "red_main" || a.pattern === "skill_draft_limit" || a.pattern === "skill_version_gate") return false;
+    // A stop of auto mode, a dead letter, a spend alert, red main, a skill draft limit, a held skill version or the coordinator limit holds up no run of the item: Needs you shows the alarm.
+    if (a.pattern === "auto_stopped" || a.pattern === "dead_letter" || a.pattern === "spend_budget" || a.pattern === "red_main" || a.pattern === "skill_draft_limit" || a.pattern === "skill_version_gate" || a.pattern === "coordinator_limit") return false;
     if (last === null || Date.parse(last.finished_at!) < Date.parse(a.created_at) - ALERT_DEDUPE_MS) return false;
     if (a.pattern === "repeated_error") return last.outcome?.status === "failed" && last.outcome.error_code === a.error_code;
     return (MODEL_RUN_KINDS as readonly string[]).includes(last.kind) && runTokenCount(last) === 0;

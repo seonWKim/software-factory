@@ -1,6 +1,7 @@
 // The coordinator's two tables (design 05-coordinator), over the store's SQL database: the due time of the next cycle
-// (`controller_coordinator_due`, one row named `coordinator`) and the action records (`controller_coordinator_actions`).
-// Every write is conditional or keyed, so a second replica or a rerun changes nothing the first did.
+// (`controller_coordinator_due`, one row named `coordinator`) and the action records (`controller_coordinator_actions`),
+// and its spend rows: kind `coordinator` in `controller_chat_spend` (design 06-spend), one per cycle that called the
+// agent. Every write is conditional or keyed, so a second replica or a rerun changes nothing the first did.
 
 import type { WorkItemId } from "../core/types.js";
 import type { SqlExecutor } from "../state/index.js";
@@ -25,6 +26,24 @@ export interface CoordinatorAction {
 }
 
 export type StoredAction = CoordinatorAction & { recorded_at: string };
+
+/** The session every coordinator spend row names: the cycles share one, as a chat's turns share theirs. */
+export const SPEND_SESSION = "coordinator";
+
+/** One cycle's spend: its UTC day, its cost (null: the runner reported none) and its tokens. */
+export interface CycleSpend {
+  cycle_id: string;
+  day: string;
+  cost_usd: number | null;
+  tokens: number;
+}
+
+/** A UTC day's coordinator spend: the known cost, the cycles counted, and those of them with no known cost. */
+export interface DaySpend {
+  cost_usd: number;
+  cycles: number;
+  unknown: number;
+}
 
 export class CoordinatorStore {
   constructor(private readonly db: SqlExecutor) {}
@@ -63,5 +82,25 @@ export class CoordinatorStore {
       command: String(r.command), outcome: String(r.outcome) as ActionOutcome, reason: String(r.reason),
       transcript_link: r.transcript_link === null ? null : String(r.transcript_link), recorded_at: String(r.recorded_at),
     }));
+  }
+
+  /**
+   * Stores cycle `s.cycle_id`'s spend row: kind `coordinator`, `turn_id` the cycle id, session `coordinator`. Keyed on
+   * the cycle id, so a rerun stores nothing more; false when it was stored already.
+   */
+  async recordSpend(s: CycleSpend, now: string): Promise<boolean> {
+    const n = await this.db.run(
+      `INSERT INTO controller_chat_spend (turn_id, session_id, day, cost_usd, tokens, created_at, kind) VALUES (?, ?, ?, ?, ?, ?, 'coordinator')
+       ON CONFLICT (turn_id) DO NOTHING`,
+      [s.cycle_id, SPEND_SESSION, s.day, s.cost_usd, s.tokens, now],
+    );
+    return n === 1;
+  }
+
+  /** The coordinator spend of UTC day `day`: only known costs add up; a row with no cost is counted under `unknown`. */
+  async spendOn(day: string): Promise<DaySpend> {
+    const rows = await this.db.all("SELECT cost_usd FROM controller_chat_spend WHERE kind = 'coordinator' AND day = ?", [day]);
+    const known = rows.filter((r) => r.cost_usd != null).map((r) => Number(r.cost_usd));
+    return { cost_usd: known.reduce((a, b) => a + b, 0), cycles: rows.length, unknown: rows.length - known.length };
   }
 }

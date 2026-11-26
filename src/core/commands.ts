@@ -5,7 +5,7 @@ import { type ItemPhase, isClosedPhase, phaseOf } from "./phase.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, SESSION_RELEASED, blockingRunKind } from "./policy.js";
 import { SCHEDULE_CHECKPOINT } from "./schedule.js"; import type { Run, RunKind, WorkItem } from "./types.js";
 import { MERGE_CHECK_HELP_LINE, awaitingSpec } from "./request-transition.js";
-export * from "./request-transition.js"; export { settleHeldSkillVersion } from "./skill-eval-gate.js"; export { AT_TRIAGE, type Attachment, addedContext, attachmentLine } from "./attachments.js"; // the gates' shared checks (design 04-gate-commands); added context and attachments, for triage (02-attachments)
+export * from "./request-transition.js"; export { settleHeldSkillVersion } from "./skill-eval-gate.js"; export { answerCoordinatorLimit } from "./alarms.js"; export { AT_TRIAGE, type Attachment, addedContext, attachmentLine } from "./attachments.js"; // the gates' shared checks (design 04-gate-commands); added context and attachments, for triage (02-attachments)
 
 /**
  * The human commands on a work item (design §4): one table of names, usage, descriptions and the states
