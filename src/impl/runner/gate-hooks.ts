@@ -12,7 +12,7 @@
 import { appendFile, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import type { Socket } from "node:net";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { commandText, runChecks, selectedChecks } from "../../core/checks.js";
+import { commandText, ranEntry, runChecks, selectedChecks } from "../../core/checks.js";
 import { diffStat, overSizeLimit, sizeDetail } from "../../core/diff-gate.js";
 import { isCovered } from "../../core/policy.js";
 import { NO_COMMITS_DETAIL, TRUSTED_GIT_ENV, fenced, runCommits } from "../../worker/index.js";
@@ -275,9 +275,9 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
       sandbox: o.sandbox, handle: o.spec.sandbox, commands, env: { ...g.check_env }, timeout_ms: limitMs, signal: sig, redact: [],
     });
     // Aborted: the check running is the failed one (it threw) or the one after the last that finished.
-    at(commandText(round.failed?.command ?? commands[round.results.length] ?? []));
+    at(commandText(round.failed ? ranEntry(round.failed) : commands[round.results.length] ?? []));
     if (!round.failed || sig.aborted) return null;
-    const cmd = commandText(round.failed.command);
+    const cmd = commandText(ranEntry(round.failed));
     return stopBlock(cmd, [
       `the check \`${cmd}\` failed (${round.failed.how}); the factory runs it before push. Fix the cause, run \`${cmd}\` yourself, commit the fix, then finish.`,
       "",
