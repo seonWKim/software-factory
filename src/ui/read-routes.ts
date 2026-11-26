@@ -33,11 +33,14 @@ import { SCREENSHOT_PATH, readScreenshot } from "./item-screenshots.js";
 import { EVALS_LIST_PATH, EVALS_PATH, readEvalSuites, readSkillEvals, skillOf } from "./evals-api.js";
 import { changesPathId, readItemChanges } from "./changes.js";
 import { SCHEDULES_PATH, SCHEDULE_RUNS_PATH, SCHEDULE_SUGGESTIONS_PATH, readScheduleRuns, readScheduleSuggestions, readSchedules } from "./schedules-api.js";
+import { registryOf } from "../api/index.js";
+import { registryRead, registryReads } from "../api/registry.js";
+import { Withholder } from "./withhold.js";
 import type { ServerDeps, UiRequest } from "./server.js";
 
-/** One GET (or HEAD) route under /api/v1: its path (or a pattern over it) and its read. */
+/** One GET (or HEAD) route under /api/v1: its path (or a pattern over it, or a test of it) and its read. */
 interface ReadRoute {
-  path: string | RegExp;
+  path: string | RegExp | ((d: ServerDeps, path: string) => boolean);
   run(d: ServerDeps, url: URL, req: UiRequest): ApiResult | Promise<ApiResult>;
 }
 
@@ -69,11 +72,16 @@ const READ_ROUTES: readonly ReadRoute[] = [
   { path: SCHEDULES_PATH, run: (d) => readSchedules(d) },
   { path: SCHEDULE_RUNS_PATH, run: (d, u) => readScheduleRuns(d, u.searchParams.get("schedule")) },
   { path: SCHEDULE_SUGGESTIONS_PATH, run: (d, u) => readScheduleSuggestions(d, u.searchParams.get("schedule")) },
+  // After every route above, before api.ts's paths: a capability declares a new path, or one whose route it replaces.
+  { path: (d, p) => registryReads(registryOf(d), p), run: (d, u) => registryRead(registryOf(d), d, u, new Withholder(d.scanner)) },
 ];
+
+const matches = (r: ReadRoute, d: ServerDeps, path: string): boolean =>
+  typeof r.path === "string" ? r.path === path : r.path instanceof RegExp ? r.path.test(path) : r.path(d, path);
 
 /** Answers one GET (or HEAD) under /api/v1 on its parsed URL. */
 export async function readApi(d: ServerDeps, url: URL, req: UiRequest): Promise<ApiResult> {
-  const route = READ_ROUTES.find((r) => (typeof r.path === "string" ? r.path === url.pathname : r.path.test(url.pathname)));
+  const route = READ_ROUTES.find((r) => matches(r, d, url.pathname));
   if (route) return route.run(d, url, req);
   const changesId = changesPathId(url.pathname);
   return changesId !== null ? readItemChanges(d, changesId, url.searchParams.get("path")) : api(d, url);
