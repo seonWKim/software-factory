@@ -40,6 +40,8 @@ export interface RunInput {
 export interface PrCheckResult {
   name: string;
   result: "passed" | "failed" | "pending";
+  /** A failed check that was cancelled or timed out (design 05-ci-gate, Cancelled checks): not a code failure. */
+  cancelled?: true;
 }
 
 /** An interactive run's scanned notes and last finish. Its person, transcript URL and token total are run columns. */

@@ -49,9 +49,12 @@ jobs:
   # The dashboard at five window sizes, light and dark (docs/design/09-dashboard-app.md, Responsive check): a local
   # development check, so it is not in repo.check_commands (the factory's sandbox has no browser) and its step is
   # written as name + run, which tests/check-commands.test.ts does not count. ubuntu-latest has google-chrome.
+  # The WebKit install normally takes under a minute; once it hung until the job's limit and the run ended
+  # `cancelled` (docs/design/05-ci-gate.md, Cancelled checks). It has its own limit, and the browser download is
+  # cached per playwright-core version, so a hang fails that step fast and most runs fetch only the system libraries.
   responsive:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -59,8 +62,17 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: playwright-core version
+        id: playwright
+        run: echo "version=$(node -p "JSON.parse(require('fs').readFileSync('node_modules/playwright-core/package.json', 'utf8')).version")" >> "$GITHUB_OUTPUT"
+      - name: Cache of the WebKit browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-webkit-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       # The check's WebKit pass (scripts/responsive/webkit.mjs) needs playwright-core's WebKit and its system libraries.
       - name: WebKit for the responsive check
+        timeout-minutes: 5
         run: npx playwright-core install --with-deps webkit
       - name: npm run check:responsive
         run: npm run check:responsive
