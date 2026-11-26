@@ -9,8 +9,7 @@ import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TI
 import { usdBudget } from "./spend.js"; import { fewOrdinaryPaths, testPathsOnly } from "./auto-grant.js";
 import type { RunId, RunKind, Tier, Timestamp } from "./types.js";
 import type { SettingOverride } from "../interfaces/factory-store.js";
-import maxRestart from "../controller/settings/max-restart.setting.js"; import retryBase from "../controller/settings/retry-base-ms.setting.js"; import retryMax from "../controller/settings/retry-max-ms.setting.js";
-import summaryMorning from "../controller/settings/summary-morning-time.setting.js"; import summaryEvening from "../controller/settings/summary-evening-time.setting.js";
+import maxRestart from "../controller/settings/max-restart.setting.js"; import retryBase from "../controller/settings/retry-base-ms.setting.js"; import retryMax from "../controller/settings/retry-max-ms.setting.js"; import summaryMorning from "../controller/settings/summary-morning-time.setting.js"; import summaryEvening from "../controller/settings/summary-evening-time.setting.js";
 import lease from "../worker/settings/lease-ms.setting.js"; import runTimeout from "../worker/settings/run-timeout-ms.setting.js"; import { AGENT_STOP_CHECK_MS_DEFAULT } from "./config.js";
 
 // Per-project settings in layers (design 2026-11-01, "Settings resolve in layers"). Pure: the parse and
@@ -464,8 +463,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "message_style":
       return parseMessageStyle(value) as SettableValues[K];
     case "notice_kinds": return parseNoticeKinds(value) as SettableValues[K];
-    case "quiet_hours": return quietHoursSetting(value) as SettableValues[K]; case "review_time": if (value === "" || (typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value))) return value as SettableValues[K]; throw new Error('review_time must be "HH:MM" (24-hour, local time, 00:00 to 23:59), or "" to turn holding off'); // design 09-status-page
-    case "summary_morning_time": case "summary_evening_time": if (typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value)) return value as SettableValues[K]; throw new Error(`${key} must be "HH:MM" (24-hour, local time, 00:00 to 23:59)`); // design 08-schedules-actions
+    case "quiet_hours": return quietHoursSetting(value) as SettableValues[K]; case "review_time": case "summary_morning_time": case "summary_evening_time": if ((value === "" && key === "review_time") || (typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value))) return value as SettableValues[K]; throw new Error(`${key} must be "HH:MM" (24-hour, local time, 00:00 to 23:59)${key === "review_time" ? ', or "" to turn holding off' : ""}`); // design 09-status-page, 08-schedules-actions
     case "notify_channels": return parseNotifyChannels(value) as SettableValues[K];
     case "integrations": return integrationEntries(value) as SettableValues[K]; case "tool_grants": return toolGrantsShape(value) as SettableValues[K];
     case "calendar": case "test_globs": try { return parseNotifyChannels(value) as SettableValues[K]; } catch { throw new Error(`${key} must be a list of distinct ${key === "calendar" ? "calendar plugin names" : "globs"}, or [] for none`); } // the same list check

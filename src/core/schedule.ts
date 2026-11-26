@@ -30,14 +30,11 @@ export type MissedRule = "catch_up" | "skip";
 
 /**
  * What a fired occurrence does: file one work item, run one read-only agent, file the feedback agent's tasks, queue
- * the daily improve run of its slot's UTC day, queue a routine run (Check a page, planned by planRoutine in
- * src/core/check-page.ts), or post the owner's summary of the day (src/core/summary.ts). Stored and routed;
- * `factory schedule add` and `edit` (and the HTTP routes) write every kind but `improve` and `summary`, which setup
- * adds (SETUP_ONLY_KINDS); they name `check_page` `check-page` (SCHEDULE_WRITE_WORDS).
- */
+ * the daily improve run of its slot's UTC day, queue a routine run (Check a page, src/core/check-page.ts), or post the
+ * owner's summary (src/core/summary.ts). Stored and routed; schedule add and edit (and the HTTP routes) write every
+ * kind but those setup adds (SETUP_ONLY_KINDS), and name `check_page` `check-page` (SCHEDULE_WRITE_WORDS). */
 export type ScheduleActionKind = "build" | "agent" | "feedback" | "improve" | "check_page" | "summary";
 export const SCHEDULE_ACTION_KINDS: readonly ScheduleActionKind[] = ["build", "agent", "feedback", "improve", "check_page", "summary"];
-/** The kinds only setup adds, and what turns each on: schedule add and edit refuse them. */
 const SETUP_ONLY_KINDS: Readonly<Record<string, string>> = { improve: "improver.daily_trigger off", summary: "the owner's summary posts" };
 /** The action words `schedule add` and `schedule edit` accept (design 08-schedules), and the kind each stores. */
 const SCHEDULE_WRITE_WORDS: Readonly<Record<string, ScheduleActionKind>> = { build: "build", agent: "agent", feedback: "feedback", "check-page": "check_page", check_page: "check_page" };
