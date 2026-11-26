@@ -25,6 +25,7 @@
 
 import type { SettingsBase } from "../core/settings.js";
 import type * as Compare from "../core/skill-eval-compare.js";
+import type * as Stats from "../core/skill-eval-stats.js";
 import type { SkillEvalStore, SkillVersion } from "../interfaces/skill-eval-store.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { storeSql, storeSqlOrNull } from "../impl/store/sql/store-sql.js";
@@ -263,7 +264,7 @@ export async function skillVersionsOf(store: Pick<SkillEvalStore, "listSkillVers
 }
 
 /** src/core/skill-eval-compare.ts's version reads and evals-api.ts skillOf, passed in by the route table (read-routes.ts). */
-export type SkillVersionReads = Pick<typeof Compare, "skillVersionRows" | "unlinkedRuns" | "latestLinkedRun" | "lineDiff" | "caseResults"> & { skillOf: typeof skillOf };
+export type SkillVersionReads = Pick<typeof Compare, "skillVersionRows" | "unlinkedRuns" | "latestLinkedRun" | "lineDiff" | "caseResults"> & Pick<typeof Stats, "wilsonInterval"> & { skillOf: typeof skillOf };
 
 type VersionsDeps = { store: Pick<FactoryStore, "listSkillEvalRuns" | "listSkillEvalReplays" | "listSkillVersions" | "getSkillVersionGate">; scanner: ApiDeps["scanner"] };
 
@@ -284,7 +285,24 @@ export async function readSkillVersions(d: VersionsDeps, f: SkillVersionReads, u
   const versions = await skillVersionsOf(d.store, runs.map((r) => r.skill_version));
   const gated = await Promise.all(versions.map(async (v) => ({ ...v, gate: (await d.store.getSkillVersionGate(v.ref_id, v.version))?.state ?? null })));
   const rows = await Promise.all(f.skillVersionRows(gated, runs).map(async (r) => ({ ...r, folder_hash: await text(r.folder_hash), run_id: r.run_id === null ? null : await text(r.run_id) })));
-  if (read === "versions") return { status: 200, value: { versions: rows, unlinked: await Promise.all(f.unlinkedRuns(versions, runs).map((r) => text(r.id))) } };
+  if (read === "versions") {
+    // Per version, from its newest linked run's replays: the 95% interval of the pass rate, the cost, and each case's verdict.
+    const detail = async (hash: string) => {
+      const run = f.latestLinkedRun(runs, hash);
+      const replays = run ? await d.store.listSkillEvalReplays(run.id) : [];
+      const passes = replays.filter((r) => r.verdict === "pass").length;
+      const interval = f.wilsonInterval(passes, replays.length);
+      const costs = replays.map((r) => r.cost_usd).filter((c): c is number => typeof c === "number");
+      const cases = new Map<string, string>();
+      for (const r of replays) if (!cases.has(r.case_id)) cases.set(r.case_id, r.verdict);
+      return { interval, cost_usd: costs.length > 0 ? costs.reduce((a, b) => a + b, 0) : null, cases: [...cases].sort(([x], [y]) => x.localeCompare(y)) };
+    };
+    const full = await Promise.all(rows.map(async (r) => {
+      const x = await detail(versions.find((v) => v.version === r.version)!.folder_hash);
+      return { ...r, band: x.interval === null ? null : { low: x.interval.low, high: x.interval.high }, cost_usd: x.cost_usd, cases: await Promise.all(x.cases.map(async ([case_id, verdict]) => ({ case_id: await text(case_id), verdict: await text(verdict) }))) };
+    }));
+    return { status: 200, value: { versions: full, unlinked: await Promise.all(f.unlinkedRuns(versions, runs).map((r) => text(r.id))) } };
+  }
   const a = url.searchParams.get("a"), b = url.searchParams.get("b");
   if (!a || !b) return apiError(400, "Name both versions: ?a=<hash>&b=<hash>.");
   const va = versions.find((v) => v.folder_hash === a), vb = versions.find((v) => v.folder_hash === b);
