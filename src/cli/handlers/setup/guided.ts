@@ -8,8 +8,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type CliIdentity, type FactoryStore, type Loaded, Plugins, addSchedule, buildStatsStore, dailyTriggerOn, settingsBase } from "../../../compose.js";
-import type { Cadence } from "../../../core/schedule-cadence.js";
-import type { ScheduleActionSpec } from "../../../core/schedule.js";
 import { AUTO_MERGE_TIER_MAX, MODES, type Mode, resolveSettings } from "../../../core/settings.js";
 import { ProfileStore, checkDisplayName } from "../../../identity/index.js";
 import { storeSql } from "../../../impl/store/sql/store-sql.js";
@@ -342,12 +340,14 @@ const modeStep: SetupStep<GuidedState> = {
   },
 };
 
+type ScheduleInput = Parameters<typeof addSchedule>[1];
+
 /** A schedule only setup adds (design 08-schedules-actions): its ID, title, action and cadence. */
 export interface SetupSchedule {
   id: string;
   title: string;
-  action: ScheduleActionSpec;
-  cadence: Cadence;
+  action: NonNullable<ScheduleInput["action"]>;
+  cadence: ScheduleInput["cadence"];
   /** The cadence in words, for the line that says it was added. */
   when: string;
 }
