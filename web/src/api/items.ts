@@ -1,8 +1,10 @@
-// GET /api/v1/items (the list, useItems) and GET /api/v1/items/:id (one item), with the merge helpers the Merge button uses.
+// GET /api/v1/items (the list, useItems, through the generated itemsList; design 09-api-registry) and
+// GET /api/v1/items/:id (one item), with the merge helpers the Merge button uses.
 
 import { useQuery } from "@tanstack/react-query";
 import { t } from "../i18n/index.js";
-import { POLL_MS, getJson, postJson } from "./client.js";
+import { POLL_MS, postJson } from "./client.js";
+import { itemsList } from "./generated.js";
 import type { HostSleepRow } from "./health.js";
 import type { CommandReply, ItemCommand, ProposalView, ThreadEntry, WaitingSpec } from "./item-commands.js";
 import { API } from "./routes.js";
@@ -299,7 +301,8 @@ export interface ItemDetail {
 export function useItems(project: string | null) {
   return useQuery({
     queryKey: project === null ? [API.items] : [API.items, "project", project],
-    queryFn: () => getJson<Items>(API.itemsIn(project)),
+    // The schema types nested objects as JSON objects (owner answer 3): the page's Items type holds their fields.
+    queryFn: () => itemsList(project === null ? {} : { project }) as Promise<unknown> as Promise<Items>,
     refetchInterval: POLL_MS,
     refetchIntervalInBackground: false,
   });

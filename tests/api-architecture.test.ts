@@ -191,3 +191,32 @@ describe("the ratchet of unregistered /api/v1 paths", () => {
     expect(unregistered(fixture, ["const verb = (v: string) => `/api/v1/fixture/${v}`;"])).toEqual([]);
   });
 });
+
+describe("the schedules and items pages", () => {
+  const calls = (file: string) => [...(code(read(file)).match(/import\s*\{([^}]*)\}\s*from\s*"\.\/generated\.js"/)?.[1] ?? "").matchAll(/\w+/g)].map((m) => m[0]);
+
+  it("call the generated typed client: the schedule reads and writes and the items list", () => {
+    expect(calls("web/src/api/schedules.ts")).toEqual(expect.arrayContaining([
+      "schedulesList", "schedulesRuns", "schedulesSuggestions", "schedulesAdd", "schedulesEdit", "schedulesPause",
+      "schedulesResume", "schedulesRun", "schedulesDelete", "schedulesDraft", "schedulesImprove",
+    ]));
+    expect(calls("web/src/api/items.ts")).toContain("itemsList");
+  });
+
+  it("hold no /api/v1/ path string outside comments", () => {
+    for (const file of ["web/src/api/schedules.ts", "web/src/api/items.ts"]) expect(code(read(file)), file).not.toContain("/api/v1/");
+  });
+
+  it("leave no scheduleWrite route in routes.ts", () => {
+    expect(code(read("web/src/api/routes.ts"))).not.toMatch(/\bscheduleWrite\b/);
+  });
+});
+
+describe("the headless-first rule", () => {
+  const RULE = "Headless first: a feature is declared as an API capability first, and the dashboard, chat and CLI call that API. Page-only or CLI-only behaviour and hand-written routes count as gaps.";
+
+  it("is stated in prompts/triage.md, worded as the design topic file words it", () => {
+    expect(read("prompts/triage.md")).toContain(RULE);
+    expect(read("docs/design/09-api-registry.md")).toContain(RULE);
+  });
+});
