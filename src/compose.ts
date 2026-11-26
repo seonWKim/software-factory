@@ -302,7 +302,7 @@ export async function build(
     git_host: gitHost(stateDir, sel.store),
     settings, learned,
     // The worker pool's sandbox: the controller's local merge check fetches and checks through it (design §5).
-    sandbox, repo_entries: async (names) => (await Promise.all(names.map((n) => stat(join(config.repo.path, n)).then(() => [n], () => [])))).flat(), // the merge reply's run hint
+    sandbox, coordinator: (await import("./coordinator/wire.js")).coordinatorWiring({ store, clock, config, owner: `${hostname()}:${process.pid}`, codeRoot: loaded.codeRoot, runner, sandbox, scanner, storage, tools: READ_TOOLS, log: new ConsoleLogger(clock, "coordinator") }), repo_entries: async (names) => (await Promise.all(names.map((n) => stat(join(config.repo.path, n)).then(() => [n], () => [])))).flat(), // the merge reply's run hint
     // The alarm step's restart count (design 05-alarms): this host's supervisor status file.
     restarts: () => readRestarts(join(loaded.stateDir, SUPERVISOR_STATUS_FILE)),
     // This process's GitHub budget, stored after each poll for the status page (design §5, GitHub call budget).

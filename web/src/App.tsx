@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Search } from "lucide-react";
+import { MessageSquare, Search } from "lucide-react";
 import { type JSX, useEffect, useState } from "react";
 import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
 import { Brand } from "./components/ui/brand.js";
@@ -14,6 +14,7 @@ import { ShortcutsLink, SideLinks, pageLabel } from "./shell/sidebar.js";
 import { ModeChip } from "./shell/mode-chip.js";
 import { MoreMenu } from "./shell/more-menu.js";
 import { startTheme } from "./theme.js";
+import { ChatPanel } from "./views/chat-panel.js";
 import { DataPage } from "./views/data.js";
 import { EvalsPage, skillName } from "./views/evals.js";
 import { ActivityActorsPage, HealthPage, ItemPage, ItemsPage } from "./views/pages.js";
@@ -59,6 +60,7 @@ export function App() {
   useEffect(() => startTheme(), []);
   const [path, navigate] = useLocationPath();
   const [dialog, setDialog] = useState<"search" | "help" | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
   useShortcuts({ navigate, openSearch: () => setDialog("search"), openHelp: () => setDialog("help"), refresh: () => void client.invalidateQueries(), path });
   const route = routeFor(path);
   // An old page path (/app/queue) swaps itself for its new one in the address bar, keeping its query.
@@ -121,6 +123,11 @@ export function App() {
                 <Search aria-hidden className="size-4" />
               </Button>
             </Tooltip>
+            <Tooltip text={t("chat.open")} placement="bottom" align="end" className="shrink-0">
+              <Button variant="ghost" size="icon" aria-label={t("chat.open")} aria-pressed={chatOpen} onClick={() => setChatOpen((o) => !o)}>
+                <MessageSquare aria-hidden className="size-4" />
+              </Button>
+            </Tooltip>
             {/* Refresh is for the pages that do not poll (Data, Plugins); Appearance picks the theme in place, as Settings does. */}
             <MoreMenu />
           </header>
@@ -142,6 +149,8 @@ export function App() {
             )}
           </main>
         </div>
+        {/* Beside the page, not over it: the page stays visible and keeps its place while the chat is open. */}
+        <ChatPanel open={chatOpen} onClose={() => setChatOpen(false)} page={pageLabel(current)} itemId={route.itemId ?? null} />
         {dialog === "search" && <SearchDialog navigate={navigate} onClose={() => setDialog(null)} />}
         {dialog === "help" && <HelpDialog onClose={() => setDialog(null)} />}
       </div>

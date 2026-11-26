@@ -289,7 +289,7 @@ export const SETTABLE_KEYS = [
   "mode", "auto_merge_max_tier",
   "message_style", "notice_kinds", "quiet_hours", "review_time", "summary_morning_time", "summary_evening_time", "notify_channels", "integrations", "calendar",
   "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label", "spend.daily_budget_usd", "spend.weekly_budget_usd", "tool_grants", "conflict_hotspot_threshold",
-  "worker_kinds", "agent_stop_check_ms",
+  "worker_kinds", "agent_stop_check_ms", "coordinator",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -348,7 +348,7 @@ export interface SettableValues {
   stall_ms: number; probe_interval_ms: number; auth_pause_ms: number; conflict_hotspot_threshold: number;
   max_coordination_cost: number; hotspot_weight: number; mechanical_weight: number; tool_grants: ToolGrants; // run kind → granted tools (design 08-settings)
   intake_label: string | null; // null: no built-in default, and neither the file nor an override says
-  worker_kinds: RunKind[]; agent_stop_check_ms: number; // the run kinds a worker claims (design 05-interactive-sessions); the gate Stop check's limit (04-pre-push-gates)
+  worker_kinds: RunKind[]; agent_stop_check_ms: number; coordinator: boolean; // the run kinds a worker claims (design 05-interactive-sessions); the gate Stop check's limit (04-pre-push-gates); the coordinator's switch (05-coordinator)
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it (a key with a setting file read there reads it from that file). */
@@ -378,7 +378,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   auth_pause_ms: 1_800_000, // shown as the default; with no override and no file value it follows the effective retry_max_ms
   max_coordination_cost: DEFAULT_COORDINATION.max_cost, hotspot_weight: DEFAULT_COORDINATION.hotspot_weight, mechanical_weight: DEFAULT_COORDINATION.mechanical_weight, tool_grants: {},
   intake_label: null, // no built-in default: the config file must say, and its value applies
-  worker_kinds: [...WORKER_KINDS], agent_stop_check_ms: AGENT_STOP_CHECK_MS_DEFAULT,
+  worker_kinds: [...WORKER_KINDS], agent_stop_check_ms: AGENT_STOP_CHECK_MS_DEFAULT, coordinator: false,
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
@@ -450,7 +450,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "workers":
       if (value === undefined) throw new Error("workers must be an integer of 0 or more (got undefined)");
       return workerCount(value) as SettableValues[K];
-    case "phases_auto_approve": case "auto_grant_test_paths": return booleanSetting(key, value) as SettableValues[K];
+    case "phases_auto_approve": case "auto_grant_test_paths": case "coordinator": return booleanSetting(key, value) as SettableValues[K];
     case "hold_policy": return parseHoldPolicy(value) as SettableValues[K];
     case "mode":
       if (!(MODES as readonly unknown[]).includes(value)) throw new Error(`mode must be ${MODES.map((m) => `"${m}"`).join(" or ")}`);
