@@ -25,7 +25,7 @@ Read this index, then only the topics you touch. Add a line here only for a new 
 - [04-spec-gate-commands.md](design/04-spec-gate-commands.md): spec answers.
 - [04-chat-commands.md](design/04-chat-commands.md): chat commands.
 - [04-chat-agent](design/04-chat-agent.md): turns.
-- [04-verdicts.md](design/04-verdicts.md): `/verdict`, implicit verdicts, pushbacks.
+- [04-verdicts.md](design/04-verdicts.md): `/verdict`, implicit verdicts.
 - [04-closing-source-issue.md](design/04-closing-source-issue.md): closing source.
 - [04-pre-push-gates.md](design/04-pre-push-gates.md): pre-push gates.
 - [04-triage.md](design/04-triage.md): path companions, allowed paths.
@@ -35,10 +35,11 @@ Read this index, then only the topics you touch. Add a line here only for a new 
 ## 5. Coordination
 - [05-coordination.md](design/05-coordination.md): claims, leases, fencing.
 - [05-dependencies.md](design/05-dependencies.md): parallel workers, holds.
+- [05-coordinator](design/05-coordinator.md): cycles, merge gate.
 - [05-restarts.md](design/05-restarts.md): stalled runs, retries.
 - [05-restart-asks.md](design/05-restart-asks.md): runs asking for paths.
 - [05-restart-pauses.md](design/05-restart-pauses.md): claim pauses, drains.
-- [05-alarms.md](design/05-alarms.md): repeated errors, zero-token runs.
+- [05-alarms.md](design/05-alarms.md): repeated errors, zero tokens.
 - [05-sandbox.md](design/05-sandbox.md): interface, run folders, tools.
 - [05-merge-conflict.md](design/05-merge-conflict.md): update runs, `/resolve`.
 - [05-ci-gate.md](design/05-ci-gate.md): CI workflow, check gate.
@@ -68,8 +69,8 @@ Read this index, then only the topics you touch. Add a line here only for a new 
 - [08-self-update.md](design/08-self-update.md): base-branch copy, drain update.
 - [08-settings.md](design/08-settings.md): layered settings, tighten only.
 - [08-settings-page.md](design/08-settings-page.md): Settings page, file-only keys.
-- [08-permissions.md](design/08-permissions.md): `OwnerAuth`, identity, size limits.
-- [08-enterprise.md](design/08-enterprise.md): one owner, many workers, local first.
+- [08-permissions.md](design/08-permissions.md): identity, size limits.
+- [08-enterprise.md](design/08-enterprise.md): one owner, local first.
 - [08-teardown.md](design/08-teardown.md): `factory teardown`.
 - [08-retention.md](design/08-retention.md): daily retention pass.
 - [08-cleanup.md](design/08-cleanup.md): closed items' leftovers.
