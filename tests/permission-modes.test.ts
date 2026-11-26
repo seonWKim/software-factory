@@ -237,6 +237,18 @@ describe.each(BACKENDS)("authorizeWrite against the store: $name", ({ make }) =>
   });
 });
 
+describe("each typed command row stores the mode it ran under", () => {
+  it("is the mode stored at the append, or the default with none stored", async () => {
+    const { store } = await newStore();
+    await store.appendCliCommand({ key: "cli:one", actor: "local:owner", command: "approve", args: {}, write_origin: "human_command" });
+    await store.setSettingOverride({ key: KEY, project: "", value: '"full"', actor: "local:owner" });
+    await store.appendCliCommand({ key: "cli:two", actor: "local:owner", command: "approve", args: {}, write_origin: "human_command" });
+    expect(await store.db.all("SELECT command_key, permission_mode FROM inbound_commands WHERE command_key IN ('cli:one', 'cli:two') ORDER BY command_key")).toEqual([
+      { command_key: "cli:one", permission_mode: "ask_irreversible" }, { command_key: "cli:two", permission_mode: "full" },
+    ]);
+  });
+});
+
 describe("a chat tool call that names a command", () => {
   it("is refused as an agent write in a chat turn; any other unknown name stays unknown_tool", async () => {
     const broker = new ChatToolBroker([]);
