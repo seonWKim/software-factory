@@ -143,7 +143,7 @@ async function caseCommand(argv: readonly string[], ctx: CommandContext, authori
   const secondOk = pair ? second !== undefined && (sub !== "split" || isSplit(second)) : second === undefined;
   if (!["list", "add", "edit", "delete", "try", "split", "from-run"].includes(sub ?? "") || !target || !secondOk || extra.length > 0 || !modelOk || !flagsOk) return null;
   if (sub === "split") return ctx.withStore((store) => setSplit(store, target, second as SkillEvalSplit));
-  if (sub === "from-run") return ctx.withStore(async (store) => report(await authoring.caseFromRun(store, target, second!), (c) => console.log(`added case ${c.id} (dev) from case ${target} of eval run ${second}`)));
+  if (sub === "from-run") return ctx.withStore(async (store) => report(await authoring.caseFromRun(store, target, second!), (c) => console.log(`added case ${c.id} (dev) from case ${second} of eval run ${target}`)));
   if (sub === "try") {
     const tryCase = ctx.trySkillEvalCase;
     if (!tryCase) {

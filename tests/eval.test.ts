@@ -369,7 +369,7 @@ describe("factory eval case split and case from-run", () => {
     expect(r.code).toBe(0);
     const added = (await store.listSkillEvalCases("s1")).filter((c) => c.id !== "c1" && c.id !== "c2");
     expect(added).toEqual([expect.objectContaining({ suite_id: "s1", input: { prompt: "in" }, expected: ["a"], seed: "seeds/one", mcp: ["files"], split: "dev" })]);
-    expect(r.out.join("\n")).toContain(added[0]!.id);
+    expect(r.out).toEqual([`added case ${added[0]!.id} (dev) from case c1 of eval run r1`]);
     expect(await store.getSkillEvalCase("c1")).toMatchObject({ split: "held-out" });
     const before = await store.db.all("SELECT * FROM controller_skill_eval_cases ORDER BY id");
     const again = await evalCommand(store, ["case", "from-run", "r1", "c1"]);
