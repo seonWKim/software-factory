@@ -5,7 +5,7 @@
 // applied (migrateWithActivity); past actions get none. A cleanup pass and a supervised restart, changes outside the
 // store, write theirs with recordActivity.
 
-import { type ActivityKind, activityActor } from "../../../controller/background-jobs.js";
+import { activityOf, logRef, transcriptRef } from "../../../controller/background-jobs.js";
 import type { AbandonedAttempt, Activity, ActivityStore, NewActivity } from "../../../interfaces/factory-store.js";
 import type { Timestamp } from "../../../core/types.js";
 import { MIGRATIONS_TABLE, tableExists, type Row, type SqlDriver, type SqlExecutor } from "../../../state/index.js";
@@ -14,10 +14,6 @@ import { SqlRunOutputStore } from "./run-output.js";
 const TABLE = "controller_activity";
 const DAY_MS = 86_400_000;
 
-/** A run's transcript path, as the dashboard's transcript route serves it. */
-export const transcriptRef = (work_item_id: string, run_id: string): string => `/api/v1/items/${work_item_id}/runs/${run_id}/transcript`;
-/** A log reference: the component's log and the message of the line the action wrote. */
-export const logRef = (component: string, message: string): string => `log:${component}:${message}`;
 
 /** Inserts one row at `now` on `db` (a transaction's executor, so it commits or rolls back with its change). */
 export async function insertActivity(db: SqlExecutor, now: Timestamp, a: NewActivity): Promise<Activity> {
@@ -26,9 +22,6 @@ export async function insertActivity(db: SqlExecutor, now: Timestamp, a: NewActi
   ]);
   return rowToActivity(row!);
 }
-
-/** A row of `kind` with its job's actor ID. */
-export const activityOf = (kind: ActivityKind, a: Omit<NewActivity, "kind" | "actor_id">): NewActivity => ({ actor_id: activityActor(kind), kind, ...a });
 
 export async function listActivity(db: SqlExecutor, opts: { kind?: string; limit?: number } = {}): Promise<Activity[]> {
   const where = opts.kind === undefined ? "" : " WHERE kind = ?";

@@ -26,7 +26,8 @@ import type {
 } from "../../../core/schedule.js";
 import type { Timestamp, UserId } from "../../../core/types.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
-import { SqlActivityStore, activityOf, insertActivity, logRef } from "./activity.js";
+import { activityOf, scheduleRunsRef } from "../../../controller/background-jobs.js";
+import { SqlActivityStore, insertActivity } from "./activity.js";
 
 const COLUMNS = "id, title, cadence_kind, cadence_spec, zone, created_by, created_at, next_due_at, running_since, missed_rule, action_kind, action_settings, token_cap, token_period, " +
   "trigger_kind, run_cap_usd, daily_cap_usd, cap_raise_usd, cap_raise_day, cap_hold_key, paused, last_run_at";
@@ -45,9 +46,9 @@ function claimReason(outcome: ClaimOutcome, occurrence_at: Timestamp, queued?: n
   return `due at ${occurrence_at}, held at a checkpoint for the owner's approval`;
 }
 
-/** The run row's `reason` and `ref` and its Activity row, written on the claim's transaction. */
+/** The run row's `reason` and `ref` (its schedule's runs, whose output the action records) and its Activity row, written on the claim's transaction. */
 async function recordClaim(tx: SqlExecutor, now: Timestamp, run: ScheduleRun, outcome: ClaimOutcome): Promise<void> {
-  const reason = claimReason(outcome, run.occurrence_at, run.queued_implement_runs), ref = logRef("controller", `schedule ${run.schedule_id} ${outcome}`);
+  const reason = claimReason(outcome, run.occurrence_at, run.queued_implement_runs), ref = scheduleRunsRef(run.schedule_id);
   await tx.run("UPDATE controller_schedule_runs SET reason = ?, ref = ? WHERE schedule_id = ? AND occurrence_at = ?", [reason, ref, run.schedule_id, run.occurrence_at]);
   await insertActivity(tx, now, activityOf("schedule_run", { subject: run.schedule_id, outcome, reason, ref }));
 }
