@@ -53,7 +53,7 @@ import { frontMatterTools, skillFolderPath, skillVersion } from "./runtime/capab
 import { skillVersionsOf } from "./ui/plugins-api.js";
 import { storeSql, storeSqlOrNull } from "./impl/store/sql/store-sql.js";
 import { checkPackGrants } from "./packs/pack-grants.js";
-import { type Authored, type CaseVerdict, type SkillEvalAuthoring, type SkillEvalEngineDeps, type TriedCase, addSkillEvalCase, addSkillEvalSuite, deleteSkillEvalSuite, editSkillEvalCase, renameSkillEvalSuite, runSkillEval, skillEvalReplay, tryCase } from "./runtime/index.js";
+import { type Authored, type CaseVerdict, type SkillEvalAuthoring, type SkillEvalEngineDeps, type TriedCase, addSkillEvalCase, addSkillEvalSuite, caseFromRun, deleteSkillEvalSuite, editSkillEvalCase, renameSkillEvalSuite, runSkillEval, skillEvalReplay, tryCase } from "./runtime/index.js";
 
 /** The most replays per case one run makes (`eval run --replays N`, design 06-measurement, repeats). */
 export const MAX_REPLAYS = 10;
@@ -539,4 +539,5 @@ export const skillEvalAuthoring: SkillEvalAuthoring = {
   deleteSuite: deleteSkillEvalSuite,
   addCase: (store, skill, f) => addSkillEvalCase({ store, newId: () => randomUUID() }, skill, f),
   editCase: editSkillEvalCase,
+  caseFromRun,
 };
