@@ -5,6 +5,8 @@
 export const TABLE_DOCS: Readonly<Record<string, string>> = {
   inbound_commands: "Commands received from the CLI, the app and chat, and whether each was handled or refused.",
   "inbound_commands.origin": "Where the command came from: cli, app or a source.",
+  "inbound_commands.write_origin": "Who wrote the command: human_command or agent; empty on older rows.",
+  "inbound_commands.permission_mode": "The permission mode in force when the command was taken; empty until the gate writes it.",
   inbound_cursors: "How far each source poll has read (a cursor or timestamp per name).",
   inbound_inbox: "Bus messages Inbound already handled, kept so a message is handled once.",
   inbound_listener_leases: "Which process holds each source listener, until when.",

@@ -130,7 +130,7 @@ export async function runProposalPress(d: ChatDeps, p: ProposalPress, ctx: ChatC
   if (ctx.item === null) return null;
   if (p.kind === "confirm") {
     const args = { item: ctx.item.id, proposal: p.id, ...(p.index === null ? {} : { index: p.index }) };
-    await d.store.appendCliCommand({ key: `cli:${ctx.id}`, actor: user, command: CONFIRM_COMMAND, args });
+    await d.store.appendCliCommand({ key: `cli:${ctx.id}`, actor: user, command: CONFIRM_COMMAND, args, write_origin: "human_command" });
     return null;
   }
   let cancelled = 0;

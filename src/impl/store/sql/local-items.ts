@@ -133,8 +133,8 @@ export async function appendCliCommand(db: SqlDriver, time: StoreTime, input: Ne
     await lockCommandSequence(tx);
     const created = await insertOnce(
       db, tx,
-      "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, mirror, passport_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [commandId(input.key), commandOrigin(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), time.now(), input.mirror ? 1 : 0, input.passport_id ?? null],
+      "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, mirror, passport_id, write_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [commandId(input.key), commandOrigin(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), time.now(), input.mirror ? 1 : 0, input.passport_id ?? null, input.write_origin ?? null],
     );
     return { created, command: (await selectCliCommand(tx, input.key))! };
   });
@@ -293,6 +293,7 @@ function rowToCliCommand(row: Row): CliCommand {
     args: JSON.parse(row.args as string) as Record<string, unknown>,
     ...(Number(row.mirror) === 1 ? { mirror: true } : {}),
     ...(row.passport_id != null ? { passport_id: String(row.passport_id) } : {}),
+    ...(row.write_origin != null ? { write_origin: row.write_origin as NonNullable<CliCommand["write_origin"]> } : {}),
     created_at: row.created_at as Timestamp,
   };
 }

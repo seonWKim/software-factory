@@ -450,6 +450,22 @@ describe("Settings page", () => {
     expect(JSON.parse(posts[1]!.init.body as string)).toEqual({ action: "set", key: "hold_policy", value: '{"mode":"run_after_minutes","minutes":5}' });
   });
 
+  it("permission_mode is a segmented control in Limits, tightest first; a press writes the mode", async () => {
+    expect(GROUP_KEYS.limits).toContain("permission_mode");
+    view.keys.push(row("permission_mode", { kind: "text", value: '"ask_irreversible"', source: "default", file_value: null, default_value: '"ask_irreversible"' }));
+    afterEachReset = () => void view.keys.pop();
+    const table = await show();
+    const mode = rowOf(table, "permission_mode");
+    expect(mode.textContent).toContain("Permission mode");
+    const group = within(mode).getByRole("radiogroup", { name: keyLabel("permission_mode") });
+    const segments = within(group).getAllByRole("radio");
+    expect(segments.map((s) => s.textContent)).toEqual(["Ask all", "Ask irreversible", "Full"]);
+    expect(segments.map((s) => s.getAttribute("aria-checked"))).toEqual(["false", "true", "false"]);
+    fireEvent.click(segments[0]!);
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(JSON.parse(posts[0]!.init.body as string)).toEqual({ action: "set", key: "permission_mode", value: '"ask_all"' });
+  });
+
   it("hold_policy shows a server refusal next to the field", async () => {
     answer = { status: 400, body: { ok: false, error: "minutes must be a positive integer" } };
     const table = await show();

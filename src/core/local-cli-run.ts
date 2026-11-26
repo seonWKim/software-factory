@@ -213,7 +213,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       // a command typed in the item's own thread is already there. A verdict changes no state and a merge answers on
       // its own (design 04-gate-commands), so neither is mirrored.
       const mirror = a.command !== "verdict" && a.command !== MERGE_COMMAND && item.source.type !== "local" && item.source.type !== d.origin;
-      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}) });
+      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}), write_origin: "human_command" });
       const decisions = "answers" in d.answers.detail(ans.answers) ? ans.answers.map((x, i) => `${i + 1}. ${x.question} → ${x.answer === null ? "(no answer and no default)" : `${x.answer} (${x.accepted_default ? "default taken" : "your answer"})`}`) : [];
       return { code: 0, lines: [`stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`${cli} task show ${item.id}\``, ...decisions] };
     }
@@ -226,7 +226,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       // The controller's confirm path (src/controller/units/commands/proposals.ts) claims and applies each pending row,
       // and answers a refusal in the thread of the first pending command's item.
       const args = { item: pending[0]!.work_item_id, proposal: a.proposal };
-      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: CONFIRM_COMMAND, args });
+      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: CONFIRM_COMMAND, args, write_origin: "human_command" });
       const n = pending.length === 1 ? "its pending command" : `its ${pending.length} pending commands`;
       return { code: 0, lines: [`stored \`${cli} confirm ${a.proposal}\` as ${user} (command ${command.seq}); the controller applies ${n} on its next poll`] };
     }

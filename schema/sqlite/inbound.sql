@@ -16,7 +16,7 @@ CREATE TABLE "inbound_commands" (
     passport_id   TEXT,
     legacy_table  TEXT,
     legacy_seq    INTEGER
-  );
+  , write_origin TEXT, permission_mode TEXT);
 
 CREATE TABLE inbound_cursors (
     name   TEXT PRIMARY KEY,
