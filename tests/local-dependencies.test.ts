@@ -300,11 +300,41 @@ describe("entry points that write the Depends on line (design 05-dependencies, 2
     expect(await f.get(a)).toEqual(before);
   });
 
-  it("`/hold` on an item that is not stopped at agent_needs_human is refused with its phase", async () => {
+  it("`/hold <short id>` on an item whose implement run is queued writes the full ID's line, and that run waits until the item merges", async () => {
     const f = await setup();
     const x = await f.mergeable();
-    const a = await f.item("implementing");
-    expect(await f.hold(a, x)).toContain("the item is implementing; `/hold <id>` applies only to a local item whose implement run asked for a human");
+    const a = await f.item("queued, not started");
+    const [queued] = await f.store.listRuns(a);
+    expect(await f.hold(a, x.slice(0, 11))).toBeNull();
+    expect(await f.get(a)).toMatchObject({ problem: `queued, not started\n\nDepends on: ${x}`, blocked_on: "dependency", blocked_reason: `waiting for ${x} to merge` });
+    expect(await f.reasons(a)).toContain("hold_requested");
+    expect(await f.store.listDependencyEdges({ work_item_id: a })).toEqual([expect.objectContaining({ state: "open" })]);
+    // The same queued run, no second one, and it is not claimed while x is open.
+    expect((await f.store.listRuns(a)).map((r) => [r.id, r.status])).toEqual([[queued!.id, "queued"]]);
+    expect(await f.claim()).toBeNull();
+    expect(await f.merge(x)).toBe("landed");
+    expect(await f.claim()).toMatchObject({ id: queued!.id, work_item_id: a, kind: "implement" });
+  });
+
+  it("`/hold` while the implement run is running is refused, saying it applies once the run ends; the run keeps running", async () => {
+    const f = await setup();
+    const x = await f.mergeable();
+    const a = await f.item("running");
+    const run = await f.claim();
+    expect(run).toMatchObject({ work_item_id: a, status: "running" });
+    const before = await f.get(a);
+    expect(await f.hold(a, x)).toBe(
+      "`/hold` was not applied: the item's implement run is running, and a running run is never stopped for a hold; `/hold <id>` applies once the run ends.",
+    );
+    expect(await f.get(a)).toEqual(before);
+    expect((await f.store.listRuns(a)).map((r) => r.status)).toEqual(["running"]);
+  });
+
+  it("`/hold` on an item with no implement run queued or stopped for a human is refused with its phase", async () => {
+    const f = await setup();
+    const x = await f.mergeable();
+    const a = await f.item("implementing, no run", {}, false);
+    expect(await f.hold(a, x)).toContain("the item is implementing; `/hold <id>` applies only to a local item whose implement run is queued or asked for a human");
     expect((await f.get(a)).blocked_on).toBe("none");
   });
 });

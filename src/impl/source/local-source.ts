@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { type DependencyLink, type DependencySource, dependsOnLines } from "../../core/coordination.js";
+import { type DependencyLink, type DependencySource, dependsOnLines, localItemOf } from "../../core/coordination.js";
 import type { WorkStatus } from "../../core/status-label.js";
-import type { DependencyState, SourceRef, WorkItem, WorkItemId } from "../../core/types.js";
+import type { DependencyState, SourceRef } from "../../core/types.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { IssueInput, PollResult, PollSource, SourceCloseReason, SubIssueInput } from "../../interfaces/source-adapter.js";
 
@@ -64,7 +64,7 @@ export class LocalSource implements PollSource, DependencySource {
     const links: DependencyLink[] = [];
     for (const line of dependsOnLines(item.problem)) {
       for (const [id] of line.matchAll(LOCAL_REF)) {
-        const dep = await this.resolve(id);
+        const dep = await localItemOf(this.store, id);
         if (dep && !links.some((l) => l.depends_on === dep.source.id)) links.push({ depends_on: dep.source.id, kind: "depends_on" });
       }
     }
@@ -82,13 +82,6 @@ export class LocalSource implements PollSource, DependencySource {
   /** The wi_ id of the local item with source id `depends_on`, which the hold reason names; null for none. */
   async dependencyLabel(depends_on: string): Promise<string | null> {
     return (await this.store.getWorkItemBySource("local", depends_on))?.id ?? null;
-  }
-
-  /** The local work item a wi_ id names, or the one task tk_'s build made; null for none. */
-  private async resolve(id: string): Promise<WorkItem | null> {
-    const wi = id.startsWith("tk_") ? (await this.store.getTask(id))?.work_item_id ?? null : (id as WorkItemId);
-    const item = wi ? await this.store.getWorkItem(wi) : null;
-    return item?.source.type === "local" ? item : null;
   }
 
   /** A new local work item for `input` with its triage run queued, idempotent on its marker-derived source id. */
