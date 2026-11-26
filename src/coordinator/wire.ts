@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { StoreLease, syncLeaseOps } from "../core/lease.js";
 import type { Logger } from "../core/log.js";
 import type { FactoryConfig } from "../core/config.js";
-import type { Clock } from "../interfaces/clock.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { type AgentDeps, COORDINATOR_PROMPT, coordinatorAgent } from "./agent.js";
@@ -19,7 +18,8 @@ export const LEASE_MARGIN_MS = 5 * 60_000;
 
 export interface WiringDeps extends Omit<AgentDeps, "prompt" | "config"> {
   store: FactoryStore;
-  clock: Clock;
+  /** The injected Clock, as the lease takes it. */
+  clock: ConstructorParameters<typeof StoreLease>[1];
   config: FactoryConfig;
   /** This replica, as the lease's owner. */
   owner: string;

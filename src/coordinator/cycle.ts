@@ -8,7 +8,6 @@
 import { errorText, type Logger } from "../core/log.js";
 import type { StoreLease } from "../core/lease.js";
 import type { WorkItem, WorkItemId } from "../core/types.js";
-import type { Clock } from "../interfaces/clock.js";
 import type { ActionOutcome, CoordinatorAction, CoordinatorStore } from "./store.js";
 
 /** How often a cycle is due (owner answer 3). */
@@ -44,7 +43,8 @@ export interface CoordinatorParts {
   store: CoordinatorStore;
   lease: StoreLease;
   agent: CoordinatorAgent;
-  clock: Clock;
+  /** The injected Clock (compose passes the factory's); the cycle reads only its time. */
+  clock: { now(): Date };
   log: Logger;
 }
 
