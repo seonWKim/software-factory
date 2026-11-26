@@ -90,7 +90,7 @@ import { PAUSE_END_INSERT, PAUSE_INSERT_ROW, pauseAt, placeholders, pruneDeliver
 import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
-import * as tasks from "./tasks.js";
+import * as tasks from "./tasks.js"; import * as chat from "./chat.js";
 import { SqlRoutineStore } from "./routines.js";
 import { claimLock, endReservations, liveReservations, reservationOf } from "./reservations.js";
 import { type CoordContext, claimDecisionsOf, claimOrder, claimOrderSql, implementTimes, releaseHolder, writeClaimDecision } from "./claim-coordination.js";
@@ -383,6 +383,7 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
   recordCommandProposals(rows: Parameters<FactoryStore["recordCommandProposals"]>[0]) { return proposals.recordCommandProposals(this.db, rows, this.now()); }
   listCommandProposals(proposal_id: string) { return proposals.listCommandProposals(this.db, proposal_id); }
   answerCommandProposal(a: Parameters<FactoryStore["answerCommandProposal"]>[0]) { return proposals.answerCommandProposal(this.db, a, this.now()); }
+  appendChatMessages(id: string, m: Parameters<FactoryStore["appendChatMessages"]>[1]) { return chat.appendChatMessages(this.db, id, m, this.now()); } listChatMessages(id: string) { return chat.listChatMessages(this.db, id); } // chat.ts
   // Plain tasks (design 02-tasks, issue #606): tasks.ts
   addTask(t: Parameters<FactoryStore["addTask"]>[0]) { return tasks.addTask(this.db, t, this.clock.now()); }
   listTasks(limit: number) { return tasks.listTasks(this.db, limit); } listDoneTasks(w: Parameters<FactoryStore["listDoneTasks"]>[0]) { return tasks.listDoneTasks(this.db, w); }
@@ -393,8 +394,7 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
   updateTask(id: string, edit: Parameters<FactoryStore["updateTask"]>[1]) { return tasks.updateTask(this.db, id, edit, this.clock.now()); }
   setTaskBody(id: string, body: string | null) { return tasks.setTaskBody(this.db, id, body); } deleteTask(id: string, opts?: { with_sub_tasks?: boolean }) { return tasks.deleteTask(this.db, id, opts); }
   addSubTask(parent_task_id: string, t: Parameters<FactoryStore["addSubTask"]>[1]) { return tasks.addSubTask(this.db, parent_task_id, t, this.clock.now()); }
-  listDueReminders(now: Date) { return tasks.listDueReminders(this.db, now); }
-  remindTask(...a: Parameters<FactoryStore["remindTask"]>) { return tasks.remindTask(this.db, ...a); }
+  listDueReminders(now: Date) { return tasks.listDueReminders(this.db, now); } remindTask(...a: Parameters<FactoryStore["remindTask"]>) { return tasks.remindTask(this.db, ...a); }
   // Owner notices (design 09-notifications): notices.ts
   recordNotice(n: Parameters<FactoryStore["recordNotice"]>[0]) { return notices.recordNotice(this.db, n); }
   listNoticesFor(work_item_ids: readonly string[]) { return notices.listNoticesFor(this.db, work_item_ids); }
