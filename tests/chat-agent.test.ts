@@ -268,7 +268,7 @@ describe("chatTurn", () => {
     }
   });
 
-  it("offers no write tool and refuses a call to one without reaching the broker", async () => {
+  it("offers no write tool and refuses a call to one, or to an unknown name, without reaching the broker", async () => {
     const calls: string[] = [];
     const tools: ToolDescriptor[] = [
       { name: "repo.read", read_only: true, description: "Reads.", input_schema: { type: "object" } },
@@ -282,7 +282,7 @@ describe("chatTurn", () => {
         return { ok: true, content: "done" };
       },
     };
-    const llm = scripted([{ text: "", tool_calls: [call("git.store_branch", { branch: "main" }), call("repo.read", {})] }, { text: "I cannot write." }]);
+    const llm = scripted([{ text: "", tool_calls: [call("git.store_branch", { branch: "main" }), call("no.such_tool", {}), call("repo.read", {})] }, { text: "I cannot write." }]);
     const { d, store } = await turnDeps(llm, broker);
     try {
       expect(await chatTurn(d, "s1", "Push it.")).toEqual({ ok: true, reply: "I cannot write." });
@@ -290,6 +290,7 @@ describe("chatTurn", () => {
       expect(calls).toEqual(["repo.read"]);
       const refused = llm.seen[1]!.messages.find((m) => m.tool_call_id === "c_git.store_branch")!;
       expect(refused.content).toMatch(/not a read-only tool/);
+      expect(llm.seen[1]!.messages.find((m) => m.tool_call_id === "c_no.such_tool")!.content).toMatch(/not a read-only tool/);
     } finally {
       await store.close();
     }

@@ -11,6 +11,21 @@ function query(input: Record<string, unknown>): string {
   return s === "" ? "" : `?${s}`;
 }
 
+export type ChatSendInput = { "session_id"?: string; "text": string };
+export type ChatSendOutput = { "turn_id": string; "session_id": string; "outcome": "answered" | "refused" | "failed"; "reason"?: string; "reply"?: string };
+/** Send the owner's message to the chat and run one turn with the Ask model; no session_id starts a new session. A withheld turn answers no reply. (POST /api/v1/chat/send, permission owner) */
+export const chatSend = (token: string, input: ChatSendInput) => postJson<ChatSendOutput & { error?: string }>("/api/v1/chat/send", token, input);
+
+export type ChatTranscriptInput = { "session_id": string };
+export type ChatTranscriptOutput = { "messages": Array<{ [key: string]: unknown }> };
+/** One chat session's stored messages in order (?session_id=<id>); an unknown session answers none. (GET /api/v1/chat/transcript, permission owner) */
+export const chatTranscript = (input: ChatTranscriptInput): Promise<ChatTranscriptOutput> => getJson<ChatTranscriptOutput>("/api/v1/chat/transcript" + query(input));
+
+export type ChatTurnsInput = { "limit"?: number };
+export type ChatTurnsOutput = { "turns": Array<{ [key: string]: unknown }> };
+/** The recent chat turns, newest first, at most limit (default 50): each with its turn_id, session_id, status, reason and times. (GET /api/v1/chat/turns, permission owner) */
+export const chatTurns = (input: ChatTurnsInput): Promise<ChatTurnsOutput> => getJson<ChatTurnsOutput>("/api/v1/chat/turns" + query(input));
+
 export type ItemsListInput = { "state"?: string; "stage"?: string; "tier"?: string; "kind"?: string; "unblocks"?: string; "closed"?: string; "q"?: string; "project"?: string };
 export type ItemsListOutput = { "as_of": string; "total": number; "items": Array<{ "id": string; "source": { [key: string]: unknown }; "title": string | null; "item_phase": string; "state_label": string; "reason_code": string; "stage": string; "tier": number | null; "kind": string | null; "blocked_on": string | null; "blocked_reason": string | null; "close_reason": string | null; "run_status": string | null; "change_ref": string | null; "change_url": string | null; "issue": { [key: string]: unknown } | null; "since": string | null; "updated_at": string; "version": number; "dependents": number; "conflicts": { [key: string]: unknown }; "merge_check": { [key: string]: unknown } | null; "merge": { [key: string]: unknown } | null; "rank_reason"?: string; "held"?: boolean; "need"?: { [key: string]: unknown } | null; "commands"?: Array<{ [key: string]: unknown }>; "overlaps"?: Array<{ [key: string]: unknown }>; "why": { [key: string]: unknown }; "parent_id": string | null; "phase": number | null; "waiting_on_number": number | null; "run": { [key: string]: unknown } | null; "claim": { [key: string]: unknown } | null }>; "facets": { [key: string]: unknown }; "counts": { [key: string]: unknown } };
 /** The work items, ranked, with the list's facets and counts; filtered by state, stage, tier, run kind, unblocks, closed, words (q) and task project. (GET /api/v1/items, permission read) */
