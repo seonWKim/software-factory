@@ -9,6 +9,4 @@
   - **Generated files.** `npm run gen:api` (`scripts/gen-api.mjs`, Node's type stripping, no build) writes `docs/api/openapi.json` (OpenAPI 3.1; no capabilities in this phase) and `web/src/api/generated.ts` (per capability its input and output types and one call through `web/src/api/client.ts`). `tests/api-openapi.test.ts` and `tests/api-registry.test.ts` fail while either differs from what the declarations generate, so a schema changed without regenerating fails; the generated client is typechecked by `npm run typecheck` and, for the fixture, in the test.
   - **Headless first** (`AGENTS.md`): a feature is declared as a capability first, and the dashboard, chat and CLI call that API. A page-only or CLI-only behaviour and a hand-written route count as gaps. Counting unregistered page paths in the same ratchet (owner answer 4) comes in a later phase, with its list file.
 
-## History
-
-No earlier decision: this topic is new.
+- Replaced decisions of this topic: none yet; a replaced one goes to `history/09-api-registry.md`.
