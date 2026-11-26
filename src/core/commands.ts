@@ -588,8 +588,7 @@ export function approveRefusal(it: ItemState): string | null {
 
 /**
  * The spec an `/approve` answers (issue #526): the one the item's latest applied, successful triage run wrote, read
- * from the run's stored output; null when there is none or it no longer parses. Store reads only (the caller passes its runs).
- */
+ * from the run's stored output; null when there is none or it no longer parses. Store reads only (the caller passes its runs). */
 export function latestSpec(runs: readonly Run[]): TriageOutput | null {
   const run = runs.filter((r) => r.kind === "triage" && r.outcome?.status === "succeeded" && r.acknowledged_at !== null).at(-1);
   if (run?.outcome?.status !== "succeeded") return null;
@@ -597,3 +596,4 @@ export function latestSpec(runs: readonly Run[]): TriageOutput | null {
   return parsed.ok ? parsed.value : null;
 }
 /** The coordinator's daily limit setting (design 06-spend), which `approve <usd>` on its limit question sets. */ export const COORDINATOR_LIMIT_KEY = "spend.coordinator_daily_usd";
+/** A dollar amount as the owner reads it ($5.00): the coordinator limit texts and the spend budget alert use it. */ export const usd = (n: number): string => `$${n.toFixed(2)}`;

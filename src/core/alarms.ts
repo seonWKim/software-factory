@@ -15,7 +15,7 @@
 // dismissed spend threshold does not alert again in its period. No forge, LLM or sandbox call; every text is scanned
 // first.
 
-import { COORDINATOR_LIMIT_KEY } from "./commands.js";
+import { COORDINATOR_LIMIT_KEY, usd } from "./commands.js";
 import { groupFailures, normalizeDetail, patternKey, sleptRuns } from "./improver.js";
 import type { Logger } from "./log.js";
 import { AGENT_STALLED, INTERACTIVE, MODEL_STALL, SESSION_ABANDONED } from "./policy.js";
@@ -313,7 +313,7 @@ export async function spendStep(d: Pick<AlarmDeps, "store" | "scanner" | "clock"
       const pattern_key = `spend:${p.name}:${utcDay(p.start)}:${pct}`;
       if (t.cost_usd * 100 < p.budget * pct || dismissed.has(pattern_key)) continue;
       const unknown = t.unknown === 0 ? "" : `; ${t.unknown} run${t.unknown === 1 ? "" : "s"} with no stored cost not counted`;
-      const detail = `$${t.cost_usd.toFixed(2)} of the $${p.budget.toFixed(2)} ${p.name} budget spent (${p.name === "daily" ? "UTC day" : "week from"} ${utcDay(p.start)})${unknown}`;
+      const detail = `${usd(t.cost_usd)} of the ${usd(p.budget)} ${p.name} budget spent (${p.name === "daily" ? "UTC day" : "week from"} ${utcDay(p.start)})${unknown}`;
       const scan = await d.scanner.scan("ui", detail);
       const r = await d.store.recordAlert(
         { pattern: "spend_budget", pattern_key, error_code: `${p.name}_${pct}`, count: t.runs, detail: scan.clean ? detail : null },
@@ -532,7 +532,8 @@ export interface CoordinatorLimit {
 export const coordinatorLimitKey = (day: string): string => `coordinator_limit:${day}`;
 /** The limit the question proposes: twice the current one. */
 export const proposedLimit = (limit_usd: number): number => limit_usd * 2;
-const dollars = (n: number): string => `$${n.toFixed(2)}`;
+/** The day's coordinator cycles with no reported cost, as a clause after the spend ("" when there are none). */
+export const uncountedCycles = (n: number): string => (n === 0 ? "" : `; ${n} cycle${n === 1 ? "" : "s"} with no reported cost not counted`);
 /** A whole-dollar amount as the owner types it in `approve <usd>` (10, not 10.00). */
 const typed = (n: number): string => (Number.isInteger(n) ? String(n) : n.toFixed(2));
 
@@ -550,8 +551,7 @@ export interface CoordinatorLimitAlert {
  */
 export function coordinatorLimitAlert(q: CoordinatorLimit): CoordinatorLimitAlert {
   const proposed = proposedLimit(q.limit_usd);
-  const unknown = q.unknown === 0 ? "" : ` (${q.unknown} cycle${q.unknown === 1 ? "" : "s"} with no reported cost not counted)`;
-  const detail = `The coordinator reached its daily limit: ${dollars(q.spent_usd)} spent on UTC day ${q.day}${unknown}. Current limit ${dollars(q.limit_usd)}, proposed limit ${dollars(proposed)}. `
+  const detail = `The coordinator reached its daily limit: ${usd(q.spent_usd)} spent on UTC day ${q.day}${uncountedCycles(q.unknown)}. Current limit ${usd(q.limit_usd)}, proposed limit ${usd(proposed)}. `
     + `Answer approve ${typed(proposed)} to set ${COORDINATOR_LIMIT_KEY} and resume cycles, or reject to keep cycles stopped until the UTC day ends.`;
   return { alert: { pattern: "coordinator_limit", pattern_key: coordinatorLimitKey(q.day), error_code: "daily_limit", count: q.unknown, detail }, dedupe_ms: DAY_MS };
 }

@@ -1,7 +1,7 @@
 import type { UserId, WorkItem, WorkItemId } from "./types.js";
 import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
 import { MERGE_COMMAND } from "./local-merge.js";
-import { CLOSED_REFUSAL, COORDINATOR_LIMIT_KEY, approveRefusal, settleHeldSkillVersion, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText } from "./commands.js";
+import { CLOSED_REFUSAL, COORDINATOR_LIMIT_KEY, approveRefusal, settleHeldSkillVersion, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText, usd } from "./commands.js";
 import type { NoteAnswers } from "./request-transition.js";
 import { verdictRefusal } from "./verdict.js";
 import { CONFIRM_COMMAND } from "./interpret.js";
@@ -274,7 +274,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
         if ("refused" in limit) return fail(limit.refused);
         return { code: 0, lines: [limit.set_usd === null
           ? "rejected: spend.coordinator_daily_usd stays as it is; coordinator cycles stay stopped until the UTC day ends"
-          : `approved: spend.coordinator_daily_usd is now $${limit.set_usd.toFixed(2)}; coordinator cycles run again once today's coordinator spend is below it`] };
+          : `approved: spend.coordinator_daily_usd is now ${usd(limit.set_usd)}; coordinator cycles run again once today's coordinator spend is below it`] };
       }
       // `approve <usd>` with no question open: the item command it reads as.
       if (a.value !== undefined) {

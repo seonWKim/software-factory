@@ -8,8 +8,8 @@
 // stores one skipped record and calls nothing; at the limit it also raises the day's one owner question. A cycle that
 // calls the agent stores one `coordinator` spend row and one Activity record with its cost.
 
-import { coordinatorLimitAlert } from "../core/alarms.js";
-import { COORDINATOR_LIMIT_KEY } from "../core/commands.js";
+import { coordinatorLimitAlert, uncountedCycles } from "../core/alarms.js";
+import { COORDINATOR_LIMIT_KEY, usd } from "../core/commands.js";
 import { errorText, type Logger } from "../core/log.js";
 import type { CoordinatorPorts } from "../core/controller-deps.js";
 import type { StoreLease } from "../core/lease.js";
@@ -182,13 +182,10 @@ export class Coordinator {
   }
 }
 
-const usd = (n: number): string => `$${n.toFixed(2)}`;
-const notCounted = (n: number): string => (n === 0 ? "" : `; ${n} cycle${n === 1 ? "" : "s"} with no reported cost not counted`);
-
 /** A cycle's Activity reason: its cost (or that the runner reported none) and today's coordinator spend against the limit. */
 export function costReason(cost_usd: number | null, day: string, limit_usd: number, today: DaySpend): string {
   const cost = cost_usd === null ? "the agent call reported no cost" : `the agent call cost ${usd(cost_usd)}`;
-  return `${cost}; ${usd(today.cost_usd)} of the ${usd(limit_usd)} coordinator daily limit spent (UTC day ${day})${notCounted(today.unknown)}`;
+  return `${cost}; ${usd(today.cost_usd)} of the ${usd(limit_usd)} coordinator daily limit spent (UTC day ${day})${uncountedCycles(today.unknown)}`;
 }
 
 /** How the skipped record's reason at the daily limit starts (limitStopsOn counts them). */
@@ -196,6 +193,6 @@ const LIMIT_REACHED = "the coordinator daily limit is reached";
 
 /** The skipped record's reason at the daily limit: the limit, today's spend, and how cycles resume. */
 export function limitReason(day: string, limit_usd: number, today: DaySpend): string {
-  return `${LIMIT_REACHED}: ${usd(today.cost_usd)} spent of ${COORDINATOR_LIMIT_KEY} ${usd(limit_usd)} (UTC day ${day})${notCounted(today.unknown)}; `
+  return `${LIMIT_REACHED}: ${usd(today.cost_usd)} spent of ${COORDINATOR_LIMIT_KEY} ${usd(limit_usd)} (UTC day ${day})${uncountedCycles(today.unknown)}; `
     + "no agent call until the owner raises the limit (approve <usd>) or the UTC day ends";
 }
