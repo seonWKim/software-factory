@@ -54,6 +54,7 @@ function replica(store: FactoryStore, clock: FakeClock, owner: string, live: { o
   const ports: CoordinatorPorts = {
     settings: async () => ({ daily_usd: 5, ...live }),
     limitReached: async () => undefined,
+    activity: async () => undefined,
     waiting: async () => (await store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: 50 })).filter(awaitingMerge),
     merge: async (id) => {
       merges.push(id);

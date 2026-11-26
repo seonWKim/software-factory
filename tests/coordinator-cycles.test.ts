@@ -34,6 +34,8 @@ async function seedWaiting(store: FactoryStore): Promise<void> {
  */
 function coordinator(store: FactoryStore, clock: FakeClock, cost = 3) {
   const calls: string[] = [];
+  /** Set to make the next question write fail, as a failed UI scan or kernel commit would. */
+  const faults = { alert: false };
   const agent: CoordinatorAgent = async ({ cycle_id }) => (calls.push(cycle_id), { status: "completed", actions: [], transcript_link: null, cost_usd: cost, tokens: 100 });
   const ports: CoordinatorPorts = {
     settings: async () => {
@@ -42,7 +44,11 @@ function coordinator(store: FactoryStore, clock: FakeClock, cost = 3) {
     },
     waiting: async () => (await store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: 50 })).filter(awaitingMerge),
     merge: async () => null,
-    limitReached: async ({ alert, dedupe_ms }) => void (await store.recordAlert(alert, dedupe_ms)),
+    limitReached: async ({ alert, dedupe_ms }) => {
+      if (faults.alert) throw ((faults.alert = false), new Error("alert write failed"));
+      await store.recordAlert(alert, dedupe_ms);
+    },
+    activity: async () => undefined,
   };
   const lease = new StoreLease(syncLeaseOps(store, COORDINATOR_LEASE), clock, { lease_ms: 60_000, heartbeat_ms: 10_000 }, "a");
   const c = new Coordinator({ store: new CoordinatorStore(storeSql(store)), lease, agent, clock, log: silent }, ports);
@@ -55,7 +61,7 @@ function coordinator(store: FactoryStore, clock: FakeClock, cost = 3) {
     if (t.kind !== "ran") throw new Error(t.kind);
     return t;
   };
-  return { calls, next };
+  return { calls, next, faults };
 }
 
 const limitAlerts = async (store: FactoryStore) => (await store.listAlerts({ limit: 100 })).filter((a) => a.pattern === "coordinator_limit");
@@ -118,6 +124,21 @@ describe("the UTC-day limit", () => {
     expect(alerts[0]!.detail).toContain("Current limit $5.00");
     expect(alerts[0]!.detail).toContain("proposed limit $10.00");
     expect(alerts[0]!.detail).toContain("approve 10");
+  });
+
+  it("a question write that fails stores no stop, so the next due cycle asks again", async () => {
+    const { store, clock } = await newStore();
+    await seedWaiting(store);
+    const c = coordinator(store, clock);
+    await c.next();
+    await c.next();
+    c.faults.alert = true;
+    await expect(c.next()).rejects.toThrow("alert write failed");
+    expect(await limitAlerts(store)).toEqual([]);
+    const stopped = await c.next();
+    expect(stopped.actions[0]).toMatchObject({ command: CYCLE, outcome: "skipped" });
+    expect(c.calls).toHaveLength(2);
+    expect(await limitAlerts(store)).toHaveLength(1);
   });
 });
 

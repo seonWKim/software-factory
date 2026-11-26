@@ -20,7 +20,7 @@ export const BACKGROUND_JOBS = [
   { job: "auto-grant", kind: "auto_grant", actor_id: "system:auto-grant", writes: "controller/units/run-results/auto-grant.ts: the grant's transition `activity`, in its transaction" },
   { job: "schedule", kind: "schedule_run", actor_id: "system:schedule", writes: "impl/store/sql/schedules.ts: recordClaim, one row per claimed occurrence with its run row's reason and ref, in the claim's transaction" },
   { job: "supervisor", kind: "restart", actor_id: "system:supervisor", writes: "impl/store/sql/worker-health.ts: recordChildRestart, one row per new restart the supervisor's status file lists, in its insert's transaction" },
-  { job: "coordinator", kind: "coordinator", actor_id: "system:coordinator", writes: "coordinator/store.ts: recordActivity, one row per cycle that called the agent, its cost in the reason, after its new spend row" },
+  { job: "coordinator", kind: "coordinator", actor_id: "system:coordinator", writes: "coordinator.unit.ts: the cycle's activity port (recordActivity), one row per cycle that called the agent, its cost in the reason, after its new spend row" },
   { job: "migrations", kind: "migration", actor_id: "system:migrate", writes: "impl/store/sql/activity.ts: migrateWithActivity, one row per migration applied on open or by npm run migrate" },
 ] as const satisfies readonly BackgroundJob[];
 

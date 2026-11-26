@@ -125,9 +125,12 @@ export class Coordinator {
     const today = await this.p.store.spendOn(day);
     if (today.cost_usd >= settings.daily_usd) {
       // One question per UTC day: only the day's first stop asks, so an answered question is not asked again that day.
-      const first = (await this.p.store.limitStopsOn(day, LIMIT_REACHED)) === 0;
+      // It is raised before the stop is stored, so a failure between the two asks again on the next stop (the store
+      // dedupes the day's key, so a second raise adds nothing).
+      if ((await this.p.store.limitStopsOn(day, LIMIT_REACHED)) === 0) {
+        await this.ports.limitReached(coordinatorLimitAlert({ day, limit_usd: settings.daily_usd, spent_usd: today.cost_usd, unknown: today.unknown }));
+      }
       await skipCycle(limitReason(day, settings.daily_usd, today));
-      if (first) await this.ports.limitReached(coordinatorLimitAlert({ day, limit_usd: settings.daily_usd, spent_usd: today.cost_usd, unknown: today.unknown }));
       this.p.log.warn("the coordinator reached its daily limit", { cycle_id, day, limit_usd: settings.daily_usd });
       return out;
     }
@@ -175,7 +178,7 @@ export class Coordinator {
     const now = this.p.clock.now().toISOString();
     if (!(await this.p.store.recordSpend({ cycle_id, day, cost_usd: answer.cost_usd, tokens: answer.tokens }, now))) return;
     const today = await this.p.store.spendOn(day);
-    await this.p.store.recordActivity({ subject: cycle_id, outcome: answer.status, reason: costReason(answer.cost_usd, day, limit_usd, today) }, now);
+    await this.ports.activity({ subject: cycle_id, outcome: answer.status, reason: costReason(answer.cost_usd, day, limit_usd, today) });
   }
 }
 
