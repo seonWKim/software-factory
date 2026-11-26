@@ -7,12 +7,14 @@
 // migrate-api.ts), /api/v1/calendar/events (the Calendar page's range read; calendar-events-api.ts), /api/v1/screenshot
 // (one stored image of an item's screenshot run; item-screenshots.ts) and /api/v1/evals/<skill>/runs, /grid, /compare
 // and /suite (a skill's eval runs, grid, compare, suite and cases; evals-api.ts, a path pattern), /versions and /diff
-// (a skill's versions and the diff of two; plugins-api.ts, a path pattern),
+// (a skill's versions and the diff of two; plugins-api.ts, a path pattern), /calibration (the owner's labels on the
+// judge; evals-api.ts),
 // /api/v1/items/:id/changes (the item page's Changes tab; changes.ts) and /api/v1/schedules and
 // /api/v1/schedules/runs and /api/v1/schedules/suggestions (`?schedule=<id>`; schedules-api.ts); every other
 // path is api.ts's. They are served here beside api.ts so it stays within its size budget. A new read route adds one
 // entry to READ_ROUTES, not a line in server.ts.
 
+import { judgeAgreement, judgeCalibrated } from "../core/skill-eval-calibration.js";
 import { caseResults, compareSkillEvalRuns, latestLinkedRun, lineDiff, skillEvalGrid, skillVersionRows, unlinkedRuns } from "../core/skill-eval-compare.js";
 import { type ApiResult, api, apiError } from "./api.js";
 import { staleCsrf } from "./commands.js";
@@ -63,7 +65,7 @@ const READ_ROUTES: readonly ReadRoute[] = [
   { path: SCREENSHOT_PATH, run: (d, u) => readScreenshot(d, u.searchParams) },
   { path: EVALS_LIST_PATH, run: (d) => readEvalSuites(d) },
   { path: EVALS_VERSIONS_PATH, run: (d, u) => readSkillVersions(d, { skillVersionRows, unlinkedRuns, latestLinkedRun, lineDiff, caseResults, skillOf }, u) },
-  { path: EVALS_PATH, run: (d, u) => readSkillEvals(d, { grid: skillEvalGrid, compare: compareSkillEvalRuns }, u) },
+  { path: EVALS_PATH, run: (d, u) => readSkillEvals(d, { grid: skillEvalGrid, compare: compareSkillEvalRuns, agreement: judgeAgreement, calibrated: judgeCalibrated }, u) },
   { path: SCHEDULES_PATH, run: (d) => readSchedules(d) },
   { path: SCHEDULE_RUNS_PATH, run: (d, u) => readScheduleRuns(d, u.searchParams.get("schedule")) },
   { path: SCHEDULE_SUGGESTIONS_PATH, run: (d, u) => readScheduleSuggestions(d, u.searchParams.get("schedule")) },

@@ -2,7 +2,8 @@
 // /versions and /diff?a=&b=, the same fields as the CLI's --json, and Run now's POST /api/v1/evals/<skill>/runs. <skill> is the
 // skill_ref, URL-encoded. A null figure means none was recorded, never 0. The Plugins page's Evals card (design
 // 09-dashboard-settings) also reads /suite and writes through POST /api/v1/evals/write (postEvalWrite), with
-// GET /api/v1/pauses's csrf_token.
+// GET /api/v1/pauses's csrf_token. The evals page's Judge checks card reads /calibration and labels a check with
+// postEvalWrite's label.set.
 
 import { useQuery } from "@tanstack/react-query";
 import { t } from "../i18n/index.js";
@@ -65,7 +66,7 @@ export interface SkillVersionDiff {
   cases: VersionCaseResult[];
 }
 
-const base = (skill: string, read: "runs" | "grid" | "suite" | "versions" | "diff"): string => `/api/v1/evals/${encodeURIComponent(skill)}/${read}`;
+const base = (skill: string, read: "runs" | "grid" | "suite" | "versions" | "diff" | "calibration"): string => `/api/v1/evals/${encodeURIComponent(skill)}/${read}`;
 
 /** Read again every 30 seconds while the page is open. */
 const POLL_MS = 30_000;
@@ -84,6 +85,28 @@ export function useSkillDiff(skill: string, a: string | null, b: string | null) 
   const url = a && b ? `${base(skill, "diff")}?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}` : null;
   return useQuery({ queryKey: [url], queryFn: () => getJson<SkillVersionDiff>(url!), enabled: url !== null });
 }
+
+/** One check the judge answered in a replay of the newest finished run, with the owner's label on it (null: none yet). */
+export interface JudgedCheck {
+  case_id: string;
+  replay: number;
+  check: string;
+  answer: string;
+  label: "right" | "wrong" | null;
+}
+
+/** GET /api/v1/evals/<skill>/calibration: the owner's labels on the judge and the newest finished run's judged checks. */
+export interface EvalCalibration {
+  labels: number;
+  /** Right labels ÷ all labels; null with no labels. */
+  agreement: number | null;
+  calibrated: boolean;
+  run: string | null;
+  checks: JudgedCheck[];
+}
+
+/** The skill's judge agreement and judged checks; read with the page and again after each label. */
+export const useEvalCalibration = (skill: string) => useApi<EvalCalibration>(base(skill, "calibration"), POLL_MS);
 
 /** The skill_refs that have a suite (GET /api/v1/evals); read once when the page opens, never polled. */
 export const useEvalSuites = () => useApi<{ skills: string[] }>("/api/v1/evals", false);
@@ -148,7 +171,8 @@ export type EvalWrite =
   | { op: "case.edit"; case: string; input?: unknown; expected?: unknown }
   | { op: "case.delete"; case: string }
   | { op: "case.try"; case: string }
-  | { op: "import"; skill: string };
+  | { op: "import"; skill: string }
+  | { op: "label.set"; run: string; case: string; replay: number; check: string; label: "right" | "wrong" };
 
 /** The answer's fields: `runs` after a suite delete, `tried` after a try, `added` and `kept` after an import. */
 export interface EvalWritten {
