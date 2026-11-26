@@ -13,4 +13,4 @@ export {
   judgeCase, rubricChecks, runSkillEval, skillEvalReplay,
   type CaseVerdict, type SkillEvalEngineDeps, type SkillEvalEngineStore, type SkillEvalOutcome, type SkillEvalRunInput, type SkillJudgeFn, type SkillReplay,
 } from "./skill-evals/engine.js";
-export { addSkillEvalCase, addSkillEvalSuite, deleteSkillEvalSuite, editSkillEvalCase, renameSkillEvalSuite, tryCase, validateCase, type Authored, type CaseFields, type SkillEvalAuthoring, type SkillEvalAuthoringStore, type TriedCase } from "./skill-evals/authoring.js";
+export { addSkillEvalCase, addSkillEvalSuite, caseFromRun, deleteSkillEvalSuite, editSkillEvalCase, renameSkillEvalSuite, tryCase, validateCase, type Authored, type CaseFields, type SkillEvalAuthoring, type SkillEvalAuthoringStore, type TriedCase } from "./skill-evals/authoring.js";
