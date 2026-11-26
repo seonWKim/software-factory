@@ -26,6 +26,7 @@ export const chat = {
   "chat.activityOne": "Answering 1 question now.",
   "chat.activityMany": "Answering {count} questions now.",
   "chat.turns": "Recent chat turns",
+  "chat.turnsFailed": "recent chat turns",
   "chat.turnsNone": "No chat turns yet",
   "chat.turnsNoneBody": "Questions asked in the chat panel show here with how each ended.",
   "chat.outcome.answered": "Answered",

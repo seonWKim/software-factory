@@ -199,6 +199,17 @@ describe("the Runners tab's Chat Card", () => {
     expect(dialog.textContent).not.toContain("cs_ok");
   });
 
+  it("says in plain words when the turns cannot load, without the address it asked", async () => {
+    const base = fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) =>
+      String(url).includes("/api/v1/chat/turns") ? new Response(JSON.stringify({ error: "Not found." }), { status: 404 }) : base(url, init)));
+    render(wrap(createElement(RunnersTab)));
+    const card = await screen.findByRole("region", { name: "Chat" }, SLOW);
+    const alert = await within(card).findByRole("alert", {}, SLOW);
+    expect(alert.textContent).toBe("Could not load: recent chat turns");
+    expect(card.textContent).not.toMatch(/\/api\/|HTTP|limit/);
+  });
+
   it("is part of Health's Runners tab", () => {
     expect(readFileSync("web/src/views/pages.tsx", "utf8")).toMatch(/<ChatCard \/>/);
   });

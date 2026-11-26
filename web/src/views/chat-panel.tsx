@@ -254,7 +254,8 @@ export function ChatCard(): ReactNode {
   return (
     <Card title={t("chat.runnersTitle")} count={q.data ? turns.length : undefined}>
       {q.isError ? (
-        <ErrorNote error={q.error} />
+        // Plain words, not the client's error: its message names the address it asked.
+        <ErrorNote error={t("chat.turnsFailed")} />
       ) : !q.data ? (
         <Loading rows={2} label="loading.running" onRetry={() => void q.refetch()} />
       ) : (
