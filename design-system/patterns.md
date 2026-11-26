@@ -45,6 +45,15 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 - A factory-wide state (paused, host asleep, a failing plugin) is a `Notice` at the top of the page, with the next step in it.
 - A short, harmless remark is a `Notice` at the info level; a failure that needs the owner is the failed level.
 
+## Autonomous work is visible
+
+Owner decision (2026-11-26): "Visibility is also important for this autonomous tasks and add it as a design rule if needed."
+
+- Every actor that acts without the owner has a place on a factory page: worker runs, schedules, personas, the improve and self-update loops, the chat back end (RFC 0025), and anything new that runs on its own.
+- That place shows what the actor is doing now, in plain words (`writing.md`); its recent actions, each with its outcome and the reason for it; and a link to each action's transcript or log.
+- Nothing that changes state is invisible: every item, rule, setting, branch, merge or sync write an actor makes shows in one of those places.
+- A new autonomous feature is not done until it has this place. Its topic file in `docs/design/` names the page. A new schedule action kind (a persona is a feedback schedule) is named on the Schedules page and listed in `AUTONOMOUS_SURFACES` (`tests/design-system.test.ts`).
+
 ## Loading, empty and error states
 
 - Loading: `Loading` in the place the content will be. The page keeps its header.
