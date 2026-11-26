@@ -1,12 +1,11 @@
 // The screenshot run (design 04-screenshots): queued by the controller after a review passes on a change that touches
-// a `repo.ui_check` path. No agent and no push. In a run folder on the item's branch it runs the install command
-// (through the run-side install cache) and the dashboard's build, then captures every sidebar page, the item page and
+// a `repo.ui_check` path. No agent and no push. In a run folder on the item's branch it runs the install step
+// (installStep: `repo.install_commands`, else the install command through the run-side install cache) and the dashboard's build, then captures every sidebar page, the item page and
 // the transcript page at 390px and 1280px, in light and dark, from the seeded fixture store (never the item's data),
 // every command through the run's sandbox, each PNG put in shared storage under `<item id>/<run id>/<page>-<width>-<theme>.png`. A build that fails, a missing
 // Chrome or a failed capture is a result: the captures it has and a reason, never a run failure, so the item is not
 // held. The controller then queues the screenshot review on what it stored.
 
-import { cachedInstall } from "../../install-cache.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, type RunCall, type RunKindDescriptor, defineRunKind } from "../../run-kind.js";
 import { chromeBrowser } from "../../../shared/chrome-browser.js";
@@ -20,8 +19,8 @@ async function screenshot(w: Worker, c: RunCall, browser: ScreenshotBrowser): Pr
   const handle = c.handle!;
   const review_run_id = typeof run.input?.review_run_id === "string" ? run.input.review_run_id : null;
   const outcome = await c.step("capture", async (): Promise<ScreenshotOutcome> => {
-    const runOn = (commands: string[][]) => w.runCheckList(run, handle, signal, { commands });
-    const install = await cachedInstall(w, handle, () => runOn([[...w.cfg.repo.install_command]]));
+    const runOn = (commands: NonNullable<Worker["cfg"]["repo"]["check_commands"]>) => w.runCheckList(run, handle, signal, { commands });
+    const install = await w.installStep(handle, runOn);
     if (install?.failed) return { captures: [], reason: `the install command failed (${install.failed.how})` };
     const build = await runOn([BUILD_COMMAND]);
     if (build.failed) return { captures: [], reason: `the build failed (${build.failed.how})` };

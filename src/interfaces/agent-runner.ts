@@ -1,3 +1,4 @@
+import type { GateEntry } from "../core/config.js";
 import type { SelectionMode, TestSelectionConfig } from "../core/test-selection.js";
 import type { ToolSpec } from "../core/tools/types.js";
 import type { Run, RunId, RunKind, WorkItemId } from "../core/types.js";
@@ -152,8 +153,8 @@ export interface GateHooks {
   /** The base the gates diff against (`<base_sha>...HEAD`), and the no-commit fallback (`--no-merges <base_sha>..HEAD`). */
   base_sha: string;
   limits: { max_diff_lines: number; max_diff_files: number };
-  /** `repo.check_commands`, in order; the Stop hook stops at the first failure. */
-  check_commands: readonly (readonly string[])[];
+  /** `repo.check_commands`, in order, each in its folder (design 04-gate-commands); the Stop hook stops at the first failure. */
+  check_commands: readonly GateEntry[];
   /** The env the Stop hook's git reads and checks run with: the worker's tool env, never a credential or test database URL. */
   check_env: Readonly<Record<string, string>>;
   /** `agent_stop_checks`: the most times the Stop hook blocks in one run. */
