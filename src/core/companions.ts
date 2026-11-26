@@ -59,6 +59,9 @@ export interface CompanionRule {
 /** A migration directly under `src/<owner>/migrations/`, or that folder itself (the file name not chosen yet). */
 const MIGRATION = /^src\/([^/]+)\/migrations\/(?:[^/]+\.ts)?$/;
 
+/** A setting declaration `src/<owner>/settings/<name>.setting.ts`, or that folder (the file name not chosen yet). */
+const SETTING = /^src\/([^/]+)\/settings\/(?:[^/]+\.setting\.ts)?$/;
+
 /** A kind rule: a file matching `when` brings the `fixed` files along, for `reason`. */
 const kindRule = (when: RegExp, fixed: readonly string[], reason: string): CompanionRule => ({
   also: (file) => (when.test(file) ? [...fixed] : []),
@@ -75,7 +78,10 @@ const kindRule = (when: RegExp, fixed: readonly string[], reason: string): Compa
  * `src/<owner>/migrations/` adds that owner's `src/<owner>/table-docs.ts`. The kind rules (decided 2026-11-26): a
  * migration adds the schema snapshot, a capability under `src/api/capabilities/` adds the API registry files, and
  * `src/core/settings.ts` or a declaration `src/<owner>/settings/<name>.setting.ts` adds the Settings page's label and
- * group files.
+ * group files. A declaration (or its `src/<owner>/settings/` folder) also adds its owner's generated catalog page
+ * `docs/settings/<owner>.md` (`npm run settings:catalog`; decided 2026-11-27, wi_b228bcc9): a setting's file sits in
+ * its owner's folder (tests/architecture/settings-monotonic.test.ts), and the catalog has one page per owner, so the
+ * path names the one page; never the index `docs/settings.md`, which changes only for a new owner.
  * A later rule is one entry here plus its test in tests/path-companions.test.ts.
  */
 export const COMPANION_RULES: readonly CompanionRule[] = [
@@ -118,6 +124,13 @@ export const COMPANION_RULES: readonly CompanionRule[] = [
     ["web/src/i18n/en/settings.ts", "web/src/views/settings/advanced-groups.ts"],
     "a new settable key needs its Settings-page label, help and group",
   ),
+  {
+    also: (file) => {
+      const owner = SETTING.exec(file)?.[1];
+      return owner === undefined ? [] : [`docs/settings/${owner}.md`];
+    },
+    reason: "a setting change regenerates its owner's catalog page docs/settings/<owner>.md (npm run settings:catalog)",
+  },
 ];
 
 /** True when a built-in rule may never add `path`: on the gate list (protected paths included) or under a floor. */
