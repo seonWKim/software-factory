@@ -8,9 +8,10 @@
 //   --json`, compareSkillEvalRuns); 404 when a run is unknown or of another skill.
 // - GET /api/v1/evals/<skill>/suite: { suite, cases }, the skill's suite (its first, by creation: the one `eval run` runs,
 //   null when it has none) and its cases (`factory eval case list <skill>`).
-// - GET /api/v1/evals: { skills, held }, the distinct skill_ref of every suite, sorted (the Skills tab links the rows it
+// - GET /api/v1/evals: { skills, held, starter }, the distinct skill_ref of every suite, sorted (the Skills tab links the rows it
 //   names), and every held skill version (newest first): its ref and version, the suite's skill_ref (null when its gate
-//   run names none), the pass rates compared, the cases that fell and its open alarm's alert_id (null: none open).
+//   run names none), the pass rates compared, the cases that fell and its open alarm's alert_id (null: none open);
+//   `starter` is null when Draft starter cases can run, else why not (no model, prompts/skill-starter.md unreadable).
 // - GET /api/v1/evals/<skill>/calibration: the owner's labels on the judge (design 06-measurement, judge labels):
 //   labels (count), agreement (right ÷ all; null with none), calibrated, run (the newest finished run's id, null with
 //   none) and checks (each judged check of that run: case_id, replay, check, answer, label right|wrong|null).
@@ -29,6 +30,11 @@
 //     { "op": "label.set", "run", "case", "replay", "check", "label": "right" | "wrong" }: the owner's label on one judged
 //     check (recordSkillEvalLabel, owner_id the page's factory user); a run, case, replay or check the judge did not
 //     answer is a 409 in plain words; a second label on the same check keeps the first.
+//     { "op": "starter.draft", "skill" }: 5 to 8 starter cases drafted from the skill's SKILL.md by one model call
+//     (src/core/skill-eval-starter.ts, design 07-self-improvement), answered as { cases } and stored nowhere.
+//     { "op": "starter.accept", "skill", "cases" }: the whole drafted set checked again by the same rules, then the
+//     test set (when the skill has none) and every case written; a refused set writes nothing. Both are a 409 for a
+//     skill that has cases already, or without the starter wiring; GET /api/v1/evals's `starter` says why it is off.
 // - POST /api/v1/evals/<skill>/runs: Run now, one run through UiEvals.run (evals-run-api.ts).
 // Every string in an answer leaves through the Withholder. The grid, compare and eval source functions come from the
 // route tables (read-routes.ts and write-routes.ts, the root), as main.ts passes the CLI its, so this feature has no
@@ -36,6 +42,7 @@
 
 import type { judgeAgreement, judgeCalibrated } from "../core/skill-eval-calibration.js";
 import type { compareSkillEvalRuns, skillEvalGrid } from "../core/skill-eval-compare.js";
+import type { SkillStarter } from "../core/skill-eval-starter.js";
 import type { UserId } from "../core/types.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -104,11 +111,12 @@ export function skillOf(encoded: string | undefined): string | ApiResult {
   return skill === "" ? apiError(404, "Not found.") : skill;
 }
 
-/** Answers GET /api/v1/evals: the distinct skill_ref of every suite, sorted, and the held versions, each string through the Withholder. */
-export async function readEvalSuites(d: EvalsDeps): Promise<ApiResult> {
+/** Answers GET /api/v1/evals: the distinct skill_ref of every suite, sorted, the held versions and why starter drafts are off (null: on), each string through the Withholder. */
+export async function readEvalSuites(d: EvalsDeps & { evals?: Pick<UiEvals, "starter"> }): Promise<ApiResult> {
   const w = new Withholder(d.scanner);
   const refs = [...new Set((await d.store.listSkillEvalSuites()).map((s) => s.skill_ref))].sort();
-  return { status: 200, value: { skills: await withheld(w, refs), held: await withheld(w, await heldVersions(d)) } };
+  const starter = d.evals?.starter ? await d.evals.starter.unavailable() : NO_STARTER;
+  return { status: 200, value: { skills: await withheld(w, refs), held: await withheld(w, await heldVersions(d)), starter: await withheld(w, starter) } };
 }
 
 /** Most held versions listed: far more than wait on the owner at once. */
@@ -239,7 +247,7 @@ async function setLabel(
 }
 
 /** The skill's suite (its first, by creation) and its cases; a null suite and no cases when it has none. */
-async function suiteOf(d: EvalsDeps, skill: string): Promise<{ suite: unknown; cases: unknown[] }> {
+async function suiteOf(d: Pick<EvalsDeps, "store">, skill: string): Promise<{ suite: unknown; cases: unknown[] }> {
   const suite = (await d.store.listSkillEvalSuites()).find((s) => s.skill_ref === skill) ?? null;
   return { suite, cases: suite ? await d.store.listSkillEvalCases(suite.id) : [] };
 }
@@ -260,12 +268,16 @@ export interface UiEvals {
    * Absent: POST /api/v1/evals/<skill>/runs is a 405.
    */
   run?(store: FactoryStore, r: { skill: string; created_by: UserId; signal: AbortSignal; model_class?: string; judge_model_class?: string; replays?: number }): Promise<{ run: { id: string; status: string } } | { refused: string }>;
+  /** Draft starter cases (src/core/skill-eval-starter.ts skillStarter, built by src/compose.ts). Absent: starter.draft and starter.accept refuse. */
+  starter?: SkillStarter;
 }
+
+const NO_STARTER = "This server has no starter drafts wired, so starter cases cannot be drafted. Add test set still works.";
 
 /** The UI's dependencies with the evals write route. Absent `evals`: a POST to it is a 405. */
 export type EvalsWriteDeps = PauseDeps & { evals?: UiEvals };
 
-const OPS = ["suite.add", "suite.rename", "suite.delete", "case.add", "case.edit", "case.delete", "case.try", "import", "version.settle", "label.set"] as const;
+const OPS = ["suite.add", "suite.rename", "suite.delete", "case.add", "case.edit", "case.delete", "case.try", "import", "version.settle", "label.set", "starter.draft", "starter.accept"] as const;
 type Op = (typeof OPS)[number];
 type Body = Record<string, unknown>;
 
@@ -285,8 +297,9 @@ function missing(op: Op, b: Body): string | null {
     if (typeof b.version !== "number" || !Number.isInteger(b.version) || b.version < 1) return "version must be a whole number from 1";
     return b.decision === "approve" || b.decision === "reject" ? null : "decision must be approve or reject";
   }
-  if (op.startsWith("suite.") || op === "case.add" || op === "import") {
+  if (op.startsWith("suite.") || op.startsWith("starter.") || op === "case.add" || op === "import") {
     if (text(b, "skill") === null) return "skill must be a non-empty string";
+    if (op === "starter.accept" && !Array.isArray(b.cases)) return "cases must be the list of drafted cases";
   } else if (text(b, "case") === null) return "case must be a non-empty string (a case id)";
   if ((op === "suite.rename" || (op === "suite.add" && b.title !== undefined)) && text(b, "title") === null) return "title must be a non-empty string";
   if (op === "case.try" && b.model !== undefined && text(b, "model") === null) return "model must be cheap, standard or strong";
@@ -356,5 +369,35 @@ async function runOp(store: FactoryStore, e: UiEvals, op: Op, b: Body, user: str
     }
     case "label.set":
       return setLabel(store, { run_id: text(b, "run")!, case_id: id, replay: b.replay as number, check: b.check as string, verdict: b.label as "right" | "wrong", owner_id: user as UserId });
+    case "starter.draft":
+    case "starter.accept":
+      return starterOp(store, e, op, skill, b.cases, user);
   }
+}
+
+/**
+ * Starter drafts for a skill with no cases: a draft is one model call that writes nothing; an accept checks the whole
+ * set by the draft's rules before any write, then adds the test set (when there is none) and each case in order.
+ */
+async function starterOp(store: FactoryStore, e: UiEvals, op: "starter.draft" | "starter.accept", skill: string, cases: unknown, user: string): Promise<Authored<Body>> {
+  if (!e.starter) return { refused: NO_STARTER };
+  const { suite, cases: stored } = await suiteOf({ store }, skill);
+  if (stored.length > 0) return { refused: `${skill} has cases already: starter cases are only for a skill with none, so nothing was ${op === "starter.draft" ? "drafted" : "written"}.` };
+  if (op === "starter.draft") {
+    const r = await e.starter.draft(skill, new AbortController().signal);
+    return "refused" in r ? r : { value: { skill, cases: r.value } };
+  }
+  const set = e.starter.check(cases);
+  if ("refused" in set) return set;
+  if (suite === null) {
+    const added = await e.authoring.addSuite(store, { skill, created_by: user });
+    if ("refused" in added) return added;
+  }
+  const added: string[] = [];
+  for (const c of set.value) {
+    const r = await e.authoring.addCase(store, skill, { input: c.input, expected: c.expected });
+    if ("refused" in r) return r;
+    added.push(r.value.id);
+  }
+  return { value: { skill, added } };
 }
