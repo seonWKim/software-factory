@@ -1,6 +1,6 @@
 // The new-version gate of an imported skill (design 07-self-improvement, src/core/skill-eval-gate.ts): a gate row in
-// pending written with each new version, the gate pass (3 replays per case, compared with the current version's latest
-// run on the same model class), the held state with the cases that fell and one owner question, the 30-minute lease
+// pending written with each new version, the gate pass (3 replays per case, paired with the current version's latest
+// run on the same model class: only a paired verdict worse holds; runs that are not comparable pass), the held state with the cases that fell and one owner question, the 30-minute lease
 // and its token, and versions recorded before the gate. The store is the real SQLite store; the suite run is a fake
 // that stores a run with the verdicts it is given: no test calls a model.
 
@@ -9,7 +9,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { GATE_LEASE_MS, GATE_REPLAYS, type SkillGateWiring, runSkillVersionGates } from "../src/core/skill-eval-gate.js";
-import { SKILL_IMPROVE_DEFAULTS } from "../src/core/skill-improve-config.js";
 import type { Timestamp, UserId } from "../src/core/types.js";
 import type { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { storeSql } from "../src/impl/store/sql/store-sql.js";
@@ -30,10 +29,13 @@ const iso = (clock: FakeClock, plus = 0) => new Date(clock.now().getTime() + plu
 
 type Verdicts = Record<string, readonly ("pass" | "fail")[]>;
 
+/** The judge version every run records unless a test names another (null: none recorded). */
+const JUDGE = "j1";
+
 /** A stored, finished run of the suite on `version` with these verdicts per case (one replay each), and its figures. */
-async function storedRun(store: SqlFactoryStore, clock: FakeClock, r: { id: string; version: string; model_class: string; verdicts: Verdicts }) {
+async function storedRun(store: SqlFactoryStore, clock: FakeClock, r: { id: string; version: string; model_class: string; verdicts: Verdicts; judge_version?: string | null }) {
   clock.advance(1000);
-  await store.startSkillEvalRun({ id: r.id, suite_id: SUITE, created_by: OWNER, skill_version: r.version });
+  await store.startSkillEvalRun({ id: r.id, suite_id: SUITE, created_by: OWNER, skill_version: r.version, judge_version: r.judge_version === undefined ? JUDGE : r.judge_version });
   const all = Object.entries(r.verdicts).flatMap(([case_id, vs]) => vs.map((verdict, i) => ({ case_id, verdict, replay: i + 1 })));
   for (const v of all) await store.recordSkillEvalReplay({ run_id: r.id, case_id: v.case_id, verdict: v.verdict, detail: {}, replay: v.replay });
   await store.finishSkillEvalRun(r.id, "passed");
@@ -72,8 +74,8 @@ function fakeWiring(store: SqlFactoryStore, clock: FakeClock, o: { suite?: strin
   return { wiring, runs };
 }
 
-const pass = (store: SqlFactoryStore, clock: FakeClock, wiring: SkillGateWiring, noise = SKILL_IMPROVE_DEFAULTS.skill_improve_noise) =>
-  runSkillVersionGates({ store, scanner: cleanScanner, clock, config: { skill_improve_noise: noise }, wiring, signal: new AbortController().signal });
+const pass = (store: SqlFactoryStore, clock: FakeClock, wiring: SkillGateWiring) =>
+  runSkillVersionGates({ store, scanner: cleanScanner, clock, wiring, signal: new AbortController().signal });
 
 describe("skill version gate: the gate row", () => {
   it("a new version is stored with its gate row in pending, in the same transaction as its version row", async () => {
@@ -194,36 +196,69 @@ describe("skill version gate: the gate pass", () => {
     expect(f.runs).toEqual([expect.objectContaining({ model_class: "standard", replays: 3 })]);
   });
 
-  it("a drop past skill_improve_noise holds the version, names each case that fell and raises one owner question", async () => {
+  it("a significant paired drop over six non-tied cases holds the version, names each case that fell and raises one owner question", async () => {
     const { store, clock } = await setup();
     await oldVersion(store, 1, "h1");
-    await storedRun(store, clock, { id: "base", version: "h1", model_class: "standard", verdicts: { c1: ["pass"], c2: ["pass"], c3: ["fail"] } });
+    const all = ["c1", "c2", "c3", "c4", "c5", "c6", "c7"];
+    await storedRun(store, clock, { id: "base", version: "h1", model_class: "standard", verdicts: Object.fromEntries(all.map((c) => [c, ["pass"]])) });
     await store.recordSkillVersion({ ref_id: REF, folder_hash: "h2", text: "B", source: "claude" });
-    const f = fakeWiring(store, clock, { verdicts: { c1: ["pass"], c2: ["fail"], c3: ["fail"] } });
+    // c6..c1 fall (two of them only part way), c7 ties: 0 wins, 6 losses, p = 0.03125, the interval below zero.
+    const f = fakeWiring(store, clock, { verdicts: { c6: ["fail"], c5: ["pass", "fail", "fail"], c4: ["fail"], c3: ["fail"], c2: ["pass", "fail", "fail"], c1: ["fail"], c7: ["pass"] } });
 
     expect(await pass(store, clock, f.wiring)).toEqual([{ ref_id: REF, version: 2, state: "held", reason: "dropped" }]);
     const gate = (await store.getSkillVersionGate(REF, 2))!;
-    expect(gate).toMatchObject({ state: "held", lease_token: null, detail: { reason: "dropped", fell: ["c2"], current: { version: 1, run_id: "base" } } });
+    expect(gate).toMatchObject({
+      state: "held", lease_token: null,
+      detail: { reason: "dropped", verdict: "worse", wins: 0, losses: 6, ties: 1, fell: ["c1", "c2", "c3", "c4", "c5", "c6"], current: { version: 1, run_id: "base" } },
+    });
+    const paired = gate.detail as { p_value: number; interval: { high: number } };
+    expect(paired.p_value).toBeLessThan(0.05);
+    expect(paired.interval.high).toBeLessThan(0);
     expect((await store.currentSkillVersion(REF))?.version).toBe(1);
     const alerts = await store.listAlerts({ limit: 10 });
     expect(alerts).toEqual([expect.objectContaining({ pattern: "skill_version_gate", pattern_key: `skill_version_gate:${REF}:2`, count: 2 })]);
-    expect(alerts[0]!.detail).toContain("c2");
+    expect(alerts[0]!.detail).toContain("paired verdict is worse");
+    expect(alerts[0]!.detail).toContain("c1, c2, c3, c4, c5, c6.");
     // A held gate is not taken again: no second run and no second question.
     expect(await pass(store, clock, f.wiring)).toEqual([]);
     expect(f.runs).toHaveLength(1);
     expect(await store.listAlerts({ limit: 10 })).toHaveLength(1);
   });
 
-  it("a drop within skill_improve_noise passes", async () => {
+  it("a small drop that is within noise passes with the paired figures and raises no question", async () => {
     const { store, clock } = await setup();
     await oldVersion(store, 1, "h1");
-    await storedRun(store, clock, { id: "base", version: "h1", model_class: "standard", verdicts: { c1: ["pass"], c2: ["fail"] } });
+    await storedRun(store, clock, { id: "base", version: "h1", model_class: "standard", verdicts: { c1: ["pass"], c2: ["pass"], c3: ["fail"] } });
     await store.recordSkillVersion({ ref_id: REF, folder_hash: "h2", text: "B", source: "claude" });
-    const f = fakeWiring(store, clock, { verdicts: { c1: ["pass", "pass", "fail"], c2: ["pass", "pass", "pass"] } });
-    // 0.5 → 0.666: a gain passes; with noise 1 any drop is within it too.
-    expect((await pass(store, clock, f.wiring))[0]).toMatchObject({ state: "passed", reason: "within_noise" });
+    // Pass rate 0.666 → 0.333: c2 falls, but one loss is within noise.
+    const f = fakeWiring(store, clock, { verdicts: { c1: ["pass"], c2: ["fail"], c3: ["fail"] } });
+
+    expect(await pass(store, clock, f.wiring)).toEqual([{ ref_id: REF, version: 2, state: "passed", reason: "within_noise" }]);
+    const gate = (await store.getSkillVersionGate(REF, 2))!;
+    expect(gate.detail).toMatchObject({ reason: "within_noise", verdict: "within noise", wins: 0, losses: 1, p_value: 1, current: { version: 1, run_id: "base" } });
+    expect(gate.detail).toHaveProperty("mean_difference");
+    expect(gate.detail).toHaveProperty("interval");
     expect(await store.listAlerts({ limit: 10 })).toEqual([]);
+    expect((await store.currentSkillVersion(REF))?.version).toBe(2);
   });
+
+  for (const [name, judge_version, why] of [
+    ["different judge versions", "j2", "the judge versions differ"],
+    ["no version recorded", null, "one run has no version recorded"],
+  ] as const) {
+    it(`runs with ${name} are not comparable: even a large drop passes with reason not_comparable and raises no question`, async () => {
+      const { store, clock } = await setup();
+      await oldVersion(store, 1, "h1");
+      const all = ["c1", "c2", "c3", "c4", "c5", "c6"];
+      await storedRun(store, clock, { id: "base", version: "h1", model_class: "standard", judge_version, verdicts: Object.fromEntries(all.map((c) => [c, ["pass"]])) });
+      await store.recordSkillVersion({ ref_id: REF, folder_hash: "h2", text: "B", source: "claude" });
+      const f = fakeWiring(store, clock, { verdicts: Object.fromEntries(all.map((c) => [c, ["fail"]])) });
+
+      expect(await pass(store, clock, f.wiring)).toEqual([{ ref_id: REF, version: 2, state: "passed", reason: "not_comparable" }]);
+      expect((await store.getSkillVersionGate(REF, 2))!.detail).toMatchObject({ reason: "not_comparable", not_comparable: why, pass_rate: 0, current: { version: 1, run_id: "base", pass_rate: 1 } });
+      expect(await store.listAlerts({ limit: 10 })).toEqual([]);
+    });
+  }
 });
 
 describe("skill version gate: lease and token", () => {
@@ -262,7 +297,7 @@ describe("skill version gate: lease and token", () => {
     };
     const f = fakeWiring(store, clock, { verdicts: { c1: ["fail"] }, during });
 
-    expect(await pass(store, clock, f.wiring)).toEqual([{ ref_id: REF, version: 2, state: "lost", reason: "dropped" }]);
+    expect(await pass(store, clock, f.wiring)).toEqual([{ ref_id: REF, version: 2, state: "lost", reason: "within_noise" }]);
     expect(await store.getSkillVersionGate(REF, 2)).toMatchObject({ state: "passed", run_id: null, detail: { reason: "by_other" } });
     expect(await store.listAlerts({ limit: 10 })).toEqual([]);
     // A finish under a token that never held it writes nothing either.
