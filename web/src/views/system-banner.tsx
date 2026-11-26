@@ -20,7 +20,7 @@ import { Outcome, useWrite } from "./settings-file-keys.js";
 import { ModeDialog } from "./settings/mode-dialog.js";
 import { ShowFailuresDialog, WhatFailedDialog } from "./alarm-dialogs.js";
 import { HeldCases, HeldVersionActions, heldRates, useHeldVersions } from "./evals.js";
-import { ModelCredentialDialog } from "./model-credential-dialog.js";
+import { AddModelCredential } from "./model-credential-dialog.js";
 import { Toast } from "../components/ui/toast.js";
 
 /**
@@ -179,18 +179,17 @@ function PauseCheckRow({ action, pause }: { action: SystemAction; pause: string 
 }
 
 /**
- * The missing model credential's Needs-you row (design 09-status-page): its sentence, no command, and Add model
- * credential in its "⋯" menu, which opens the dialog; the row keeps its height.
+ * The missing model credential's Needs-you row (design 09-status-page): its sentence, why it matters in the details
+ * line, no command, and a visible Add model credential button that opens the dialog.
  */
 function ModelCredentialRow({ action }: { action: SystemAction }) {
-  const [open, setOpen] = useState(false);
   return (
     <ListRow
       data-check="model_credential"
       title={<p title={action.text} className={cn(ROW_TITLE, "text-text-1")}>{action.text}</p>}
-      menu={<OverflowMenu label={t("commands.more")} items={[{ label: t("needs.addCredential"), action: "add_model_credential", onSelect: () => setOpen(true) }]} />}
+      details={<span>{t("needs.credentialWhy")}</span>}
     >
-      {open && <ModelCredentialDialog onClose={() => setOpen(false)} />}
+      <AddModelCredential />
     </ListRow>
   );
 }

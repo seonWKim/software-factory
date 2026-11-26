@@ -176,6 +176,7 @@ export const shell = {
   "loading.running": "Running work",
   "loading.queue": "Queue",
   "loading.items": "Work items",
+  "loading.coordinator": "Coordinator",
   "loading.item": "Work item",
   "loading.workers": "Worker processes",
   "loading.merges": "Unreviewed merges",
