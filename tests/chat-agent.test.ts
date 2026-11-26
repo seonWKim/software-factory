@@ -1,12 +1,20 @@
 // Chat, phase 1 (docs/plugins/llm-provider.md): chat messages in controller_chat_messages, keyed by session and seq,
 // and the provider call with tools. A test drives two calls by hand: the reply's tool call is answered with a `tool`
-// message in the next call's messages. No live model call: a fake provider, a stubbed fetch, a CLI that never runs.
+// message in the next call's messages. Phase 2 (design 04-chat-agent): the turn loop, chatTurn, with the chat's
+// read-only tools, the egress scan and a spend row per turn. No live model call: a fake provider, a stubbed fetch, a
+// CLI that never runs.
 
 import { chmodSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFeatureMap } from "../src/api/feature-map.js";
+import { buildRegistry, declare } from "../src/api/registry.js";
+import { object, string } from "../src/api/schema.js";
+import { type ChatDeps, chatTurn } from "../src/core/chat-agent.js";
+import { type ChatTool, ChatToolBroker, featureMapTools } from "../src/core/chat-agent-tools.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { ClaudeCliLLMProvider } from "../src/impl/llm/claude-cli-llm-provider.js";
 import { OpenAICompatibleLLMProvider } from "../src/impl/llm/openai-compatible-llm-provider.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
@@ -14,6 +22,7 @@ import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { NewChatMessage } from "../src/interfaces/factory-store.js";
 import type { LLMMessage, LLMProvider, LLMRequest, LLMResponse, LLMTool } from "../src/interfaces/llm-provider.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
+import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -187,5 +196,173 @@ describe("claude-cli provider with tools", () => {
     expect(r.usage.output_tokens).toBe(0);
     expect(existsSync(marker)).toBe(false);
     expect(existsSync(join(dir, "work"))).toBe(false);
+  });
+});
+
+// ---- Phase 2: the turn loop ----
+
+const SECRET = `ghp_${"Ab3".repeat(12)}`;
+const REGISTRY = buildRegistry([declare({
+  id: "store.ping", area: "store", description: "Answers that the store is up.", permission: "read", method: "GET", path: "/api/v1/store/ping",
+  input: object({}), output: object({ up: string() }), run: () => ({ up: "yes" }),
+})]);
+const mapTools = () => featureMapTools((p) => readFeatureMap(REGISTRY, p));
+
+type Step = Omit<LLMResponse, "usage" | "stop_reason"> & Partial<Pick<LLMResponse, "usage" | "stop_reason">>;
+/** A provider that answers `steps` in order and keeps each request. */
+function scripted(steps: Step[]): LLMProvider & { seen: LLMRequest[] } {
+  const seen: LLMRequest[] = [];
+  return {
+    seen,
+    async complete(req) {
+      seen.push(req);
+      const s = steps[seen.length - 1] ?? { text: "out of script" };
+      return { stop_reason: "end", usage: { input_tokens: 10, output_tokens: 5, cost_usd: 0.01 }, ...s };
+    },
+  };
+}
+const call = (name: string, args: unknown, id = `c_${name}`) => ({ id, name, arguments: JSON.stringify(args) });
+
+async function turnDeps(llm: LLMProvider, broker: ToolBroker = new ChatToolBroker(mapTools())): Promise<{ d: ChatDeps; store: SqlFactoryStore }> {
+  const clock = new FakeClock("2026-11-26T09:00:00.000Z");
+  const store = new SqlFactoryStore(new SqliteDriver(dbFile()), clock);
+  await store.migrate();
+  let n = 0;
+  return { store, d: { store, llm, broker, clock, scanner: new PatternEgressScanner(async () => []), newTurnId: () => `ct_${n++}` } };
+}
+
+describe("chatTurn", () => {
+  it("offers the feature-map tools, runs the asked call, stores the turn and one spend row, and returns the reply", async () => {
+    const llm = scripted([{ text: "", tool_calls: [call("list_areas", {})] }, { text: "One area: store." }]);
+    const { d, store } = await turnDeps(llm);
+    try {
+      expect(await chatTurn(d, "s1", "What areas are there?")).toEqual({ ok: true, reply: "One area: store." });
+      expect(llm.seen[0]!.tools!.map((t) => t.name)).toEqual(["list_areas", "list_features", "get_feature", "get_feature_schema"]);
+      const tool = { role: "tool", content: JSON.stringify({ areas: [{ id: "store", capabilities: ["store.ping"] }] }), tool_call_id: "c_list_areas" };
+      expect(llm.seen[1]!.messages).toContainEqual(tool);
+      const stored = (await store.listChatMessages("s1")).map((m) => [m.seq, m.role, m.content]);
+      expect(stored).toEqual([[0, "user", "What areas are there?"], [1, "assistant", ""], [2, "tool", tool.content], [3, "assistant", "One area: store."]]);
+      expect(await store.listChatSpendBetween("2026-11-26", "2026-11-26")).toEqual([{ turn_id: "ct_0", session_id: "s1", day: "2026-11-26", cost_usd: 0.02, tokens: 30 }]);
+
+      // The next turn sends the stored history and takes the next seqs.
+      const again = scripted([{ text: "Still one." }]);
+      expect(await chatTurn({ ...d, llm: again }, "s1", "And now?")).toEqual({ ok: true, reply: "Still one." });
+      expect(again.seen[0]!.messages.map((m) => m.content)).toEqual(["What areas are there?", "", tool.content, "One area: store.", "And now?"]);
+      expect((await store.listChatMessages("s1")).map((m) => m.seq)).toContain(5);
+      expect((await store.listChatSpendBetween("2026-11-26", "2026-11-26")).map((s) => s.turn_id)).toEqual(["ct_0", "ct_1"]);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("a read-only tool added to the broker is offered and callable, with no chat code changed", async () => {
+    const count: ChatTool = { name: "store.count", read_only: true, description: "Counts items.", input_schema: { type: "object" }, call: async () => ({ ok: true, content: { count: 7 } }) };
+    const llm = scripted([{ text: "", tool_calls: [call("store.count", {})] }, { text: "Seven." }]);
+    const { d, store } = await turnDeps(llm, new ChatToolBroker([...mapTools(), count]));
+    try {
+      expect(await chatTurn(d, "s1", "How many?")).toEqual({ ok: true, reply: "Seven." });
+      expect(llm.seen[0]!.tools!.map((t) => t.name)).toContain("store.count");
+      expect(llm.seen[1]!.messages).toContainEqual({ role: "tool", content: '{"count":7}', tool_call_id: "c_store.count" });
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("offers no write tool and refuses a call to one without reaching the broker", async () => {
+    const calls: string[] = [];
+    const tools: ToolDescriptor[] = [
+      { name: "repo.read", read_only: true, description: "Reads.", input_schema: { type: "object" } },
+      { name: "git.store_branch", read_only: false, description: "Writes.", input_schema: { type: "object" } },
+    ];
+    const broker: ToolBroker = {
+      listTools: (g) => tools.filter((t) => g.includes(t.name)),
+      allTools: () => tools,
+      async call(_ctx: ToolCallContext, name: string): Promise<ToolResult> {
+        calls.push(name);
+        return { ok: true, content: "done" };
+      },
+    };
+    const llm = scripted([{ text: "", tool_calls: [call("git.store_branch", { branch: "main" }), call("repo.read", {})] }, { text: "I cannot write." }]);
+    const { d, store } = await turnDeps(llm, broker);
+    try {
+      expect(await chatTurn(d, "s1", "Push it.")).toEqual({ ok: true, reply: "I cannot write." });
+      expect(llm.seen[0]!.tools!.map((t) => t.name)).toEqual(["repo.read"]);
+      expect(calls).toEqual(["repo.read"]);
+      const refused = llm.seen[1]!.messages.find((m) => m.tool_call_id === "c_git.store_branch")!;
+      expect(refused.content).toMatch(/not a read-only tool/);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("a secret in a tool result stores no message and returns nothing; the model never sees it", async () => {
+    const leak: ChatTool = { name: "store.leak", read_only: true, description: "Leaks.", input_schema: { type: "object" }, call: async () => ({ ok: true, content: SECRET }) };
+    const llm = scripted([{ text: "", tool_calls: [call("store.leak", {})] }, { text: "never" }]);
+    const { d, store } = await turnDeps(llm, new ChatToolBroker([leak]));
+    try {
+      expect(await chatTurn(d, "s1", "Leak it.")).toEqual({ ok: false, reason: "withheld" });
+      expect(llm.seen).toHaveLength(1);
+      expect(await store.listChatMessages("s1")).toEqual([]);
+      // The model calls were spent: the turn's spend is still counted.
+      expect((await store.listChatSpendBetween("2026-11-26", "2026-11-26")).map((s) => s.session_id)).toEqual(["s1"]);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("a secret in the reply or in the owner's message stores no message and returns nothing", async () => {
+    const { d, store } = await turnDeps(scripted([{ text: `Here: ${SECRET}` }]));
+    try {
+      expect(await chatTurn(d, "s1", "Tell me.")).toEqual({ ok: false, reason: "withheld" });
+      const silent = scripted([]);
+      expect(await chatTurn({ ...d, llm: silent }, "s2", `my key ${SECRET}`)).toEqual({ ok: false, reason: "withheld" });
+      expect(silent.seen).toEqual([]);
+      expect(await store.listChatMessages("s1")).toEqual([]);
+      expect(await store.listChatMessages("s2")).toEqual([]);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("stores nothing on a provider error or when the model keeps asking for tools; an unknown cost is stored as null", async () => {
+    const { d, store } = await turnDeps(scripted([{ text: "", stop_reason: "error", usage: { input_tokens: 1, output_tokens: 0, cost_usd: null } }]));
+    try {
+      expect(await chatTurn(d, "s1", "Hi")).toEqual({ ok: false, reason: "model_error" });
+      const loop = scripted(Array.from({ length: 20 }, () => ({ text: "", tool_calls: [call("list_areas", {})] })));
+      expect(await chatTurn({ ...d, llm: loop }, "s2", "Hi")).toEqual({ ok: false, reason: "too_many_steps" });
+      expect(await store.listChatMessages("s1")).toEqual([]);
+      expect(await store.listChatMessages("s2")).toEqual([]);
+      const spend = await store.listChatSpendBetween("2026-11-26", "2026-11-26");
+      expect(spend.find((s) => s.session_id === "s1")).toMatchObject({ cost_usd: null, tokens: 1 });
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("a failed turn takes no seq, and the next turn's spend is still counted", async () => {
+    const llm = scripted([{ text: "", stop_reason: "error", usage: { input_tokens: 1, output_tokens: 0, cost_usd: null } }, { text: "Hello." }]);
+    const { d, store } = await turnDeps(llm);
+    try {
+      expect(await chatTurn(d, "s1", "Hi")).toEqual({ ok: false, reason: "model_error" });
+      expect(await chatTurn(d, "s1", "Hi again")).toEqual({ ok: true, reply: "Hello." });
+      expect((await store.listChatMessages("s1")).map((m) => m.seq)).toEqual([0, 1]);
+      const spend = await store.listChatSpendBetween("2026-11-26", "2026-11-26");
+      expect(spend.map((s) => [s.turn_id, s.session_id])).toEqual([["ct_0", "s1"], ["ct_1", "s1"]]);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("a spend row already stored for the turn is not stored twice", async () => {
+    const { store } = await turnDeps(scripted([]));
+    try {
+      const row = { turn_id: "ct_9", session_id: "s1", day: "2026-11-26", cost_usd: 0.5, tokens: 9 };
+      expect(await store.recordChatSpend(row)).toBe(true);
+      expect(await store.recordChatSpend({ ...row, cost_usd: 1 })).toBe(false);
+      expect(await store.listChatSpendBetween("2026-11-26", "2026-11-26")).toEqual([row]);
+      expect(await store.listChatSpendBetween("2026-11-27", "2026-11-28")).toEqual([]);
+    } finally {
+      await store.close();
+    }
   });
 });

@@ -380,7 +380,7 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
   recordCommandProposals(rows: Parameters<FactoryStore["recordCommandProposals"]>[0]) { return proposals.recordCommandProposals(this.db, rows, this.now()); }
   listCommandProposals(proposal_id: string) { return proposals.listCommandProposals(this.db, proposal_id); }
   answerCommandProposal(a: Parameters<FactoryStore["answerCommandProposal"]>[0]) { return proposals.answerCommandProposal(this.db, a, this.now()); }
-  appendChatMessages(id: string, m: Parameters<FactoryStore["appendChatMessages"]>[1]) { return chat.appendChatMessages(this.db, id, m, this.now()); } listChatMessages(id: string) { return chat.listChatMessages(this.db, id); } // chat.ts
+  appendChatMessages(id: string, m: Parameters<FactoryStore["appendChatMessages"]>[1]) { return chat.appendChatMessages(this.db, id, m, this.now()); } listChatMessages(id: string) { return chat.listChatMessages(this.db, id); } recordChatSpend(s: Parameters<FactoryStore["recordChatSpend"]>[0]) { return chat.recordChatSpend(this.db, s, this.now()); } listChatSpendBetween(from: string, to: string) { return chat.listChatSpendBetween(this.db, from, to); } // chat.ts
   // Plain tasks (design 02-tasks, issue #606): tasks.ts
   addTask(t: Parameters<FactoryStore["addTask"]>[0]) { return tasks.addTask(this.db, t, this.clock.now()); }
   listTasks(limit: number) { return tasks.listTasks(this.db, limit); } listDoneTasks(w: Parameters<FactoryStore["listDoneTasks"]>[0]) { return tasks.listDoneTasks(this.db, w); }

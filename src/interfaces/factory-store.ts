@@ -344,10 +344,10 @@ export interface NoticeMessageStore {
 /** A chat message to store (controller_chat_messages): `seq` orders a session's messages; the rest as on LLMMessage. */
 export interface NewChatMessage extends LLMMessage { seq: number }
 export interface ChatMessageRecord extends NewChatMessage { session_id: string; created_at: Timestamp }
-/** A chat session's messages: an append writes the whole batch, or nothing (false) when one of its seqs is the session's already. */
+/** A chat session's messages: an append writes the whole batch, or nothing (false) when one of its seqs is the session's already. Its turns' spend (design 04-chat-agent): one row per turn, keyed by the turn's own id (never a message seq, which a failed turn does not take), `cost_usd` null when unknown; a record of a counted turn writes nothing (false); a read takes UTC days, both inclusive. */
 export interface ChatMessageStore {
-  appendChatMessages(session_id: string, messages: readonly NewChatMessage[]): Promise<boolean>;
-  listChatMessages(session_id: string): Promise<ChatMessageRecord[]>;
+  appendChatMessages(session_id: string, messages: readonly NewChatMessage[]): Promise<boolean>; listChatMessages(session_id: string): Promise<ChatMessageRecord[]>;
+  recordChatSpend(s: { turn_id: string; session_id: string; day: string; cost_usd: number | null; tokens: number }): Promise<boolean>; listChatSpendBetween(from: string, to: string): Promise<Parameters<ChatMessageStore["recordChatSpend"]>[0][]>;
 }
 
 /** One autonomous action (design 08-schedules-actions): `kind` as src/controller/background-jobs.ts lists it; `ref` a run's transcript path or a `log:<component>:<message>` reference (null: none); `at` the store's time. */
