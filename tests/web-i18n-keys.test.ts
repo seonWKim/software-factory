@@ -90,3 +90,15 @@ describe("the generated catalog barrel", () => {
     expect(render(areas.slice(1))).not.toBe(readFileSync(BARREL, "utf8"));
   });
 });
+
+describe("attach help and confirmation text", () => {
+  it("uses the owner's words: no triage, no spec without plan, no triage run in the confirmation", () => {
+    const values = Object.entries(en).filter(([key]) => key.startsWith("attach.")).map(([, value]) => String(value));
+    expect(values.length).toBeGreaterThan(0);
+    for (const v of values) {
+      expect(v.toLowerCase()).not.toContain("triage");
+      if (v.toLowerCase().includes("spec")) expect(v.toLowerCase()).toContain("plan");
+    }
+    expect(en["attach.contextSent"]).not.toContain("triage run");
+  });
+});
