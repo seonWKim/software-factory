@@ -2,7 +2,7 @@
 // version,model`, `factory eval compare` and GET /api/v1/evals/<skill>/grid and /compare all use these, so the
 // grouping and the paired compare live once. The per-version read and the version diff (GET /api/v1/evals/<skill>/versions
 // and /diff) link runs to skill versions by folder hash here too, and the diff read tallies the two versions' cases
-// (caseTally) by the same verdict rule as compare (pairedVerdict). Nothing here reads or writes the store. Main.ts passes them to the CLI
+// (caseResults, through caseTally) by the same verdict rule as compare (pairedVerdict). Nothing here reads or writes the store. Main.ts passes them to the CLI
 // through the command call (CommandCall.skillEvalReads); the routes import them.
 
 import type { SkillEvalRun, SkillVersionGateState } from "../interfaces/skill-eval-store.js";
@@ -210,12 +210,6 @@ export interface CaseResult {
   b: string | null;
 }
 
-/** The per-case results of two runs' replays, by case id. */
-export function caseResults(a: readonly { case_id: string; verdict: string }[], b: readonly { case_id: string; verdict: string }[]): CaseResult[] {
-  const ids = [...new Set([...a, ...b].map((r) => r.case_id))].sort();
-  const of = (list: typeof a, id: string) => list.find((r) => r.case_id === id)?.verdict ?? null;
-  return ids.map((case_id) => ({ case_id, a: of(a, case_id), b: of(b, case_id) }));
-}
 
 /** The second version against the first over their case results: wins, losses, ties and the paired verdict. */
 export interface CaseTally {
@@ -237,4 +231,12 @@ export function caseTally(cases: readonly CaseResult[]): CaseTally {
   const diffs = cases.filter((c) => passOrFail(c.a) && passOrFail(c.b)).map((c) => Number(c.b === "pass") - Number(c.a === "pass"));
   const wins = diffs.filter((d) => d > 0).length, losses = diffs.filter((d) => d < 0).length;
   return { wins, losses, ties: diffs.length - wins - losses, verdict: diffs.length === 0 ? null : pairedVerdict(signTestP(wins, losses), pairedInterval(diffs).interval) };
+}
+
+/** The per-case results of two runs' replays, by case id, with their tally (caseTally). */
+export function caseResults(a: readonly { case_id: string; verdict: string }[], b: readonly { case_id: string; verdict: string }[]): CaseTally & { cases: CaseResult[] } {
+  const ids = [...new Set([...a, ...b].map((r) => r.case_id))].sort();
+  const of = (list: typeof a, id: string) => list.find((r) => r.case_id === id)?.verdict ?? null;
+  const cases = ids.map((case_id) => ({ case_id, a: of(a, case_id), b: of(b, case_id) }));
+  return { cases, ...caseTally(cases) };
 }
