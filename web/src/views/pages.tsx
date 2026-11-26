@@ -412,7 +412,7 @@ export function ItemPage({ id }: { id: string }) {
         <span className="text-text-3"> / </span>
         <Link href={itemPath(item.id)} aria-current="page" title={item.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", ID_CLASS)}>{short}</Link>
       </nav>
-      <PageHeader title={<span data-raw>{item.title ?? short}</span>} actions={runs.some(isInteractiveRun) ? <InteractiveBadge /> : undefined} />
+      <PageHeader title={<span data-raw>{item.title ?? short}</span>} actions={<div className="flex items-center gap-3">{runs.some(isInteractiveRun) && <InteractiveBadge />}<Link href={`${BASE}activity`} className={LINK_CLASS}>{t("actors.title")}</Link></div>} />
       {hasTabs && <PageToolbar tabs={<Tabs label={t("item.views")} options={tabs} value={tab} onChange={(v) => pick(v === "overview" ? null : v)} />} />}
       {item.parent_id && (
         <p data-testid="parent" className="mt-1 text-sm">
@@ -949,7 +949,7 @@ export function HealthPage() {
   };
   return (
     <>
-      <PageHeader title={t("page.health")} />
+      <PageHeader title={t("page.health")} actions={<Link href={`${BASE}activity`} className={LINK_CLASS}>{t("actors.title")}</Link>} />
       <PageToolbar tabs={<Tabs label={t("health.tabs")} options={options} value={tab} onChange={pick} />}>
         {tab === "runs" && <FailuresWindowSwitch value={failuresWindow} onChange={setFailuresWindow} />}
       </PageToolbar>

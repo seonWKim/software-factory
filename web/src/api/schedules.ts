@@ -59,6 +59,8 @@ export interface ScheduleRunRow {
   occurrence_at: string;
   outcome: "fired" | "refused" | "skipped" | "checkpoint" | "rejected";
   recorded_at: string;
+  /** The dashboard href of the run's transcript when its claim started one, else null. */
+  transcript: string | null;
   output?: string;
   tokens?: number;
   cost_usd?: number;
