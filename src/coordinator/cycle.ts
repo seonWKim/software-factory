@@ -8,12 +8,13 @@
 // stores one skipped record and calls nothing; at the limit it also raises the day's one owner question. A cycle that
 // calls the agent stores one `coordinator` spend row and one Activity record with its cost.
 
+import { coordinatorLimitAlert } from "../core/alarms.js";
 import { errorText, type Logger } from "../core/log.js";
 import type { CoordinatorPorts } from "../core/controller-deps.js";
 import type { StoreLease } from "../core/lease.js";
 import { utcDay } from "../core/spend.js";
 import type { WorkItem, WorkItemId } from "../core/types.js";
-import type { ActionOutcome, CoordinatorAction, CoordinatorStore, DaySpend } from "./store.js";
+import { type ActionOutcome, COORDINATOR_LIMIT_KEY, type CoordinatorAction, type CoordinatorStore, type DaySpend } from "./store.js";
 
 /** How often a cycle is due (owner answer 3). */
 export const CYCLE_MS = 15 * 60_000;
@@ -123,7 +124,8 @@ export class Coordinator {
     const today = await this.p.store.spendOn(day);
     if (today.cost_usd >= settings.daily_usd) {
       await skipCycle(limitReason(day, settings.daily_usd, today));
-      await this.ports.limitReached({ day, limit_usd: settings.daily_usd, spent_usd: today.cost_usd, unknown: today.unknown });
+      await this.ports.limitReached(coordinatorLimitAlert({ day, limit_usd: settings.daily_usd, spent_usd: today.cost_usd, unknown: today.unknown }));
+      this.p.log.warn("the coordinator reached its daily limit", { cycle_id, day, limit_usd: settings.daily_usd });
       return out;
     }
     let answer: AgentCycle;
@@ -167,9 +169,10 @@ export class Coordinator {
 
   /** The cycle's one spend row (kind `coordinator`, keyed on the cycle) and its Activity record, whose reason gives the cost. */
   private async spent(cycle_id: string, day: string, answer: AgentCycle, limit_usd: number): Promise<void> {
-    await this.p.store.recordSpend({ cycle_id, day, cost_usd: answer.cost_usd, tokens: answer.tokens }, this.p.clock.now().toISOString());
+    const now = this.p.clock.now().toISOString();
+    if (!(await this.p.store.recordSpend({ cycle_id, day, cost_usd: answer.cost_usd, tokens: answer.tokens }, now))) return;
     const today = await this.p.store.spendOn(day);
-    await this.ports.activity({ subject: cycle_id, outcome: answer.status, reason: costReason(answer.cost_usd, day, limit_usd, today) });
+    await this.p.store.recordActivity({ subject: cycle_id, outcome: answer.status, reason: costReason(answer.cost_usd, day, limit_usd, today) }, now);
   }
 }
 
@@ -184,6 +187,6 @@ export function costReason(cost_usd: number | null, day: string, limit_usd: numb
 
 /** The skipped record's reason at the daily limit: the limit, today's spend, and how cycles resume. */
 export function limitReason(day: string, limit_usd: number, today: DaySpend): string {
-  return `the coordinator daily limit is reached: ${usd(today.cost_usd)} spent of spend.coordinator_daily_usd ${usd(limit_usd)} (UTC day ${day})${notCounted(today.unknown)}; `
+  return `the coordinator daily limit is reached: ${usd(today.cost_usd)} spent of ${COORDINATOR_LIMIT_KEY} ${usd(limit_usd)} (UTC day ${day})${notCounted(today.unknown)}; `
     + "no agent call until the owner raises the limit (approve <usd>) or the UTC day ends";
 }

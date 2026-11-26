@@ -1,7 +1,8 @@
-import type { WorkItem, WorkItemId } from "./types.js";
-import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { UserId, WorkItem, WorkItemId } from "./types.js";
+import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
+import { COORDINATOR_LIMIT_KEY } from "../coordinator/store.js";
 import { MERGE_COMMAND } from "./local-merge.js";
-import { CLOSED_REFUSAL, answerCoordinatorLimit, approveRefusal, settleHeldSkillVersion, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText } from "./commands.js";
+import { CLOSED_REFUSAL, approveRefusal, settleHeldSkillVersion, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText } from "./commands.js";
 import type { NoteAnswers } from "./request-transition.js";
 import { verdictRefusal } from "./verdict.js";
 import { CONFIRM_COMMAND } from "./interpret.js";
@@ -17,6 +18,40 @@ import { type CliAction as ParsedAction, parseLocalCliArgs } from "./local-cli-p
  * the open coordinator limit question, else settles the newest held skill version (parseLocalCliArgs in local-cli.ts).
  */
 export type CliAction = ParsedAction | { action: "settle"; command: "approve" | "reject"; value?: string };
+/** A dollar amount as `approve <usd>` takes it on the coordinator limit question (10, 12.50, $10). */
+export const COORDINATOR_USD = /^\$?\d+(\.\d+)?$/;
+/** The newest alerts read to find the open coordinator limit question, as many as the alarm step reads. */
+const ALERTS_SCAN = 100;
+
+/** What an answer to the coordinator limit question did: refused (why), or answered (the limit set, null on reject). */
+export type CoordinatorLimitAnswer = { alert: Alert; refused: string } | { alert: Alert; set_usd: number | null };
+
+/**
+ * A bare `approve <usd>` or `reject` on the open coordinator limit question (coordinatorLimitAlert in alarms.ts, design
+ * 06-spend): the common commands, no limit-specific one. Null when no question is open (the newest `coordinator_limit`
+ * alert is answered, or there is none): the caller keeps its other meanings. Only the owner (`isOwner`, the check
+ * `approve` uses) answers. `approve` needs a positive dollar amount and sets `spend.coordinator_daily_usd` to it through
+ * the settings path (one audit row, as `factory settings set`), so cycles run again once today's spend is below it;
+ * `reject` changes no setting, so cycles stay stopped until the UTC day ends. Either answer dismisses the alert by `by`,
+ * so the answer stays on the alert and the question leaves Needs you.
+ */
+export async function answerCoordinatorLimit(
+  store: Pick<FactoryStore, "listAlerts" | "dismissAlert" | "setSettingOverride">,
+  a: { command: "approve" | "reject"; value: string | null; by: UserId; isOwner: () => Promise<boolean> },
+): Promise<CoordinatorLimitAnswer | null> {
+  const [alert] = (await store.listAlerts({ limit: ALERTS_SCAN })).filter((x) => x.pattern === "coordinator_limit");
+  if (!alert || (alert.dismissed_at !== undefined && alert.dismissed_at >= alert.created_at)) return null;
+  let set_usd: number | null = null;
+  if (a.command === "approve") {
+    const amount = a.value !== null && COORDINATOR_USD.test(a.value) ? Number(a.value.replace(/^\$/, "")) : NaN;
+    if (!(amount > 0)) return { alert, refused: `approve needs the new ${COORDINATOR_LIMIT_KEY} as a positive dollar amount, such as approve 10; ${a.value === null ? "none was given" : `${a.value} is not one`}` };
+    set_usd = amount;
+  }
+  if (!(await a.isOwner())) return { alert, refused: `only the owner answers the coordinator limit question; you are ${a.by}` };
+  if (set_usd !== null) await store.setSettingOverride({ key: COORDINATOR_LIMIT_KEY, project: "", value: JSON.stringify(set_usd), actor: a.by });
+  await store.dismissAlert(alert.id, a.by);
+  return { alert, set_usd };
+}
 /** `task create`'s last line: what happens to the new item next. */ export const CREATE_NEXT_STEP = "triage queued; you'll be asked to approve the spec";
 const UI_PORT = 4310; // `ui.port` unset: compose.ts DEFAULT_UI_PORT, which core cannot import
 

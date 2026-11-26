@@ -15,7 +15,7 @@
 // dismissed spend threshold does not alert again in its period. No forge, LLM or sandbox call; every text is scanned
 // first.
 
-import { COORDINATOR_LIMIT_KEY } from "./commands.js";
+import { COORDINATOR_LIMIT_KEY } from "../coordinator/store.js";
 import { groupFailures, normalizeDetail, patternKey, sleptRuns } from "./improver.js";
 import type { Logger } from "./log.js";
 import { AGENT_STALLED, INTERACTIVE, MODEL_STALL, SESSION_ABANDONED } from "./policy.js";
@@ -26,7 +26,7 @@ import {
 } from "./types.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
-import type { Alert, AlertPattern, FactoryStore } from "../interfaces/factory-store.js";
+import type { Alert, AlertPattern, FactoryStore, NewAlert } from "../interfaces/factory-store.js";
 import type { ChildRestart } from "../interfaces/updater.js";
 
 /** One pattern alerts at most once per this long (the store's dedupe window). */
@@ -536,22 +536,22 @@ const dollars = (n: number): string => `$${n.toFixed(2)}`;
 /** A whole-dollar amount as the owner types it in `approve <usd>` (10, not 10.00). */
 const typed = (n: number): string => (Number.isInteger(n) ? String(n) : n.toFixed(2));
 
+/** The coordinator limit question as the cycle hands it to the unit: the alert (its text in `detail`) and its dedupe window. */
+export interface CoordinatorLimitAlert {
+  alert: NewAlert & { detail: string };
+  dedupe_ms: number;
+}
+
 /**
- * The coordinator limit's owner question (design 06-spend): one Needs-you alert, pattern `coordinator_limit`, key
- * `coordinator_limit:<UTC day>`, with the current and the proposed limit, its text scanned as UI text first. One per
- * UTC day: a day whose key is stored already (open or answered) stores nothing, so an answer never brings a second
- * question that day. The answer is answerCoordinatorLimit in commands.ts. Returns the stored alert, or null.
+ * The coordinator limit's owner question (design 06-spend), built here; the coordinator unit scans `detail` as UI text
+ * and stores it through the kernel's `alert` write. One Needs-you alert, pattern `coordinator_limit`, key
+ * `coordinator_limit:<UTC day>`, with the current and the proposed limit, deduped for one day on a key that names the
+ * day: exactly one per UTC day, answered or not. The answer is answerCoordinatorLimit (src/core/local-cli-run.ts).
  */
-export async function coordinatorLimitQuestion(d: Pick<AlarmDeps, "store" | "scanner" | "log">, q: CoordinatorLimit): Promise<Alert | null> {
-  const pattern_key = coordinatorLimitKey(q.day);
-  if ((await d.store.listAlerts({ limit: ALERTS_READ })).some((a) => a.pattern_key === pattern_key)) return null;
+export function coordinatorLimitAlert(q: CoordinatorLimit): CoordinatorLimitAlert {
   const proposed = proposedLimit(q.limit_usd);
   const unknown = q.unknown === 0 ? "" : ` (${q.unknown} cycle${q.unknown === 1 ? "" : "s"} with no reported cost not counted)`;
-  const text = `The coordinator reached its daily limit: ${dollars(q.spent_usd)} spent on UTC day ${q.day}${unknown}. Current limit ${dollars(q.limit_usd)}, proposed limit ${dollars(proposed)}. `
+  const detail = `The coordinator reached its daily limit: ${dollars(q.spent_usd)} spent on UTC day ${q.day}${unknown}. Current limit ${dollars(q.limit_usd)}, proposed limit ${dollars(proposed)}. `
     + `Answer approve ${typed(proposed)} to set ${COORDINATOR_LIMIT_KEY} and resume cycles, or reject to keep cycles stopped until the UTC day ends.`;
-  const detail = (await d.scanner.scan("ui", text)).clean ? text : null;
-  const r = await d.store.recordAlert({ pattern: "coordinator_limit", pattern_key, error_code: "daily_limit", count: q.unknown, detail }, DAY_MS);
-  if (!r.created) return null;
-  d.log.warn("alarm: the coordinator reached its daily limit", { alert_id: r.alert.id, day: q.day });
-  return r.alert;
+  return { alert: { pattern: "coordinator_limit", pattern_key: coordinatorLimitKey(q.day), error_code: "daily_limit", count: q.unknown, detail }, dedupe_ms: DAY_MS };
 }
