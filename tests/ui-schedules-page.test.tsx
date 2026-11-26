@@ -344,6 +344,20 @@ describe("Schedules page", () => {
     expect(dl.querySelector("dd p")!.className).toContain("line-clamp-2");
   });
 
+  it("a summary schedule setup adds shows its Last run and Next run in its detail Card", async () => {
+    schedules.push(schedule("summary-morning", "Morning summary", { action: { kind: "summary", settings: {} }, cadence: { kind: "interval", spec: "15" }, next_due_at: "2026-11-25T08:15:00.000Z" }));
+    runs["summary-morning"] = [{ schedule_id: "summary-morning", occurrence_at: "2026-11-25T08:00:00.000Z", outcome: "fired", recorded_at: "2026-11-25T08:00:05.000Z", output: "nothing to report" }];
+    show();
+    await ready();
+    fireEvent.click(within(await row("Morning summary")).getByRole("button", { name: "Show what Morning summary does and its runs" }));
+    const detail = await screen.findByRole("region", { name: "About Morning summary" }, SLOW);
+    const pairs = () => Object.fromEntries([...detail.querySelectorAll("dt")].map((dt) => [dt.textContent, dt.nextElementSibling!.textContent]));
+    await waitFor(() => expect(pairs()["Last run"]).toMatch(/Nov 2[45], 2026/), SLOW);
+    expect(pairs()["Next run"]).toMatch(/Nov 2[45], 2026/);
+    expect(pairs()["Does"]).toMatch(/^Sends you a summary/);
+    expect(pairs()["Repeats"]).toBe("Every 15 minutes");
+  });
+
   it("a schedule with no token limit shows the default, and one that has not run says so", async () => {
     show();
     await ready();

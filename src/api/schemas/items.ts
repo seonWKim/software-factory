@@ -1,5 +1,5 @@
-// The output schema of GET /api/v1/items (src/ui/api.ts items()), for the phase that moves the route into the
-// registry (design 09-api-registry, owner answer 3): the answer's and each row's top-level fields are typed, and
+// The output schema of GET /api/v1/items (the capability items.list; src/ui/api.ts items()) (design 09-api-registry,
+// owner answer 3): the answer's and each row's top-level fields are typed (tier an integer or null), and
 // every nested object (source, issue, merge check, merge, why, run, claim, need, facets, counts) is a JSON object.
 
 import { array, boolean, integer, jsonObject, nullable, object, optional, string } from "../schema.js";
@@ -15,7 +15,7 @@ export const ITEM_ROW = object({
   state_label: string(),
   reason_code: string(),
   stage: string(),
-  tier: nullable(string()),
+  tier: nullable(integer()),
   kind: nullable(string()),
   blocked_on: nullable(string()),
   blocked_reason: nullable(string()),
