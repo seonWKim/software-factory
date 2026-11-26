@@ -285,6 +285,8 @@ export const settings = {
   "key.spend.daily_budget_usd.help": "The most, in dollars, the factory spends in a day. Empty: no budget.",
   "key.spend.weekly_budget_usd.label": "Weekly spend budget",
   "key.spend.weekly_budget_usd.help": "The most, in dollars, the factory spends in a week. Empty: no budget.",
+  "key.spend.coordinator_daily_usd.label": "Coordinator daily spend limit",
+  "key.spend.coordinator_daily_usd.help": "The most, in dollars, the coordinator spends on its checks in a day. Default: $5.",
   "key.tool_grants.label": "Tools granted per role",
   "key.tool_grants.help": "Which tools each role may call; a role with no entry gets none.",
   "key.plugins.label": "Plugins",

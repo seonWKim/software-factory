@@ -33,6 +33,8 @@ export const activity = {
   "actors.link.log": "Log",
   "actors.alerts": "Factory alerts",
   "actors.alertsLabel": "Factory alerts",
+  "actors.backSchedules": "Back to Schedules",
+  "actors.backHealth": "Back to Health",
   "actors.clear": "Clear",
   "actors.clearFor": "Clear alert: {text}",
   "actors.clearFailed": "Could not clear the alert: {error}",

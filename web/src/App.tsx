@@ -17,7 +17,7 @@ import { startTheme } from "./theme.js";
 import { ChatPanel } from "./views/chat-panel.js";
 import { DataPage } from "./views/data.js";
 import { EvalsPage, skillName } from "./views/evals.js";
-import { HealthPage, ItemPage, ItemsPage } from "./views/pages.js";
+import { ActivityActorsPage, HealthPage, ItemPage, ItemsPage } from "./views/pages.js";
 import { PluginsPage } from "./views/plugins.js";
 import { SettingsPage } from "./views/settings.js";
 import { FactoryRevision, RevisionBanner, StopAllAgents, UnpushedMerges, UpdateNote } from "./views/system-banner.js";
@@ -72,14 +72,16 @@ export function App() {
   const transcript = transcriptRoute(path);
   // An evals page (evals/<skill>) has no sidebar link: Data, also hidden, is its current page, so no link is marked.
   const evalsSkill = evalsRoute(path);
-  const current = transcript ? routeFor(`${BASE}items`).page : evalsSkill ? routeFor(`${BASE}data`).page : route.page;
+  // The Activity page (/app/activity) has no sidebar link either: Health, which links it, is its current page.
+  const activity = path.replace(/\/+$/, "") === `${BASE}activity`;
+  const current = transcript ? routeFor(`${BASE}items`).page : evalsSkill ? routeFor(`${BASE}data`).page : activity ? routeFor(`${BASE}health`).page : route.page;
   const needs = overview.data?.needs_you;
   const View = VIEWS[route.page.path] ?? TasksPage;
   useEffect(() => {
     // The Needs you count leads the tab title, so a background tab shows it: "(4) Needs you · Gongbang".
     const count = needs ? `(${needs}) ` : "";
-    document.title = `${count}${transcript ? t("app.runTranscript") : evalsSkill ? skillName(evalsSkill) : route.itemId ? t("app.workItem") : pageLabel(route.page)} · ${t("app.name")}`;
-  }, [route.page, route.itemId, transcript, evalsSkill, needs]);
+    document.title = `${count}${transcript ? t("app.runTranscript") : activity ? t("actors.title") : evalsSkill ? skillName(evalsSkill) : route.itemId ? t("app.workItem") : pageLabel(route.page)} · ${t("app.name")}`;
+  }, [route.page, route.itemId, transcript, evalsSkill, activity, needs]);
 
   return (
     <NavProvider value={navigate}>
@@ -137,6 +139,8 @@ export function App() {
               <TranscriptView key={`${transcript.itemId}/${transcript.runId}`} itemId={transcript.itemId} runId={transcript.runId} />
             ) : evalsSkill ? (
               <EvalsPage key={evalsSkill} skill={evalsSkill} />
+            ) : activity ? (
+              <ActivityActorsPage />
             ) : route.itemId ? (
               <ItemPage key={route.itemId} id={route.itemId} />
             ) : moved ? null : (

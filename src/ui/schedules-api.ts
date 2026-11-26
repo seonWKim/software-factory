@@ -39,9 +39,22 @@ async function oneSchedule(d: Pick<UiDeps, "store">, id: string | null): Promise
   return !(await isStored(d, id)) ? apiError(404, `No schedule ${id}.`) : null;
 }
 
-/** GET /api/v1/schedules/runs?schedule=<id>: its run rows, oldest first. */
+/**
+ * GET /api/v1/schedules/runs?schedule=<id>: its run rows, oldest first, each with `transcript`: the dashboard href of the
+ * run's transcript, or null. A run's claim wrote its `schedule_run` Activity row in the same transaction, so the row
+ * with the schedule's ID as subject and the run's `recorded_at` as time is the run's claim; its stored ref gives the link.
+ */
 export async function readScheduleRuns(d: Pick<UiDeps, "store">, id: string | null): Promise<ApiResult> {
-  return (await oneSchedule(d, id)) ?? { status: 200, value: { runs: await d.store.listScheduleRuns(id!) } };
+  const refused = await oneSchedule(d, id);
+  if (refused !== null) return refused;
+  // Loaded inside the read, as readActivity loads its modules: a top-level import would add a feature→feature edge to the layering ratchet.
+  const { linkOf } = await import("./activity-api.js");
+  const claims = new Map((await d.store.listActivity({ kind: "schedule_run" })).filter((a) => a.subject === id).map((a) => [String(a.at), a.ref]));
+  const runs = (await d.store.listScheduleRuns(id!)).map((r) => {
+    const link = linkOf(claims.get(String(r.recorded_at)) ?? null);
+    return { ...r, transcript: link?.kind === "transcript" ? link.href : null };
+  });
+  return { status: 200, value: { runs } };
 }
 
 /** GET /api/v1/schedules/suggestions?schedule=<id>: its suggestions, oldest first, each state as of now. */

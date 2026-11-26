@@ -10,7 +10,11 @@ import { OverflowMenu } from "../components/ui/menu.js";
 import { Notice, PageHeader } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
+import { LINK_CLASS } from "../components/ui/link-style.js";
 import { t } from "../i18n/index.js";
+import { Link } from "../nav.js";
+import { BASE } from "../pages.js";
+import { SCHEDULE_ACTOR } from "./activity/page.js";
 import { DeleteScheduleDialog, ScheduleDialog, newScheduleId } from "./schedules/form.js";
 import { RunOutput } from "./schedules/output.js";
 import { ScheduleDetail, TitleCell, nextText, when } from "./schedules/detail.js";
@@ -71,6 +75,7 @@ function RunsTable({ id }: { id: string }) {
     { key: "started", header: t("schedules.runs.started"), render: (r) => when(r.occurrence_at) },
     { key: "result", header: t("schedules.runs.result"), render: (r) => t(OUTCOME_TEXT[r.outcome]) },
     { key: "cost", header: t("schedules.runs.cost"), render: (r) => (r.cost_usd === undefined ? "" : `$${r.cost_usd.toFixed(4)}`) },
+    { key: "transcript", header: "", render: (r) => (r.transcript ? <Link href={r.transcript} className={LINK_CLASS} aria-label={t("schedules.runs.transcriptFor", { at: r.occurrence_at })}>{t("schedules.runs.transcript")}</Link> : null) },
     { key: "output", header: t("schedules.runs.output"), render: (r) => <RunOutput output={r.output} />, className: "max-w-prose break-words" },
   ];
   return <DataTable columns={columns} rows={[...q.data.runs].reverse()} rowKey={(r) => r.occurrence_at} label={t("schedules.runs.label")} empty={t("schedules.runsEmpty")} />;
@@ -154,7 +159,12 @@ export function SchedulesPage() {
       <PageHeader
         title={t("page.schedules")}
         description={t("schedules.description")}
-        actions={<Button ref={addButton} variant="primary" data-capture-open="new-schedule" disabled={!w.ready} onClick={() => open({ kind: "edit", schedule: null }, addButton.current)}>{t("schedules.new")}</Button>}
+        actions={(
+          <div className="flex items-center gap-4">
+            <Link href={`${BASE}activity?actor=${SCHEDULE_ACTOR}`} className={LINK_CLASS}>{t("schedules.activityLink")}</Link>
+            <Button ref={addButton} variant="primary" data-capture-open="new-schedule" disabled={!w.ready} onClick={() => open({ kind: "edit", schedule: null }, addButton.current)}>{t("schedules.new")}</Button>
+          </div>
+        )}
       />
       {form?.kind === "delete" && (
         <DeleteScheduleDialog schedule={form.schedule} busy={w.busy} error={w.error} returnFocusTo={opener} onConfirm={() => remove(form.schedule)} onClose={close} />

@@ -12,13 +12,19 @@ import { Notice, PageHeader } from "../../components/ui/notice.js";
 import { ErrorNote, Loading } from "../../components/ui/parts.js";
 import { t } from "../../i18n/index.js";
 import { localDateTime, relativeTime } from "../../lib/format.js";
+import { LINK_CLASS } from "../../components/ui/link-style.js";
+import { useUrlParam } from "../../lib/url-param.js";
 import { Link, useNavigate } from "../../nav.js";
+import { BASE } from "../../pages.js";
 import { useNow } from "../common.js";
 
 // The Activity page (design 09-dashboard-activity): PageHeader Activity; a Card Actors with a DataTable of one row per
 // actor (Badge state, Button Transcript); a Card About <actor> with KeyValue now, last, next run and a DataTable of its
 // recent actions (outcome, reason, Transcript or log link). Open factory alerts come with a Clear button. One read:
 // GET /api/v1/activity, the `activity.actors` capability (the chat reads the same one).
+
+/** The schedule actor's ID: its entry is the one the Schedules page links (`/app/activity?actor=system:schedule`). */
+export const SCHEDULE_ACTOR = "system:schedule";
 
 const STATE_LEVEL = { idle: undefined, running: "info", attention: "warn" } as const;
 const STATE_TEXT = { idle: "actors.state.idle", running: "actors.state.running", attention: "actors.state.attention" } as const;
@@ -79,9 +85,14 @@ function ActionsTable({ actor, days }: { actor: ActivityActor; days: number }) {
   return <DataTable<ActivityAction> label={t("actors.recentLabel", { name: actor.name })} empty={t("actors.noActions", { days })} rowKey={(a) => String(a.seq)} rows={actor.actions} columns={columns} />;
 }
 
+/** The page that owns an actor's work: Schedules for the schedule actor, Health for every other. */
+const backOf = (actor: ActivityActor) =>
+  actor.actor_id === SCHEDULE_ACTOR ? { href: `${BASE}schedules`, text: t("actors.backSchedules") } : { href: `${BASE}health`, text: t("actors.backHealth") };
+
 function ActorDetail({ actor, days, now }: { actor: ActivityActor; days: number; now: number }) {
+  const back = backOf(actor);
   return (
-    <Card title={t("actors.about", { name: actor.name })}>
+    <Card title={t("actors.about", { name: actor.name })} action={<Link href={back.href} className={LINK_CLASS}>{back.text}</Link>}>
       <div className="flex flex-col gap-4">
         <p className="text-sm text-text-2 text-pretty">{actor.about}</p>
         <KeyValue
@@ -99,7 +110,8 @@ function ActorDetail({ actor, days, now }: { actor: ActivityActor; days: number;
 
 /** The Activity page's body: the Actors Card and the About Card of the selected actor. */
 export function ActivityBody({ view, now }: { view: ActivityView; now: number }) {
-  const [selected, setSelected] = useState<string | null>(null);
+  // `?actor=` selects the actor (a link from Schedules); none, or an unknown one, keeps the first.
+  const [selected, setSelected] = useUrlParam("actor");
   const actor = view.actors.find((a) => a.actor_id === selected) ?? view.actors[0];
   const columns: Column<ActivityActor>[] = [
     { key: "name", header: t("actors.col.actor") },
