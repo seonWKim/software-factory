@@ -1,5 +1,21 @@
 # 4. Agents: gate commands
 
+**A gate entry can name its folder, and `repo.install_commands` lists several installs** (decision changed 2026-11-26, wi_a4ee0778; replaces "every install, check and UI check command is one argv run in the run folder", see History). Each `repo.check_commands` and `repo.install_commands` entry, and `repo.ui_check.command`, is a plain argv, run in the run folder as before, or `{ "dir": <folder>, "argv": [...] }`, run in that folder inside the run folder; still argv, never a shell. `repo.install_commands`, when set, is the install step, run in order before the checks in place of `repo.install_command`, which stays one argv (default `["npm","ci"]`) and the only install the run-side cache stands in for (05-sandbox). One parser checks every entry at startup (`gateEntryConfig`, `src/core/checks.ts`): an empty `dir`, an absolute one, one above the run folder (`..`), an empty `argv` or another key fails naming the entry (`repo.check_commands[1].dir`); `.` is the run folder. `runChecks` passes each entry's folder as its `cwd`, in every run that runs the gates and in red main. Text names a folder entry `npm test (in frontend/)`. Test selection narrows only a plain argv. A Gradle backend and an npm frontend (the host provides the JDK):
+
+```json
+"repo": {
+  "install_commands": [
+    { "dir": "backend", "argv": ["./gradlew", "--offline", "dependencies"] },
+    { "dir": "frontend", "argv": ["npm", "ci"] }
+  ],
+  "check_commands": [
+    { "dir": "backend", "argv": ["./gradlew", "--offline", "test"] },
+    { "dir": "frontend", "argv": ["npm", "test"] }
+  ],
+  "ui_check": { "command": { "dir": "frontend", "argv": ["npm", "run", "check:responsive"] }, "paths": ["frontend/"] }
+}
+```
+
 **A `factory merge`, `/merge` or auto mode merge the queue accepts moves the item to `merge_queued`** (decision changed 2026-11-23, wi_f835a79d; replaces "a `factory merge` or auto mode's merge never leaves `merge_pending`", see History). When the merge queue creates the entry (`MergeQueueUnit.enter`), before its first check runs, the item moves from `merge_pending` to `blocked_on: ci`, `blocked_reason: merge_queued` (reason `merge_requested`, `detail.merge_key`), through `mergeEntered`, as the dashboard's Merge (which tags its request seq). A second merge of a queued item, from any surface, gets the queue's typed `already` result: no `merge_returned`, no reason change, no post. A removal of the entry (red check, hook veto, timed-out check, refused landing) returns the item to `merge_pending` with the refusal (`merge_returned`); a refusal while its entry is live returns nothing. An item with a PR stays `merge_pending` while the forge merges it.
 
 **`/note <text>` gives review and implement an owner note at any open stage** (decision changed 2026-11-23, wi_bdd36b09; replaces "the approver's notes are only the approval's and `/retry` note", see History). `/note <text>` in its thread, or `factory task note <id> <text>` (owner only), stores one `owner_note` state change and changes no stage (`units/commands/note.ts`); a non-owner, empty or flagged note, or closed item is refused. The thread shows it. `approverNotes` (src/worker/runner.ts) adds each owner note after the latest approval, oldest first, fenced and untrusted, to the implement and review inputs; an implementer's interactive note never counts.
