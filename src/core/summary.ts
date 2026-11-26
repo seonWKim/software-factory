@@ -4,13 +4,35 @@
 // call. A window with none of these is no summary (spend alone posts nothing). summaryDeps binds the summary action's
 // ports (src/controller/units/schedule/plugins/summary/) to the store, the egress scanner and the live settings.
 
-import type { SummaryButton, SummaryDeps, SummaryMessage, SummaryWindow } from "../controller/units/schedule/plugins/ports.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import { commandState, commandsFor, failedRunKind } from "./commands.js";
 import { FAILED_PHASES, phaseOf } from "./phase.js";
 import type { ScheduleStore } from "./schedule.js";
 import type { Run, Timestamp, WorkItem } from "./types.js";
+
+/** One summary slot (design 08-schedules-actions): the morning or the evening post of a local date. */
+export type SummarySlotName = "morning" | "evening";
+/** The window one summary covers: from the slot before it (`since`) to its own time (`until`), ISO times. */
+export interface SummaryWindow { slot: SummarySlotName; since: string; until: string; exclude_schedule: string }
+/** A summary's button: the command its line asks for, on its item (null: open the item). */
+export interface SummaryButton { work_item_id: string; label: string; command: string | null }
+/** A summary as built: fixed-wording text and one button per waiting decision and per failure without a retry. */
+export interface SummaryMessage { text: string; buttons: readonly SummaryButton[] }
+
+/**
+ * What the summary action (src/controller/units/schedule/plugins/summary/) works through; compose binds it
+ * (summaryDeps below). `times` reads both time settings now (each run), `build` the window's summary from the store
+ * (null: nothing to report), `scan` the egress scanner's findings (empty: clean), `post` one outbound delivery on the
+ * owner's chat, keyed on `key`: a key already stored stores nothing (`created` false). `post` throws while the
+ * channel is down.
+ */
+export interface SummaryDeps {
+  times(): Promise<{ morning: string; evening: string }>;
+  build(w: SummaryWindow): Promise<SummaryMessage | null>;
+  scan(text: string): Promise<readonly string[]>;
+  post(d: { key: string; text: string; buttons: readonly SummaryButton[] }): Promise<{ created: boolean }>;
+}
 
 /** The most rows of each read, as the dashboard's lists read them. */
 const READ_LIMIT = 200;
