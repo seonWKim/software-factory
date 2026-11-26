@@ -168,7 +168,7 @@ export interface ControllerDeps {
 
 /**
  * What the controller unit binds for the coordinator cycle: the live settings, the waiting items, the existing local
- * merge, the daily limit's owner question and the cycle's Activity row.
+ * merge and the daily limit's owner question.
  */
 export interface CoordinatorPorts {
   /** Read at each tick: the `coordinator` switch, `auto_merge_max_tier` and `spend.coordinator_daily_usd`. */
@@ -178,8 +178,6 @@ export interface CoordinatorPorts {
    * its text as UI text and commits it through the kernel's `alert` write, deduped for `dedupe_ms`.
    */
   limitReached(q: CoordinatorLimitAlert): Promise<void>;
-  /** Stores a cycle's `coordinator` Activity row (job `coordinator`, design 06-spend) through the store's recordActivity. */
-  activity(a: { subject: string; outcome: string; reason: string }): Promise<void>;
   /** The items waiting for a merge, of any source. */
   waiting(): Promise<readonly WorkItem[]>;
   /** The existing local merge as auto mode runs it, keyed on `key`: the refusal, or null when the change is queued. */

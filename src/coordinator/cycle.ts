@@ -178,7 +178,7 @@ export class Coordinator {
     const now = this.p.clock.now().toISOString();
     if (!(await this.p.store.recordSpend({ cycle_id, day, cost_usd: answer.cost_usd, tokens: answer.tokens }, now))) return;
     const today = await this.p.store.spendOn(day);
-    await this.ports.activity({ subject: cycle_id, outcome: answer.status, reason: costReason(answer.cost_usd, day, limit_usd, today) });
+    await this.p.store.recordActivity({ subject: cycle_id, outcome: answer.status, reason: costReason(answer.cost_usd, day, limit_usd, today) }, now);
   }
 }
 

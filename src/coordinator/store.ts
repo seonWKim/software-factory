@@ -2,9 +2,11 @@
 // (`controller_coordinator_due`, one row named `coordinator`) and the action records (`controller_coordinator_actions`),
 // and its spend rows: kind `coordinator` in `controller_chat_spend` (design 06-spend), one per cycle that called the
 // agent. Every write is conditional or keyed, so a second replica or a rerun changes nothing the first did (the cycle
-// writes its Activity row through its ports only when the cycle's spend row was new).
+// writes its Activity row only when the cycle's spend row was new).
 
-import type { WorkItemId } from "../core/types.js";
+import { activityOf, logRef } from "../controller/background-jobs.js";
+import type { Timestamp, WorkItemId } from "../core/types.js";
+import { insertActivity } from "../impl/store/sql/activity.js";
 import type { SqlExecutor } from "../state/index.js";
 
 /** The due row's name: one coordinator per store. */
@@ -107,6 +109,10 @@ export class CoordinatorStore {
     return n === 1;
   }
 
+  /** Stores a cycle's `coordinator` Activity row (job `coordinator`, actor `system:coordinator`, design 06-spend). */
+  async recordActivity(a: { subject: string; outcome: string; reason: string }, now: string): Promise<void> {
+    await insertActivity(this.db, now as Timestamp, activityOf("coordinator", { ...a, ref: logRef("controller", "coordinator cycle done") }));
+  }
 
   /** The coordinator spend of UTC day `day`: only known costs add up; a row with no cost is counted under `unknown`. */
   async spendOn(day: string): Promise<DaySpend> {

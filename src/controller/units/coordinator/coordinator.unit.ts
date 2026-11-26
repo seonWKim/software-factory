@@ -1,10 +1,9 @@
 // The coordinator step (design 05-coordinator): at each tick it hands the coordinator cycle (src/coordinator/, built by
 // compose as `coordinator`) the live settings, the items waiting for a merge and the existing local merge, as auto
 // mode runs it under the controller's service passport. The cycle decides whether a cycle is due and runs it. At the
-// daily limit it stores the cycle's owner question, scanned as UI text, through the kernel's `alert` write, and each
-// cycle's Activity row through the store's recordActivity (design 06-spend).
+// daily limit it stores the cycle's owner question, scanned as UI text, through the kernel's `alert` write (design
+// 06-spend).
 
-import { activityOf, logRef } from "../../background-jobs.js";
 import { awaitingMerge } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
@@ -25,7 +24,6 @@ export class CoordinatorUnit {
         const clean = (await this.c.k.reader.scan("ui", alert.detail)).clean;
         await this.c.k.commit({ writes: [{ kind: "alert", alert: { ...alert, detail: clean ? alert.detail : null }, dedupe_ms }] });
       },
-      activity: async (a) => void (await this.c.k.d.store.recordActivity(activityOf("coordinator", { ...a, ref: logRef("controller", "coordinator cycle done") }))),
       waiting: async () => (await this.c.k.reader.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: WAITING_BATCH })).filter(awaitingMerge),
       merge: async (id, key) => {
         const item = await this.c.k.reader.getWorkItem(id);

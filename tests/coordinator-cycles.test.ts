@@ -48,7 +48,6 @@ function coordinator(store: FactoryStore, clock: FakeClock, cost = 3) {
       if (faults.alert) throw ((faults.alert = false), new Error("alert write failed"));
       await store.recordAlert(alert, dedupe_ms);
     },
-    activity: async () => undefined,
   };
   const lease = new StoreLease(syncLeaseOps(store, COORDINATOR_LEASE), clock, { lease_ms: 60_000, heartbeat_ms: 10_000 }, "a");
   const c = new Coordinator({ store: new CoordinatorStore(storeSql(store)), lease, agent, clock, log: silent }, ports);
