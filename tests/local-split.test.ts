@@ -79,7 +79,7 @@ async function setup() {
   };
   const get = async (id: WorkItemId) => (await store.getWorkItem(id))!;
   const messages = async (id: WorkItemId) => (await store.listItemMessages(id)).map((m) => m.body);
-  return { clock, store, local, controller, parent, approve, close, get, messages };
+  return { clock, store, local, controller, cli, triaged, parent, approve, close, get, messages };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -169,6 +169,49 @@ describe("split spec on a local task", () => {
     await f.controller.tickPhases();
     expect(await f.get(two.id)).toMatchObject({ stage: "NEW", blocked_on: "upstream", blocked_reason: PHASE_HOLD });
     expect(await f.get(p.id)).toMatchObject({ stage: "READY", blocked_reason: PHASES_OPEN });
+  });
+});
+
+describe("a split of an item filed with --depends-on (design 05-dependencies, 2026-11-26)", () => {
+  it("every phase inherits the line, and phase 1's implement run waits until that item merges, through the controller's ticks", async () => {
+    const f = await setup();
+    const source = { type: "local" as const, id: "local-dep", link: "local:local-dep" };
+    const { item: dep } = await f.store.createWorkItem({ source, title: "Dep", requester_id: ME, project: PROJECT_KEY, problem: "first", resources: [] }, system);
+    // The short ID, as the dashboard shows it, resolves to the full one.
+    const created = await f.cli({ action: "create", title: "Big change", bodyFile: "b", depends_on: dep.id.slice(0, 11) });
+    expect(created.code).toBe(0);
+    const pid = created.lines[0] as WorkItemId;
+    await f.controller.tickIntake();
+    await f.triaged();
+    await f.approve(pid);
+    const phases = await f.store.listPhases(pid);
+    expect(phases).toHaveLength(3);
+    for (const x of phases) expect(x.problem).toContain(`Depends on: ${dep.id}`);
+
+    // Phase 1 is triaged and approved: its implement run is queued.
+    const one = phases[0]!;
+    f.clock.advance(DAY);
+    const triage = await f.store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: 60_000 });
+    expect(triage?.work_item_id).toBe(one.id);
+    await f.store.completeRun(triage!.id, triage!.lease!.token, { status: "succeeded", summary: "s", data: { spec: triageSpec } });
+    await f.controller.tickRuns();
+    expect((await f.cli({ action: "command", command: "approve", id: one.id, text: "" })).code).toBe(0);
+    await f.controller.tickCommands();
+    expect((await f.store.listRuns(one.id)).filter((r) => r.kind === "implement").map((r) => r.status)).toEqual(["queued"]);
+
+    await f.controller.tickCoordination();
+    expect(await f.get(one.id)).toMatchObject({ stage: "RUNNING", blocked_on: "dependency", blocked_reason: `waiting for ${dep.id} to merge` });
+    expect(await f.store.listDependencyEdges({ work_item_id: one.id })).toEqual([expect.objectContaining({ depends_on: source.id, state: "open" })]);
+    const implement = () => f.store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: 60_000 });
+    expect(await implement()).toBeNull();
+
+    await f.store.transition({
+      id: dep.id, expected_version: dep.version, actor: system, reason: "merged",
+      patch: { stage: "CLOSED", close_reason: "completed", merge_sha: "m1", blocked_on: "none", blocked_reason: null },
+    });
+    await f.controller.tickCoordination();
+    expect(await f.get(one.id)).toMatchObject({ blocked_on: "none", blocked_reason: null });
+    expect(await implement()).toMatchObject({ work_item_id: one.id, kind: "implement" });
   });
 });
 
