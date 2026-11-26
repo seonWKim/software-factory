@@ -480,6 +480,26 @@ const INNER_SPACING: readonly { file: string; snippet: string; reason: string }[
   { file: "settings-file-keys.tsx", snippet: "data-filed", reason: "filed-issue line under the form, inside a Card" },
   { file: "settings-file-keys.tsx", snippet: 'className="mt-1"', reason: "control under its label, inside a Card" },
   { file: "settings-row.tsx", snippet: "max-w-64 text-xs", reason: "hint under its field, inside a settings row" },
+  // Phase 3 of widening the guard to N >= 1: margins of 1 and 2 in the rules, plugins, schedules, standing and remaining views.
+  { file: "host-sleeps.tsx", snippet: '<RawDetails className="mt-2">', reason: "raw details under the row above it" },
+  { file: "plugins.tsx", snippet: 'className="mt-2 text-xs text-pretty break-words text-pill-bad-fg"', reason: "error line under the form's controls" },
+  { file: "rules-applied.tsx", snippet: "mt-2 ${STACK_NARROW}", reason: "stacked block under the row above it" },
+  { file: "rules-detail.tsx", snippet: '<div className="mt-2 space-y-1">', reason: "list under its heading, inside one block" },
+  { file: "rules-improve.tsx", snippet: '<div className="mt-2 space-y-2">', reason: "list under its heading, inside one block" },
+  { file: "rules-skills.tsx", snippet: "mb-2 ${PROSE} ${muted}", reason: "note above its list, inside one block" },
+  { file: "rules.tsx", snippet: "mb-2 ${PROSE} ${muted}", reason: "note above its list, inside one block" },
+  { file: "schedules/detail.tsx", snippet: "mb-2 min-w-0 wrap-anywhere sm:mb-0", reason: "field values in the detail list (two lines)" },
+  { file: "spend.tsx", snippet: 'data-axis="x"', reason: "axis labels under the bars, inside one Card" },
+  { file: "standing.tsx", snippet: 'className="mt-1 text-xs text-pretty break-words text-pill-bad-fg"', reason: "error line under the controls" },
+  { file: "standing.tsx", snippet: "data-recent-all", reason: "list under its heading, inside one block" },
+  { file: "standing.tsx", snippet: '<ul className="mt-1 list-disc pl-5">', reason: "list under its heading, inside one block" },
+  { file: "standing.tsx", snippet: "mb-2 ${muted}", reason: "note above its content, inside one block" },
+  { file: "system-banner.tsx", snippet: 'className="mt-1 max-h-48', reason: "list under the banner's line" },
+  { file: "system-banner.tsx", snippet: "update.more", reason: "count note under the list" },
+  { file: "tasks.tsx", snippet: '<div className="mt-2">', reason: "block under its heading" },
+  { file: "thread.tsx", snippet: 'flush className="mt-2"', reason: "toggle under the thread's header" },
+  { file: "tree.tsx", snippet: "group mt-1 text-text-2", reason: "chevron nudged to line up with the row's text" },
+  { file: "workers.tsx", snippet: 'className="mt-1 flex justify-between text-xs', reason: "axis labels under the graph" },
 ];
 
 describe("page blocks are stacked by the page's gap-6 column", () => {
@@ -501,6 +521,24 @@ describe("page blocks are stacked by the page's gap-6 column", () => {
       found,
       "design-system/patterns.md:15: blocks of one page are stacked in one flex column with a gap-6, not with mb-* or mt-* on each block. Move these into the page's column, or add inner spacing to INNER_SPACING with its reason.",
     ).toEqual([]);
+  });
+
+  it("phase 3 files: every mt-1, mt-2, mb-1 or mb-2 line is listed in INNER_SPACING", () => {
+    const SMALL = /(?<![\w-])m[tb]-[12](?![\w.-])/;
+    const phase3 = [
+      "host-sleeps.tsx", "plugins.tsx", "rules-applied.tsx", "rules-detail.tsx", "rules-improve.tsx", "rules-skills.tsx",
+      "rules.tsx", "schedules/detail.tsx", "spend.tsx", "standing.tsx", "system-banner.tsx", "tasks.tsx", "thread.tsx",
+      "tree.tsx", "workers.tsx",
+    ];
+    const unlisted = phase3.flatMap((rel) =>
+      readFileSync(join(views, rel), "utf8")
+        .split("\n")
+        .map((line, i) => ({ line, at: `web/src/views/${rel}:${i + 1}` }))
+        .filter(({ line }) => SMALL.test(line))
+        .filter(({ line }) => !INNER_SPACING.some((a) => a.file === rel && line.includes(a.snippet)))
+        .map(({ at, line }) => `${at}: ${line.trim()}`),
+    );
+    expect(unlisted).toEqual([]);
   });
 
   it("self-check: a block margin is flagged, an allowed inner one and scroll-mt are not", () => {
