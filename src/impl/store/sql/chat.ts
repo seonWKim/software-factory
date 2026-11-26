@@ -1,6 +1,7 @@
 // Chat messages (docs/plugins/llm-provider.md): the store methods of ChatMessageStore over controller_chat_messages
 // (src/state/migrations/20261126T1200-state-chat-sessions), controller_chat_spend (design 04-chat-agent,
-// src/state/migrations/20261126T1300-state-chat-spend) and controller_chat_turns (design 04-chat-agent,
+// src/state/migrations/20261126T1300-state-chat-spend; its kind, design 06-spend, 20261127T1000-state-coordinator-spend)
+// and controller_chat_turns (design 04-chat-agent,
 // src/state/migrations/20261126T1400-state-chat-turns), kept out of sql-factory-store.ts so that file stays within
 // its line budget. Store data only: no model call, no sync plugin.
 
@@ -55,9 +56,9 @@ export async function recordChatSpend(db: SqlDriver, s: ChatSpend, at: Timestamp
   return insertOnce(db, db, INSERT_SPEND, [s.turn_id, s.session_id, s.day, s.cost_usd, s.tokens, at]);
 }
 
-/** The turns of the UTC days `from` to `to`, both inclusive, by day, session and turn id. Read-only. */
+/** The chat turns (kind `chat`: never a coordinator row) of the UTC days `from` to `to`, both inclusive, by day, session and turn id. Read-only. */
 export async function listChatSpendBetween(db: SqlExecutor, from: string, to: string): Promise<ChatSpend[]> {
-  const rows = await db.all("SELECT * FROM controller_chat_spend WHERE day >= ? AND day <= ? ORDER BY day, session_id, turn_id", [from, to]);
+  const rows = await db.all("SELECT * FROM controller_chat_spend WHERE kind = 'chat' AND day >= ? AND day <= ? ORDER BY day, session_id, turn_id", [from, to]);
   return rows.map((r) => ({
     turn_id: String(r.turn_id), session_id: String(r.session_id), day: String(r.day), cost_usd: r.cost_usd == null ? null : Number(r.cost_usd), tokens: Number(r.tokens),
   }));
