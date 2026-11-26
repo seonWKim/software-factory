@@ -15,7 +15,7 @@ export const ITEM_ROW = object({
   state_label: string(),
   reason_code: string(),
   stage: string(),
-  tier: nullable(string()),
+  tier: nullable(integer()),
   kind: nullable(string()),
   blocked_on: nullable(string()),
   blocked_reason: nullable(string()),
