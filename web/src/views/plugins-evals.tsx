@@ -298,6 +298,7 @@ export function EvalsCard({ path }: { path: string }) {
     },
   ];
   const name = skillName(path);
+  const note = !q.data ? null : off ? t("evals.cannotWrite") : cases.length === 0 ? starterOff : null;
   return (
     <>
       <p className={CARD_INTRO}>{t("evals.cardIntro")}</p>
@@ -327,8 +328,8 @@ export function EvalsCard({ path }: { path: string }) {
           <DataTable label={t("evals.cardTitle", { name })} columns={columns} rows={cases} rowKey={(c) => c.id} empty={t("evals.cardNoCases")} />
         </>
       )}
-      {off && q.data && <div className="mt-4"><Notice tone="info">{t("evals.cannotWrite")}</Notice></div>}
-      {!off && q.data && cases.length === 0 && starterOff !== null && <div className="mt-4"><Notice tone="info">{starterOff}</Notice></div>}
+      {/* One note under the card: the server cannot write, else why Draft starter cases is off for a skill with no cases. */}
+      {note !== null && <div className="mt-4"><Notice tone="info">{off ? t("evals.cannotWrite") : note}</Notice></div>}
       {open?.kind === "suite.add" && <SuiteDialog path={path} write={write} initial={name} adding onClose={close} />}
       {open?.kind === "suite.rename" && suite && <SuiteDialog path={path} write={write} initial={suite.title} adding={false} onClose={close} />}
       {open?.kind === "suite.delete" && suite && <DeleteDialog path={path} suiteId={suite.id} write={write} body={{ op: "suite.delete", skill: path }} heading="evals.deleteSuiteTitle" onClose={close} />}
