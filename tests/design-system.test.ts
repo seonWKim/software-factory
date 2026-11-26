@@ -504,7 +504,7 @@ const INNER_SPACING: readonly { file: string; snippet: string; reason: string }[
 
 describe("page blocks are stacked by the page's gap-6 column", () => {
   const views = join(WEB_SRC, "views");
-  const MARGIN = /(?<![\w-])m[tb]-(?:(?:[3-9]|\d\d)(?![\w-])|\[)/;
+  const MARGIN = /(?<![\w-])m[tb]-(?:(?:[1-9]|[1-9]\d)(?![\w-])|\[)/;
   const flagged = (rel: string, text: string) =>
     text
       .split("\n")
@@ -544,13 +544,13 @@ describe("page blocks are stacked by the page's gap-6 column", () => {
   it("self-check: a block margin is flagged, an allowed inner one and scroll-mt are not", () => {
     expect(flagged("pages.tsx", '<div className="mt-6">')).toHaveLength(1);
     expect(flagged("pages.tsx", '<div className="mb-3 flex">')).toHaveLength(1);
-    expect(flagged("pages.tsx", '<div className="mt-1 scroll-mt-4 first:mt-0">')).toEqual([]);
+    expect(flagged("pages.tsx", '<div className="scroll-mt-4 first:mt-0">')).toEqual([]);
     expect(flagged("spend.tsx", '<div data-spend-notes className="mt-3">')).toEqual([]);
     expect(flagged("item-about.tsx", '<div className="mt-3">')).toHaveLength(1);
     expect(flagged("item-about.tsx", '<div data-about-part className="mt-3 min-w-0">')).toEqual([]);
     expect(flagged("pages.tsx", '<div className="mt-[10px]">')).toHaveLength(1);
     expect(flagged("pages.tsx", '<div className="mb-[2rem] flex">')).toHaveLength(1);
-    expect(flagged("pages.tsx", '<div className="mt-2">')).toEqual([]);
+    expect(flagged("pages.tsx", '<div className="mt-2">')).toHaveLength(1);
   });
 });
 
