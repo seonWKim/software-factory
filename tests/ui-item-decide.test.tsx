@@ -121,6 +121,7 @@ describe("item page: DecisionCard", () => {
     const dialog = await screen.findByRole("dialog");
     for (const f of ["In short", "Scope", "Allowed paths"]) expect(within(dialog).queryByText(f)).toBeNull();
     expect(within(dialog).getAllByRole("textbox")).toHaveLength(1);
+    expect(dialog.textContent).not.toContain("current");
   });
 
   it("with a spec Revise opens the five-section form; without one (not New) it opens one Add context textarea", async () => {
