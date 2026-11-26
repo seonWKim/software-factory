@@ -47,35 +47,70 @@ export const INDEX_FOLDERS: readonly PathCompanion[] = [
 /** The generated i18n catalog barrel: allowed only when the answer names it (a new area file). */
 const I18N_BARREL = "web/src/i18n/en.ts";
 
+/** One built-in rule: the companions of one `files_to_change` path, read from the path alone. */
+export interface CompanionRule {
+  also: (file: string) => string[];
+  /** The fixed paths a kind rule adds; a test checks each exists in the repository. */
+  fixed?: readonly string[];
+  /** Why; noted under the spec's applied defaults like a config entry's reason. */
+  reason?: string;
+}
+
+/** A migration directly under `src/<owner>/migrations/`, or that folder itself (the file name not chosen yet). */
+const MIGRATION = /^src\/([^/]+)\/migrations\/(?:[^/]+\.ts)?$/;
+
+/** A kind rule: a file matching `when` brings the `fixed` files along, for `reason`. */
+const kindRule = (when: RegExp, fixed: readonly string[], reason: string): CompanionRule => ({
+  also: (file) => (when.test(file) ? [...fixed] : []),
+  fixed,
+  reason,
+});
+
 /**
- * The built-in rules (decided 2026-11-18): the companions of one `files_to_change` path, read from the path alone,
- * since triage has no clone. A design topic file adds its History file; a web view or component adds only the i18n
- * area file its name maps to; the generated catalog barrel `web/src/i18n/en.ts` (`npm run i18n:catalog`) is added
- * only when `files_to_change` names it, as triage does for a new area file (decided 2026-11-20); a source file under
- * `src/` adds the test named after it; a migration directly under `src/<owner>/migrations/` adds that owner's
- * `src/<owner>/table-docs.ts`.
+ * The built-in rules (decided 2026-11-18), the one list of them: the companions of one `files_to_change` path, read
+ * from the path alone, since triage has no clone. A design topic file adds its History file; a web view or component
+ * adds only the i18n area file its name maps to; the generated catalog barrel `web/src/i18n/en.ts`
+ * (`npm run i18n:catalog`) is added only when `files_to_change` names it, as triage does for a new area file (decided
+ * 2026-11-20); a source file under `src/` adds the test named after it; a migration directly under
+ * `src/<owner>/migrations/` adds that owner's `src/<owner>/table-docs.ts`. The kind rules (decided 2026-11-26): a
+ * migration adds the schema snapshot, and a capability under `src/api/capabilities/` adds the API registry files.
+ * A later rule is one entry here plus its test in tests/path-companions.test.ts.
  */
-const COMPANION_RULES: readonly ((file: string) => string[])[] = [
-  (file) => {
-    const topic = /^docs\/design\/([^/]+)\.md$/.exec(file)?.[1];
-    return topic === undefined ? [] : [`docs/design/history/${topic}.md`];
+export const COMPANION_RULES: readonly CompanionRule[] = [
+  {
+    also: (file) => {
+      const topic = /^docs\/design\/([^/]+)\.md$/.exec(file)?.[1];
+      return topic === undefined ? [] : [`docs/design/history/${topic}.md`];
+    },
   },
-  (file) => {
-    const area =
-      /^web\/src\/components\/([^/.]+)\.tsx$/.exec(file)?.[1] ??
-      /^web\/src\/views\/(?:([^/]+)\/[^/]+|([^/.-]+)[^/]*)\.tsx$/.exec(file)?.slice(1).find((a) => a !== undefined);
-    return area === undefined ? [] : [`web/src/i18n/en/${area}.ts`];
+  {
+    also: (file) => {
+      const area =
+        /^web\/src\/components\/([^/.]+)\.tsx$/.exec(file)?.[1] ??
+        /^web\/src\/views\/(?:([^/]+)\/[^/]+|([^/.-]+)[^/]*)\.tsx$/.exec(file)?.slice(1).find((a) => a !== undefined);
+      return area === undefined ? [] : [`web/src/i18n/en/${area}.ts`];
+    },
   },
-  (file) => (file === I18N_BARREL ? [file] : []),
-  (file) => {
-    if (file.endsWith(".d.ts")) return [];
-    const m = /^src\/(?:.+\/)?([^/.]+)[^/]*\.(tsx?)$/.exec(file);
-    return m && m[1] !== "index" ? [`tests/${m[1]}.test.${m[2]}`] : [];
+  { also: (file) => (file === I18N_BARREL ? [file] : []) },
+  {
+    also: (file) => {
+      if (file.endsWith(".d.ts")) return [];
+      const m = /^src\/(?:.+\/)?([^/.]+)[^/]*\.(tsx?)$/.exec(file);
+      return m && m[1] !== "index" ? [`tests/${m[1]}.test.${m[2]}`] : [];
+    },
   },
-  (file) => {
-    const owner = /^src\/([^/]+)\/migrations\/(?:[^/]+\.ts)?$/.exec(file)?.[1];
-    return owner === undefined ? [] : [`src/${owner}/table-docs.ts`];
+  {
+    also: (file) => {
+      const owner = MIGRATION.exec(file)?.[1];
+      return owner === undefined ? [] : [`src/${owner}/table-docs.ts`];
+    },
   },
+  kindRule(MIGRATION, ["schema/sqlite/controller.sql"], "a new migration changes the schema snapshot (npm run schema:snapshot)"),
+  kindRule(
+    /^src\/api\/capabilities\/(?:[^/]+\.ts)?$/,
+    ["src/api/index.ts", "web/src/api/generated.ts", "docs/api/openapi.json"],
+    "a new or changed API capability changes its registry files (npm run gen:api)",
+  ),
 ];
 
 /** True when a built-in rule may never add `path`: on the gate list (protected paths included) or under a floor. */
@@ -142,7 +177,7 @@ export function whenMatches(when: string, path: string): boolean {
  * `allowed_paths` unless an allowed path already covers it: config entries whose `when` matches a
  * `files_to_change` path, the doc index folders (INDEX_FOLDERS) when an index is named in either list, and the
  * built-in rules' paths for each `files_to_change` path, except a gate path or one under `floors` (the project's
- * tier floors, required so no caller skips the refusal). A config entry with a `reason` that added a path also adds
+ * tier floors, required so no caller skips the refusal). A config entry or built-in rule with a `reason` that added a path also adds
  * its note (`companionNote`) to the answer's `applied_defaults`, once per reason; notes that would pass
  * MAX_APPLIED_DEFAULTS share one line, and none is added when even that does not fit (the Files section still names
  * the paths). The controller runs it on every triage answer, so a `/revise` (a new triage run) gets it too.
@@ -161,17 +196,19 @@ export function applyCompanions(answer: unknown, companions: readonly PathCompan
     return true;
   };
   const reasons: string[] = [];
+  const addAll = (paths: readonly string[], because: string, reason: string | undefined) => {
+    const any = paths.map((p) => add(p, because)).some(Boolean);
+    if (any && reason && !reasons.includes(reason)) reasons.push(reason);
+  };
   const named = (when: string) => files.some((f) => whenMatches(when, f));
   for (const c of companions) {
-    if (!named(c.when) || !(c.with ?? []).every(named)) continue;
-    const any = c.also.map((p) => add(p, c.when)).some(Boolean);
-    if (any && c.reason && !reasons.includes(c.reason)) reasons.push(c.reason);
+    if (named(c.when) && (c.with ?? []).every(named)) addAll(c.also, c.when, c.reason);
   }
   for (const c of INDEX_FOLDERS) {
     if (files.includes(c.when) || answer.allowed_paths.includes(c.when)) for (const p of c.also) add(p, c.when);
   }
   for (const f of files) {
-    for (const rule of COMPANION_RULES) for (const p of rule(f)) if (!refusedCompanion(p, floors)) add(p, f);
+    for (const rule of COMPANION_RULES) addAll(rule.also(f).filter((p) => !refusedCompanion(p, floors)), f, rule.reason);
   }
   if (added.length === 0) return { answer, added };
   const notes = withNotes(answer.applied_defaults, reasons);
