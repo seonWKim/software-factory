@@ -9,7 +9,7 @@ export default defineSetting({
   type: "boolean",
   default: false,
   description: "Whether the coordinator runs its cycle every 15 minutes and acts on the work items.",
-  applies: "the controller's next tick",
+  applies: "the next tick",
   direction: "free",
   changed_by: "runtime",
   scope: "global",
