@@ -21,7 +21,7 @@ import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, SYSTEM, retry, retryWip, footerAfter, alreadyAllowed } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
-import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js"; import { RUN_NEXT_COMMAND, runNext } from "./run-next.js";
+import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js"; import { gateAgentWrite } from "./held-writes.js"; import { RUN_NEXT_COMMAND, runNext } from "./run-next.js";
 import { FEEDBACK_REQUIRED, applyQueued, queueRevise, replyQueued } from "./queued-revise.js"; import { scanClean } from "./scan.js"; import { recheckRetry } from "./premise-recheck.js"; import { commandText, pathsCommand } from "./paths.js"; import { noteCommand, noteOnSource } from "./note.js";
 import { PR_REVISE, type PrFeedbackDeps, handlePrReview, itemOfPr, prFeedback } from "./pr-feedback.js"; import { RETRY, answerCheckpoint } from "./checkpoint.js"; import { type InfoSay, handleInfo, handleLink } from "./replies.js";
 
@@ -102,6 +102,11 @@ export class CommandsUnit {
    * merge_queued goes back to merge_pending with the refusal on its state change, so the dashboard's row shows why
    * and offers Merge again. Any other item changes nothing (a `factory merge` or auto mode's merge never left it).
    */
+  /** An agent write (a coordinator step) through the guards and the permission gate: run, held for `confirm <id>`, or refused. */
+  gateAgentWrite(w: Parameters<typeof gateAgentWrite>[1]) {
+    return gateAgentWrite(this.c, w);
+  }
+
   async mergeReturned(id: WorkItemId, refusal: string): Promise<void> {
     await this.c.unit("transitions").decide(id, (it) => mergeReturned(it, refusal, SYSTEM));
   }

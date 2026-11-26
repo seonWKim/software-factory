@@ -1,4 +1,7 @@
-import type { UserId } from "./types.js";
+import type { Timestamp, UserId } from "./types.js";
+import type { TableCommand } from "./command-table.js";
+import permissionMode, { PERMISSION_MODES, type PermissionMode } from "../controller/settings/permission-mode.setting.js";
+import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { AuthAction, AuthDecision, AuthProvider, AuthResource, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 
@@ -87,4 +90,88 @@ export class OwnerAuth implements AuthProvider {
     });
     return decision;
   }
+}
+
+/**
+ * The permission gate (design 08-permissions, phase 2 of 3 of local-task-tk_cad55672). Agent writes, from a chat
+ * tool call or a coordinator step, go through `authorizeWrite`: the guards first (a write that reads a secret, then
+ * the egress scan of its arguments), refused in every mode with their own reasons; then the mode, read from the
+ * store at this write; then `permissionGate`. A held write is stored once (`holdWrite`, keyed by `key`) for the
+ * owner's `confirm <id>`, with the mode it ran under. A typed command (`human_command`) passes the guards and is never
+ * gated.
+ */
+
+/** Who wrote a command: a person's typed command, or an agent (inbound_commands.write_origin). */
+export type WriteOrigin = "human_command" | "agent";
+/** A guard's refusal: the write reads a secret (G1: agents never read secrets). */
+export const SECRET_READ = "secret_read";
+/** A guard's refusal: the egress scan (G5) flagged the write's arguments; the tool gate's reason. */
+export const EGRESS_BLOCKED = "egress_blocked";
+/** The gate's refusal: an agent write in a chat turn, in every mode. */
+export const AGENT_WRITE_IN_CHAT = "agent_write_in_chat";
+
+/** What the gate decides: run the write, hold it for the owner's confirm, or refuse it. */
+export type GateDecision = { outcome: "run" } | { outcome: "hold" } | { outcome: "refuse"; reason: typeof AGENT_WRITE_IN_CHAT };
+
+/**
+ * The gate, a pure function: a typed command runs; an agent write in a chat turn is refused; any other agent write is
+ * held in `ask_all`, held when it cannot be undone in `ask_irreversible` (a command that declares no `reversible`
+ * counts as irreversible), and runs in `full`.
+ */
+export function permissionGate(i: { mode: PermissionMode; reversible: boolean | undefined; origin: WriteOrigin; in_chat_turn: boolean }): GateDecision {
+  if (i.origin === "human_command") return { outcome: "run" };
+  if (i.in_chat_turn) return { outcome: "refuse", reason: AGENT_WRITE_IN_CHAT };
+  const hold = i.mode === "ask_all" || (i.mode === "ask_irreversible" && i.reversible !== true);
+  return { outcome: hold ? "hold" : "run" };
+}
+
+/** The mode in force, read from the store's override at each write (never a process cache); none, or a bad one, is the default. */
+export async function readPermissionMode(store: Pick<FactoryStore, "listSettingOverrides">): Promise<PermissionMode> {
+  const row = (await store.listSettingOverrides()).find((r) => r.key === "permission_mode" && r.project === "");
+  let value: unknown = null;
+  try {
+    value = row ? JSON.parse(row.value) : null;
+  } catch { /* a bad stored value reads as the default */ }
+  return PERMISSION_MODES.find((m) => m === value) ?? (permissionMode.default as PermissionMode);
+}
+
+/** An agent write the gate held (controller_held_writes): pending until the owner confirms `id`; `mode` is the mode it ran under. */
+export interface NewHeldWrite { key: string; command: string; args: readonly string[]; actor: UserId; mode: PermissionMode }
+export interface HeldWrite extends Omit<NewHeldWrite, "args"> { id: string; args: string[]; status: string; created_at: Timestamp }
+/** Held writes (part of FactoryStore): a hold of a key already pending writes nothing and gives the pending row (`created` false); a list reads the newest first. */
+export interface HeldWriteStore {
+  holdWrite(w: NewHeldWrite): Promise<{ created: boolean; write: HeldWrite }>;
+  listHeldWrites(limit: number): Promise<HeldWrite[]>;
+}
+
+/** One write to authorize: the command table's entry, its arguments, who wrote it, and the key that makes it the same write again. */
+export interface WriteRequest {
+  command: Pick<TableCommand, "name" | "reversible">;
+  args: readonly string[];
+  actor: UserId;
+  origin: WriteOrigin;
+  in_chat_turn: boolean;
+  key: string;
+  reads_secret?: boolean;
+}
+export interface WriteGateDeps {
+  store: Pick<FactoryStore, "listSettingOverrides" | "holdWrite">;
+  scanner: Pick<EgressScanner, "scan">;
+}
+export type WriteDecision =
+  | { outcome: "run"; mode: PermissionMode }
+  | { outcome: "held"; mode: PermissionMode; id: string; reply: string }
+  | { outcome: "refused"; reason: string; reply: string };
+
+/** The guards, then the mode read now, then the gate; a held write is stored once and answered with `confirm <id>`. */
+export async function authorizeWrite(d: WriteGateDeps, w: WriteRequest): Promise<WriteDecision> {
+  const refused = (reason: string, why: string): WriteDecision => ({ outcome: "refused", reason, reply: `\`${w.command.name}\` was refused: ${why}` });
+  if (w.reads_secret === true) return refused(SECRET_READ, "it reads a secret");
+  if (!(await d.scanner.scan("tool_result", [w.command.name, ...w.args].join(" "))).clean) return refused(EGRESS_BLOCKED, "the egress scan flagged it");
+  const mode = await readPermissionMode(d.store);
+  const gate = permissionGate({ mode, reversible: w.command.reversible, origin: w.origin, in_chat_turn: w.in_chat_turn });
+  if (gate.outcome === "refuse") return refused(gate.reason, "an agent may not write from a chat turn; type the command instead");
+  if (gate.outcome === "run") return { outcome: "run", mode };
+  const { write } = await d.store.holdWrite({ key: w.key, command: w.command.name, args: w.args, actor: w.actor, mode });
+  return { outcome: "held", mode: write.mode, id: write.id, reply: `\`${w.command.name}\` is held under permission_mode ${write.mode}: confirm it with \`confirm ${write.id}\`` };
 }
