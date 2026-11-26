@@ -7,8 +7,8 @@ import { type FunctionComponent, type ReactElement, createElement } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SystemAction } from "../web/src/api.js";
 
-// The Add model credential dialog (design 09-status-page): Needs you's model_credential row names no command and opens
-// the dialog from its "⋯" menu; the Failures page's setup_missing group opens the same dialog. One masked field per
+// The Add model credential dialog (design 09-status-page): Needs you's model_credential row names no command and gives its reason
+// and a visible Add model credential button that opens the dialog; the Failures page's setup_missing group opens the same dialog. One masked field per
 // declared secret, Save and Cancel; Save posts the filled fields with the page's CSRF token. The server is a fake fetch.
 // tsconfig.test.json checks this file without JSX, so the views load by a specifier the node check skips.
 
@@ -71,15 +71,15 @@ async function saveIn(d: HTMLElement, name: string, value: string) {
 }
 
 describe("Needs you: the model credential row", () => {
-  it("names no command, and its menu's Add model credential opens the dialog with one masked field per declared secret", async () => {
+  it("names no command, gives a reason, and its visible Add model credential button opens the dialog with one masked field per declared secret", async () => {
     mount(createElement("ul", null, createElement(CheckRow, { action: ROW })));
     const row = screen.getByText("Add a model credential").closest("li")!;
     expect(row.textContent).not.toMatch(/npm|setup|`/);
     expect(row.querySelector("code")).toBeNull();
-    fireEvent.click(within(row).getByRole("button", { name: "More commands" }));
-    const item = within(row).getByRole("menuitem", { name: "Add model credential" });
-    expect(item.getAttribute("data-action")).toBe("add_model_credential");
-    fireEvent.click(item);
+    expect(row.textContent).toContain("agent runs wait");
+    expect(row.getAttribute("data-check")).toBe("model_credential");
+    expect(within(row).queryByRole("button", { name: "More commands" })).toBeNull();
+    fireEvent.click(within(row).getByRole("button", { name: "Add model credential" }));
     const d = await dialog();
     for (const name of SECRETS) expect((await within(d).findByLabelText(name)).getAttribute("type")).toBe("password");
     expect(within(d).getByRole("button", { name: "Cancel" })).toBeTruthy();
@@ -88,8 +88,7 @@ describe("Needs you: the model credential row", () => {
   it("Save posts the filled field only, with the page's CSRF token, and closes; the value stays nowhere on the page", async () => {
     mount(createElement("ul", null, createElement(CheckRow, { action: ROW })));
     const row = screen.getByText("Add a model credential").closest("li")!;
-    fireEvent.click(within(row).getByRole("button", { name: "More commands" }));
-    fireEvent.click(within(row).getByRole("menuitem", { name: "Add model credential" }));
+    fireEvent.click(within(row).getByRole("button", { name: "Add model credential" }));
     await saveIn(await dialog(), SECRETS[0]!, VALUE);
     expect(posts).toEqual([{ url: "/api/v1/model-credential", token: TOKEN, body: { values: { [SECRETS[0]!]: VALUE } } }]);
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -100,8 +99,7 @@ describe("Needs you: the model credential row", () => {
     answer = { status: 403, body: { error: "Only the owner adds a model credential; you are local:other." } };
     mount(createElement("ul", null, createElement(CheckRow, { action: ROW })));
     const row = screen.getByText("Add a model credential").closest("li")!;
-    fireEvent.click(within(row).getByRole("button", { name: "More commands" }));
-    fireEvent.click(within(row).getByRole("menuitem", { name: "Add model credential" }));
+    fireEvent.click(within(row).getByRole("button", { name: "Add model credential" }));
     const d = await dialog();
     await saveIn(d, SECRETS[1]!, VALUE);
     expect(within(d).getByRole("alert").textContent).toMatch(/Only the owner adds a model credential/);
