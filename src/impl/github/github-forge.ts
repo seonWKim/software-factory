@@ -359,8 +359,9 @@ export class GitHubForge implements Forge {
     return this.issues.postComment(this.prRef(pr), body, marker);
   }
 
-  setPrStatus(source: SourceRef, status: WorkStatus, pr: number): Promise<void> {
-    return this.issues.setStatus(source, status, String(pr));
+  setPrStatus(source: SourceRef, status: WorkStatus, pr: number): Promise<void> { return this.issues.setStatus(source, status, String(pr)); }
+  async prTitle(pr: number): Promise<string | null> {
+    return (await this.client.request<Pick<GhPull, "title"> | undefined>("GET", `${this.base}/pulls/${pr}`))?.title || null;
   }
 
   /** Every path the PR changes, both sides of a rename. GitHub lists at most 3000 files per PR. */
