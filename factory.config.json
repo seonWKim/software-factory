@@ -119,16 +119,16 @@
     {
       "when": "src/core/types.ts",
       "with": ["src/worker/runs/"],
-      "also": ["src/core/settings.ts", "src/worker/settings/worker-kinds.setting.ts", "docs/settings.md", "tests/settings-catalog.test.ts", "tests/worker-kinds.test.ts", "tests/architecture/rule-of-two.test.ts"],
+      "also": ["src/core/settings.ts", "src/worker/settings/worker-kinds.setting.ts", "docs/settings/worker.md", "tests/settings-catalog.test.ts", "tests/worker-kinds.test.ts", "tests/architecture/rule-of-two.test.ts"],
       "reason": "a new run kind must be in WORKER_KINDS (src/core/settings.ts) or the pool refuses to start; it also joins the worker_kinds setting, its catalog page (npm run settings:catalog) and the catalog test; tests/worker-kinds.test.ts and tests/architecture/rule-of-two.test.ts pin the exact kind and role lists, so a new kind or role is added on purpose and reviewed (the rule-of-two test is a gate path)"
     },
-    { "when": "src/controller/settings/", "also": ["docs/settings.md"], "reason": "a setting change regenerates docs/settings.md (npm run settings:catalog)" },
-    { "when": "src/guards/settings/", "also": ["docs/settings.md"], "reason": "a setting change regenerates docs/settings.md (npm run settings:catalog)" },
-    { "when": "src/inbound/settings/", "also": ["docs/settings.md"], "reason": "a setting change regenerates docs/settings.md (npm run settings:catalog)" },
-    { "when": "src/outbound/settings/", "also": ["docs/settings.md"], "reason": "a setting change regenerates docs/settings.md (npm run settings:catalog)" },
-    { "when": "src/runtime/settings/", "also": ["docs/settings.md"], "reason": "a setting change regenerates docs/settings.md (npm run settings:catalog)" },
-    { "when": "src/state/settings/", "also": ["docs/settings.md"], "reason": "a setting change regenerates docs/settings.md (npm run settings:catalog)" },
-    { "when": "src/worker/settings/", "also": ["docs/settings.md"], "reason": "a setting change regenerates docs/settings.md (npm run settings:catalog)" }
+    { "when": "src/controller/settings/", "also": ["docs/settings/controller.md"], "reason": "a setting change regenerates its owner's catalog page docs/settings/controller.md (npm run settings:catalog)" },
+    { "when": "src/guards/settings/", "also": ["docs/settings/guards.md"], "reason": "a setting change regenerates its owner's catalog page docs/settings/guards.md (npm run settings:catalog)" },
+    { "when": "src/inbound/settings/", "also": ["docs/settings/inbound.md"], "reason": "a setting change regenerates its owner's catalog page docs/settings/inbound.md (npm run settings:catalog)" },
+    { "when": "src/outbound/settings/", "also": ["docs/settings/outbound.md"], "reason": "a setting change regenerates its owner's catalog page docs/settings/outbound.md (npm run settings:catalog)" },
+    { "when": "src/runtime/settings/", "also": ["docs/settings/runtime.md"], "reason": "a setting change regenerates its owner's catalog page docs/settings/runtime.md (npm run settings:catalog)" },
+    { "when": "src/state/settings/", "also": ["docs/settings/state.md"], "reason": "a setting change regenerates its owner's catalog page docs/settings/state.md (npm run settings:catalog)" },
+    { "when": "src/worker/settings/", "also": ["docs/settings/worker.md"], "reason": "a setting change regenerates its owner's catalog page docs/settings/worker.md (npm run settings:catalog)" }
   ],
   "state_dir": ".factory",
   "worktrees_dir": ".worktrees",
@@ -136,5 +136,6 @@
   "stats": { "weights": { "none": 0, "minor": 1, "major": 3, "critical": 10 }, "min_sample": 10 },
   "agent_git_identity": { "name": "software-factory implementer", "email": "software-factory@users.noreply.github.com" },
   "improver": { "schedule": "daily" },
+  "chat_eval": { "schedule": "daily" },
   "slack": { "channels": ["C0CDEHN4HM5"] }
 }

@@ -236,6 +236,23 @@ describe("config keys: packs (design 11-packs.md)", () => {
   });
 });
 
+describe("config keys: chat_eval (design 04-chat-agent)", () => {
+  it("is a top-level key: the checked-in config sets chat_eval.schedule to daily and loads", async () => {
+    expect(TOP_LEVEL_KEYS).toContain("chat_eval");
+    expect(REAL.chat_eval).toEqual({ schedule: "daily" });
+    await expect(loadConfig(root(SQLITE))).resolves.toBeTruthy();
+  });
+
+  it("an absent block loads; an unknown key or a schedule other than daily fails naming its path", async () => {
+    const without: Record<string, unknown> = { ...SQLITE };
+    delete without.chat_eval;
+    await expect(loadConfig(root(without))).resolves.toBeTruthy();
+    expect((await loadError({ ...SQLITE, chat_eval: { schedul: "daily" } })).message).toContain('unknown config key "schedul" at chat_eval.schedul; valid chat_eval keys: schedule; did you mean "schedule"?');
+    expect((await loadError({ ...SQLITE, chat_eval: { schedule: "hourly" } })).message).toContain("chat_eval.schedule must be one of daily");
+    expect((await loadError({ ...SQLITE, chat_eval: "daily" })).message).toContain("chat_eval must be an object");
+  });
+});
+
 describe("config keys: defaults and projects", () => {
   const ID = "seonWKim/software-factory";
   const PROJECT_KEYS = ["max_attempts", "max_diff_lines", "max_diff_files", "budgets", "floors"];

@@ -1,9 +1,9 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { isGatePath } from "../../src/core/improver.js";
 import { keyRefusal, resolveSettings } from "../../src/core/settings.js";
-import { type SettingCatalog, loadSettingCatalog, monotonicProblems, renderSettingCatalog } from "../../src/runtime/index.js";
+import { SettingCatalog, loadSettingCatalog, monotonicProblems, renderSettingCatalog } from "../../src/runtime/index.js";
 import { resolveLevels } from "../../src/runtime/settings/monotonic.js";
 import { type SettingDescriptor, settingFileName, settingProblems } from "../../src/shared/setting.js";
 import { REPO, componentOf } from "./lib.js";
@@ -11,7 +11,8 @@ import { REPO, componentOf } from "./lib.js";
 // RFC 0015 §8, §9 settings-monotonic: a lower settings level never loosens what a higher one set; runtime
 // changes (`factory settings set`) never touch a guard, and loosen a dial only with its grant; floors, dials and
 // guards otherwise change by a reviewed config change only. Also the settings layout, the gate list over every
-// setting file, and the generated catalog (docs/settings.md; `npm run settings:catalog` rewrites it).
+// setting file, and the generated catalog (the index docs/settings.md and one page per owner under docs/settings/;
+// `npm run settings:catalog` rewrites them).
 
 let catalog: SettingCatalog;
 beforeAll(async () => {
@@ -103,11 +104,45 @@ describe("settings-monotonic", () => {
     }
   });
 
-  it("docs/settings.md is the generated catalog", () => {
-    const path = join(REPO, "docs", "settings.md");
-    const actual = renderSettingCatalog(catalog);
-    if (process.env.SF_SNAPSHOT_UPDATE === "1") writeFileSync(path, actual);
-    expect(existsSync(path), "run npm run settings:catalog").toBe(true);
-    expect(actual, "docs/settings.md is stale: run npm run settings:catalog").toBe(readFileSync(path, "utf8"));
+  it("every owner page holds only that owner's rows, and every key sits in exactly one page", () => {
+    const pages = renderSettingCatalog(catalog);
+    const index = pages.get("docs/settings.md")!;
+    expect(index, "the index holds no setting rows").not.toMatch(/^\| `/m);
+    const owners = [...new Set(catalog.all().map((s) => s.owner))].sort();
+    expect(owners).toEqual(expect.arrayContaining(["controller", "guards", "inbound", "outbound", "runtime", "state", "worker"]));
+    const seen: string[] = [];
+    for (const owner of owners) {
+      const page = pages.get(`docs/settings/${owner}.md`);
+      expect(page, owner).toBeDefined();
+      expect(index).toContain(`(settings/${owner}.md)`);
+      for (const row of page!.split("\n").filter((l) => l.startsWith("| `"))) {
+        expect(row.split(" | ")[1], row).toBe(owner);
+        seen.push(row.slice(3, row.indexOf("`", 3)));
+      }
+    }
+    expect(seen.sort()).toEqual(catalog.all().map((s) => s.key).sort());
+  });
+
+  it("the index does not change when a setting's default or description changes", () => {
+    const [first, ...rest] = catalog.entries;
+    const changed = { ...first!, descriptor: { ...first!.descriptor, default: "other", description: "Something else." } };
+    const before = renderSettingCatalog(catalog).get("docs/settings.md");
+    expect(renderSettingCatalog(new SettingCatalog([changed, ...rest])).get("docs/settings.md")).toBe(before);
+  });
+
+  it("docs/settings.md and docs/settings/<owner>.md are the generated catalog", () => {
+    const pages = renderSettingCatalog(catalog);
+    const dir = join(REPO, "docs", "settings");
+    if (process.env.SF_SNAPSHOT_UPDATE === "1") {
+      mkdirSync(dir, { recursive: true });
+      for (const f of readdirSync(dir)) if (f.endsWith(".md") && !pages.has(`docs/settings/${f}`)) rmSync(join(dir, f));
+      for (const [rel, text] of pages) writeFileSync(join(REPO, rel), text);
+    }
+    for (const [rel, text] of pages) {
+      expect(existsSync(join(REPO, rel)), `${rel} is missing: run npm run settings:catalog`).toBe(true);
+      expect(text, `${rel} is stale: run npm run settings:catalog`).toBe(readFileSync(join(REPO, rel), "utf8"));
+    }
+    const extra = readdirSync(dir).filter((f) => f.endsWith(".md") && !pages.has(`docs/settings/${f}`));
+    expect(extra, "pages for no owner: run npm run settings:catalog").toEqual([]);
   });
 });

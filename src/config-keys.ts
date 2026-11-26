@@ -5,6 +5,7 @@
 import type { FileConfig } from "./load-config.js";
 import { CLEANUP_KEYS, cleanupProblems } from "./cleanup/config.js";
 import { CAPABILITIES_KEYS, COORDINATION_KEYS, SKILL_IMPROVE_KEYS, TOOLCHAIN_KEYS, capabilitiesProblems, coordinationProblems, goldenConfig, skillImproveProblems } from "./core/config.js";
+import { CHAT_EVAL_KEYS, chatEvalProblems } from "./core/chat-eval.js";
 import { pathCompanionProblems } from "./core/companions.js";
 import { DISTILL_KEYS, IMPROVER_KEYS, improverProblems } from "./core/proposals.js";
 import { packsProblems } from "./packs/packs.js";
@@ -25,8 +26,10 @@ import { SLACK_KEYS, slackConfigProblems } from "./impl/source/slack-config.js";
  * `improver` and `distill` (design 07-self-improvement, entity proposals): `max_proposals`, `schedule` and `min_cases` (`improverConfig`).
  * `cleanup` (design 08-cleanup): `enabled` and `keep_hours`, checked here (`cleanupProblems`), read by compose and the CLI (`cleanupConfig`).
  * The six skill improvement keys (design 07-self-improvement, `SKILL_IMPROVE_KEYS`): checked here (`skillImproveProblems`), read by `skillImproveConfig`.
+ * `chat_eval` (design 04-chat-agent): `schedule` "daily" turns on the controller's daily chat eval run, checked here
+ * (`chatEvalProblems`), read by compose.ts (`chatEvalDaily`); absent, the run is off.
  */
-type CoreOnlyKey = "cli_user" | "capabilities" | "conflict_hotspot_threshold" | "golden" | "improver" | "distill" | "cleanup" | (typeof COORDINATION_KEYS)[number] | (typeof SKILL_IMPROVE_KEYS)[number];
+type CoreOnlyKey = "chat_eval" | "cli_user" | "capabilities" | "conflict_hotspot_threshold" | "golden" | "improver" | "distill" | "cleanup" | (typeof COORDINATION_KEYS)[number] | (typeof SKILL_IMPROVE_KEYS)[number];
 
 export const TOP_LEVEL_KEYS = [
   "env",
@@ -109,6 +112,7 @@ export const TOP_LEVEL_KEYS = [
   "skill_improve_noise",
   "skill_drafts_per_day",
   "skill_draft_token_budget",
+  "chat_eval",
 ] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];
 
 // Fails typecheck when FileConfig gains a key that is not listed above.
@@ -247,6 +251,7 @@ export function unknownConfigKeys(raw: unknown): string[] {
   check(raw.golden, "golden", "golden", GOLDEN_KEYS);
   check(raw.improver, "improver", "improver", IMPROVER_KEYS);
   check(raw.distill, "distill", "distill", DISTILL_KEYS);
+  check(raw.chat_eval, "chat_eval", "chat_eval", CHAT_EVAL_KEYS);
   if (isObject(raw.stats)) check(raw.stats.weights, "stats.weights", "stats.weights", VERDICT_SEVERITIES);
   // Per-project settings (design 2026-11-01): `defaults` and each project block take only the per-project
   // keys. Anything else in a project (dials, plugins, repo, budget_min_sample, a guard) is an unknown key.
@@ -280,6 +285,7 @@ export function checkConfigKeys(raw: unknown): void {
     ...improverProblems(raw),
     ...skillImproveProblems(raw),
     ...cleanupProblems(raw),
+    ...chatEvalProblems(raw),
   ];
   if (problems.length > 0) throw new ConfigKeyError(problems);
 }
