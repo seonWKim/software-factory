@@ -544,7 +544,11 @@ describe("repo.test_command config", () => {
     writeFileSync(join(dir, "factory.config.json"), JSON.stringify({ ...cfg, store: { type: "sqlite" }, state_dir: "state" }));
     return dir;
   }
-  const withTestCommand = (value: unknown) => ({ ...REAL, repo: { ...REAL.repo, test_command: value } });
+  // repo.test_selection needs an npm test command, so a non-npm command goes without it.
+  const withTestCommand = (value: unknown) => {
+    const { test_selection: _, ...repo } = REAL.repo;
+    return { ...REAL, repo: { ...repo, test_command: value } };
+  };
   const withoutTestCommand = () => {
     const { test_command: _, ...repo } = REAL.repo;
     return { ...REAL, repo };
