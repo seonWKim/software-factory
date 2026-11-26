@@ -26,8 +26,7 @@ import type {
 } from "../../../core/schedule.js";
 import type { Timestamp, UserId } from "../../../core/types.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
-import { activityOf, scheduleRunsRef } from "../../../controller/background-jobs.js";
-import { SqlActivityStore, insertActivity } from "./activity.js";
+import { SqlActivityStore, activityOf, insertActivity, scheduleRunsRef } from "./activity.js";
 
 const COLUMNS = "id, title, cadence_kind, cadence_spec, zone, created_by, created_at, next_due_at, running_since, missed_rule, action_kind, action_settings, token_cap, token_period, " +
   "trigger_kind, run_cap_usd, daily_cap_usd, cap_raise_usd, cap_raise_day, cap_hold_key, paused, last_run_at";

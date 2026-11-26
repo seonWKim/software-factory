@@ -5,14 +5,37 @@
 // applied (migrateWithActivity); past actions get none. A cleanup pass and a supervised restart, changes outside the
 // store, write theirs with recordActivity.
 
-import { activityOf, logRef, transcriptRef } from "../../../controller/background-jobs.js";
+import type { ActivityKind, ActorOf } from "../../../controller/background-jobs.js";
 import type { AbandonedAttempt, Activity, ActivityStore, NewActivity } from "../../../interfaces/factory-store.js";
 import type { Timestamp } from "../../../core/types.js";
-import { MIGRATIONS_TABLE, tableExists, type Row, type SqlDriver, type SqlExecutor } from "../../../state/index.js";
+import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
 import { SqlRunOutputStore } from "./run-output.js";
 
 const TABLE = "controller_activity";
+/** The migration runner's record (src/state MIGRATIONS_TABLE), named here: the store reads no runtime value of src/state (kinds R1). */
+const MIGRATIONS = "runtime_schema_migrations";
 const DAY_MS = 86_400_000;
+
+/** Days a `controller_activity` row is kept (owner answer, 2026-11-26): the retention pass's history class deletes older rows. */
+export const ACTIVITY_RETENTION_DAYS = 30;
+
+/** The kinds the store writes itself; units write the others (src/controller/background-jobs.ts activityOf). */
+type StoreKind = Extract<ActivityKind, "lease_expiry" | "retention" | "schedule_run" | "restart" | "migration">;
+/** Their actor IDs: the store may not import the controller's list (kinds R1), so the type holds each to it. */
+export const STORE_ACTORS = {
+  lease_expiry: "system:reaper", retention: "system:retention", schedule_run: "system:schedule", restart: "system:supervisor", migration: "system:migrate",
+} as const satisfies { [K in StoreKind]: ActorOf<K> };
+
+/** A row of `kind` with its job's actor ID. */
+export const activityOf = (kind: StoreKind, a: Omit<NewActivity, "kind" | "actor_id">): NewActivity => ({ actor_id: STORE_ACTORS[kind], kind, ...a });
+
+// The reference formats (the controller's transcriptRef and logRef give the same text: tests/background-jobs.test.ts).
+/** A run's transcript path, as the dashboard's transcript route serves it. */
+export const transcriptRef = (work_item_id: string, run_id: string): string => `/api/v1/items/${work_item_id}/runs/${run_id}/transcript`;
+/** A log reference: the component's log and the message of the line the action wrote. */
+export const logRef = (component: string, message: string): string => `log:${component}:${message}`;
+/** A schedule's run list, as the dashboard's schedules API serves it, with each run's recorded output. */
+export const scheduleRunsRef = (schedule_id: string): string => `/api/v1/schedules/runs?schedule=${encodeURIComponent(schedule_id)}`;
 
 
 /** Inserts one row at `now` on `db` (a transaction's executor, so it commits or rolls back with its change). */
@@ -77,7 +100,8 @@ export function prunedWithActivity(
  * migrations get no row. The rows are written after the migrations commit; a migration runs outside any one transaction.
  */
 export async function migrateWithActivity(db: SqlDriver, now: () => Timestamp): Promise<void> {
-  const applied = async () => (await tableExists({ dialect: db.dialect.name, all: (q, p) => db.all(q, p), run: (q, p) => db.run(q, p) }, MIGRATIONS_TABLE)) ? await db.all(`SELECT id, component, change_kind FROM ${MIGRATIONS_TABLE} ORDER BY id`) : [];
+  const applied = async () => (await db.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [MIGRATIONS])).length === 0
+    ? [] : db.all(`SELECT id, component, change_kind FROM ${MIGRATIONS} ORDER BY id`);
   const before = new Set((await applied()).map((r) => String(r.id)));
   await db.migrate();
   if (before.size === 0) return;

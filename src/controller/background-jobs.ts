@@ -1,9 +1,8 @@
 // The background jobs (design 08-schedules-actions): every action the factory takes on its own, with the Activity
 // kind and the system actor ID of the `controller_activity` rows it writes, and where it writes them. The guard test
-// (phase 2) reads this list; the Activity page (phase 3) groups rows by actor. Imports only a type, so the store
-// and the units both read it.
-
-import type { NewActivity } from "../interfaces/factory-store.js";
+// (phase 2) reads this list; the Activity page (phase 3) groups rows by actor. Imports nothing (dependency-direction).
+// The store, which may not import the controller (kinds R1), keeps its own actor map for the kinds it writes
+// (src/impl/store/sql/activity.ts STORE_ACTORS), which its type checks against this list.
 
 /** One background job: its name, its Activity kind, its actor ID (an ID, never a display name) and its writer. */
 export interface BackgroundJob {
@@ -26,17 +25,20 @@ export const BACKGROUND_JOBS = [
 
 export type ActivityKind = (typeof BACKGROUND_JOBS)[number]["kind"];
 
+/** The actor ID of `kind`'s job: the store's actor map is typed against it. */
+export type ActorOf<K extends ActivityKind> = Extract<(typeof BACKGROUND_JOBS)[number], { kind: K }>["actor_id"];
+
+/** An Activity row a unit writes (the store's NewActivity): `kind` with its job's actor ID. */
+export interface JobActivity { actor_id: string; kind: ActivityKind; subject: string; outcome: string; reason: string; ref: string | null }
+
 /** A row of `kind` with its job's actor ID. */
-export function activityOf(kind: ActivityKind, a: Omit<NewActivity, "kind" | "actor_id">): NewActivity {
+export function activityOf(kind: ActivityKind, a: Omit<JobActivity, "kind" | "actor_id">): JobActivity {
   return { actor_id: BACKGROUND_JOBS.find((j) => j.kind === kind)!.actor_id, kind, ...a };
 }
 
+// The two reference formats a unit writes; the store's copies (src/impl/store/sql/activity.ts) give the same text,
+// which tests/background-jobs.test.ts checks.
 /** A run's transcript path, as the dashboard's transcript route serves it. */
 export const transcriptRef = (work_item_id: string, run_id: string): string => `/api/v1/items/${work_item_id}/runs/${run_id}/transcript`;
-/** A schedule's run list, as the dashboard's schedules API serves it, with each run's recorded output. */
-export const scheduleRunsRef = (schedule_id: string): string => `/api/v1/schedules/runs?schedule=${encodeURIComponent(schedule_id)}`;
 /** A log reference: the component's log and the message of the line the action wrote. */
 export const logRef = (component: string, message: string): string => `log:${component}:${message}`;
-
-/** Days a `controller_activity` row is kept (owner answer, 2026-11-26): the retention pass's history class deletes older rows. */
-export const ACTIVITY_RETENTION_DAYS = 30;

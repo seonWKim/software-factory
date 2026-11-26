@@ -6,11 +6,11 @@
 import type { Timestamp } from "../../../core/types.js";
 import type { PauseInterval } from "../../../interfaces/factory-store.js";
 import { ALERT_DEDUPE_MS } from "../../../core/alarms.js";
-import { ACTIVITY_RETENTION_DAYS } from "../../../controller/background-jobs.js";
 import { PROBE_PAUSES } from "../../../core/policy.js";
 import { COMMANDS_CURSOR } from "../../../inbound/index.js";
 import { ACTION_INTENT, THREAD_INTENT } from "../../../outbound/index.js";
 import type { SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
+import { ACTIVITY_RETENTION_DAYS } from "./activity.js";
 
 /** `?, ?, ...` for `n` bound parameters (the store's lists use it too). */
 export function placeholders(n: number): string {

@@ -7,8 +7,7 @@ import type { HostSleep, Timestamp, WorkerId, WorkItemId } from "../../../core/t
 import type { WorkerProcess, WorkerProcessReport } from "../../../interfaces/factory-store.js";
 import type { ChildRestart } from "../../../interfaces/updater.js";
 import type { Row, SqlDriver, SqlValue } from "../../../state/index.js";
-import { activityOf, logRef } from "../../../controller/background-jobs.js";
-import { insertActivity } from "./activity.js";
+import { activityOf, insertActivity, logRef } from "./activity.js";
 import { rowToHostSleep } from "./rows.js";
 import { type StoreTime, insertOnce } from "./store-steps.js";
 
