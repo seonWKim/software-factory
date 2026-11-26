@@ -3,7 +3,11 @@
 
 import { defineSetting } from "../../shared/setting.js";
 
-export default defineSetting({
+/** The values, tightest first: ask before every write, before irreversible ones only, or never. */
+export const PERMISSION_MODES = ["ask_all", "ask_irreversible", "full"] as const;
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
+
+export default defineSetting<PermissionMode>({
   key: "permission_mode",
   owner: "controller",
   type: "enum",
@@ -11,7 +15,7 @@ export default defineSetting({
   description: "What a write asks the owner first: every write, only irreversible ones, or none (full).",
   applies: "the next command the permission gate checks",
   direction: "tighten-only",
-  tighter: ["ask_all", "ask_irreversible", "full"],
+  tighter: PERMISSION_MODES,
   changed_by: "runtime",
   scope: "global",
 });

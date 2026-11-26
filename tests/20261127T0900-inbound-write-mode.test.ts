@@ -8,7 +8,6 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import WRITE_MODE from "../src/inbound/migrations/20261127T0900-inbound-write-mode.migration.js";
-import { WRITE_ORIGINS } from "../src/interfaces/factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { type MigrationDb, applyMigrations, discoverMigrations } from "../src/state/index.js";
 import { newStore } from "./helpers/store.js";
@@ -50,9 +49,8 @@ describe("migration 20261127T0900-inbound-write-mode", () => {
 
 describe("a command row's write_origin", () => {
   it("is human_command or agent, stored on append and read back; absent when the append passes none", async () => {
-    expect(WRITE_ORIGINS).toEqual(["human_command", "agent"]);
     const { store } = await newStore();
-    for (const write_origin of WRITE_ORIGINS) {
+    for (const write_origin of ["human_command", "agent"] as const) {
       const { command } = await store.appendCliCommand({ key: `cli:${write_origin}`, actor: "local:owner", command: "approve", args: {}, write_origin });
       expect(command.write_origin).toBe(write_origin);
     }

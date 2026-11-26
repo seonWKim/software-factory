@@ -1143,22 +1143,13 @@ export interface NewCliCommand {
   mirror?: boolean;
   /** The edge passport the command entered with (RFC 0015 §8, Identity); absent on rows from before M9. */
   passport_id?: string;
-  /**
-   * Who wrote the command (design 08-permissions): `human_command` from a person's CLI, chat or comment command,
-   * `agent` from an agent. Absent on rows appended without one (rows from before the column, app requests).
-   */
-  write_origin?: WriteOrigin;
+  /** Who wrote it (design 08-permissions): a person's CLI, chat or comment command, or an agent; absent on older rows and app requests. */ write_origin?: "human_command" | "agent";
 }
-
-/** The writers a command row records (design 08-permissions); the permission_mode gate reads it in a later phase. */
-export const WRITE_ORIGINS = ["human_command", "agent"] as const;
-export type WriteOrigin = (typeof WRITE_ORIGINS)[number];
 
 export interface CliCommand extends NewCliCommand {
   seq: number;
-  /** Its id (CommandReceived carries it) and origin (`cli`, `app`, or the provider of a comment poll), RFC 0015 D7. */
-  id: string;
-  origin: string;
+  /** Its id (CommandReceived carries it) and origin, the channel (`cli`, `app`, or the provider of a comment poll), RFC 0015 D7. */
+  id: string; origin: string;
   /** Store clock's now when the command was first appended. */
   created_at: Timestamp;
 }

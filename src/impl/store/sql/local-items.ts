@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import type { SourceRef, SourceType, Timestamp, UserId, WorkItemId } from "../../../core/types.js";
 import type {
-  AppCommandRequest, CliCommand, ItemMessage, NewAppCommandRequest, NewCliCommand, NewItemMessage, RunIntent, SyncFence, ThreadDelivery, ThreadLinkField, WriteOrigin,
+  AppCommandRequest, CliCommand, ItemMessage, NewAppCommandRequest, NewCliCommand, NewItemMessage, RunIntent, SyncFence, ThreadDelivery, ThreadLinkField,
 } from "../../../interfaces/factory-store.js";
 import { recordAction } from "../../../outbound/index.js";
 import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
@@ -293,7 +293,7 @@ function rowToCliCommand(row: Row): CliCommand {
     args: JSON.parse(row.args as string) as Record<string, unknown>,
     ...(Number(row.mirror) === 1 ? { mirror: true } : {}),
     ...(row.passport_id != null ? { passport_id: String(row.passport_id) } : {}),
-    ...(row.write_origin != null ? { write_origin: row.write_origin as WriteOrigin } : {}),
+    ...(row.write_origin != null ? { write_origin: row.write_origin as NonNullable<CliCommand["write_origin"]> } : {}),
     created_at: row.created_at as Timestamp,
   };
 }

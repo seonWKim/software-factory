@@ -12,7 +12,7 @@ import { Outcome, StringListControl, useWrite } from "../settings-file-keys.js";
 import { HOLD_CHOICE, HOLD_CHOICES, HOLD_MODES, SHORT_OBJECT, type HoldChoice, type HoldDraft, asObject, entries, holdOf, pretty, stringItems, stringOf, summaryOf } from "./values.js";
 import { Disclosure } from "../../components/ui/disclosure.js";
 import { ModeDialog, type ModeTarget } from "./mode-dialog.js";
-import type { PermissionMode } from "../../../../src/core/settings.js";
+import type { PermissionMode } from "../../../../src/controller/settings/permission-mode.setting.js";
 
 const TIERS = ["cheap", "standard", "strong"] as const;
 /** permission_mode's values, tightest first (design 08-permissions); the type keeps them in step with the server's. */

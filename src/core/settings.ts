@@ -9,7 +9,7 @@ import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TI
 import { usdBudget } from "./spend.js"; import { fewOrdinaryPaths, testPathsOnly } from "./auto-grant.js";
 import type { RunId, RunKind, Tier, Timestamp } from "./types.js";
 import type { SettingOverride } from "../interfaces/factory-store.js";
-import maxRestart from "../controller/settings/max-restart.setting.js"; import retryBase from "../controller/settings/retry-base-ms.setting.js"; import retryMax from "../controller/settings/retry-max-ms.setting.js"; import summaryMorning from "../controller/settings/summary-morning-time.setting.js"; import summaryEvening from "../controller/settings/summary-evening-time.setting.js"; import coordinatorDaily from "../controller/settings/spend-coordinator-daily-usd.setting.js";
+import maxRestart from "../controller/settings/max-restart.setting.js"; import retryBase from "../controller/settings/retry-base-ms.setting.js"; import retryMax from "../controller/settings/retry-max-ms.setting.js"; import summaryMorning from "../controller/settings/summary-morning-time.setting.js"; import summaryEvening from "../controller/settings/summary-evening-time.setting.js"; import coordinatorDaily from "../controller/settings/spend-coordinator-daily-usd.setting.js"; import permissionMode, { PERMISSION_MODES, type PermissionMode } from "../controller/settings/permission-mode.setting.js";
 import lease from "../worker/settings/lease-ms.setting.js"; import runTimeout from "../worker/settings/run-timeout-ms.setting.js"; import { AGENT_STOP_CHECK_MS_DEFAULT } from "./config.js";
 
 // Per-project settings in layers (design 2026-11-01, "Settings resolve in layers"). Pure: the parse and
@@ -301,19 +301,12 @@ export const PROJECT_SETTABLE_KEYS = [...GATE_SETTABLE_KEYS, "mode", "auto_grant
 export type GlobalSettableKey = Exclude<SettableKey, ProjectSettableKey>;
 
 /** The factory's two modes (design 03-risk): `manual` waits for a person at both gates; `auto` may pass them itself. */
-export const MODES = ["manual", "auto"] as const;
-export type Mode = (typeof MODES)[number];
-/** `permission_mode`'s values, tightest first (design 08-permissions): ask before every write, before irreversible ones only, or never. */
-export const PERMISSION_MODES = ["ask_all", "ask_irreversible", "full"] as const;
-export type PermissionMode = (typeof PERMISSION_MODES)[number];
+export const MODES = ["manual", "auto"] as const; export type Mode = (typeof MODES)[number];
 /** The highest `auto_merge_max_tier` the setting takes: tier 4 and up never merge automatically. */
 export const AUTO_MERGE_TIER_MAX = 3;
 /** Keys whose change needs `approve_merge` on the project (design 08-settings): they decide what merges without a person. */
 export const APPROVE_MERGE_KEYS: readonly SettableKey[] = ["mode", "auto_merge_max_tier"];
-/**
- * Keys only the owner changes (design 08-settings): `integrations` and `calendar` switch plugins the factory runs, free
- * and with no grant; `permission_mode` decides what the factory asks before a write, and a set toward `full` also needs approve_merge (08-permissions).
- */
+/** Keys only the owner changes (design 08-settings): plugins the factory runs, and what it asks before a write (`permission_mode`, whose loosening also needs approve_merge). */
 export const OWNER_KEYS: readonly SettableKey[] = ["integrations", "calendar", "permission_mode"];
 
 /** Keys that change only by a reviewed PR to factory.config.json (guards and secrets included). */
@@ -346,9 +339,8 @@ export interface SettableValues {
   alarm_window_minutes: number;
   alarm_restart_count: number;
   "standing_approvals.threshold": number; "spend.daily_budget_usd": number | null; "spend.weekly_budget_usd": number | null; "spend.coordinator_daily_usd": number; // dollars; null: no budget (the coordinator's daily limit is never null, design 06-spend)
-  mode: Mode;
+  mode: Mode; permission_mode: PermissionMode;
   auto_merge_max_tier: number;
-  permission_mode: PermissionMode;
   message_style: string;
   notice_kinds: NoticeKind[]; quiet_hours: string; review_time: string; summary_morning_time: string; summary_evening_time: string; notify_channels: string[];
   integrations: Readonly<Record<string, string>>; calendar: readonly string[]; // interface → plugin name (no entry: the config's choice); calendar plugin names
@@ -378,8 +370,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   ...ALARM_DEFAULTS,
   "standing_approvals.threshold": 10, "spend.daily_budget_usd": null, "spend.weekly_budget_usd": null, "spend.coordinator_daily_usd": coordinatorDaily.default!,
   mode: "manual",
-  auto_merge_max_tier: 0,
-  permission_mode: "ask_irreversible",
+  auto_merge_max_tier: 0, permission_mode: permissionMode.default!,
   message_style: "",
   notice_kinds: [...NOTICE_KINDS], quiet_hours: "", review_time: "09:00", summary_morning_time: summaryMorning.default, summary_evening_time: summaryEvening.default, notify_channels: [], integrations: {}, calendar: [],
   stall_ms: STALL_DEFAULTS.stall_ms, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms, conflict_hotspot_threshold: DEFAULT_HOTSPOT_THRESHOLD,
@@ -460,19 +451,17 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
       return workerCount(value) as SettableValues[K];
     case "phases_auto_approve": case "auto_grant_test_paths": case "coordinator": return booleanSetting(key, value) as SettableValues[K];
     case "hold_policy": return parseHoldPolicy(value) as SettableValues[K];
-    case "mode":
-      if (!(MODES as readonly unknown[]).includes(value)) throw new Error(`mode must be ${MODES.map((m) => `"${m}"`).join(" or ")}`);
+    case "mode": case "permission_mode": {
+      const allowed: readonly unknown[] = key === "mode" ? MODES : PERMISSION_MODES;
+      if (!allowed.includes(value)) throw new Error(`${key} must be ${allowed.map((m) => `"${m}"`).join(" or ")}`);
       return value as SettableValues[K];
+    }
     case "auto_merge_max_tier":
       if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > AUTO_MERGE_TIER_MAX) {
         throw new Error(`auto_merge_max_tier must be a whole number from 0 to ${AUTO_MERGE_TIER_MAX}; tier 4 and the gate list never merge automatically`);
       }
       return value as SettableValues[K];
-    case "permission_mode":
-      if (!(PERMISSION_MODES as readonly unknown[]).includes(value)) throw new Error(`permission_mode must be ${PERMISSION_MODES.map((m) => `"${m}"`).join(", ")}`);
-      return value as SettableValues[K];
-    case "message_style":
-      return parseMessageStyle(value) as SettableValues[K];
+    case "message_style": return parseMessageStyle(value) as SettableValues[K];
     case "notice_kinds": return parseNoticeKinds(value) as SettableValues[K];
     case "quiet_hours": return quietHoursSetting(value) as SettableValues[K]; case "review_time": case "summary_morning_time": case "summary_evening_time": if ((value === "" && key === "review_time") || (typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value))) return value as SettableValues[K]; throw new Error(`${key} must be "HH:MM" (24-hour, local time, 00:00 to 23:59)${key === "review_time" ? ', or "" to turn holding off' : ""}`); // design 09-status-page, 08-schedules-actions
     case "notify_channels": return parseNotifyChannels(value) as SettableValues[K];

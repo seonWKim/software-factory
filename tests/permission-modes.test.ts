@@ -5,7 +5,8 @@
 
 import { describe, expect, it } from "vitest";
 import { saveProjectLabel } from "../src/core/project-labels.js";
-import { LiveSettings, OWNER_KEYS, PERMISSION_MODES, SETTABLE_DEFAULTS, SETTABLE_KEYS, type SettingsBase, baseFromConfig, parseSettable } from "../src/core/settings.js";
+import { PERMISSION_MODES } from "../src/controller/settings/permission-mode.setting.js";
+import { LiveSettings, OWNER_KEYS, SETTABLE_DEFAULTS, SETTABLE_KEYS, type SettingsBase, baseFromConfig, parseSettable } from "../src/core/settings.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -35,7 +36,7 @@ describe("permission_mode: the key", () => {
     expect(SETTABLE_DEFAULTS[KEY]).toBe("ask_irreversible");
     expect(PERMISSION_MODES).toEqual(["ask_all", "ask_irreversible", "full"]);
     for (const m of PERMISSION_MODES) expect(parseSettable(KEY, m)).toBe(m);
-    for (const bad of ["ask", "FULL", "", 1, null]) expect(() => parseSettable(KEY, bad)).toThrow(/permission_mode must be/);
+    for (const bad of ["ask", "FULL", "", 1, null]) expect(() => parseSettable(KEY, bad)).toThrow(/permission_mode must be "ask_all" or "ask_irreversible" or "full"/);
   });
 });
 
