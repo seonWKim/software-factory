@@ -69,13 +69,13 @@ function UrlOrText({ url, text }: { url: string | null | undefined; text: string
 }
 
 /**
- * The item's facts: state, source, tier, PR, plan, review loops, restarts, tokens, updated. A closed item shows only
- * the facts with a value: no "–" for a tier, PR or plan it never had, no review loops or restarts it never took.
+ * The item's facts: state, source, tier, PR, plan, review loops, restarts, tokens, updated. Every item, open or closed,
+ * shows only the facts with a value: no "–" for a tier, PR or plan it never had, no review loops, restarts or tokens
+ * it never took. When the count leaves one cell on the last row of four, that cell spans the row.
  * The IDs stay in the IDs disclosure below.
  */
 export function ItemFacts({ item, now }: { item: Item; now: number }) {
   const level = item.item_phase;
-  const closed = item.stage === "CLOSED";
   const facts: [string, ReactNode, boolean][] = [
     [t("col.state"), <StatusBadge state={level}>{stateLabel(level)}{level === "closed" && item.close_reason ? ` (${termLabel(item.close_reason)})` : ""}</StatusBadge>, true],
     [t("item.source"), isHttpUrl(item.source.link) ? <SourceLink source={item.source} className="inline-block align-bottom" /> : shortItemId(item.id), true],
@@ -84,13 +84,14 @@ export function ItemFacts({ item, now }: { item: Item; now: number }) {
     [t("item.specComment"), item.spec_comment_url ? <UrlOrText url={item.spec_comment_url} text={t("item.specCommentLink")} /> : "–", !!item.spec_comment_url],
     [t("item.reviewLoops"), item.loop_count, item.loop_count > 0],
     [t("item.restarts"), item.restart_count, item.restart_count > 0],
-    [termLabel("token_cost"), tokens(item.token_cost), true],
+    [termLabel("token_cost"), tokens(item.token_cost), item.token_cost > 0],
     [t("item.updated"), <When at={item.updated_at} now={now} />, true],
   ];
+  const shown = facts.filter(([, , has]) => has);
   return (
     <dl data-item-facts className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
-      {facts.filter(([, , has]) => has || !closed).map(([k, v]) => (
-        <div key={k} className="min-w-0">
+      {shown.map(([k, v], i) => (
+        <div key={k} className={i === shown.length - 1 && shown.length % 4 === 1 ? "min-w-0 sm:col-span-4" : "min-w-0"}>
           <dt className="text-xs text-text-2">{k}</dt>
           <dd className="truncate tabular-nums">{typeof v === "object" ? v : String(v)}</dd>
         </div>
