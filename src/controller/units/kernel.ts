@@ -4,7 +4,7 @@ import { LiveSettings, type ProjectSettings, modeOf, settingValues } from "../..
 import { LOCAL_SOURCE, threadDelivery } from "../../core/local-merge.js";
 import { errorText } from "../../core/log.js";
 import { askDetail } from "../../core/owner-asks.js";
-import { type Run, type SourceRef, type SourceType, type Timestamp, type WorkItem, outcomeCost, runTokenCount } from "../../core/types.js";
+import { type Run, type SourceRef, type SourceType, type Timestamp, type UserId, type WorkItem, outcomeCost, runTokenCount } from "../../core/types.js";
 import type { Forge } from "../../interfaces/forge.js";
 import { type ControllerDeps, rateLimitWait } from "../../core/controller-deps.js";
 import { type Routine, type SuggestionDecision, carrierSource, fingerprint, lastCost, overRunCap, routineFindings, routineOfCarrier, routineOfHold, slotOfRun } from "../../core/check-page.js";
@@ -50,6 +50,7 @@ const READS = [
   "getMergeCheck", "getAppCommandRequest", "listItemMessages", "listSettingChanges", "getWorkItemByMergeSha",
   "listVerdicts", "listStandingRules", "latestSignalTimes", "listSignalRefs", "listStateChangesSince", "listVerdictsSince", "listRunsFinishedSince",
   "listNoticesFor", "listHeldNotices", "listDueReminders", "listMergeEvaluations", "getRoutine", "getRoutineSuggestion", "listRoutineSuggestions", "listScheduleRuns",
+  "listAlerts",
 ] as const;
 
 /**
@@ -139,7 +140,13 @@ export type ControllerWrite =
   /** A routine run's findings (scanned clean) as pending suggestions; duplicates skipped and counted. */
   | { kind: "routine_findings"; routine_id: string; run_id: string; texts: readonly string[] }
   /** A suggestion's answer; an accept first files it through the first source that can (`fileIssue`), keyed on its marker. */
-  | { kind: "suggestion_answer"; id: string; decision: Exclude<SuggestionDecision, { to: "accepted" }> | { to: "accepted"; by: string; issue: Parameters<NonNullable<SourceAdapter["fileIssue"]>>[0] } };
+  | { kind: "suggestion_answer"; id: string; decision: Exclude<SuggestionDecision, { to: "accepted" }> | { to: "accepted"; by: string; issue: Parameters<NonNullable<SourceAdapter["fileIssue"]>>[0] } }
+  /**
+   * The owner's answer to the coordinator limit question (design 06-spend): `approve <usd>` sets `setting` (the key
+   * `spend.coordinator_daily_usd` and the amount) through the settings path by `actor` (one audit row), `reject` (null)
+   * sets nothing; either dismisses the alert by `actor`, so the answer stays on it. A second commit sets the same value.
+   */
+  | { kind: "coordinator_limit_answer"; alert_id: string; setting: { key: string; value: number } | null; actor: UserId };
 
 /** What one lease expiry did: each attempt it cut off, and the runs it requeued or failed. */
 export interface ExpiredLeases {
@@ -307,6 +314,7 @@ export class Kernel {
       else if (w.kind === "schedule_result") await store.recordScheduleRunResult(w.schedule_id, w.occurrence_at, w.result);
       else if (w.kind === "routine_update") await store.updateRoutine(w.id, w.read, w.patch);
       else if (w.kind === "routine_raise") await store.raiseRoutineCap(w.id, w.raise);
+      else if (w.kind === "coordinator_limit_answer") await this.limitAnswer(w);
       else await this.commit({ writes: w.then(await this.expireLeases(w)) });
     }
   }
@@ -394,6 +402,14 @@ export class Kernel {
     await this.d.store.setSettingOverride({ key: "mode", project: w.level, value: JSON.stringify("manual"), actor: w.actor });
     await this.live.refresh();
     this.d.log.warn("auto mode stopped; the mode is manual again", { cause: w.alert.error_code, alert_id: r.created ? r.alert.id : null, mode_change: w.mode_change });
+  }
+
+  private async limitAnswer(w: Extract<ControllerWrite, { kind: "coordinator_limit_answer" }>): Promise<void> {
+    if (w.setting !== null) {
+      await this.d.store.setSettingOverride({ key: w.setting.key, project: "", value: JSON.stringify(w.setting.value), actor: w.actor });
+      await this.live.refresh();
+    }
+    await this.d.store.dismissAlert(w.alert_id, w.actor);
   }
 
   /** Announces every stored intent as DeliveryRequested on the controller's bus; returns how many. */

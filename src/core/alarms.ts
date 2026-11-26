@@ -15,11 +15,10 @@
 // dismissed spend threshold does not alert again in its period. No forge, LLM or sandbox call; every text is scanned
 // first.
 
-import { COORDINATOR_LIMIT_KEY, usd } from "./commands.js";
 import { groupFailures, normalizeDetail, patternKey, sleptRuns } from "./improver.js";
 import type { Logger } from "./log.js";
 import { AGENT_STALLED, INTERACTIVE, MODEL_STALL, SESSION_ABANDONED } from "./policy.js";
-import { DAY_MS, dayStart, spendTotals, utcDay, weekStart } from "./spend.js";
+import { COORDINATOR_LIMIT_KEY, DAY_MS, coordinatorLimitKey, dayStart, spendTotals, usd, utcDay, weekStart } from "./spend.js";
 import {
   type FailureGroup, type FiledPattern, RECURRING_FAILURE, type Run, type RunId, type RunKind, type RunOutcome, type SourceRef, type StateChange, type Timestamp, type UserId, type WorkItem, type WorkItemId,
   runTokenCount,
@@ -528,8 +527,6 @@ export interface CoordinatorLimit {
   unknown: number;
 }
 
-/** The coordinator limit question's pattern key: one per UTC day. */
-export const coordinatorLimitKey = (day: string): string => `coordinator_limit:${day}`;
 /** The limit the question proposes: twice the current one. */
 export const proposedLimit = (limit_usd: number): number => limit_usd * 2;
 /** The day's coordinator cycles with no reported cost, as a clause after the spend ("" when there are none). */
@@ -547,7 +544,8 @@ export interface CoordinatorLimitAlert {
  * The coordinator limit's owner question (design 06-spend), built here; the coordinator unit scans `detail` as UI text
  * and stores it through the kernel's `alert` write. One Needs-you alert, pattern `coordinator_limit`, key
  * `coordinator_limit:<UTC day>`, with the current and the proposed limit, deduped for one day on a key that names the
- * day; the cycle raises it only on the day's first stop, so there is one per UTC day, answered or not. The answer is answerCoordinatorLimit (src/core/local-cli-run.ts).
+ * day; the cycle raises it only on the day's first stop, so there is one per UTC day, answered or not. The answer is
+ * coordinatorLimitAnswer (src/core/spend.ts), applied by the commands unit (coordinator-limit.ts).
  */
 export function coordinatorLimitAlert(q: CoordinatorLimit): CoordinatorLimitAlert {
   const proposed = proposedLimit(q.limit_usd);

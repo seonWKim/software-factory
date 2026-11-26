@@ -12,7 +12,7 @@ export interface LocalCliLookups {
 
 type Loaded = ConstructorParameters<typeof Plugins>[0];
 
-/** What `runLocalCli` is called with: the store, the CLI identity, the project resolver, file reader, id generator, UI settings, answer helpers and caps lookup. */
+/** What `runLocalCli` is called with: the store, the CLI identity, the project resolver, file reader, id generator, clock, UI settings, answer helpers and caps lookup. */
 export async function buildLocalCliDeps(
   store: FactoryStore,
   loaded: Loaded,
@@ -32,6 +32,7 @@ export async function buildLocalCliDeps(
     project: async () => (await resolveProject())?.key ?? null,
     read: (path: string) => readFile(path, "utf8"),
     newId: () => randomUUID(),
+    clock: await new Plugins(loaded).clock(), // today's UTC day, for the coordinator limit question (design 06-spend)
     cli,
     ui: loaded.file.ui ?? {},
     answers: { split: splitAnswers, detail: answersDetail },

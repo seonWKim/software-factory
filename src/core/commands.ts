@@ -214,6 +214,7 @@ export const commandSpec = (name: CommandName): CommandSpec => BY_NAME.get(name)
 export { DEPENDENCY_CLOSED } from "./phase.js"; export { LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND } from "./local-merge.js"; // for the commands unit
 export { LOCAL_ID, dependsOnId, dependsOnIds, localItemOf, wantedDependsOn, withDependsOn } from "./task-build.js"; // for `/hold` and the coordination unit
 export { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "./local-cli.js"; export { specKind } from "./standing.js"; export { overCap } from "./split.js"; export { overCapApproval } from "./size-cap.js"; // for the commands unit; the last two: an over-cap `/approve` (design 04-split-specs)
+export { COORDINATOR_LIMIT_KEY, LIMIT_ALERTS_SCAN, coordinatorLimitAnswer } from "./spend.js"; // for the commands unit: the coordinator limit question's answer (design 06-spend)
 
 /** Block reasons whose step `/retry` reads from the stage (or, for the agent blocks, from the item's runs first). */
 const STAGE_RETRY_REASONS: readonly (string | null)[] = ["max_attempts", "max_restart", AGENT_NEEDS_HUMAN, REPEATED_FAILURE];
@@ -588,12 +589,12 @@ export function approveRefusal(it: ItemState): string | null {
 
 /**
  * The spec an `/approve` answers (issue #526): the one the item's latest applied, successful triage run wrote, read
- * from the run's stored output; null when there is none or it no longer parses. Store reads only (the caller passes its runs). */
+ * from the run's stored output; null when there is none or it no longer parses. Store reads only: the caller passes
+ * the item's runs.
+ */
 export function latestSpec(runs: readonly Run[]): TriageOutput | null {
   const run = runs.filter((r) => r.kind === "triage" && r.outcome?.status === "succeeded" && r.acknowledged_at !== null).at(-1);
   if (run?.outcome?.status !== "succeeded") return null;
   const parsed = parseTriage(run.outcome.data.spec);
   return parsed.ok ? parsed.value : null;
 }
-/** The coordinator's daily limit setting (design 06-spend), which `approve <usd>` on its limit question sets. */ export const COORDINATOR_LIMIT_KEY = "spend.coordinator_daily_usd";
-/** A dollar amount as the owner reads it ($5.00): the coordinator limit texts and the spend budget alert use it. */ export const usd = (n: number): string => `$${n.toFixed(2)}`;

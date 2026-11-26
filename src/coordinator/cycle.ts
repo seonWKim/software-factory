@@ -9,11 +9,10 @@
 // calls the agent stores one `coordinator` spend row and one Activity record with its cost.
 
 import { coordinatorLimitAlert, uncountedCycles } from "../core/alarms.js";
-import { COORDINATOR_LIMIT_KEY, usd } from "../core/commands.js";
 import { errorText, type Logger } from "../core/log.js";
 import type { CoordinatorPorts } from "../core/controller-deps.js";
 import type { StoreLease } from "../core/lease.js";
-import { utcDay } from "../core/spend.js";
+import { COORDINATOR_LIMIT_KEY, usd, utcDay } from "../core/spend.js";
 import type { WorkItem, WorkItemId } from "../core/types.js";
 import { type ActionOutcome, type CoordinatorAction, type CoordinatorStore, type DaySpend } from "./store.js";
 

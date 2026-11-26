@@ -29,13 +29,14 @@ export { type SentenceDeps, parseSentence, runSentence } from "./local-cli-sente
 
 import { parseLocalCliArgs as parseArgs } from "./local-cli-parse.js";
 import type { CliAction } from "./local-cli-run.js";
-import { COORDINATOR_USD } from "./local-cli-run.js";
+import { COORDINATOR_USD } from "./spend.js";
 
 /**
  * The action, or an error line (parseArgs in local-cli-parse.ts). A bare `approve` or `reject`, with no work item ID,
- * answers the open coordinator limit question, else settles the newest held skill version (design 07-self-improvement);
- * with neither it fails as the parser does. `approve <usd>` (a dollar amount, such as 10) answers the open coordinator
- * limit question (design 06-spend); with none open it is the item command it reads as.
+ * settles the newest held skill version (design 07-self-improvement), except that `reject` answers today's open
+ * coordinator limit question first; with neither it fails as the parser does. `approve <usd>` (a dollar amount, such
+ * as 10) answers today's open coordinator limit question (design 06-spend); with none open it is the item command it
+ * reads as.
  */
 export function parseLocalCliArgs(word: string, args: readonly string[]): CliAction | { error: string } {
   if ((word === "approve" || word === "reject") && args.length === 0) return { action: "settle", command: word };

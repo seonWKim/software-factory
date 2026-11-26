@@ -5,7 +5,7 @@
 // apart, under `chat`, never added to the run totals. Pure, apart from readSpend's two store reads.
 
 import { type Run, type RunKind, type Timestamp, type WorkItemId, outcomeCost, runTokenCount } from "./types.js";
-import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
 
 export const DAY_MS = 24 * 3_600_000;
 /** The run kinds whose agent reports a cost: the same kinds the status page's cost table counts, a routine's runs included. */
@@ -135,6 +135,37 @@ export async function readSpend(store: Pick<FactoryStore, "listRunsFinishedBetwe
   const start = `${from}T00:00:00.000Z` as Timestamp;
   const end = new Date(Date.parse(`${to}T00:00:00.000Z`) + DAY_MS).toISOString() as Timestamp;
   return summarizeSpend(await store.listRunsFinishedBetween(start, end), from, to, await store.listChatSpendBetween(from, to));
+}
+
+/** A dollar amount as the owner reads it ($5.00): the coordinator limit texts and the spend budget alert use it. */
+export const usd = (n: number): string => `$${n.toFixed(2)}`;
+
+/** The coordinator's daily limit setting (design 06-spend), which `approve <usd>` on its limit question sets. */
+export const COORDINATOR_LIMIT_KEY = "spend.coordinator_daily_usd";
+/** The coordinator limit question's pattern key: one per UTC day. */
+export const coordinatorLimitKey = (day: string): string => `coordinator_limit:${day}`;
+/** A dollar amount as `approve <usd>` takes it on the coordinator limit question (10, 12.50, $10). */
+export const COORDINATOR_USD = /^\$?\d+(\.\d+)?$/;
+/** The newest alerts read to find the coordinator limit question, as many as the alarm step reads. */
+export const LIMIT_ALERTS_SCAN = 100;
+
+/** What an answer to the coordinator limit question does: refused (why), or answered (the limit to set, null on reject). */
+export type CoordinatorLimitAnswer = { alert: Alert; refused: string } | { alert: Alert; set_usd: number | null };
+
+/**
+ * A bare `approve <usd>` or `reject` on the coordinator limit question (design 06-spend), checked the same way by the
+ * CLI before it stores the command and by the controller when it applies it. Only the question of the UTC day of
+ * `now_ms` (key `coordinator_limit:<day>`), while it is not dismissed: an earlier day's question is over, since its
+ * stop ended with its day. Null when there is none open: the caller keeps the command's other meanings (a held skill
+ * version). `approve` needs a positive dollar amount, the new `spend.coordinator_daily_usd`; `reject` sets nothing.
+ */
+export function coordinatorLimitAnswer(alerts: readonly Alert[], now_ms: number, command: "approve" | "reject", value: string | null): CoordinatorLimitAnswer | null {
+  const alert = alerts.find((a) => a.pattern_key === coordinatorLimitKey(utcDay(now_ms)));
+  if (!alert || (alert.dismissed_at !== undefined && alert.dismissed_at >= alert.created_at)) return null;
+  if (command === "reject") return { alert, set_usd: null };
+  const amount = value !== null && COORDINATOR_USD.test(value) ? Number(value.replace(/^\$/, "")) : NaN;
+  if (amount > 0) return { alert, set_usd: amount };
+  return { alert, refused: `approve needs the new ${COORDINATOR_LIMIT_KEY} as a positive dollar amount, such as approve 10; ${value === null ? "none was given" : `${value} is not one`}` };
 }
 
 /** A budget setting's value: a positive dollar amount (12.50), or null for no budget. Throws the loader's message. */

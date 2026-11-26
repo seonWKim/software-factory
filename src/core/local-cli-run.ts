@@ -1,7 +1,9 @@
-import type { UserId, WorkItem, WorkItemId } from "./types.js";
-import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
+import type { WorkItem, WorkItemId } from "./types.js";
+import type { Clock } from "../interfaces/clock.js";
+import type { FactoryStore } from "../interfaces/factory-store.js";
 import { MERGE_COMMAND } from "./local-merge.js";
-import { CLOSED_REFUSAL, COORDINATOR_LIMIT_KEY, approveRefusal, settleHeldSkillVersion, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText, usd } from "./commands.js";
+import { CLOSED_REFUSAL, approveRefusal, settleHeldSkillVersion, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText } from "./commands.js";
+import { COORDINATOR_LIMIT_KEY, type CoordinatorLimitAnswer, LIMIT_ALERTS_SCAN, coordinatorLimitAnswer, usd } from "./spend.js";
 import type { NoteAnswers } from "./request-transition.js";
 import { verdictRefusal } from "./verdict.js";
 import { CONFIRM_COMMAND } from "./interpret.js";
@@ -14,43 +16,9 @@ import { ANONYMOUS_USER, CLI_KEY_PREFIX, type CliIdentity, DEFAULT_CLI_NAME } fr
 import { type CliAction as ParsedAction, parseLocalCliArgs } from "./local-cli-parse.js";
 /**
  * Every action runLocalCli runs: the parser's, and a bare `approve` (`value`: a dollar amount) or `reject`, which answers
- * the open coordinator limit question, else settles the newest held skill version (parseLocalCliArgs in local-cli.ts).
+ * today's open coordinator limit question, else settles the newest held skill version (parseLocalCliArgs in local-cli.ts).
  */
 export type CliAction = ParsedAction | { action: "settle"; command: "approve" | "reject"; value?: string };
-/** A dollar amount as `approve <usd>` takes it on the coordinator limit question (10, 12.50, $10). */
-export const COORDINATOR_USD = /^\$?\d+(\.\d+)?$/;
-/** The newest alerts read to find the open coordinator limit question, as many as the alarm step reads. */
-const ALERTS_SCAN = 100;
-
-/** What an answer to the coordinator limit question did: refused (why), or answered (the limit set, null on reject). */
-export type CoordinatorLimitAnswer = { alert: Alert; refused: string } | { alert: Alert; set_usd: number | null };
-
-/**
- * A bare `approve <usd>` or `reject` on the open coordinator limit question (coordinatorLimitAlert in alarms.ts, design
- * 06-spend): the common commands, no limit-specific one. Null when no question is open (the newest `coordinator_limit`
- * alert is answered, or there is none): the caller keeps its other meanings. Only the owner (`isOwner`, the check
- * `approve` uses) answers. `approve` needs a positive dollar amount and sets `spend.coordinator_daily_usd` to it through
- * the settings path (one audit row, as `factory settings set`), so cycles run again once today's spend is below it;
- * `reject` changes no setting, so cycles stay stopped until the UTC day ends. Either answer dismisses the alert by `by`,
- * so the answer stays on the alert and the question leaves Needs you.
- */
-export async function answerCoordinatorLimit(
-  store: Pick<FactoryStore, "listAlerts" | "dismissAlert" | "setSettingOverride">,
-  a: { command: "approve" | "reject"; value: string | null; by: UserId; isOwner: () => Promise<boolean> },
-): Promise<CoordinatorLimitAnswer | null> {
-  const [alert] = (await store.listAlerts({ limit: ALERTS_SCAN })).filter((x) => x.pattern === "coordinator_limit");
-  if (!alert || (alert.dismissed_at !== undefined && alert.dismissed_at >= alert.created_at)) return null;
-  let set_usd: number | null = null;
-  if (a.command === "approve") {
-    const amount = a.value !== null && COORDINATOR_USD.test(a.value) ? Number(a.value.replace(/^\$/, "")) : NaN;
-    if (!(amount > 0)) return { alert, refused: `approve needs the new ${COORDINATOR_LIMIT_KEY} as a positive dollar amount, such as approve 10; ${a.value === null ? "none was given" : `${a.value} is not one`}` };
-    set_usd = amount;
-  }
-  if (!(await a.isOwner())) return { alert, refused: `only the owner answers the coordinator limit question; you are ${a.by}` };
-  if (set_usd !== null) await store.setSettingOverride({ key: COORDINATOR_LIMIT_KEY, project: "", value: JSON.stringify(set_usd), actor: a.by });
-  await store.dismissAlert(alert.id, a.by);
-  return { alert, set_usd };
-}
 /** `task create`'s last line: what happens to the new item next. */ export const CREATE_NEXT_STEP = "triage queued; you'll be asked to approve the spec";
 const UI_PORT = 4310; // `ui.port` unset: compose.ts DEFAULT_UI_PORT, which core cannot import
 
@@ -75,7 +43,7 @@ export interface LocalCliDeps extends DraftTerminal { // DraftTerminal: `schedul
     | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
     | "createProject" | "listProjects" | "renameProject" | "archiveProject" | "restoreProject" | "deleteProject" | "getProjectBySlug"
     | "addTaskToProject" | "removeTaskFromProject" | "moveTaskToProject" | "listTaskProjectSlugs" | "listSchedules" | "listScheduleRuns" | "addSchedule" | "updateSchedule" | "deleteSchedule" | "scheduleNow"
-    | "listHeldSkillVersionGates" | "settleSkillVersionGate" | "listAlerts" | "dismissAlert" | "setSettingOverride"
+    | "listHeldSkillVersionGates" | "settleSkillVersionGate" | "listAlerts"
   >;
   /** Who every command acts as (`cliIdentity`). */
   identity: CliIdentity;
@@ -89,6 +57,7 @@ export interface LocalCliDeps extends DraftTerminal { // DraftTerminal: `schedul
   caps?: (project: string) => Promise<{ max_diff_lines: number; max_diff_files: number }>; // the project's size caps as the controller reads them (storedProjectCaps): `approve` refuses an over-cap approval with no note before any write; absent (chat): the controller does
   cli?: string; // the hints' command name (cliName); absent: DEFAULT_CLI_NAME, as chat callers leave it
   ui?: { port?: number }; // factory.config.json's `ui` (validated at load): `task create` prints the item's loopback link on its port; absent: no link (chat)
+  clock?: Pick<Clock, "now">; // today's UTC day, for the coordinator limit question a bare `approve <usd>` or `reject` answers (design 06-spend); absent (chat): those settle a held skill version only
   answers: NoteAnswers<{ question: string; answer: string | null; accepted_default: boolean }>; // splitAnswers, answersDetail (src/shared/command-notes.ts)
 }
 
@@ -268,21 +237,21 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       return { code: 0, lines: [`stored \`${cli} confirm ${a.proposal}\` as ${user} (command ${command.seq}); the controller applies ${n} on its next poll`] };
     }
     case "settle": {
-      // The open coordinator limit question first (design 06-spend); the answer claims the owner and is refused for anyone else.
-      const limit = await answerCoordinatorLimit(d.store, { command: a.command, value: a.value ?? null, by: user, isOwner: async () => (await claim()) === user });
-      if (limit !== null) {
-        if ("refused" in limit) return fail(limit.refused);
-        return { code: 0, lines: [limit.set_usd === null
-          ? "rejected: spend.coordinator_daily_usd stays as it is; coordinator cycles stay stopped until the UTC day ends"
-          : `approved: spend.coordinator_daily_usd is now ${usd(limit.set_usd)}; coordinator cycles run again once today's coordinator spend is below it`] };
-      }
+      // Today's open coordinator limit question (design 06-spend) takes `approve <usd>` and `reject`, stored for the
+      // controller, which checks and applies it (the commands unit's answerLimit). A bare `approve` settles a held skill
+      // version first: the question needs an amount.
+      const value = a.value ?? null;
+      const limit = d.clock ? coordinatorLimitAnswer(await d.store.listAlerts({ limit: LIMIT_ALERTS_SCAN }), d.clock.now().getTime(), a.command, value) : null;
+      if (limit !== null && !(a.command === "approve" && value === null)) return storeLimitAnswer(d, limit, a.command, value, user, cli, async () => (await claim()) === user);
       // `approve <usd>` with no question open: the item command it reads as.
       if (a.value !== undefined) {
         const p = parseLocalCliArgs(a.command, [a.value]);
         return "error" in p ? { code: 1, lines: p.error.split("\n") } : runLocalCli(d, p);
       }
-      // No held version: the parser's refusal of a bare item command, word for word, as before (design 07-self-improvement).
+      // No held version and the question open: a bare approve's refusal names the amount it needs.
       const r = await settleHeldSkillVersion(d.store, a.command, user);
+      if (r === null && limit !== null && "refused" in limit) return fail(limit.refused);
+      // No held version: the parser's refusal of a bare item command, word for word, as before (design 07-self-improvement).
       if (r === null) { const p = parseLocalCliArgs(a.command, []); return { code: 1, lines: "error" in p ? p.error.split("\n") : [] }; }
       const v = `version ${r.gate.version} of skill ${r.gate.ref_id}`;
       if (!r.settled) return { code: 0, lines: [`${v} was settled already`] };
@@ -296,6 +265,24 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       return { code: 0, lines: helpReply(itemCommandState(item, await d.store.listRuns(item.id))).split("\n") };
     }
   }
+}
+
+/**
+ * `approve <usd>` or `reject` on today's coordinator limit question, after the checks the controller makes again
+ * (coordinatorLimitAnswer, the owner check): one command row naming the question's key, which the controller applies
+ * (the setting through the settings path, the alert dismissed by the owner). A refusal stores nothing.
+ */
+async function storeLimitAnswer(
+  d: LocalCliDeps, limit: CoordinatorLimitAnswer, command: "approve" | "reject", value: string | null, user: CliIdentity["user"], cli: string, isOwner: () => Promise<boolean>,
+): Promise<CliResult> {
+  if ("refused" in limit) return { code: 1, lines: [limit.refused] };
+  if (!(await isOwner())) return { code: 1, lines: [`only the owner answers the coordinator limit question; you are ${user}`] };
+  const args = { coordinator_limit: limit.alert.pattern_key, ...(value !== null ? { text: value } : {}) };
+  const { command: row } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command, args });
+  const next = limit.set_usd === null
+    ? `leaves ${COORDINATOR_LIMIT_KEY} as it is, so coordinator cycles stay stopped until the UTC day ends`
+    : `sets ${COORDINATOR_LIMIT_KEY} to ${usd(limit.set_usd)}, so coordinator cycles run again once today's coordinator spend is below it`;
+  return { code: 0, lines: [`stored \`${cli} ${command}${value !== null ? ` ${value}` : ""}\` on the coordinator limit question as ${user} (command ${row.seq}); on its next poll the controller ${next}`] };
 }
 
 /** `factory project <verb>`: the task projects' store methods, a slug looked up active or archived. */
