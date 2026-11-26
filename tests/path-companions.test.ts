@@ -342,9 +342,32 @@ describe("built-in companion rules", () => {
     }
   });
 
+  // A new settable key failed tests/ui-settings-page.test.tsx twice (wi_d3e7b74d, wi_3a47d6d4): its label, help and
+  // group live in two web files the spec did not allow, so the implement run stopped for a person.
+  it.each([
+    "src/core/settings.ts",
+    "src/controller/settings/coordinator.setting.ts",
+    "src/worker/settings/stall-ms.setting.ts",
+    "src/runtime/settings/",
+  ])("a settings change %s adds the Settings page's label and group files, with the reason", (file) => {
+    const { paths, added } = allowedAfter([file]);
+    for (const p of ["web/src/i18n/en/settings.ts", "web/src/views/settings/advanced-groups.ts"]) {
+      expect(paths).toContain(p);
+      expect(added).toContainEqual({ path: p, because: file });
+    }
+    expect(kindNote([file], "a new settable key needs its Settings-page label, help and group")).toHaveLength(1);
+  });
+
+  it("a file that is not a settings declaration adds no Settings page file", () => {
+    const web = ["web/src/i18n/en/settings.ts", "web/src/views/settings/advanced-groups.ts"];
+    for (const file of ["src/core/settings-base.ts", "src/runtime/settings/catalog.ts", "src/ui/settings-api.ts", "src/controller/settings/sub/x.setting.ts", "src/settings-cmd.ts"]) {
+      expect(allowedAfter([file]).added.filter((a) => web.includes(a.path))).toEqual([]);
+    }
+  });
+
   it("every fixed path a rule names exists in the repository", () => {
     const fixed = COMPANION_RULES.flatMap((r) => r.fixed ?? []);
-    expect(fixed).toEqual(expect.arrayContaining(["schema/sqlite/controller.sql", "src/api/index.ts", "web/src/api/generated.ts", "docs/api/openapi.json"]));
+    expect(fixed).toEqual(expect.arrayContaining(["schema/sqlite/controller.sql", "src/api/index.ts", "web/src/api/generated.ts", "docs/api/openapi.json", "web/src/i18n/en/settings.ts", "web/src/views/settings/advanced-groups.ts"]));
     expect(fixed.filter((p) => !existsSync(join(REPO_ROOT, p)))).toEqual([]);
   });
 

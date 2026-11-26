@@ -73,7 +73,9 @@ const kindRule = (when: RegExp, fixed: readonly string[], reason: string): Compa
  * (`npm run i18n:catalog`) is added only when `files_to_change` names it, as triage does for a new area file (decided
  * 2026-11-20); a source file under `src/` adds the test named after it; a migration directly under
  * `src/<owner>/migrations/` adds that owner's `src/<owner>/table-docs.ts`. The kind rules (decided 2026-11-26): a
- * migration adds the schema snapshot, and a capability under `src/api/capabilities/` adds the API registry files.
+ * migration adds the schema snapshot, a capability under `src/api/capabilities/` adds the API registry files, and
+ * `src/core/settings.ts` or a declaration `src/<owner>/settings/<name>.setting.ts` adds the Settings page's label and
+ * group files.
  * A later rule is one entry here plus its test in tests/path-companions.test.ts.
  */
 export const COMPANION_RULES: readonly CompanionRule[] = [
@@ -110,6 +112,11 @@ export const COMPANION_RULES: readonly CompanionRule[] = [
     /^src\/api\/capabilities\/(?:[^/]+\.ts)?$/,
     ["src/api/index.ts", "web/src/api/generated.ts", "docs/api/openapi.json"],
     "a new or changed API capability changes its registry files (npm run gen:api)",
+  ),
+  kindRule(
+    /^src\/(?:core\/settings\.ts|[^/]+\/settings\/(?:[^/]+\.setting\.ts)?)$/,
+    ["web/src/i18n/en/settings.ts", "web/src/views/settings/advanced-groups.ts"],
+    "a new settable key needs its Settings-page label, help and group",
   ),
 ];
 
