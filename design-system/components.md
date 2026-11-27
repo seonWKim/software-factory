@@ -188,6 +188,10 @@ A content chip that opens a `Popover` (`popover.tsx`), such as a calendar event:
 
 A small bordered `text-xs` button (`border-strong`, `text-2`, hover `surface-2`) that writes `value` to the clipboard; `what` names it in its accessible name and title ("Copy item ID"). States: default ("Copy"), done ("Copied" for 1.5 s), no clipboard (nothing happens; the text stays selectable).
 
+## CopyIcon
+
+A ghost icon `Button` (`size-8`, lucide Copy icon) that writes `value` to the clipboard; `what` names it in its accessible name and title ("Copy reply"). Beside it a `text-xs` `aria-live="polite"` element says "Copied" for 1.5 s. States: default, done, no clipboard (nothing shows; the text stays selectable). Used under each chat reply, own message and fenced code block, in a `ButtonRow`.
+
 ## CopyText
 
 A copy element: the shown text (`children`, else `value`) in `font-mono text-xs` that wraps, then a CopyButton that copies `value`.

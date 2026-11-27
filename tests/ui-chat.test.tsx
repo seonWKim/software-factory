@@ -319,6 +319,23 @@ describe("the Runners tab's Chat Card", () => {
   });
 });
 
+describe("Copy on the page", () => {
+  it("each reply and your own message has a Copy button that writes its stored text, without the context line", async () => {
+    const writes: string[] = [];
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (v: string) => void writes.push(v) } });
+    page(ITEM);
+    await ask("What is this?");
+    await screen.findByText("This is a build task.", {}, SLOW);
+    fireEvent.click(screen.getByRole("button", { name: "Copy your message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy reply" }));
+    await waitFor(() => expect(writes).toHaveLength(2));
+    expect(writes).toEqual(["What is this?", REPLY]);
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+    await waitFor(() => expect(writes.at(-1)).toBe("- old line\n+ new line"));
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+});
+
 describe("the typed client only", () => {
   const sources = ["web/src/views/chat-page.tsx", "web/src/views/chat-card.tsx"].map((f) => readFileSync(f, "utf8"));
   it("calls no fetch of its own and reads and writes through the generated client", () => {
