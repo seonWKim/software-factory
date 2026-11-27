@@ -11,6 +11,6 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   controller_chat_messages: "Every message of a chat session, one per session and seq: its role, text, the tool calls it asked for (JSON) and the tool call a tool result answers.",
   controller_chat_spend: "The spend of every chat turn and coordinator cycle, one per turn id, with its session and kind (chat or coordinator): its UTC day, its known cost in dollars (empty when unknown) and its tokens.",
   controller_chat_turns: "Every chat turn the dashboard sent, one per turn id, with its session: running at its start, then answered, refused or failed, the reason when refused or failed, and when it started and ended.",
-  controller_held_writes: "Every agent write the permission gate held for the owner's confirm, one per held write and pending once per write key: the command, its arguments (JSON), the agent, the permission mode it ran under, its status and when it was held.",
+  controller_held_writes: "Every agent write the permission gate held for the owner's confirm, one per held write and pending once per write key: the command, its arguments (JSON), the agent, the permission mode it ran under, its write origin (agent; empty on older rows), its status and when it was held.",
   ext_skill_versions: "Every version of an imported skill, one per changed folder hash: the skill folder's hash, its full SKILL.md text, its source and when the import saw it.",
 };

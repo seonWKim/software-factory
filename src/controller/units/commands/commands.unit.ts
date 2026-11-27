@@ -21,7 +21,7 @@ import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, SYSTEM, retry, retryWip, footerAfter, alreadyAllowed } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
-import { answerPlain, appProposal, confirmHeldWrite, confirmProposal, storeProposals } from "./proposals.js"; import { writeGateDeps } from "./held-writes.js"; import { RUN_NEXT_COMMAND, runNext } from "./run-next.js";
+import { answerPlain, appProposal, confirmHeldWrite, confirmProposal, storeProposals } from "./proposals.js"; import { inboxApplies, writeGateDeps } from "./held-writes.js"; import { RUN_NEXT_COMMAND, runNext } from "./run-next.js";
 import { FEEDBACK_REQUIRED, applyQueued, queueRevise, replyQueued } from "./queued-revise.js"; import { scanClean } from "./scan.js"; import { recheckRetry } from "./premise-recheck.js"; import { commandText, pathsCommand } from "./paths.js"; import { noteCommand, noteOnSource } from "./note.js";
 import { PR_REVISE, type PrFeedbackDeps, handlePrReview, itemOfPr, prFeedback } from "./pr-feedback.js"; import { RETRY, answerCheckpoint } from "./checkpoint.js"; import { type InfoSay, handleInfo, handleLink } from "./replies.js";
 
@@ -143,6 +143,8 @@ export class CommandsUnit {
   }
 
   async handleInboxCommand(c: CliCommand): Promise<void> {
+    // An agent's run write, or a typed command the guards refused (held-writes.ts), is not applied.
+    if (!(await inboxApplies(this.c, c, (args) => authorizeWrite(writeGateDeps(this.c), { command: c.command, args, actor: c.actor as UserId, origin: "human_command", in_chat_turn: false, key: c.key })))) return;
     if (c.origin === "app") {
       // An app request (RFC 0015 D7): its own row, or a row from before the merge that points at it by seq.
       const r = await this.c.k.reader.getAppCommandRequest(typeof c.args.app_request === "number" ? c.args.app_request : c.key);

@@ -2,7 +2,8 @@
 // A command row becomes CommandReceived{command_id}; a source's or the forge's event becomes
 // SourceEventReceived{record_id, kind}. The adapters already parse their source's shape into these events (one
 // comment mapping for every source, src/core/comment-event.ts), so nothing is parsed again here. The message
-// keeps the record's stream as its subject, so a source's messages stay in order.
+// keeps the record's stream as its subject, so a source's messages stay in order. An agent's command row is a write
+// the permission gate already ran (stored handled, design 08-permissions): it is never applied again.
 
 import { COMMAND_RECEIVED, SOURCE_EVENT_RECEIVED } from "../../../controller/index.js";
 import type { Envelope } from "../../../shared/envelope.js";
@@ -20,7 +21,7 @@ export default defineHandler<Envelope, InboundContext>({
     if (m.payload.kind === "command") {
       const c = await readCommand(ctx.tx, id);
       // A person's command: its key never expires (RFC 0015 §5.2). The command row keeps the edge key.
-      if (c) ctx.emit({ type: COMMAND_RECEIVED, subject: m.subject, idempotency_key: c.id, idempotency_key_ttl_ms: null, payload: { command_id: c.id } });
+      if (c && c.write_origin !== "agent") ctx.emit({ type: COMMAND_RECEIVED, subject: m.subject, idempotency_key: c.id, idempotency_key_ttl_ms: null, payload: { command_id: c.id } });
       return;
     }
     const r = await readRecord(ctx.tx, id);
