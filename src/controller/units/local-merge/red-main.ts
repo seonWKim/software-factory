@@ -3,6 +3,7 @@
 // (the sandbox, the green bases table) is inline, as the unit's.
 
 import { LOCAL_SOURCE, canReadChangedFiles, canRevertLocal, checkCommands, runChecks, runKey } from "../../../core/local-merge.js";
+import { touchesUi } from "../../../shared/screenshots.js";
 import { failingTestNames } from "../../../worker/index.js";
 import { AUTO, SYSTEM } from "../support.js";
 import type { Ctx } from "../context.js";
@@ -49,7 +50,7 @@ async function runsUiCheck(c: Ctx, tip: string | null): Promise<boolean> {
   const sandbox = c.k.d.sandbox;
   if (tip === null || !canReadChangedFiles(sandbox)) return true;
   const changed = await sandbox.localChangedFiles({ repo: repo.path, to: tip }).catch(() => null);
-  return changed === null || changed.some((f) => ui.paths.some((p) => f.startsWith(p)));
+  return changed === null || touchesUi(changed, ui.paths);
 }
 
 /**
