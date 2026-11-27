@@ -457,7 +457,7 @@ export function checkLayout(limits) {
   }
 
   // item-primary-top
-  const itemMain = document.body.querySelector("[data-item-main]");
+  const itemMain = document.body.querySelectorAll("[data-item-main]")[0];
   if (itemMain && W >= 1280) {
     const primary = [...itemMain.querySelectorAll("button.bg-accent")].find(painted);
     if (primary) {
