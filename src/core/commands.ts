@@ -211,7 +211,7 @@ const BY_NAME = new Map(COMMANDS.map((c) => [c.name, c]));
 export const commandSpec = (name: CommandName): CommandSpec => BY_NAME.get(name)!;
 
 /** blocked_reason prefix (with `blocked_on: human`) of an item whose dependency closed without a merge (design §5). */
-export { DEPENDENCY_CLOSED } from "./phase.js"; export { LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND } from "./local-merge.js"; export { COORDINATOR_LIMIT_KEY, LIMIT_ALERTS_SCAN, coordinatorLimitAnswer } from "./spend.js"; // for the commands unit; the last: the coordinator limit answer (design 06-spend)
+export { DEPENDENCY_CLOSED } from "./phase.js"; export { LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND } from "./local-merge.js"; export { type WriteRequest, authorizeWrite } from "./authorize.js"; export { COORDINATOR_LIMIT_KEY, LIMIT_ALERTS_SCAN, coordinatorLimitAnswer } from "./spend.js"; // for the commands unit; the last two: its agent writes (design 08-permissions), the coordinator limit answer (design 06-spend)
 export { LOCAL_ID, dependsOnId, dependsOnIds, localItemOf, wantedDependsOn, withDependsOn } from "./task-build.js"; // for `/hold` and the coordination unit
 export { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "./local-cli.js"; export { specKind } from "./standing.js"; export { overCap } from "./split.js"; export { overCapApproval } from "./size-cap.js"; // for the commands unit; the last two: an over-cap `/approve` (design 04-split-specs)
 

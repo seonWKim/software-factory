@@ -253,7 +253,9 @@ describe("the coordinator unit", () => {
       },
       unit: (name: string) => name === "auth"
         ? { automatic: async () => null }
-        : { mergeLocal: async (id: string, who: unknown) => (merged.push(`${id}:${JSON.stringify(who)}`), null) },
+        : name === "commands"
+          ? { gateAgentWrite: async () => ({ outcome: "run", mode: "full" }) }
+          : { mergeLocal: async (id: string, who: unknown) => (merged.push(`${id}:${JSON.stringify(who)}`), null) },
     };
     const u = coordinatorUnit.create(ctx as never) as CoordinatorUnit;
     await u.step();

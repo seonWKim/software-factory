@@ -210,6 +210,17 @@ CREATE TABLE controller_handoffs (
     UNIQUE (run_id, commit_sha)
   );
 
+CREATE TABLE controller_held_writes (
+    id          TEXT NOT NULL PRIMARY KEY,
+    write_key   TEXT NOT NULL,
+    command     TEXT NOT NULL,
+    args        TEXT NOT NULL,
+    actor       TEXT NOT NULL,
+    mode        TEXT NOT NULL CHECK (mode IN ('ask_all', 'ask_irreversible', 'full')),
+    status      TEXT NOT NULL DEFAULT 'pending',
+    created_at  TEXT NOT NULL
+  );
+
 CREATE TABLE controller_improve_proposals (
     id                 TEXT PRIMARY KEY,
     project            TEXT NOT NULL,
@@ -692,6 +703,8 @@ CREATE INDEX controller_dependency_edges_target ON controller_dependency_edges (
 CREATE INDEX controller_design_learnings_project ON controller_design_learnings (project_key, seq);
 
 CREATE INDEX controller_handoffs_item ON controller_handoffs (work_item_id, at);
+
+CREATE UNIQUE INDEX controller_held_writes_pending_key ON controller_held_writes (write_key) WHERE status = 'pending';
 
 CREATE INDEX controller_improve_proposals_project ON controller_improve_proposals (project, created_at);
 
