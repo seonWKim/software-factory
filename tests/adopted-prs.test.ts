@@ -1,84 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import type { Logger } from "../src/core/log.js";
+import type { WorkerId } from "../src/core/types.js";
+import type { ForgeEvent } from "../src/interfaces/forge.js";
 import { SKIP_LABEL } from "../src/core/policy.js";
 import { projectLabelCursor } from "../src/core/project.js";
-import type { SourceRef, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/worker/index.js";
-import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
-import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { GitHubClient } from "../src/impl/github/github-client.js";
-import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
-import { GitHubForge } from "../src/impl/github/github-forge.js";
-import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
-import type { ExternalIdentity } from "../src/interfaces/auth-provider.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
-import type { ForgeEvent } from "../src/interfaces/forge.js";
-import type { SourceEvent } from "../src/interfaces/source-adapter.js";
-import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
-import { FakeBroker } from "./helpers/fakes/broker.js";
-import { FakeForge } from "./helpers/fakes/forge.js";
-import { FakeSource } from "./helpers/fakes/source.js";
-import { alice, cleanScanner, config, issueRef, mallory, prompts, recordingLog, silent, triageSpec } from "./helpers/fakes/config.js";
-import { newStore, PROJECT_KEY } from "./helpers/store.js";
+import { alice, issueRef, mallory, recordingLog, silent } from "./helpers/fakes/config.js";
+import { PROJECT_KEY } from "./helpers/store.js";
+import { bob, factory, prOpen, prRef } from "./helpers/classifier.js";
 
-// Pull requests the factory did not open (design 2026-11-01): adoption, `factory: skip`, a person's pushes
-// recorded as `manual` runs, and merges with no item recorded as unreviewed merges.
-
-const bob: ExternalIdentity = { provider: "github", subject: "2", login: "bob" };
-
-function prRef(n: number): SourceRef {
-  return { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/pull/${n}` };
-}
-
-function prOpen(n: number, o: Partial<Extract<ForgeEvent, { kind: "change_open" }>> = {}): ForgeEvent {
-  return {
-    kind: "change_open",
-    source: prRef(n),
-    change_ref: String(n),
-    head_branch: "feature/x",
-    head_sha: "h1",
-    title: "Speed up the poll",
-    body: "It reads fewer pages now.",
-    author: bob,
-    labels: [],
-    ...o,
-  };
-}
-
-async function factory(script: ConstructorParameters<typeof FakeRunner>[0] = {}, log: Logger = silent) {
-  const clock = new FakeClock();
-  const { store } = await newStore(clock);
-  const source = new FakeSource();
-  const forge = new FakeForge(source);
-  const sandbox = new FakeSandbox();
-  const broker = new FakeBroker();
-  const runner = new FakeRunner({
-    triage: () => ({ output: triageSpec }),
-    implement: () => ({ output: { summary: "s", next_steps: "n" } }),
-    review: () => ({ output: { verdict: "pass", tier: 1, findings: [], summary: "fine" } }),
-    ...script,
-  });
-  const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
-  const worker = new Worker({
-    id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config, prompts, log: silent,
-    scanner: cleanScanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(), prRef: (pr) => forge.prRef(pr),
-  });
-  /** One poll tick: PR events come from the forge, the rest from the source. */
-  const poll = async (...events: (SourceEvent | ForgeEvent)[]) => {
-    for (const e of events) {
-      if (e.kind.startsWith("change_") || e.kind === "pr_changes_requested") forge.queue.push(e as ForgeEvent);
-      else source.queue.push(e as SourceEvent);
-    }
-    await controller.tickIntake();
-  };
-  const work = async () => {
-    while (await worker.tick()) await controller.tickRuns();
-    await controller.tickRuns();
-  };
-  const item = async (n: number) => store.getWorkItemBySource("github_issue", `o/r#${n}`);
-  return { clock, store, source, forge, sandbox, broker, runner, controller, worker, poll, work, item };
-}
+// Pull requests the factory did not open (design 2026-11-01): adoption, `factory: skip` and a person's pushes
+// recorded as `manual` runs. Merges and the first start are in adopted-prs-merges.test.ts.
 
 describe("adopting a pull request a person opened", () => {
   it("one non-draft PR on a non-factory branch becomes one item at REVIEW with one review run; a second poll adds nothing", async () => {
@@ -317,102 +248,3 @@ describe("a person's push to a factory or adopted PR", () => {
   });
 });
 
-describe("merges of pull requests the factory did not open", () => {
-  it("an adopted PR's merge closes its item as CLOSED / completed with the merger as approver of record", async () => {
-    const f = await factory();
-    await f.poll(prOpen(50));
-    await f.work();
-    await f.poll({ kind: "change_merged", change_ref: "50", head_branch: "feature/x", merge_sha: "m50", merger: alice });
-    const it = (await f.item(50))!;
-    expect(it).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m50" });
-    const last = (await f.store.listStateChanges(it.id)).at(-1)!;
-    expect(last).toMatchObject({ reason: "pr_merged", actor: { kind: "user", id: "github:1" } });
-    expect(await f.store.listUnreviewedMerges(10)).toEqual([]);
-    expect(f.source.statusLabels(prRef(50))).toEqual(["done"]);
-  });
-
-  it("an adopted PR closed without a merge closes its item as rejected", async () => {
-    const f = await factory();
-    await f.poll(prOpen(50));
-    await f.poll({ kind: "change_closed", change_ref: "50", head_branch: "feature/x" });
-    expect((await f.item(50))!).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
-  });
-
-  it("a merged PR that was never adopted (a fork, or merged before any poll) writes one unreviewed merge and no item", async () => {
-    const f = await factory();
-    await f.poll(
-      { kind: "change_merged", change_ref: "60", head_branch: "feature/x", merge_sha: "m60", merger: alice, fork: true },
-      { kind: "change_merged", change_ref: "61", head_branch: "patch-1", merge_sha: "m61", merger: null, title: "Config: 1 worker" },
-    );
-    await f.poll({ kind: "change_merged", change_ref: "61", head_branch: "patch-1", merge_sha: "m61", merger: null });
-    expect(await f.store.listWorkItems(10)).toEqual([]);
-    const rows = await f.store.listUnreviewedMerges(10);
-    // The PR's title as the forge gave it, kept for the Tasks page's merge rows; none given: null.
-    expect(rows.map((r) => [r.change_ref, r.merge_sha, r.merger_id, r.title]).sort()).toEqual([["60", "m60", "github:1", null], ["61", "m61", null, "Config: 1 worker"]]);
-  });
-
-  it("a PR closed without a merge and with no item records nothing", async () => {
-    const f = await factory();
-    await f.poll({ kind: "change_closed", change_ref: "62", head_branch: "feature/x", fork: true });
-    expect(await f.store.listWorkItems(10)).toEqual([]);
-    expect(await f.store.listUnreviewedMerges(10)).toEqual([]);
-  });
-});
-
-describe("the first start on a repository with history (design §5, Merges)", () => {
-  /** Closed PRs on one page and the merger of each; counts the single-PR reads; every other list is empty. */
-  class Repo extends GitHubClient {
-    closed: unknown[] = [];
-    prReads = 0;
-    constructor() {
-      super({} as GitHubCredentials, "http://unused");
-    }
-    override async request<T>(method: string, path: string): Promise<T> {
-      if (method !== "GET") return {} as T;
-      if (path.startsWith("/repos/o/r/pulls?state=closed")) return (path.includes("page=1") ? this.closed : []) as T;
-      if (/^\/repos\/o\/r\/pulls\/\d+$/.test(path)) {
-        this.prReads++;
-        return { merged_by: { id: 2, login: "bob", type: "User" } } as T;
-      }
-      return [] as T;
-    }
-  }
-  const merged = (n: number, at: string) => ({
-    number: n, merged_at: at, merge_commit_sha: `m${n}`, updated_at: at,
-    head: { ref: `feature/${n}`, sha: `h${n}`, repo: { full_name: "o/r" } }, base: { ref: "main", sha: "b" },
-  });
-
-  async function start() {
-    const clock = new FakeClock("2026-11-07T00:00:00Z");
-    const { store } = await newStore(clock);
-    const log = recordingLog();
-    const repo = new Repo();
-    const ctx = { clock, history_since: null, log };
-    const source = new GitHubIssueSource(repo, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store);
-    const forge = new GitHubForge(repo, { owner: "o", name: "r" }, "factory/", "main", source, ctx);
-    const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
-    const unreviewed = () => log.lines.filter((l) => l.msg === "unreviewed merge");
-    return { clock, store, repo, controller, unreviewed };
-  }
-
-  it("50 old merged PRs: no unreviewed merge warning, no row, no per-PR read", async () => {
-    const f = await start();
-    f.repo.closed = Array.from({ length: 50 }, (_, i) => merged(100 + i, `2026-10-01T00:${String(i).padStart(2, "0")}:00Z`));
-    await f.controller.tickIntake();
-    expect(f.unreviewed()).toEqual([]);
-    expect(await f.store.listUnreviewedMerges(100)).toEqual([]);
-    expect(f.repo.prReads).toBe(0);
-  });
-
-  it("a PR merged without review after the first start is recorded as an unreviewed merge with one warning", async () => {
-    const f = await start();
-    f.repo.closed = [merged(1, "2026-10-01T00:00:00Z")];
-    await f.controller.tickIntake();
-    f.clock.advance(60_000);
-    f.repo.closed = [merged(2, "2026-11-07T00:00:30Z"), merged(1, "2026-10-01T00:00:00Z")];
-    await f.controller.tickIntake();
-    await f.controller.tickIntake();
-    expect((await f.store.listUnreviewedMerges(100)).map((r) => [r.change_ref, r.merge_sha])).toEqual([["2", "m2"]]);
-    expect(f.unreviewed().map((l) => l.fields?.change_ref)).toEqual(["2"]);
-  });
-});
