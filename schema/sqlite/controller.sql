@@ -38,7 +38,7 @@ CREATE TABLE controller_attachments (
     label         TEXT,
     created_by    TEXT NOT NULL,
     created_at    TEXT NOT NULL
-  );
+  , chat_session_id TEXT, chat_seq INTEGER);
 
 CREATE TABLE controller_budget_checkpoints (
     id                   TEXT PRIMARY KEY,
@@ -219,7 +219,7 @@ CREATE TABLE controller_held_writes (
     mode        TEXT NOT NULL CHECK (mode IN ('ask_all', 'ask_irreversible', 'full')),
     status      TEXT NOT NULL DEFAULT 'pending',
     created_at  TEXT NOT NULL
-  );
+  , write_origin TEXT CHECK (write_origin IN ('agent')));
 
 CREATE TABLE controller_improve_proposals (
     id                 TEXT PRIMARY KEY,
@@ -687,6 +687,8 @@ CREATE TABLE "controller_work_items" (
 CREATE INDEX controller_activity_at ON controller_activity (at);
 
 CREATE INDEX controller_alerts_created ON controller_alerts (created_at);
+
+CREATE INDEX controller_attachments_chat ON controller_attachments (chat_session_id, chat_seq);
 
 CREATE INDEX controller_attachments_item ON controller_attachments (work_item_id, created_at);
 

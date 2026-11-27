@@ -54,6 +54,10 @@ export const integer = (): Schema<number> => leaf((v): v is number => Number.isS
 export const number = (): Schema<number> => leaf((v): v is number => typeof v === "number" && Number.isFinite(v), "a number", { type: "number" }, "number", "number");
 export const boolean = (): Schema<boolean> => leaf((v): v is boolean => typeof v === "boolean", "true or false", { type: "boolean" }, "boolean", "boolean");
 
+/** Bytes as base64 text (an image): checked as base64 and never withheld, since they are not text. */
+export const bytes = (): Schema<string> =>
+  leaf((v): v is string => typeof v === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(v), "base64 bytes", { type: "string", contentEncoding: "base64" }, "string", "string", true);
+
 /** One of fixed words: never withheld, since they are the code's own. */
 export function oneOf<const W extends readonly string[]>(words: W): Schema<W[number]> {
   const check = (v: unknown): v is W[number] => typeof v === "string" && words.includes(v);

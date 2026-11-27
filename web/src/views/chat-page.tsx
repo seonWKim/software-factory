@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUp } from "lucide-react";
-import { Fragment, type KeyboardEvent, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { type ClipboardEvent, Fragment, type KeyboardEvent, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { API, type Session, useApi } from "../api.js";
 import { chatSend, itemsList } from "../api/generated.js";
 import { Button } from "../components/ui/button.js";
@@ -12,13 +12,18 @@ import { Textarea } from "../components/ui/textarea.js";
 import { TypingDots } from "../components/ui/typing-dots.js";
 import { type MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
+import { cn } from "../lib/cn.js";
 import { ReplyTable, reasonWords, replyParts } from "./chat-card.js";
+import { AttachImages, ComposerTray, type SentImage, SentImages, pastedImages, useComposerImages, useImageDrop } from "./chat-images.js";
 
 // The Chat page (design 09-dashboard-chat): one centred column, the conversation above and the composer pinned under
 // it. It reads and writes through the generated typed client (web/src/api/generated.ts) only.
 
-/** One message: yours (with the error of its send, if it failed) or the chat's reply. */
-type Said = { id: number; who: "you"; text: string; error?: string } | { id: number; who: "chat"; text: string };
+/**
+ * One message: yours (its images, and the error of its send, if it failed) or the chat's reply (with a note naming any
+ * image that was not sent).
+ */
+type Said = { id: number; who: "you"; text: string; images?: SentImage[]; error?: string } | { id: number; who: "chat"; text: string; note?: string };
 
 interface Conversation {
   said: Said[];
@@ -41,7 +46,7 @@ const MAX_LINES = 8;
 const NEAR_END = 80;
 
 /** A reply as readable markdown: paragraphs, lists and code blocks in Markdown, a pipe table as a DataTable. */
-function ChatReply({ text }: { text: string }) {
+function ChatReply({ text, note }: { text: string; note?: string | undefined }) {
   const groups: ({ kind: "md"; text: string } | { kind: "table"; rows: string[][] })[] = [];
   for (const p of replyParts(text)) {
     if (p.kind === "table") {
@@ -55,11 +60,16 @@ function ChatReply({ text }: { text: string }) {
   }
   return (
     <div className="min-w-0 space-y-3">
+      {note !== undefined && <p data-raw className="text-sm text-text-2 wrap-anywhere">{note}</p>}
       {groups.map((g, i) => (g.kind === "md" ? <Markdown key={i} text={g.text} /> : <ReplyTable key={i} rows={g.rows} />))}
       <ButtonRow><CopyIcon value={text} what={t("chat.copyReply")} /></ButtonRow>
     </div>
   );
 }
+
+/** The names of the images a scan kept from the chat, as one plain sentence; undefined when none was. */
+const withheldNote = (names: readonly string[] | undefined): string | undefined =>
+  names?.length ? t("chat.imagesWithheld", { names: names.map((n) => `“${n}”`).join(", ") }) : undefined;
 
 /** The item a message is about (`/app/chat?item=<id>`), or null. */
 const itemOf = (): string | null => new URLSearchParams(location.search).get("item");
@@ -80,6 +90,8 @@ export function ChatPage() {
   const follow = useRef(true);
   const itemId = itemOf();
   const hint = useId();
+  const composer = useComposerImages();
+  const drop = useImageDrop(composer.add);
 
   // The app's content column scrolls (App.tsx `data-scroll-root`): follow new messages only while it is read to its end.
   useEffect(() => {
@@ -109,15 +121,17 @@ export function ChatPage() {
     el.style.overflowY = el.scrollHeight + 2 > max ? "auto" : "hidden";
   }, [text]);
 
-  /** Sends `message` (a new one, or the failed message `retry` again) and adds the reply or the error under it. */
-  const send = async (message: string, retry?: number) => {
-    if (message === "" || token === undefined || client.getQueryData<Conversation>(KEY)?.busy) return;
+  /** Sends `message` and its `images` (a new one, or the failed message `retry` again) and adds the reply or the error under it. */
+  const send = async (message: string, images: SentImage[], retry?: number) => {
+    if ((message === "" && images.length === 0) || token === undefined || client.getQueryData<Conversation>(KEY)?.busy) return;
     const id = retry ?? Date.now();
     follow.current = true;
     update((c) => ({
       ...c,
       busy: true,
-      said: retry === undefined ? [...c.said, { id, who: "you", text: message }] : c.said.map((m) => (m.id === retry && m.who === "you" ? { id, who: "you", text: m.text } : m)),
+      said: retry === undefined
+        ? [...c.said, { id, who: "you", text: message, ...(images.length > 0 && { images }) }]
+        : c.said.map((m) => (m.id === retry && m.who === "you" ? { id, who: "you", text: m.text, ...(m.images && { images: m.images }) } : m)),
     }));
     const fail = (error: string) => update((c) => ({ ...c, busy: false, said: c.said.map((m) => (m.id === id && m.who === "you" ? { ...m, error } : m)) }));
     try {
@@ -126,26 +140,41 @@ export function ChatPage() {
       const item = list?.items.find((i) => i.id === itemId);
       const context = item === undefined ? "" : `${t("chat.contextItem", { title: item.title ?? t("chat.untitled"), state: item.state_label, stage: item.stage })}\n\n`;
       const sessionId = client.getQueryData<Conversation>(KEY)?.sessionId;
-      const res = await chatSend(token, { ...(sessionId === undefined ? {} : { session_id: sessionId }), text: `${context}${message}` });
+      const res = await chatSend(token, {
+        ...(sessionId === undefined ? {} : { session_id: sessionId }),
+        text: message === "" ? message : `${context}${message}`,
+        ...(images.length > 0 && { images: images.map(({ name, data }) => ({ name, data })) }),
+      });
       if (res.status === 503) fail(t("chat.off"));
       else if (!res.ok) fail(t("chat.sendFailed", { reason: res.value.error ?? "" }).trim());
       else if (res.value.outcome !== "answered" || res.value.reply === undefined) {
         update((c) => ({ ...c, sessionId: res.value.session_id }));
-        fail(t("chat.noReply", { reason: reasonWords(res.value.reason, res.value.detail) }));
+        const note = withheldNote(res.value.images_withheld);
+        fail(note ?? t("chat.noReply", { reason: reasonWords(res.value.reason, res.value.detail) }));
       } else {
         const reply = res.value.reply;
-        update((c) => ({ ...c, busy: false, sessionId: res.value.session_id, said: [...c.said, { id: id + 0.5, who: "chat", text: reply }] }));
+        const note = withheldNote(res.value.images_withheld);
+        update((c) => ({ ...c, busy: false, sessionId: res.value.session_id, said: [...c.said, { id: id + 0.5, who: "chat", text: reply, ...(note !== undefined && { note }) }] }));
       }
     } catch {
       fail(t("chat.failedRead"));
     }
   };
 
+  /** Send is on with text or at least one read image, once every image is read. */
+  const canSend = (text.trim() !== "" || composer.ready > 0) && !composer.reading && !chat.busy && token !== undefined;
   const submit = () => {
+    if (!canSend) return;
     const message = text.trim();
-    if (message === "" || chat.busy || token === undefined) return;
     setText("");
-    void send(message);
+    void send(message, composer.take());
+  };
+
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = pastedImages(e);
+    if (files.length === 0) return;
+    e.preventDefault();
+    composer.add(files);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -188,10 +217,13 @@ export function ChatPage() {
               <Fragment key={m.id}>
                 <li data-from="you" className="flex min-w-0 flex-col items-end">
                   <span className="sr-only">{t("chat.you")}</span>
+                  {m.images && <SentImages images={m.images} />}
+                  {m.text !== "" && (
                   <p data-raw className="max-w-[85%] min-w-0 rounded-card bg-surface-2 px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap wrap-anywhere">
                     {m.text}
                   </p>
-                  <ButtonRow><CopyIcon value={m.text} what={t("chat.copyYours")} /></ButtonRow>
+                  )}
+                  {m.text !== "" && <ButtonRow><CopyIcon value={m.text} what={t("chat.copyYours")} /></ButtonRow>}
                 </li>
                 {/*
                   A failed send reads as the chat's turn: where its answer would be, at the left. The text may hold one long
@@ -201,7 +233,7 @@ export function ChatPage() {
                   <li data-from="chat" data-send-error className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
                     <span className="sr-only">{t("chat.reply")}</span>
                     <p role="alert" data-raw className="max-w-full min-w-0 text-sm text-pretty text-failed wrap-anywhere">{m.error}</p>
-                    <Button variant="secondary" size="sm" disabled={chat.busy} onClick={() => void send(m.text, m.id)}>
+                    <Button variant="secondary" size="sm" disabled={chat.busy} onClick={() => void send(m.text, m.images ?? [], m.id)}>
                       {t("chat.retry")}
                     </Button>
                   </li>
@@ -210,7 +242,7 @@ export function ChatPage() {
             ) : (
               <li key={m.id} data-from="chat" className="min-w-0">
                 <span className="sr-only">{t("chat.reply")}</span>
-                <ChatReply text={m.text} />
+                <ChatReply text={m.text} note={m.note} />
               </li>
             ),
           )}
@@ -231,25 +263,29 @@ export function ChatPage() {
           e.preventDefault();
           submit();
         }}
+        {...drop.handlers}
       >
-        <div className="relative">
+        <ComposerTray images={composer.images} remove={composer.remove} />
+        <div data-dropping={drop.dragging || undefined} className={cn("relative rounded-card", drop.dragging && "ring-2 ring-focus")}>
+          <AttachImages add={composer.add} disabled={chat.busy} className="absolute bottom-1.5 left-2 rounded-pill!" />
           <Textarea
             ref={field}
             aria-label={t("chat.field")}
             aria-describedby={hint}
             placeholder={t("chat.placeholder")}
             rows={1}
-            className="block w-full resize-none rounded-card! py-3 pr-14 pl-4 leading-5 shadow-sm"
+            className="block w-full resize-none rounded-card! py-3 pr-14 pl-12 leading-5 shadow-sm"
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
           />
           <Button
             type="submit"
             variant="primary"
             size="icon"
             aria-label={t("chat.send")}
-            disabled={chat.busy || text.trim() === "" || token === undefined}
+            disabled={!canSend}
             className="absolute right-2 bottom-1.5 rounded-pill!"
           >
             <ArrowUp aria-hidden className="size-4" />

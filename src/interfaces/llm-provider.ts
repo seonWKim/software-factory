@@ -17,9 +17,20 @@ export interface LLMTool {
   parameters: Record<string, unknown>;
 }
 
+/** One image for the model: its type (png, jpeg, gif or webp) and its bytes, base64. */
+export interface LLMImage {
+  media_type: string;
+  data: string;
+}
+
 export interface LLMMessage {
   role: "user" | "assistant" | "tool";
   content: string;
+  /**
+   * A user message's images, sent after its text as image input, in this order (design 04-chat-agent). A provider
+   * that takes no image input (openai-compatible) leaves them out.
+   */
+  images?: readonly LLMImage[];
   /** An assistant message's tool calls, sent back as they were returned. */
   tool_calls?: readonly LLMToolCall[];
   /** A `tool` message: the id of the call whose result `content` is. */

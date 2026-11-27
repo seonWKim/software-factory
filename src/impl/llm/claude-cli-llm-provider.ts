@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { LLMMessage, LLMProvider, LLMRequest, LLMResponse, LLMTool, LLMToolCall } from "../../interfaces/llm-provider.js";
 import type { SecretStore } from "../../interfaces/secret-store.js";
 import { runProcess } from "../process/run-process.js";
-import { buildAgentEnv, harnessCredential } from "../runner/claude-code-runner.js";
+import { buildAgentEnv, harnessCredential, parseJsonResult } from "../runner/claude-code-runner.js";
 
 /**
  * Anthropic via the Claude Code CLI on the subscription login (D2). One turn. The CLI runs with no tools of its own
@@ -12,6 +12,10 @@ import { buildAgentEnv, harnessCredential } from "../runner/claude-code-runner.j
  * lists each tool with its arguments' schema, `--json-schema` makes the reply `{ answer, tool_calls }`, and a reply
  * with tool calls is returned as `tool_calls` for the caller to run. Earlier tool calls and their results are sent as
  * text in the prompt. The provider never runs a tool. Tools with an output schema are refused (stop_reason "error").
+ * A call whose messages carry images (design 04-chat-agent) sends the prompt as one stream-json user message on stdin
+ * (`--input-format stream-json`, which needs `--output-format stream-json` and `--verbose`): each message's text, and
+ * after a message's text its images as base64 image blocks, in order, so no image is written to a file. The last
+ * `result` event is the object `--output-format json` prints.
  */
 export class ClaudeCliLLMProvider implements LLMProvider {
   constructor(
@@ -38,12 +42,12 @@ export class ClaudeCliLLMProvider implements LLMProvider {
       claudeConfigDir: this.opts.claudeConfigDir,
       path: process.env.PATH ?? "/usr/bin:/bin",
     });
-    const prompt = req.messages.map(promptPart).join("\n\n");
+    const withImages = req.messages.some((m) => (m.images?.length ?? 0) > 0);
     const system = tools.length > 0 ? [req.system, toolsSection(tools)].filter((x) => x).join("\n\n") : req.system;
     const schema = tools.length > 0 ? toolReplySchema(tools) : req.output_schema;
     const args = [
       this.opts.claudeBin ?? "claude", "-p",
-      "--output-format", "json",
+      ...(withImages ? ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"] : ["--output-format", "json"]),
       "--tools", "",
       "--setting-sources", "project",
       "--strict-mcp-config",
@@ -55,17 +59,12 @@ export class ClaudeCliLLMProvider implements LLMProvider {
     const r = await runProcess(args, {
       cwd: this.opts.workDir,
       env,
-      stdin: prompt,
+      stdin: withImages ? imageInput(req.messages) : req.messages.map(promptPart).join("\n\n"),
       ...(req.signal !== undefined && { signal: req.signal }),
     });
     try {
-      const out = JSON.parse(r.stdout) as {
-        is_error?: boolean;
-        result?: string;
-        structured_output?: unknown;
-        total_cost_usd?: number;
-        usage?: { input_tokens?: number; output_tokens?: number };
-      };
+      const out = parseJsonResult(r.stdout);
+      if (out === null) throw new Error("no result");
       usage.input_tokens = out.usage?.input_tokens ?? 0;
       usage.output_tokens = out.usage?.output_tokens ?? 0;
       usage.cost_usd = out.total_cost_usd ?? null;
@@ -80,6 +79,23 @@ export class ClaudeCliLLMProvider implements LLMProvider {
       return { text: "", stop_reason: "error", usage };
     }
   }
+}
+
+/**
+ * The messages as one stream-json user message: the prompt text of each message, joined as the plain prompt joins
+ * them, and right after a message's text its images, in order, each a base64 image block.
+ */
+export function imageInput(messages: readonly LLMMessage[]): string {
+  const content: Record<string, unknown>[] = [];
+  let text = "";
+  for (const m of messages) {
+    text += `${text === "" ? "" : "\n\n"}${promptPart(m)}`;
+    if (!m.images?.length) continue;
+    content.push({ type: "text", text }, ...m.images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.media_type, data: i.data } })));
+    text = "";
+  }
+  if (text !== "") content.push({ type: "text", text });
+  return `${JSON.stringify({ type: "user", message: { role: "user", content } })}\n`;
 }
 
 /** One message as prompt text; an assistant's tool calls and a tool's result are written out, so a later call sees them. */

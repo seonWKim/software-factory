@@ -8,6 +8,7 @@ import { Input } from "../components/ui/input.js";
 import { Radio } from "../components/ui/radio.js";
 import { Textarea } from "../components/ui/textarea.js";
 import { t } from "../i18n/index.js";
+import { base64Of } from "../lib/bytes.js";
 
 // Add context and Attach on a New or in-triage item (design 02-attachments, design 09-dashboard-item): two buttons on
 // the item page, each opening a modal. Add context sends `revise` with the text, as `factory revise <id> <text>` does:
@@ -27,18 +28,11 @@ const ACCEPT = "image/png,image/jpeg,image/gif,image/webp";
  */
 const FILE = { type: "file" } as unknown as { type: "text" };
 
-/** A file's bytes as base64: all of them up to the limit, else its first 16 bytes. */
-async function base64Of(file: Blob): Promise<string> {
-  const bytes = new Uint8Array(await (file.size > MAX_IMAGE_BYTES ? file.slice(0, 16) : file).arrayBuffer());
-  let text = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(text);
-}
 
-/** The attach body for the dialog's choice: an image's name, bytes and size, or a link's URL and label. */
+/** The attach body for the dialog's choice: an image's name, bytes and size (over the limit, its first 16 bytes only), or a link's URL and label. */
 export async function attachBody(id: string, choice: { kind: "image"; file: File } | { kind: "link"; url: string; label: string }): Promise<Record<string, unknown>> {
   if (choice.kind === "link") return { id, kind: "link", url: choice.url.trim(), label: choice.label.trim() || null };
-  return { id, kind: "image", name: choice.file.name, size: choice.file.size, data: await base64Of(choice.file) };
+  return { id, kind: "image", name: choice.file.name, size: choice.file.size, data: await base64Of(choice.file.size > MAX_IMAGE_BYTES ? choice.file.slice(0, 16) : choice.file) };
 }
 
 type Open = "context" | "attach" | null;

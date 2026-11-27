@@ -133,6 +133,27 @@ describe("NoOpSandbox", { timeout: 30_000 }, () => {
     await expect(sbx.localBranch({ repo, branch: "--upload-pack=x" })).rejects.toThrow(/refusing/);
   });
 
+  it("localChangedFiles lists the files changed between two commits, by default against the first parent, and fetches nothing", async () => {
+    const { root, repo } = repoWithOrigin();
+    const init = git(repo, "rev-parse", "HEAD").trim();
+    mkdirSync(join(repo, "web"));
+    writeFileSync(join(repo, "web", "app.css"), "a\n");
+    writeFileSync(join(repo, "b.txt"), "b\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "two files");
+    const tip = git(repo, "rev-parse", "HEAD").trim();
+    const calls: (readonly string[])[] = [];
+    const real = (await import("../src/impl/process/run-process.js")).runProcess;
+    const sbx = new NoOpSandbox(join(root, "worktrees"), (cmd, opts) => (calls.push(cmd), real(cmd, opts)));
+    expect(await sbx.localChangedFiles({ repo, to: tip })).toEqual(["b.txt", "web/app.css"]);
+    expect(await sbx.localChangedFiles({ repo, from: tip, to: init })).toEqual(["b.txt", "web/app.css"]);
+    // The root commit has no first parent; a commit that is not there cannot be read.
+    expect(await sbx.localChangedFiles({ repo, to: init })).toBeNull();
+    expect(await sbx.localChangedFiles({ repo, to: "f".repeat(40) })).toBeNull();
+    await expect(sbx.localChangedFiles({ repo, to: "--output=x" })).rejects.toThrow(/not a commit sha/);
+    expect(calls.some((c) => c.includes("fetch"))).toBe(false);
+  });
+
   it("the local route's sandbox (with a forge selected) starts a resolve from the local branch and the local base, not origin", async () => {
     const { root, repo, origin } = repoWithOrigin();
     git(repo, "checkout", "--quiet", "-b", "factory/wi_1");

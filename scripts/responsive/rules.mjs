@@ -40,8 +40,9 @@
 //                   than `proseMinLines` (2) lines has a line of more than `maxProseChars` (75) characters, counted
 //                   per rendered line (the 75ch cap of design 09-dashboard-item-about; the owner saw about 150).
 //   button-height   a button is not 28px or 32px tall (a switch, a listbox option, a menu item, a chart's bar,
-//                   [data-chart-bar], whose height is the chart's, and a content chip, [data-chip] (a calendar event),
-//                   whose height is its text's, are not checked; small-target still holds the chip to 24px).
+//                   [data-chart-bar], whose height is the chart's, a content chip, [data-chip] (a calendar event),
+//                   whose height is its text's, and an image thumbnail, [data-thumb], whose height is the picture's, are
+//                   not checked; small-target still holds the chip to 24px).
 //   raw-name        visible text holds a snake_case name or a wi_ ID outside [data-raw] (code and pre count as raw).
 //   title-wrap      a row title ([data-row-title]: Work, Tasks and Health's Runners rows) wraps onto more than two
 //                   lines, so the ID, badge or time beside it squeezed it (design 09-dashboard-shell, 2026-11-22).
@@ -345,7 +346,7 @@ export function checkLayout(limits) {
   }
 
   // button-height
-  for (const b of document.body.querySelectorAll("button:not([role=switch], [role=option], [role=menuitem], [data-chart-bar], [data-chip])")) {
+  for (const b of document.body.querySelectorAll("button:not([role=switch], [role=option], [role=menuitem], [data-chart-bar], [data-chip], [data-thumb])")) {
     if (!painted(b)) continue;
     const h = Math.round(b.getBoundingClientRect().height);
     if (!limits.buttonHeights.includes(h)) fail("button-height", b, `${h}px tall, not ${limits.buttonHeights.join(" or ")}px`);

@@ -8,6 +8,7 @@
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { ChatMessageRecord } from "../interfaces/factory-store.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
+import { chatEvalFailedAlert, failuresOf } from "./alarms.js";
 import { type ChatDeps, chatTurn } from "./chat-agent.js";
 import { type ChatTool, ChatToolBroker, type FeatureMapReader, featureMapTools } from "./chat-agent-tools.js";
 import type { Timestamp } from "./types.js";
@@ -153,10 +154,14 @@ export function chatEvalDaily(raw: unknown): boolean {
 /**
  * The daily run as the controller's chat-eval unit calls it. `claim(day)` takes the UTC day for this process with a
  * conditional cursor advance, so replicas on one store run the day once; `run()` reads the questions and runs them.
+ * `failures` and `failedAlert` are the alarm builders (src/core/alarms.ts) the unit logs and alerts with, handed in so
+ * the unit imports no core module.
  */
 export interface ChatEvalSchedule {
   claim(day: string): Promise<boolean>;
   run(): Promise<ChatEvalReport>;
+  failures: typeof failuresOf;
+  failedAlert: typeof chatEvalFailedAlert;
 }
 
 export function chatEvalSchedule(
@@ -170,5 +175,7 @@ export function chatEvalSchedule(
       return (mark === null || mark < day) && store.advanceCursor(CHAT_EVAL_CURSOR, mark, day);
     },
     run: async () => runChatEval(deps, parseChatEvalQuestions(await questions())),
+    failures: failuresOf,
+    failedAlert: chatEvalFailedAlert,
   };
 }

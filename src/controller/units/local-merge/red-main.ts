@@ -2,7 +2,8 @@
 // and the revert of a bad automatic merge. Kept out of local-merge.unit.ts, which may not grow (file budget); its I/O
 // (the sandbox, the green bases table) is inline, as the unit's.
 
-import { LOCAL_SOURCE, canRevertLocal, checkCommands, runChecks, runKey, toolchainMissing } from "../../../core/local-merge.js";
+import { LOCAL_SOURCE, canReadChangedFiles, canRevertLocal, checkCommands, runChecks, runKey, toolchainMissing } from "../../../core/local-merge.js";
+import { touchesUi } from "../../../shared/screenshots.js";
 import { failingTestNames } from "../../../worker/index.js";
 import { AUTO, SYSTEM } from "../support.js";
 import type { Ctx } from "../context.js";
@@ -50,9 +51,25 @@ function greenBases(c: Ctx): GreenBaseStore | null {
 }
 
 /**
- * The install step (`repo.install_commands`, else `repo.install_command`), the checks and the UI check (`repo.ui_check`)
- * on the base tip in a fresh detached checkout, each entry in its folder (design 04-gate-commands), through the merge
- * check's runner (`runChecks`: its tail, at most CHECK_TAIL_CHARS). `where` names the tip in the text.
+ * Whether the UI check runs on `tip` (design 03-risk), by the merge check's rule: the tip's own change (the diff from
+ * its first parent, `localChangedFiles`) touches one of `repo.ui_check.paths`. Changed files that cannot be read (no
+ * such read on the sandbox, a failed read) run it.
+ */
+async function runsUiCheck(c: Ctx, tip: string | null): Promise<boolean> {
+  const { repo } = c.k.cfg;
+  const ui = repo.ui_check;
+  if (!ui) return false;
+  const sandbox = c.k.d.sandbox;
+  if (tip === null || !canReadChangedFiles(sandbox)) return true;
+  const changed = await sandbox.localChangedFiles({ repo: repo.path, to: tip }).catch(() => null);
+  return changed === null || touchesUi(changed, ui.paths);
+}
+
+/**
+ * The install step (`repo.install_commands`, else `repo.install_command`), the checks and, when the tip's change
+ * touches its paths (`runsUiCheck`), the UI check (`repo.ui_check`) on the base tip in a fresh detached checkout, each
+ * entry in its folder (design 04-gate-commands), through the merge check's runner (`runChecks`: its tail, at most
+ * CHECK_TAIL_CHARS). `where` names the tip in the text.
  */
 async function checkTip(c: Ctx, where: string): Promise<Round> {
   const sandbox = c.k.d.sandbox!;
@@ -62,8 +79,9 @@ async function checkTip(c: Ctx, where: string): Promise<Round> {
     const handle = await sandbox.create({ repo: repo.path, branch: null, base_ref: repo.base_branch });
     tip = handle.base_sha ?? null;
     try {
+      const ui = repo.ui_check && (await runsUiCheck(c, tip)) ? [repo.ui_check.command] : [];
       const round = await runChecks({
-        sandbox, handle, commands: [...(repo.install_commands ?? [repo.install_command]), ...checkCommands(repo), ...(repo.ui_check ? [repo.ui_check.command] : [])],
+        sandbox, handle, commands: [...(repo.install_commands ?? [repo.install_command]), ...checkCommands(repo), ...ui],
         env: { ...c.k.d.check_env }, timeout_ms: c.k.cfg.run_timeout_ms, signal: new AbortController().signal, redact: [],
       });
       if (!round.failed) return { tip, failed: null, command: null, how: null };

@@ -237,6 +237,17 @@ export class NoOpSandbox implements Sandbox {
     return this.localCommit(spec.repo, spec.branch);
   }
 
+  /**
+   * `git diff --name-only` from `from` (absent: `to`'s first parent) to `to`, objects only: no rename detection,
+   * external diff or textconv. Null when a commit is missing or `to` has no parent.
+   */
+  async localChangedFiles(spec: { repo: string; to: string; from?: string }): Promise<string[] | null> {
+    for (const sha of [spec.to, spec.from]) if (sha !== undefined && !/^[0-9a-f]{40,64}$/.test(sha)) throw new Error(`not a commit sha: ${JSON.stringify(sha)}`);
+    const from = spec.from ?? `${spec.to}^1`;
+    const r = await this.git(spec.repo, ["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", "--end-of-options", from, spec.to, "--"], false);
+    return r.exit_code === 0 ? r.stdout.split("\0").filter((p) => p !== "").sort() : null;
+  }
+
   /** The text of `path` in the local branch `ref`, from objects only; null when the branch or the file is missing. */
   async readLocalFile(spec: { repo: string; ref: string; path: string }): Promise<{ commit: string; text: string } | null> {
     safeRef(spec.ref);
