@@ -115,6 +115,8 @@ export function commandOf(row: Row): CliCommand {
     command: String(row.command),
     args: JSON.parse(String(row.args)) as Record<string, unknown>,
     ...(Number(row.mirror) === 1 ? { mirror: true } : {}),
+    ...(row.write_origin != null ? { write_origin: row.write_origin as NonNullable<CliCommand["write_origin"]> } : {}),
+    ...(row.permission_mode != null ? { permission_mode: row.permission_mode as NonNullable<CliCommand["permission_mode"]> } : {}),
     created_at: row.created_at as CliCommand["created_at"],
   };
 }

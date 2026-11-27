@@ -93,12 +93,13 @@ export class OwnerAuth implements AuthProvider {
 }
 
 /**
- * The permission gate (design 08-permissions, phase 2 of 3 of local-task-tk_cad55672). Agent writes, from a chat
- * tool call or a coordinator step, go through `authorizeWrite`: the guards first (a write that reads a secret, then
- * the egress scan of its arguments), refused in every mode with their own reasons; then the mode, read from the
- * store at this write; then `permissionGate`. A held write is stored once (`holdWrite`, keyed by `key`) for the
- * owner's `confirm <id>`, with the mode it ran under. A typed command (`human_command`) passes the guards and is never
- * gated.
+ * The permission gate (design 08-permissions, local-task-tk_cad55672). Agent writes, from a chat tool call or a
+ * coordinator step, and typed commands (`human_command`, from the command inbox) go through `authorizeWrite`: the
+ * guards first (a write that reads a secret, then the egress scan of its arguments), refused in every mode and for
+ * both origins with their own reasons; then the mode, read from the store at this write; then `permissionGate`. An
+ * agent write that runs is stored once as a handled command row (`recordAgentWrite`, keyed by `key`) with origin
+ * `agent` and its mode; a held one once (`holdWrite`, keyed by `key`) for the owner's `confirm <id>`, with its mode.
+ * A typed command is never gated: its row is already stored, with its mode.
  */
 
 /** Who wrote a command: a person's typed command, or an agent (inbound_commands.write_origin). */
@@ -107,6 +108,8 @@ export type WriteOrigin = "human_command" | "agent";
 export const SECRET_READ = "secret_read";
 /** A guard's refusal: the egress scan (G5) flagged the write's arguments; the tool gate's reason. */
 export const EGRESS_BLOCKED = "egress_blocked";
+/** The commands that read a secret, refused by G1 for both origins: none declares it today. */
+const SECRET_COMMANDS: readonly string[] = [];
 /** The gate's refusal: an agent write in a chat turn, in every mode. */
 export const AGENT_WRITE_IN_CHAT = "agent_write_in_chat";
 
@@ -135,13 +138,20 @@ export async function readPermissionMode(store: Pick<FactoryStore, "listSettingO
   return PERMISSION_MODES.find((m) => m === value) ?? (permissionMode.default as PermissionMode);
 }
 
-/** An agent write the gate held (controller_held_writes): pending until the owner confirms `id`; `mode` is the mode it ran under. */
+/** An agent write the gate held (controller_held_writes, pending until the owner confirms `id`) or ran (a handled inbound_commands row); `mode` is the mode it ran under. */
 export interface NewHeldWrite { key: string; command: string; args: readonly string[]; actor: UserId; mode: PermissionMode }
-export interface HeldWrite extends Omit<NewHeldWrite, "args"> { id: string; args: string[]; status: string; created_at: Timestamp }
-/** Held writes (part of FactoryStore): a hold of a key already pending writes nothing and gives the pending row (`created` false); a list reads the newest first. */
+/** `write_origin` is `agent` on every held write; null on a row held before it was stored. */
+export interface HeldWrite extends Omit<NewHeldWrite, "args"> { id: string; args: string[]; write_origin: "agent" | null; status: string; created_at: Timestamp }
+/**
+ * The gate's rows (part of FactoryStore): a hold of a key already pending writes nothing and gives the pending row (`created` false);
+ * a list reads the newest first. `recordAgentWrite` stores a run agent write once per key as a handled command row the inbox skips;
+ * `refuseCommand` marks a pending command row handled with its refusal (false when it was handled already).
+ */
 export interface HeldWriteStore {
   holdWrite(w: NewHeldWrite): Promise<{ created: boolean; write: HeldWrite }>;
   listHeldWrites(limit: number): Promise<HeldWrite[]>;
+  recordAgentWrite(w: NewHeldWrite): Promise<{ created: boolean }>;
+  refuseCommand(id: string, refusal: string): Promise<boolean>;
 }
 
 /** One write to authorize: the command table's name (`merge`), its arguments, who wrote it, and the key that makes it the same write again. */
@@ -155,23 +165,25 @@ export interface WriteRequest {
   reads_secret?: boolean;
 }
 export interface WriteGateDeps {
-  store: Pick<FactoryStore, "listSettingOverrides" | "holdWrite">;
+  store: Pick<FactoryStore, "listSettingOverrides" | "holdWrite" | "recordAgentWrite">;
   scanner: Pick<EgressScanner, "scan">;
 }
 export type WriteDecision =
   | { outcome: "run"; mode: PermissionMode }
   | { outcome: "held"; mode: PermissionMode; id: string; reply: string }
-  | { outcome: "refused"; reason: string; reply: string };
+  | { outcome: "refused"; reason: string; why: string; reply: string };
 
 /** The guards, then the mode read now, then the gate; a held write is stored once and answered with `confirm <id>`. */
 export async function authorizeWrite(d: WriteGateDeps, w: WriteRequest): Promise<WriteDecision> {
-  const refused = (reason: string, why: string): WriteDecision => ({ outcome: "refused", reason, reply: `\`${w.command}\` was refused: ${why}` });
-  if (w.reads_secret === true) return refused(SECRET_READ, "it reads a secret");
-  if (!(await d.scanner.scan("tool_result", [w.command, ...w.args].join(" "))).clean) return refused(EGRESS_BLOCKED, "the egress scan flagged it");
+  const refused = (reason: string, why: string): WriteDecision => ({ outcome: "refused", reason, why, reply: `\`${w.command}\` was refused: ${why}` });
+  if (w.reads_secret ?? SECRET_COMMANDS.includes(w.command)) return refused(SECRET_READ, "it reads a secret");
+  if (!(await d.scanner.scan("tool_result", [w.command, ...w.args].join(" "))).clean) return refused(EGRESS_BLOCKED, "the leak scanner flagged it, so nothing of it was stored and nothing changed");
   const mode = await readPermissionMode(d.store);
   const gate = permissionGate({ mode, reversible: COMMAND_TABLE.find((c) => c.name === w.command)?.reversible, origin: w.origin, in_chat_turn: w.in_chat_turn });
   if (gate.outcome === "refuse") return refused(gate.reason, "an agent may not write from a chat turn; type the command instead");
+  const row = { key: w.key, command: w.command, args: w.args, actor: w.actor, mode };
+  if (gate.outcome === "run" && w.origin === "agent") await d.store.recordAgentWrite(row);
   if (gate.outcome === "run") return { outcome: "run", mode };
-  const { write } = await d.store.holdWrite({ key: w.key, command: w.command, args: w.args, actor: w.actor, mode });
+  const { write } = await d.store.holdWrite(row);
   return { outcome: "held", mode: write.mode, id: write.id, reply: `\`${w.command}\` is held under permission_mode ${write.mode}: confirm it with \`confirm ${write.id}\`` };
 }

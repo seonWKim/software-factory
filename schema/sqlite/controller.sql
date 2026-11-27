@@ -219,7 +219,7 @@ CREATE TABLE controller_held_writes (
     mode        TEXT NOT NULL CHECK (mode IN ('ask_all', 'ask_irreversible', 'full')),
     status      TEXT NOT NULL DEFAULT 'pending',
     created_at  TEXT NOT NULL
-  );
+  , write_origin TEXT CHECK (write_origin IN ('agent')));
 
 CREATE TABLE controller_improve_proposals (
     id                 TEXT PRIMARY KEY,

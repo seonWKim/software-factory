@@ -3,6 +3,7 @@
 // Outbox claims are fenced by a token that only a claim bumps, like run leases.
 
 import { createHash } from "node:crypto";
+import type { NewHeldWrite } from "../../../core/authorize.js";
 import type { SourceRef, SourceType, Timestamp, UserId, WorkItemId } from "../../../core/types.js";
 import type {
   AppCommandRequest, CliCommand, ItemMessage, NewAppCommandRequest, NewCliCommand, NewItemMessage, RunIntent, SyncFence, ThreadDelivery, ThreadLinkField,
@@ -126,18 +127,43 @@ export async function listItemMessages(db: SqlDriver, work_item_id: WorkItemId):
   return rows.map(rowToItemMessage);
 }
 
-export async function appendCliCommand(db: SqlDriver, time: StoreTime, input: NewCliCommand): Promise<{ created: boolean; command: CliCommand }> {
+/** One command row per key, with its write origin (`human_command` when none is passed) and `mode`, the permission mode the store read for this write. */
+export async function appendCliCommand(db: SqlDriver, time: StoreTime, input: NewCliCommand, mode: NewHeldWrite["mode"]): Promise<{ created: boolean; command: CliCommand }> {
   return db.transaction(async (tx) => {
     const existing = await selectCliCommand(tx, input.key);
     if (existing) return { created: false, command: existing };
     await lockCommandSequence(tx);
     const created = await insertOnce(
       db, tx,
-      "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, mirror, passport_id, write_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [commandId(input.key), commandOrigin(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), time.now(), input.mirror ? 1 : 0, input.passport_id ?? null, input.write_origin ?? null],
+      "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, mirror, passport_id, write_origin, permission_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [commandId(input.key), commandOrigin(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), time.now(), input.mirror ? 1 : 0, input.passport_id ?? null, input.write_origin ?? "human_command", mode],
     );
     return { created, command: (await selectCliCommand(tx, input.key))! };
   });
+}
+
+/**
+ * An agent write the permission gate ran (design 08-permissions): one row per write key, origin and write origin
+ * `agent`, its arguments as `argv`, the mode it ran under, handled at insert so the command inbox never applies it.
+ */
+export async function recordAgentWrite(db: SqlDriver, time: StoreTime, w: NewHeldWrite): Promise<{ created: boolean }> {
+  return db.transaction(async (tx) => {
+    if (await selectCliCommand(tx, w.key)) return { created: false };
+    await lockCommandSequence(tx);
+    const now = time.now();
+    return {
+      created: await insertOnce(
+        db, tx,
+        "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, handled_at, write_origin, permission_mode) VALUES (?, 'agent', ?, ?, ?, ?, ?, ?, 'agent', ?)",
+        [commandId(w.key), w.key, w.actor, w.command, JSON.stringify({ argv: w.args }), now, now, w.mode],
+      ),
+    };
+  });
+}
+
+/** A pending command row the inbox's guards refused: handled now, with its refusal; false when it was handled already. */
+export async function refuseCommand(db: SqlDriver, time: StoreTime, id: string, refusal: string): Promise<boolean> {
+  return (await db.run("UPDATE inbound_commands SET handled_at = ?, refusal = ? WHERE id = ? AND handled_at IS NULL", [time.now(), refusal, id])) > 0;
 }
 
 export async function listCliCommandsAfter(db: SqlDriver, after_seq: number, limit: number): Promise<CliCommand[]> {
@@ -294,6 +320,7 @@ function rowToCliCommand(row: Row): CliCommand {
     ...(Number(row.mirror) === 1 ? { mirror: true } : {}),
     ...(row.passport_id != null ? { passport_id: String(row.passport_id) } : {}),
     ...(row.write_origin != null ? { write_origin: row.write_origin as NonNullable<CliCommand["write_origin"]> } : {}),
+    ...(row.permission_mode != null ? { permission_mode: row.permission_mode as NewHeldWrite["mode"] } : {}),
     created_at: row.created_at as Timestamp,
   };
 }
