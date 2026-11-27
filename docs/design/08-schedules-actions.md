@@ -25,7 +25,7 @@ Split from [08-schedules.md](08-schedules.md) (2026-11-25, moved text, no decisi
   - **Not yet.** Triggers other than merge; dropping the routine tables.
 
 - **A schedule's token cap counts the runs of its period, `token_period`: `day` for a daily cadence, `lifetime` for any other (decision changed 2026-11-25, local-task-tk_33c95362 phase 2 of 4; current; replaces "Token cap. Per schedule, summed over its runs' tokens." below, see History).** Why: over all runs, a daily schedule hit the default cap in a few days and was held for good.
-  - **Store.** `controller_schedules.token_period` (TEXT, nullable), migration `20261125T1001-state-controller-schedule-token-period` (additive, no backfill): null, every older schedule, counts as `lifetime`. `addSchedule` sets it from the cadence if not given; an edit keeps it.
+  - **Store.** `controller_schedules.token_period` (TEXT, nullable), migration `20261125T1001-state-controller-schedule-token-period` (additive, no backfill). Null, every older schedule, resolves from its cadence like a new one: `day` for a daily cadence, `lifetime` for any other (changed 2026-11-27: a null daily schedule was counted over all its runs and held for good; see [history/08-schedules.md](history/08-schedules.md)). `tokenPeriod` in `src/core/schedule.ts` is that one rule, read where the cap is summed and by `addSchedule`, which stores it if not given; an edit keeps it.
   - **Count.** `scheduleTokensUsed(id, day?)` sums the runs whose `occurrence_at` is on that UTC date. For `day`, the claim pass, `checkpointAnswer` and `raisedCap` use the claimed or held slot's date, so the next day's occurrence starts fresh.
   - **Not yet.** Setting it from the CLI or HTTP; the page showing it.
 

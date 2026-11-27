@@ -1,4 +1,4 @@
-import { CalendarCheck, CalendarClock, CalendarDays, ChartGantt, Database, FileDiff, HeartPulse, ListTodo, Puzzle, ScrollText, Settings, type LucideIcon } from "lucide-react";
+import { CalendarCheck, CalendarClock, CalendarDays, ChartGantt, Database, FileDiff, HeartPulse, ListTodo, MessageSquare, Puzzle, ScrollText, Settings, type LucideIcon } from "lucide-react";
 import { REDIRECTS } from "./page-redirects.js";
 
 /** Where a page sits in the sidebar: the Tasks block, the System block (Work, Health, Workers), the bottom block (Rules, Plugins, Settings), or nowhere (a routable page with no sidebar link: Data, linked from Settings > Advanced, and Proposals at /app/proposals). Runners is Health's Runners tab. */
@@ -18,6 +18,7 @@ export const PAGES: readonly PageDef[] = [
   { path: "tasks", label: "Tasks", key: "tasks", icon: CalendarCheck, group: "tasks" },
   { path: "calendar", label: "Calendar", key: "calendar", icon: CalendarDays, group: "tasks" },
   { path: "schedules", label: "Schedules", key: "schedules", icon: CalendarClock, group: "tasks" },
+  { path: "chat", label: "Chat", key: "chat", icon: MessageSquare, group: "tasks" },
   { path: "items", label: "Work", key: "work", icon: ListTodo, group: "system" },
   { path: "health", label: "Health", key: "health", icon: HeartPulse, group: "system" },
   { path: "workers", label: "Workers", key: "workers", icon: ChartGantt, group: "system" },

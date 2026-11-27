@@ -117,6 +117,8 @@ async function main() {
     // Health's Cost and Review tabs: Spend, Efficiency, the unreviewed merges and the improve report.
     { name: "health-cost", path: "health?tab=cost" },
     { name: "health-review", path: "health?tab=review" },
+    // Health's Activity tab: the actors, the selected actor's About card and its recent actions.
+    { name: "health-activity", path: "health?tab=activity" },
     { name: "transcript", path: `items/${enc(fixture.pages.item)}/runs/${enc(fixture.pages.run)}` },
     { name: "menu-top", path: "schedules" },
     { name: "menu-row", path: "schedules" },

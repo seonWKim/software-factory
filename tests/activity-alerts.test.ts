@@ -4,9 +4,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ActivityActorsPage } from "../web/src/views/activity/page.js";
+import { ActivityTab } from "../web/src/views/activity/page.js";
 
-// The Alerts card of the Activity page (design 09-dashboard-activity): each open alert with a Clear button; Clear posts
+// The Alerts card of Health's Activity tab (design 09-dashboard-activity): each open alert with a Clear button; Clear posts
 // the alert's ID to POST /api/v1/alarms/dismiss, the list is read again, and a refusal shows in a Notice.
 
 const T0 = "2026-11-26T10:00:00.000Z";
@@ -34,7 +34,7 @@ function mountPage() {
     return json({ error: "Not found." }, 404);
   }));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(createElement(QueryClientProvider, { client }, createElement(ActivityActorsPage)));
+  render(createElement(QueryClientProvider, { client }, createElement(ActivityTab)));
   return () => reads;
 }
 

@@ -3,7 +3,6 @@ import { type MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { Button } from "../components/ui/button.js";
 import { FOCUS } from "../components/ui/control.js";
-import { Kbd } from "../components/ui/notice.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { BASE, type PageDef } from "../pages.js";
@@ -40,8 +39,8 @@ export function SideLinks({ label, pages, current, badges = {} }: { label: strin
 
 /**
  * The sidebar's Shortcuts row (design 09-dashboard-shell): a row like the page links above it, the keyboard icon, its
- * label and the `?` key at its end, that opens the shortcut list (HelpDialog), as `?` does. A narrow sidebar shows only
- * the icon.
+ * label, that opens the shortcut list (HelpDialog), as `?` does. No key is drawn at its end (owner, 2026-11-27); the key
+ * stays in `aria-keyshortcuts` and in the list. A narrow sidebar shows only the icon.
  */
 export function ShortcutsLink({ onOpen }: { onOpen: () => void }) {
   return (
@@ -58,7 +57,6 @@ export function ShortcutsLink({ onOpen }: { onOpen: () => void }) {
     >
       <Keyboard aria-hidden className="size-4 shrink-0" />
       <span className="max-lg:sr-only">{t("keys.footerLink")}</span>
-      <span className="ml-auto max-lg:hidden"><Kbd hint="?" /></span>
     </Button>
   );
 }

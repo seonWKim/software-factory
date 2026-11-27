@@ -329,4 +329,14 @@ describe("⌘K actions", () => {
     const help = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
     expect(help.textContent).toContain("⌘K");
   });
+
+  it("the Shortcuts row draws no ? key at its end, yet names it, and ? still opens the shortcut list", async () => {
+    mount("/app/tasks");
+    const sidebar = await screen.findByRole("complementary", { name: "Sidebar" });
+    const row = within(sidebar).getByRole("button", { name: "Shortcuts" });
+    expect(row.querySelector("kbd")).toBeNull();
+    expect(row.getAttribute("aria-keyshortcuts")).toBe("?");
+    fireEvent.keyDown(document.body, { key: "?" });
+    expect(await screen.findByRole("dialog", { name: "Keyboard shortcuts" })).toBeTruthy();
+  });
 });
