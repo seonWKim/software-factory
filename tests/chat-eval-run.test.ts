@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  CHAT_EVAL_CURSOR, CHAT_EVAL_PASS_BAR, CHAT_EVAL_QUESTIONS, type ChatEvalDeps, type ChatEvalQuestion, chatEvalDaily, chatEvalExitCode,
+  CHAT_EVAL_CURSOR, CHAT_EVAL_FIXTURE, CHAT_EVAL_PASS_BAR, chatEvalCaller, CHAT_EVAL_QUESTIONS, type ChatEvalDeps, type ChatEvalQuestion, chatEvalDaily, chatEvalExitCode,
   chatEvalSchedule, parseChatEvalQuestions, runChatEval,
 } from "../src/core/chat-eval.js";
 import { ChatEvalUnit } from "../src/controller/units/chat-eval/chat-eval.unit.js";
@@ -19,8 +19,11 @@ import { main } from "../scripts/chat-eval.js";
 const ROOT = join(import.meta.dirname, "..");
 const QUESTIONS_TEXT = readFileSync(join(ROOT, CHAT_EVAL_QUESTIONS), "utf8");
 const USAGE = { input_tokens: 1, output_tokens: 1, cost_usd: 0 };
-const FEATURE_MAP_TOOLS = ["list_areas", "list_features", "get_feature", "get_feature_schema"];
-const ARGS: Record<string, string> = { list_areas: "{}", list_features: '{"area":"chat"}', get_feature: '{"id":"chat.send"}', get_feature_schema: '{"id":"chat.send"}' };
+const CHAT_TOOLS = ["list_areas", "list_features", "get_feature", "get_feature_schema", "call_feature"];
+const ARGS: Record<string, string> = {
+  list_areas: "{}", list_features: '{"area":"chat"}', get_feature: '{"id":"chat.send"}', get_feature_schema: '{"id":"chat.send"}',
+  call_feature: '{"id":"items.list","input":{"blocked_on":"human"}}',
+};
 
 /**
  * The fake Ask model: for a question, first asks for the tools `calls(q)` names (each once), then replies
@@ -64,7 +67,7 @@ const QUESTIONS = parseChatEvalQuestions(QUESTIONS_TEXT);
 const ids = (n: number) => new Set(QUESTIONS.slice(0, n).map((q) => q.id));
 
 describe("the eval runner", () => {
-  it("reads the owner's questions file and sends each question through chatTurn in its own new session, with the four feature-map tools and the given Ask model", async () => {
+  it("reads the owner's questions file and sends each question through chatTurn in its own new session, with the chat's tools (the four feature-map tools and call_feature) and the given Ask model", async () => {
     const ask = fakeAsk(QUESTIONS);
     const report = await runChatEval(deps(ask.llm, fakeJudge(ids(QUESTIONS.length)).judge), QUESTIONS);
 
@@ -77,7 +80,7 @@ describe("the eval runner", () => {
     expect(firsts.map((r) => r.messages[0]!.content)).toEqual(QUESTIONS.map((q) => q.question));
     for (const r of ask.seen) {
       expect(r.model_class).toBe("cheap");
-      expect(r.tools!.map((t) => t.name)).toEqual(FEATURE_MAP_TOOLS);
+      expect(r.tools!.map((t) => t.name)).toEqual(CHAT_TOOLS);
     }
   });
 
@@ -89,6 +92,38 @@ describe("the eval runner", () => {
     expect(judge.seen[0]!.model_class).toBe("standard");
     expect(judge.seen[0]!.messages[0]!.content).toContain(q.judged_answer);
     expect(judge.seen[0]!.messages[0]!.content).toContain(`reply:${q.id}`);
+  });
+});
+
+describe("the eval's live data", () => {
+  it("has the live-data questions, each expecting call_feature", () => {
+    const live = QUESTIONS.filter((q) => q.id === "needs-me-today" || q.id === "running-now");
+    expect(live.map((q) => [q.id, q.question, q.tools])).toEqual([
+      ["needs-me-today", "What needs me today?", ["call_feature"]],
+      ["running-now", "What is running now?", ["call_feature"]],
+    ]);
+  });
+
+  it("call_feature answers from the fixed fixture: the items blocked on the owner and the open alerts", async () => {
+    const owner = await chatEvalCaller("items.list", { blocked_on: "human" });
+    expect(owner.status).toBe(200);
+    const rows = (owner.value as { items: { id: string; blocked_on: string }[] }).items;
+    expect(rows.map((r) => r.id)).toEqual(CHAT_EVAL_FIXTURE.items.filter((i) => i.blocked_on === "human").map((i) => i.id));
+    expect(rows.length).toBeGreaterThan(0);
+    expect(await chatEvalCaller("activity.actors", {})).toEqual({ status: 200, value: { actors: CHAT_EVAL_FIXTURE.actors, alerts: CHAT_EVAL_FIXTURE.alerts } });
+    expect((await chatEvalCaller("chat.send", {})).status).toBe(404);
+  });
+
+  it("a live-data question's call_feature result in the turn is the fixture's, with no store in the eval's deps", async () => {
+    const q = QUESTIONS.find((x) => x.id === "needs-me-today")!;
+    const ask = fakeAsk([q]);
+    const d = deps(ask.llm, fakeJudge(new Set([q.id])).judge);
+    expect(Object.keys(d)).not.toContain("store");
+    const [r] = (await runChatEval(d, [q])).results;
+    expect(r).toMatchObject({ passed: true, missing_tools: [] });
+    const tool = ask.seen.at(-1)!.messages.find((m) => m.role === "tool")!;
+    for (const it of CHAT_EVAL_FIXTURE.items.filter((i) => i.blocked_on === "human")) expect(tool.content).toContain(it.id);
+    expect(tool.content).not.toContain("wi_eval_build");
   });
 });
 

@@ -72,6 +72,18 @@
       "question": "In one sentence, what is the factory for?",
       "judged_answer": "One short plain sentence: it takes the owner's work items through triage, implement and review to the owner's approval; no jargon.",
       "tools": []
+    },
+    {
+      "id": "needs-me-today",
+      "question": "What needs me today?",
+      "judged_answer": "Lists the items blocked on the owner from call_feature (wi_eval_spec, Add a dark mode to the dashboard, and wi_eval_merge, Retry failed pushes once) and the open alert al_eval_chat, each by id and title or text; lists no item that is not blocked on the owner and invents none.",
+      "tools": ["call_feature"]
+    },
+    {
+      "id": "running-now",
+      "question": "What is running now?",
+      "judged_answer": "Says from call_feature that the worker is running, implementing wi_eval_build (Cache the spend page), and that the coordinator is idle; invents no other run.",
+      "tools": ["call_feature"]
     }
   ]
 }
