@@ -262,6 +262,18 @@ describe("sending a message", () => {
     expect((await screen.findByRole("alert", {}, SLOW)).textContent).toMatch(/held something private/);
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
+
+  it("says what the model did: its own words on a failed call, or that it refused", async () => {
+    sendBody = { turn_id: "ct_3", session_id: "cs_3", outcome: "failed", reason: "model_error", detail: "claude-cli: Not logged in · Please run /login" };
+    page();
+    await ask("Hi");
+    expect((await screen.findByRole("alert", {}, SLOW)).textContent).toBe("No answer came back. The model call failed: claude-cli: Not logged in · Please run /login");
+    cleanup();
+    sendBody = { turn_id: "ct_4", session_id: "cs_4", outcome: "failed", reason: "model_refused" };
+    page();
+    await ask("Hi");
+    expect((await screen.findByRole("alert", {}, SLOW)).textContent).toBe("No answer came back. The model refused to answer.");
+  });
 });
 
 describe("the Runners tab's Chat Card", () => {

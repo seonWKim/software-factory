@@ -143,7 +143,7 @@ export function ChatPage() {
       else if (!res.ok) fail(t("chat.sendFailed", { reason: res.value.error ?? "" }).trim());
       else if (res.value.outcome !== "answered" || res.value.reply === undefined) {
         update((c) => ({ ...c, sessionId: res.value.session_id }));
-        fail(t("chat.noReply", { reason: reasonWords(res.value.reason) }));
+        fail(t("chat.noReply", { reason: reasonWords(res.value.reason, res.value.detail) }));
       } else {
         const reply = res.value.reply;
         update((c) => ({ ...c, busy: false, sessionId: res.value.session_id, said: [...c.said, { id: id + 0.5, who: "chat", text: reply }] }));

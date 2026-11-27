@@ -16,22 +16,22 @@ type Outcome = (typeof OUTCOMES)[number];
 export const CHAT_TURNS_LIMIT = 50;
 
 /** A turn's result as chat.send's outcome and reason: withheld is a refusal, every other failure a failure. */
-function outcomeOf(r: ChatTurnResult): { outcome: Outcome; reason: string | null } {
+function outcomeOf(r: ChatTurnResult): { outcome: Outcome; reason: string | null; detail?: string } {
   if (r.ok) return { outcome: "answered", reason: null };
-  return { outcome: r.reason === "withheld" ? "refused" : "failed", reason: r.reason };
+  return { outcome: r.reason === "withheld" ? "refused" : "failed", reason: r.reason, ...(r.detail !== undefined && { detail: r.detail }) };
 }
 
 export const CHAT: readonly Declared[] = [
   declare({
     id: "chat.send", area: "chat",
-    description: "Send the owner's message to the chat and run one turn with the Ask model; no session_id starts a new session. A withheld turn answers no reply.",
+    description: "Send the owner's message to the chat and run one turn with the Ask model; no session_id starts a new session. A withheld turn answers no reply; a failed model call answers the provider's own words in detail.",
     permission: "owner", method: "POST", path: "/api/v1/chat/send",
     input: object({ session_id: optional(string()), text: string() }),
-    output: object({ turn_id: string(), session_id: string(), outcome: oneOf(OUTCOMES), reason: optional(string()), reply: optional(string()) }),
+    output: object({ turn_id: string(), session_id: string(), outcome: oneOf(OUTCOMES), reason: optional(string()), detail: optional(string()), reply: optional(string()) }),
     run: async (c, i) => {
       const llm = c.d.settings?.ask?.llm ?? null;
       if (llm === null) return refuse(503, "Chat is off: no model is configured (plugins.llm).");
-      const [{ randomUUID }, { chatTurn }, { ChatToolBroker, featureMapTools }, { readFeatureMap }, { registryOf }] = await Promise.all([
+      const [{ randomUUID }, { chatTurn, CHAT_DETAIL_MAX }, { ChatToolBroker, featureMapTools }, { readFeatureMap }, { registryOf }] = await Promise.all([
         import("node:crypto"), import("../../core/chat-agent.js"), import("../../core/chat-agent-tools.js"), import("../feature-map.js"), import("../index.js"),
       ]);
       const session_id = i.session_id ?? `cs_${randomUUID()}`;
@@ -41,14 +41,18 @@ export const CHAT: readonly Declared[] = [
       const registry = registryOf(c.d);
       const broker = new ChatToolBroker(featureMapTools((p) => readFeatureMap(registry, p)));
       let result: ChatTurnResult | null = null;
+      let thrown = "";
       try {
         result = await chatTurn({ store, llm, broker, scanner: c.d.scanner, clock: c.d.clock, newTurnId: () => turn_id }, session_id, i.text);
-      } catch {
-        // A thrown error ends the row too: failed, reason "error", never left running.
+      } catch (err) {
+        // A thrown error ends the row too: failed, reason "error", never left running. Its message is the detail
+        // when the scan finds nothing in it.
+        thrown = (err instanceof Error ? err.message : String(err)).trim().slice(0, CHAT_DETAIL_MAX);
       }
-      const { outcome, reason } = result === null ? { outcome: "failed" as const, reason: "error" } : outcomeOf(result);
+      const thrownDetail = thrown !== "" && (await c.d.scanner.scan("ui", thrown)).clean ? { detail: thrown } : {};
+      const { outcome, reason, detail } = result === null ? { outcome: "failed" as const, reason: "error", ...thrownDetail } : outcomeOf(result);
       await store.finishChatTurn(turn_id, outcome, reason);
-      return { turn_id, session_id, outcome, ...(reason !== null && { reason }), ...(result?.ok && { reply: result.reply }) };
+      return { turn_id, session_id, outcome, ...(reason !== null && { reason }), ...(detail !== undefined && { detail }), ...(result?.ok && { reply: result.reply }) };
     },
   }),
   declare({

@@ -94,13 +94,16 @@ export function ReplyTable({ rows }: { rows: string[][] }) {
 /** The context line a sent message may start with (chat-page.tsx), taken off again where a stored message is shown. */
 const withoutContext = (text: string): string => text.replace(/^(?:Open page|About item): [^\n]*\n\n/, "");
 
-export function reasonWords(reason: string | null | undefined): string {
+/** A failed turn's reason in plain words; `detail` (chat.send's, the provider's own words) is shown with it when given. */
+export function reasonWords(reason: string | null | undefined, detail?: string): string {
   const words: Record<string, () => string> = {
     withheld: () => t("chat.reason.withheld"),
-    model_error: () => t("chat.reason.model_error"),
+    model_error: () => (detail ? t("chat.reason.model_errorDetail", { detail }) : t("chat.reason.model_error")),
+    model_refused: () => t("chat.reason.model_refused"),
+    model_cut_off: () => t("chat.reason.model_cut_off"),
     too_many_steps: () => t("chat.reason.too_many_steps"),
     seq_taken: () => t("chat.reason.seq_taken"),
-    error: () => t("chat.reason.error"),
+    error: () => (detail ? t("chat.reason.errorDetail", { detail }) : t("chat.reason.error")),
   };
   const word = words[reason ?? ""];
   return word === undefined ? t("chat.reason.other") : word();
