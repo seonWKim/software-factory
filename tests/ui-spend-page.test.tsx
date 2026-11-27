@@ -33,6 +33,8 @@ const SPEND: SpendView = {
   from: "2025-12-16",
   to: "2026-01-14",
   total: { cost_usd: 15.5, tokens: 15500, runs: 6, unknown: 1 },
+  chat: { cost_usd: 2.25, tokens: 1200, turns: 7, unknown: 0 },
+  coordinator: { cost_usd: 0.5, tokens: 300, turns: 1, unknown: 0 },
   days: DAYS,
   items: [
     { work_item_id: "wi_big", title: "Big task", cost_usd: 10, tokens: 9000, runs: 1, unknown: 0, kinds: ["implement"] },
@@ -101,6 +103,32 @@ describe("Spend page", () => {
     expect(totals("This week")).toContain("6.5k tokens");
     expect(totals("Last 30 days")).toContain("$15.50");
     expect(totals("Last 30 days")).toContain("15.5k tokens");
+  });
+
+  it("shows chat and coordinator spend in their own tiles, apart from the run totals", async () => {
+    view = { ...SPEND, coordinator: { cost_usd: 0.5, tokens: 300, turns: 1, unknown: 0 } };
+    show(SpendSection);
+    await screen.findByText("Today");
+    const totals = (label: string) => document.querySelector<HTMLElement>(`[data-total="${label}"]`)!.textContent;
+    expect(totals("Chat")).toContain("$2.25");
+    expect(totals("Chat")).toContain("1.2k tokens");
+    expect(totals("Chat")).toContain("7 turns");
+    expect(totals("Coordinator")).toContain("$0.50");
+    expect(totals("Coordinator")).toContain("1 turn");
+    expect(totals("Coordinator")).not.toContain("1 turns");
+    expect(totals("Last 30 days")).toContain("$15.50");
+    expect(totals("Today")).toContain("$1.50");
+    expect(screen.queryByTestId("spend-unknown-chat")).toBeNull();
+    expect(screen.queryByTestId("spend-unknown-coordinator")).toBeNull();
+  });
+
+  it("names how many chat turns and coordinator cycles had no cost, never as $0", async () => {
+    view = { ...SPEND, chat: { cost_usd: 0, tokens: 0, turns: 3, unknown: 3 }, coordinator: { cost_usd: 1, tokens: 10, turns: 2, unknown: 1 } };
+    show(SpendSection);
+    await screen.findByText("Today");
+    expect(screen.getByTestId("spend-unknown-chat").textContent).toBe("3 chat turns reported no cost; they are counted apart, never as $0.");
+    expect(screen.getByTestId("spend-unknown-coordinator").textContent).toBe("1 coordinator cycle reported no cost; it is counted apart, never as $0.");
+    expect(screen.getByTestId("spend-unknown").textContent).toContain("1 run reported no cost");
   });
 
   it("shows each period's budget against its spent amount, 'No budget set.' when none, and the alert-only note", async () => {
@@ -172,7 +200,7 @@ const NOV_ITEMS: SpendView["items"] = [
 ];
 const NOV_VIEW: SpendView = {
   as_of: "2026-11-15T12:00:00.000Z", today: "2026-11-15", week_start: "2026-11-09", budgets: { daily_usd: null, weekly_usd: null }, from: "2026-10-17", to: "2026-11-15",
-  total: { cost_usd: 588.79, tokens: 1_230_000, runs: 16, unknown: 1 }, days: NOV, items: NOV_ITEMS, items_total: 4,
+  total: { cost_usd: 588.79, tokens: 1_230_000, runs: 16, unknown: 1 }, chat: { cost_usd: 0, tokens: 0, turns: 0, unknown: 0 }, coordinator: { cost_usd: 0, tokens: 0, turns: 0, unknown: 0 }, days: NOV, items: NOV_ITEMS, items_total: 4,
 };
 const NOV7_VIEW: SpendView = {
   ...NOV_VIEW, from: "2026-11-07", to: "2026-11-07", total: { cost_usd: 568.79, tokens: 1_200_000, runs: 14, unknown: 1 },

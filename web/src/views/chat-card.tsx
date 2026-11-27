@@ -4,8 +4,10 @@ import { POLL_MS } from "../api.js";
 import { chatTranscript, chatTurns } from "../api/generated.js";
 import { Badge } from "../components/ui/badge.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { Card } from "../components/ui/card.js";
 import { Clamp } from "../components/ui/clamp.js";
+import { CopyIcon } from "../components/ui/copy.js";
 import { DataTable } from "../components/ui/data-table.js";
 import { ModalPanel } from "../components/ui/dialog.js";
 import { EmptyState } from "../components/ui/notice.js";
@@ -63,8 +65,8 @@ export function replyParts(reply: string): Part[] {
   return parts;
 }
 
-/** A reply in a transcript: plain words as Clamp paragraphs; a code block or a table inside its own Card. */
-function Reply({ text }: { text: string }) {
+/** A reply in a transcript (`copy`: ends with a Copy button for the whole reply): plain words as Clamp paragraphs; a code block or a table inside its own Card. */
+function Reply({ text, copy }: { text: string; copy?: boolean }) {
   return (
     <div className="space-y-3">
       {replyParts(text).map((p, i) =>
@@ -73,6 +75,7 @@ function Reply({ text }: { text: string }) {
         ) : p.kind === "code" ? (
           <Card key={i} label={t("chat.code")}>
             <pre className="overflow-x-auto font-mono text-xs whitespace-pre">{p.text}</pre>
+            <ButtonRow><CopyIcon value={p.text} what={t("chat.copyCode")} /></ButtonRow>
           </Card>
         ) : (
           <Card key={i} label={t("chat.table")}>
@@ -80,6 +83,7 @@ function Reply({ text }: { text: string }) {
           </Card>
         ),
       )}
+      {copy && <ButtonRow><CopyIcon value={text} what={t("chat.copyReply")} /></ButtonRow>}
     </div>
   );
 }
@@ -139,7 +143,7 @@ function TranscriptDialog({ turn, onClose }: { turn: Turn; onClose: () => void }
           {shown.map((m, i) => (
             <li key={i}>
               <span className="text-xs font-medium text-text-2">{m.role === "user" ? t("chat.you") : t("chat.reply")}</span>
-              <Reply text={m.role === "user" ? withoutContext(String(m.content)) : String(m.content)} />
+              <Reply text={m.role === "user" ? withoutContext(String(m.content)) : String(m.content)} copy={m.role !== "user"} />
             </li>
           ))}
         </ul>

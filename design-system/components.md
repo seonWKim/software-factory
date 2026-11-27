@@ -188,6 +188,10 @@ A content chip that opens a `Popover` (`popover.tsx`), such as a calendar event:
 
 A small bordered `text-xs` button (`border-strong`, `text-2`, hover `surface-2`) that writes `value` to the clipboard; `what` names it in its accessible name and title ("Copy item ID"). States: default ("Copy"), done ("Copied" for 1.5 s), no clipboard (nothing happens; the text stays selectable).
 
+## CopyIcon
+
+A ghost icon `Button` (`size-8`, lucide Copy icon) that writes `value` to the clipboard; `what` names it in its accessible name and title ("Copy reply"). Beside it a `text-xs` `aria-live="polite"` element says "Copied" for 1.5 s. States: default, done, no clipboard (nothing shows; the text stays selectable). Used under each chat reply, own message and fenced code block, in a `ButtonRow`.
+
 ## CopyText
 
 A copy element: the shown text (`children`, else `value`) in `font-mono text-xs` that wraps, then a CopyButton that copies `value`.
@@ -227,3 +231,7 @@ The mark and the wordmark at the top of the sidebar; below `sm` only the mark.
 ## BrandMark
 
 The Gongbang mark alone, decorative; size comes from `className`.
+
+## TypingDots
+
+The mark in a reply's place while an answer is on its way (`typing-dots.tsx`), as chat apps show one: three 8px `text-2` dots, 6px apart, in a 24px row, that each rise 3px and brighten (opacity 0.35 to 1) and settle again, one after the other (150ms apart, a 1.2s loop on the `typing` keyframes in `index.css`, each delay inside the animation shorthand). Motion-safe only: with reduced motion the three dots stand still. A live region (`role="status"`, `aria-live="polite"`) that reads `label` ("Thinking…" on the Chat page). One size, no variants. States: shown (moving, or still with reduced motion).
