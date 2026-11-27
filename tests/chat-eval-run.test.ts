@@ -8,7 +8,10 @@ import {
   CHAT_EVAL_CURSOR, CHAT_EVAL_PASS_BAR, CHAT_EVAL_QUESTIONS, type ChatEvalDeps, type ChatEvalQuestion, chatEvalDaily, chatEvalExitCode,
   chatEvalSchedule, parseChatEvalQuestions, runChatEval,
 } from "../src/core/chat-eval.js";
-import { ChatEvalUnit, failuresOf } from "../src/controller/units/chat-eval/chat-eval.unit.js";
+import { ChatEvalUnit } from "../src/controller/units/chat-eval/chat-eval.unit.js";
+import { CHAT_FAILURE_WORDS, chatEvalFailedKey, failuresOf } from "../src/core/alarms.js";
+import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import { newStore } from "./helpers/store.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { main } from "../scripts/chat-eval.js";
@@ -158,12 +161,41 @@ describe("the daily run", () => {
     expect(cursors.get(CHAT_EVAL_CURSOR)).toBe("2026-11-28");
   });
 
-  function unit(port: ConstructorParameters<typeof ChatEvalUnit>[0]["k"]["d"]["chat_eval"], now: { ms: number }) {
+  type Port = ConstructorParameters<typeof ChatEvalUnit>[0]["k"]["d"]["chat_eval"];
+  /**
+   * The unit on a fake kernel: its `alert` write goes to `store` (the store's own dedupe), and its UI scan flags any
+   * text that holds `flag`.
+   */
+  function unit(port: Port, now: { ms: number }, store?: FactoryStore, flag = "\u0000never") {
     const logs: string[] = [];
+    const scanned: string[] = [];
     const log = { info: (m: string) => logs.push(m), warn: (m: string) => logs.push(m), error: (m: string) => logs.push(m), debug: () => {} };
-    const ctx = { k: { d: { chat_eval: port, log }, nowMs: () => now.ms } } as unknown as ConstructorParameters<typeof ChatEvalUnit>[0];
-    return { u: new ChatEvalUnit(ctx), logs };
+    const reader = { scan: async (channel: string, text: string) => (scanned.push(`${channel}:${text}`), { clean: !text.includes(flag) }) };
+    const commit = async (b: { writes: { kind: string; alert: Parameters<FactoryStore["recordAlert"]>[0]; dedupe_ms: number }[] }) => {
+      for (const w of b.writes) if (w.kind === "alert") await store!.recordAlert(w.alert, w.dedupe_ms);
+    };
+    const ctx = { k: { d: { chat_eval: port, log }, nowMs: () => now.ms, reader, commit } } as unknown as ConstructorParameters<typeof ChatEvalUnit>[0];
+    return { u: new ChatEvalUnit(ctx), logs, scanned };
   }
+
+  /** A port that claims every day and answers `run` with the next of `outcomes` (an Error is thrown). */
+  function scripted(outcomes: (Awaited<ReturnType<NonNullable<Port>["run"]>> | Error)[]): NonNullable<Port> {
+    let i = 0;
+    return {
+      claim: async () => true,
+      run: async () => {
+        const o = outcomes[i++]!;
+        if (o instanceof Error) throw o;
+        return o;
+      },
+    };
+  }
+
+  const chatAlerts = async (store: FactoryStore) => (await store.listAlerts({ limit: 100 })).filter((a) => a.pattern === "chat_eval_failed");
+  const BELOW = {
+    passed: 0, total: 12, bar: CHAT_EVAL_PASS_BAR, ok: false,
+    results: [{ failure: "too_many_steps" }, { failure: "model_error", detail: "claude-cli: Not logged in" }, { failure: "model_error" }, { failure: "model_error" }, { failure: null }],
+  };
 
   it("the controller unit starts the run once a UTC day, with no owner action, and logs its result", async () => {
     let runs = 0;
@@ -191,6 +223,77 @@ describe("the daily run", () => {
     ];
     expect(failuresOf(results)).toEqual({ failures: "model_error:2,too_many_steps:1", failure_detail: "claude-cli: Not logged in" });
     expect(failuresOf([{ failure: null }])).toEqual({});
+  });
+
+  it("a run that ends with ok false stores one chat_eval_failed alert for the UTC day with the counts, the bar and the top reason", async () => {
+    const { store } = await newStore();
+    const now = { ms: Date.parse("2026-11-27T00:00:00Z") };
+    const { u, scanned } = unit(scripted([BELOW]), now, store);
+    await u.evalStep();
+    await u.running;
+    const alerts = await chatAlerts(store);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({ pattern_key: chatEvalFailedKey("2026-11-27"), count: 0 });
+    expect(alerts[0]!.pattern_key).toBe("chat_eval_failed:2026-11-27");
+    const detail = alerts[0]!.detail!;
+    expect(detail).toContain(`Chat check failed today: 0 of 12 answered (needs ${CHAT_EVAL_PASS_BAR}).`);
+    expect(detail).toContain(`Most failures: ${CHAT_FAILURE_WORDS.model_error} (3).`);
+    expect(detail).toContain("claude-cli: Not logged in");
+    expect(scanned).toContain(`ui:${detail}`);
+  });
+
+  it("a run that throws stores one chat_eval_failed alert naming the error", async () => {
+    const { store } = await newStore();
+    const { u } = unit(scripted([new Error("questions file missing")]), { ms: Date.parse("2026-11-27T00:00:00Z") }, store);
+    await u.evalStep();
+    await u.running;
+    const alerts = await chatAlerts(store);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.detail).toBe("Chat check failed today: the run stopped with an error: questions file missing.");
+  });
+
+  it("two failing runs on the same UTC day store one alert", async () => {
+    const { store } = await newStore();
+    const now = { ms: Date.parse("2026-11-27T00:00:00Z") };
+    const a = unit(scripted([BELOW]), now, store);
+    const b = unit(scripted([new Error("boom")]), now, store);
+    await a.u.evalStep();
+    await a.u.running;
+    now.ms = Date.parse("2026-11-27T23:59:00Z");
+    await b.u.evalStep();
+    await b.u.running;
+    expect((await chatAlerts(store)).map((x) => x.pattern_key)).toEqual(["chat_eval_failed:2026-11-27"]);
+  });
+
+  it("a passing run stores no alert", async () => {
+    const { store } = await newStore();
+    const { u } = unit(scripted([{ passed: CHAT_EVAL_PASS_BAR, total: 12, bar: CHAT_EVAL_PASS_BAR, ok: true, results: [{ failure: "model_error" }] }]), { ms: Date.parse("2026-11-27T00:00:00Z") }, store);
+    await u.evalStep();
+    await u.running;
+    expect(await chatAlerts(store)).toEqual([]);
+  });
+
+  it("a detail the UI scan flags is stored as null", async () => {
+    const { store } = await newStore();
+    const { u } = unit(scripted([new Error("token sk-secret")]), { ms: Date.parse("2026-11-27T00:00:00Z") }, store, "sk-secret");
+    await u.evalStep();
+    await u.running;
+    const alerts = await chatAlerts(store);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.detail).toBeNull();
+  });
+
+  it("evalStep returns while the run is still running", async () => {
+    const { store } = await newStore();
+    let finish!: (r: typeof BELOW) => void;
+    const port = { claim: async () => true, run: () => new Promise<typeof BELOW>((res) => { finish = res; }) };
+    const { u } = unit(port, { ms: Date.parse("2026-11-27T00:00:00Z") }, store);
+    await u.evalStep();
+    expect(u.running).not.toBeNull();
+    expect(await chatAlerts(store)).toEqual([]);
+    finish(BELOW);
+    await u.running;
+    expect(await chatAlerts(store)).toHaveLength(1);
   });
 
   it("with no run wired (the key absent) the unit does nothing", async () => {
