@@ -2,9 +2,10 @@
 // @ts-nocheck -- tsconfig.test.json has no DOM or JSX; like the other ui tests this file typechecks under the web config.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import axe from "axe-core";
 import { describe, expect, it, vi } from "vitest";
 import { NeedActions } from "../web/src/views/item-commands.js";
-import { AT, base, found, installDialogStub, installItemPageFixtures, mountItem as mount } from "./ui-shell-fixtures.js";
+import { AT, DECIDE_AT, FACTORY_MSG, base, box, decideDetail, decideState, found, installDecideFixtures, installDialogStub, installItemPageFixtures, mountDecide, mountItem as mount } from "./ui-shell-fixtures.js";
 
 // The item page decisions (design §9, issues #526, #527): In short and the approve confirm, the Reject and Revise dialogs, and the over-cap Approve dialog.
 
@@ -342,5 +343,72 @@ describe("Needs you: an over-cap Approve opens the note dialog (design 09-dashbo
     await menuApprove();
     await waitFor(() => expect(sent).toEqual([["approve", ""]]));
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
+
+describe("item page: DecisionCard", () => {
+  installDecideFixtures();
+
+  it("orders the page: the card, the current run, the thread (collapsed after its first message), the runs, the timeline", async () => {
+    const older = { ...FACTORY_MSG, seq: 3, anchor: "msg-3", at: "2026-11-11T00:00:00.000Z", body: "An older message." };
+    decideState.body = decideDetail({
+      thread: [older, FACTORY_MSG],
+      runs: [...decideDetail().runs, { id: "run_i1", kind: "implement", status: "running", attempt: 1, started_at: DECIDE_AT, finished_at: null, created_at: DECIDE_AT, tokens: 0, error: null, attempts: [{ attempt: 1, worker_id: "mac-mini:4242:2" }] }],
+    });
+    mountDecide();
+    const order = [
+      await box(),
+      screen.getByRole("region", { name: "Current run" }),
+      screen.getByRole("region", { name: "Thread" }),
+      screen.getByRole("region", { name: "Runs" }),
+      screen.getByRole("region", { name: "Timeline" }),
+    ];
+    for (let i = 1; i < order.length; i++) expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(order[1]!.textContent).toContain("Running"); // the run pill shows the state table's label
+    // A running run links to its transcript before any of it is stored.
+    expect(within(order[1]!).getByRole("link", { name: "Transcript" }).getAttribute("href")).toMatch(/\/items\/[^/]+\/runs\/run_i1$/);
+    // The thread shows its first message; the rest wait behind one button.
+    const list = screen.getByRole("list", { name: "Thread" });
+    expect(list.dataset.collapsed).toBe("true");
+    expect(list.querySelector("li")!.id).toBe("msg-7");
+    const more = within(order[2]!).getByRole("button", { name: "Show 1 earlier message" });
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(more);
+    expect(list.dataset.collapsed).toBe("false");
+  });
+
+  it("has no control without an accessible name", async () => {
+    mountDecide();
+    await box();
+    const result = await axe.run(document.querySelector("main")!, {
+      runOnly: ["button-name", "select-name", "label", "aria-input-field-name", "link-name", "summary-name", "input-button-name"],
+    });
+    expect(result.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.html).join(" | ")}`)).toEqual([]);
+  });
+
+  it("has no command prose in the page body: no /approve, /reject or /verdict text and no terminal line", async () => {
+    mountDecide();
+    await box();
+    const main = document.querySelector("main")!;
+    expect(main.textContent).not.toMatch(/\/(approve|reject|verdict)\b/);
+    expect(main.textContent).not.toContain("From a terminal");
+    expect(main.querySelector("[data-cli-hint]")).toBeNull();
+  });
+
+  it("shows the owner as you and a worker as worker N, each ID in a tooltip on its name; the timeline names them in its sentences", async () => {
+    mountDecide();
+    await box();
+    const timeline = screen.getByRole("region", { name: "Timeline" });
+    expect(timeline.textContent).toContain("Created by you");
+    expect(timeline.textContent).toContain("A person asked for a retry");
+    const runs = screen.getByRole("table", { name: "Runs" });
+    const worker = runs.querySelector("[data-id]")!;
+    expect(worker.tagName).toBe("BUTTON");
+    expect(worker.textContent).toBe("worker 3");
+    expect(runs.querySelector("details")).toBeNull();
+    fireEvent.mouseEnter(worker.parentElement!);
+    expect(screen.getByRole("tooltip").textContent).toBe("mac-mini:4242:3");
+    // "Acting as" names the viewer as you too.
+    expect(document.querySelector("[data-commands-actor] [data-id]")!.textContent).toBe("you");
   });
 });
