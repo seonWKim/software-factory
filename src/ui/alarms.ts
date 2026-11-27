@@ -47,6 +47,7 @@ export function alarmText(a: Alert): string {
   if (a.pattern === "auto_stopped") return `Alarm: back to manual: ${AUTO_STOP_TEXT[a.error_code] ?? "a check the factory has no plain words for yet"}`;
   if (a.pattern === "dead_letter") return `Alarm: a message on ${deadLetterTopic(a)} was dead-lettered (${DEAD_LETTER_TEXT[a.error_code] ?? "for a reason the factory has no plain words for yet"})`;
   if (a.pattern === "spend_budget") return `Alarm: spending passed ${spendOf(a).pct}% of the ${spendOf(a).period} budget`;
+  if (hostCheckAlert(a)) return `Alarm: a check could not run on this host at \`${redMainSha(a).slice(0, 12)}\` (an environment problem, not a red base); the merge is kept`;
   if (a.pattern === "red_main") return `Alarm: the base branch fails its checks on its own at \`${redMainSha(a).slice(0, 12)}\`; merge-queue changes wait until it moves`;
   if (a.pattern === "skill_draft_limit") return `Alarm: a skill draft limit was reached (${a.error_code} is ${a.count})`;
   if (a.pattern === "skill_version_gate") return `Alarm: version ${a.count} of a skill is held: its eval pass rate fell`;
@@ -133,7 +134,7 @@ export async function lastAutoStop(store: Pick<FactoryStore, "listAlerts" | "lis
   if (!a) return null;
   const note = { alert_id: a.id, at: a.created_at, cause: a.error_code };
   if (a.error_code !== "red_main") return note;
-  const red = alerts.find((x) => x.pattern === "red_main" && x.created_at <= a.created_at);
+  const red = alerts.find((x) => x.pattern === "red_main" && !hostCheckAlert(x) && x.created_at <= a.created_at);
   const output = red ? redMainDetail(red).output : null;
   return { ...note, failing_tests: output?.failing_tests ?? [], output_tail: output?.output_tail ?? null };
 }
@@ -156,9 +157,18 @@ function spendOf(a: Alert): { period: string; pct: string } {
   return { period, pct };
 }
 
-/** The failing base sha of a red_main alert, from its key `red_main:<sha>`. */
+/** The base sha of a red_main alert, from its key `red_main:<sha>` (a host check alert: `red_main:<sha>:checks_env`). */
 function redMainSha(a: Alert): string {
-  return a.pattern_key.slice("red_main:".length);
+  return a.pattern_key.slice("red_main:".length).split(":")[0]!;
+}
+
+/**
+ * A red_main alert with error code `checks_env` (design 03-risk): a check on the new base tip could not run on this
+ * host (a missing toolchain, or a command that could not start). An environment problem, not a red base: the merge
+ * is kept, no fix item is filed and queued changes do not wait on it.
+ */
+function hostCheckAlert(a: Alert): boolean {
+  return a.pattern === "red_main" && a.error_code === "checks_env";
 }
 
 /** Where the operator looks into the alarm; it closes once its pattern stops, or when dismissed (`factory alarm dismiss <id>`). */
@@ -167,6 +177,7 @@ export function alarmCommand(a: Alert): string {
   if (a.pattern === "repeated_error") return "Failures page (/app/failures)";
   if (a.pattern === "zero_tokens") return "factory llm-check";
   if (a.pattern === "auto_stopped") return "Turn auto back on in Settings (/app/settings) after the cause is fixed, or factory mode auto";
+  if (hostCheckAlert(a)) return "Install or fix the missing tool on this host (its detail names it), then factory doctor; nothing was reverted and the next merge checks again";
   if (a.pattern === "red_main") return `Fix the base branch at ${redMainSha(a)} (a fix item is filed for it); queued changes are checked again once it moves`;
   if (a.pattern === "dead_letter") return `bus_${deadLetterTopic(a).replace(/\./g, "_")}_dead_letters (replay once the cause is fixed)`;
   if (a.pattern === "skill_draft_limit") return `${a.error_code} in factory.config.json`;

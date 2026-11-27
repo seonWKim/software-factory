@@ -1,9 +1,10 @@
-// Held writes (design 08-permissions, phase 2 of local-task-tk_cad55672): the store methods of HeldWriteStore over
-// controller_held_writes (src/state/migrations/20261127T1100-state-held-writes), kept out of sql-factory-store.ts so
-// that file stays within its line budget. Store data only.
+// Held writes (design 08-permissions, phases 2 and 3 of local-task-tk_cad55672): the store methods of HeldWriteStore
+// and HeldWriteAnswers over controller_held_writes (src/state/migrations/20261127T1100-state-held-writes), kept out of
+// sql-factory-store.ts so that file stays within its line budget. Store data only.
 
 import type { HeldWrite, NewHeldWrite } from "../../../core/authorize.js";
 import type { Timestamp, UserId } from "../../../core/types.js";
+import type { HeldWriteAnswers } from "../../../interfaces/factory-store.js";
 import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
 import { newId } from "./rows.js";
 import { insertOnce } from "./store-steps.js";
@@ -30,4 +31,15 @@ export async function holdWrite(db: SqlDriver, w: NewHeldWrite, at: Timestamp): 
 export async function listHeldWrites(db: SqlExecutor, limit: number): Promise<HeldWrite[]> {
   const rows = await db.all("SELECT * FROM controller_held_writes ORDER BY created_at DESC, rowid DESC LIMIT ?", [limit]);
   return rows.map(rowToHeld);
+}
+
+/** One row by its ID, or null. Read-only. */
+export async function getHeldWrite(db: SqlExecutor, id: string): Promise<HeldWrite | null> {
+  const [row] = await db.all("SELECT * FROM controller_held_writes WHERE id = ?", [id]);
+  return row ? rowToHeld(row) : null;
+}
+
+/** `from` → `to` as one conditional update: false when the row is not in `from` (answered already, or not stored). */
+export async function answerHeldWrite(db: SqlExecutor, a: Parameters<HeldWriteAnswers["answerHeldWrite"]>[0]): Promise<boolean> {
+  return (await db.run("UPDATE controller_held_writes SET status = ? WHERE id = ? AND status = ?", [a.to, a.id, a.from])) > 0;
 }

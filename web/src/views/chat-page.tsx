@@ -4,12 +4,14 @@ import { Fragment, type KeyboardEvent, useEffect, useId, useLayoutEffect, useRef
 import { API, type Session, useApi } from "../api.js";
 import { chatSend, itemsList } from "../api/generated.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
+import { CopyIcon } from "../components/ui/copy.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { PageHeader } from "../components/ui/notice.js";
 import { Textarea } from "../components/ui/textarea.js";
+import { TypingDots } from "../components/ui/typing-dots.js";
 import { type MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { cn } from "../lib/cn.js";
 import { ReplyTable, reasonWords, replyParts } from "./chat-card.js";
 
 // The Chat page (design 09-dashboard-chat): one centred column, the conversation above and the composer pinned under
@@ -54,21 +56,7 @@ function ChatReply({ text }: { text: string }) {
   return (
     <div className="min-w-0 space-y-3">
       {groups.map((g, i) => (g.kind === "md" ? <Markdown key={i} text={g.text} /> : <ReplyTable key={i} rows={g.rows} />))}
-    </div>
-  );
-}
-
-/** Each dot of the answering mark pulses a little after the one before it. */
-const DOT_DELAYS = ["[animation-delay:0ms]", "[animation-delay:200ms]", "[animation-delay:400ms]"] as const;
-
-/** Three dots in the reply's place while the chat answers; screen readers hear "Answering…". */
-function Answering() {
-  return (
-    <div role="status" data-answering className="flex h-6 items-center gap-1">
-      <span className="sr-only">{t("chat.answering")}</span>
-      {DOT_DELAYS.map((delay) => (
-        <span key={delay} aria-hidden className={cn("size-1.5 rounded-pill bg-text-3 motion-safe:animate-pulse", delay)} />
-      ))}
+      <ButtonRow><CopyIcon value={text} what={t("chat.copyReply")} /></ButtonRow>
     </div>
   );
 }
@@ -203,6 +191,7 @@ export function ChatPage() {
                   <p data-raw className="max-w-[85%] min-w-0 rounded-card bg-surface-2 px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap wrap-anywhere">
                     {m.text}
                   </p>
+                  <ButtonRow><CopyIcon value={m.text} what={t("chat.copyYours")} /></ButtonRow>
                 </li>
                 {/*
                   A failed send reads as the chat's turn: where its answer would be, at the left. The text may hold one long
@@ -227,7 +216,7 @@ export function ChatPage() {
           )}
           {chat.busy && (
             <li data-from="chat">
-              <Answering />
+              <TypingDots label={t("chat.answering")} />
             </li>
           )}
         </ol>

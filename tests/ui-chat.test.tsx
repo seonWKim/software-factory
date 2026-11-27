@@ -159,12 +159,12 @@ describe("the composer", () => {
     await waitFor(() => expect(sendButton().disabled).toBe(false), SLOW);
     fireEvent.click(sendButton());
     // While it waits: the answering mark in the reply's place, and the button stays off even with new text typed.
-    expect((await screen.findByRole("status")).textContent).toContain("Answering…");
+    expect((await screen.findByRole("status")).textContent).toContain("Thinking…");
     fireEvent.change(box, { target: { value: "Next" } });
     expect(sendButton().disabled).toBe(true);
     answer(json(200, sendBody));
     await screen.findByText("This is a build task.", {}, SLOW);
-    expect(screen.queryByText("Answering…")).toBeNull();
+    expect(screen.queryByText("Thinking…")).toBeNull();
     expect(sendButton().disabled).toBe(false);
   });
 });
@@ -316,6 +316,23 @@ describe("the Runners tab's Chat Card", () => {
 
   it("is part of Health's Runners tab", () => {
     expect(readFileSync("web/src/views/pages.tsx", "utf8")).toMatch(/<ChatCard \/>/);
+  });
+});
+
+describe("Copy on the page", () => {
+  it("each reply and your own message has a Copy button that writes its stored text, without the context line", async () => {
+    const writes: string[] = [];
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (v: string) => void writes.push(v) } });
+    page(ITEM);
+    await ask("What is this?");
+    await screen.findByText("This is a build task.", {}, SLOW);
+    fireEvent.click(screen.getByRole("button", { name: "Copy your message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy reply" }));
+    await waitFor(() => expect(writes).toHaveLength(2));
+    expect(writes).toEqual(["What is this?", REPLY]);
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+    await waitFor(() => expect(writes.at(-1)).toBe("- old line\n+ new line"));
+    Reflect.deleteProperty(navigator, "clipboard");
   });
 });
 
