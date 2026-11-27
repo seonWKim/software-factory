@@ -25,7 +25,7 @@ const AT = "2026-11-26T10:00:00.000Z";
 const ITEM = "wi_item_abc123";
 const REPLY = "This is a build task.\n\n```diff\n- old line\n+ new line\n```\n\n| Name | State |\n|---|---|\n| Alpha | Running |";
 
-let sends: { token: string | null; body: { session_id?: string; text: string } }[];
+let sends: { token: string | null; body: { session_id?: string; text: string; images?: { name: string; data: string }[] } }[];
 let turns: Record<string, unknown>[];
 let sendStatus: number;
 let sendBody: Record<string, unknown>;
@@ -159,12 +159,12 @@ describe("the composer", () => {
     await waitFor(() => expect(sendButton().disabled).toBe(false), SLOW);
     fireEvent.click(sendButton());
     // While it waits: the answering mark in the reply's place, and the button stays off even with new text typed.
-    expect((await screen.findByRole("status")).textContent).toContain("Answering…");
+    expect((await screen.findByRole("status")).textContent).toContain("Thinking…");
     fireEvent.change(box, { target: { value: "Next" } });
     expect(sendButton().disabled).toBe(true);
     answer(json(200, sendBody));
     await screen.findByText("This is a build task.", {}, SLOW);
-    expect(screen.queryByText("Answering…")).toBeNull();
+    expect(screen.queryByText("Thinking…")).toBeNull();
     expect(sendButton().disabled).toBe(false);
   });
 });
@@ -316,6 +316,128 @@ describe("the Runners tab's Chat Card", () => {
 
   it("is part of Health's Runners tab", () => {
     expect(readFileSync("web/src/views/pages.tsx", "utf8")).toMatch(/<ChatCard \/>/);
+  });
+});
+
+describe("images in the composer", () => {
+  const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
+  const png = (name: string, size?: number) => new File([size === undefined ? new Uint8Array(PNG) : new Uint8Array(size)], name, { type: "image/png" });
+  const b64 = btoa(String.fromCharCode(...PNG));
+  let urls: number;
+  beforeEach(() => {
+    urls = 0;
+    // jsdom has no object URLs; each picture gets its own.
+    URL.createObjectURL = vi.fn(() => `blob:pic-${urls++}`);
+    URL.revokeObjectURL = vi.fn();
+  });
+  const tray = () => screen.queryByRole("list", { name: "Images to send" });
+  const thumbs = () => [...(tray()?.querySelectorAll("img") ?? [])].map((i) => i.getAttribute("alt"));
+  const form = async () => (await field()).closest("form")!;
+  const picker = async () => (await form()).querySelector<HTMLInputElement>("[data-file-picker]")!;
+
+  it("paste, drop and the attach button each add a thumbnail; Remove takes one away", async () => {
+    page();
+    const box = await field();
+    fireEvent.paste(box, { clipboardData: { files: [png("pasted.png")] } });
+    await waitFor(() => expect(thumbs()).toEqual(["pasted.png"]), SLOW);
+    const dropped = { types: ["Files"], files: [png("dropped.png")] };
+    fireEvent.dragOver(await form(), { dataTransfer: dropped });
+    expect((await form()).querySelector("[data-dropping]")).not.toBeNull();
+    fireEvent.drop(await form(), { dataTransfer: dropped });
+    expect((await form()).querySelector("[data-dropping]")).toBeNull();
+    await waitFor(() => expect(thumbs()).toEqual(["pasted.png", "dropped.png"]), SLOW);
+    expect(screen.getByRole("button", { name: "Add images" })).toBeTruthy();
+    expect((await picker()).accept).toBe("image/png,image/jpeg,image/gif,image/webp");
+    fireEvent.change(await picker(), { target: { files: [png("picked.png")] } });
+    await waitFor(() => expect(thumbs()).toEqual(["pasted.png", "dropped.png", "picked.png"]), SLOW);
+    fireEvent.click(screen.getByRole("button", { name: "Remove dropped.png" }));
+    expect(thumbs()).toEqual(["pasted.png", "picked.png"]);
+    // A paste of text only is the text's: no thumbnail.
+    fireEvent.paste(box, { clipboardData: { files: [] } });
+    expect(thumbs()).toHaveLength(2);
+  });
+
+  it("with only an image, Send is on and sends its name and bytes; the message shows it, and a click opens it larger", async () => {
+    page();
+    await field();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Send" })).not.toBeNull(), SLOW);
+    expect(sendButton().disabled).toBe(true);
+    fireEvent.change(await picker(), { target: { files: [png("chart.png")] } });
+    await waitFor(() => expect(sendButton().disabled).toBe(false), SLOW);
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(sends).toHaveLength(1), SLOW);
+    expect(sends[0]!.body).toEqual({ text: "", images: [{ name: "chart.png", data: b64 }] });
+    expect(tray()).toBeNull();
+    const mine = await screen.findByRole("list", { name: "Your images" });
+    const open = within(mine).getByRole("button", { name: "Open chart.png" });
+    expect(within(open).getByRole("img", { name: "chart.png" }).getAttribute("src")).toMatch(/^blob:/);
+    fireEvent.click(open);
+    const dialog = await screen.findByRole("dialog", {}, SLOW);
+    expect(within(dialog).getByRole("heading", { name: "chart.png" })).toBeTruthy();
+    expect(within(dialog).getByRole("img", { name: "chart.png" })).toBeTruthy();
+  });
+
+  it("names a file of another type, one over 5 MB and a sixth image, and sends none of them", async () => {
+    page();
+    await field();
+    const pdf = new File(["%PDF"], "notes.pdf", { type: "application/pdf" });
+    const files = [...["a", "b", "c", "d", "e"].map((n) => png(`${n}.png`)), png("f.png"), png("big.png", 5 * 1024 * 1024 + 1), pdf];
+    fireEvent.change(await picker(), { target: { files } });
+    const alerts = await screen.findAllByRole("alert", {}, SLOW);
+    expect(alerts.map((a) => a.textContent)).toEqual([
+      "“f.png” can’t be sent: a message takes at most 5 images. Remove it to go on.",
+      "“big.png” can’t be sent: it is larger than 5 MB. Remove it to go on.",
+      "“notes.pdf” can’t be sent: only png, jpeg, gif and webp images can. Remove it to go on.",
+    ]);
+    await waitFor(() => expect(sendButton().disabled).toBe(false), SLOW);
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(sends).toHaveLength(1), SLOW);
+    expect(sends[0]!.body.images!.map((i: { name: string }) => i.name)).toEqual(["a.png", "b.png", "c.png", "d.png", "e.png"]);
+  });
+
+  it("says in plain words which image the chat did not send, above the reply", async () => {
+    sendBody = { ...sendBody, reply: "One image read.", images_withheld: ["key.png"] };
+    page();
+    await field();
+    fireEvent.change(await picker(), { target: { files: [png("key.png"), png("ok.png")] } });
+    await ask("What are these?");
+    await screen.findByText("One image read.", {}, SLOW);
+    expect(screen.getByText("Not sent to the chat: “key.png”. It looked like it held a password or key, so it stayed here.")).toBeTruthy();
+  });
+
+  it("the Runners transcript shows a stored message's images, read through chat.image", async () => {
+    const base = fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const u = new URL(url, "http://127.0.0.1");
+      if (u.pathname === "/api/v1/chat/transcript") {
+        return json(200, { messages: [{ seq: 0, role: "user", content: "", images: [{ id: "at_1", name: "chart.png", media_type: "image/png", size_bytes: 11 }] }, { seq: 1, role: "assistant", content: "A chart." }] });
+      }
+      if (u.pathname === "/api/v1/chat/image") return json(200, { id: u.searchParams.get("id"), name: "chart.png", media_type: "image/png", size_bytes: 11, data: b64 });
+      return base(url, init);
+    }));
+    render(wrap(createElement(RunnersTab)));
+    const card = await screen.findByRole("region", { name: "Chat" }, SLOW);
+    fireEvent.click((await within(card).findAllByRole("button", { name: "Transcript" }, SLOW))[1]!);
+    const dialog = await screen.findByRole("dialog", {}, SLOW);
+    await within(dialog).findByRole("img", { name: "chart.png" }, SLOW);
+    expect(within(dialog).getByText("A chart.")).toBeTruthy();
+  });
+});
+
+describe("Copy on the page", () => {
+  it("each reply and your own message has a Copy button that writes its stored text, without the context line", async () => {
+    const writes: string[] = [];
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (v: string) => void writes.push(v) } });
+    page(ITEM);
+    await ask("What is this?");
+    await screen.findByText("This is a build task.", {}, SLOW);
+    fireEvent.click(screen.getByRole("button", { name: "Copy your message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy reply" }));
+    await waitFor(() => expect(writes).toHaveLength(2));
+    expect(writes).toEqual(["What is this?", REPLY]);
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+    await waitFor(() => expect(writes.at(-1)).toBe("- old line\n+ new line"));
+    Reflect.deleteProperty(navigator, "clipboard");
   });
 });
 

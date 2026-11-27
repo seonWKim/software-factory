@@ -1,7 +1,9 @@
 // Attachments (design 02-attachments): images and links the owner adds to a New or in-triage item, kept in the
 // controller store (`controller_attachments`), never in the repository or a sandbox working tree. The CLI
 // (`factory attach`) and the dashboard's Attach dialog both store through `attach`, so their refusals are the same.
-// The egress scanner reads text only: a link's URL and label are scanned, an image's bytes are not.
+// The egress scanner reads text only: a link's URL and label are scanned, an image's bytes are not. A chat message's
+// images (design 04-chat-agent) are rows of the same table that belong to a chat turn instead of an item: checked by
+// `chatImages`, stored with the turn's messages, and scanned as the text inside them (`imageText`) before the model.
 
 import type { AuthProvider } from "../interfaces/auth-provider.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -48,6 +50,31 @@ export interface Attachment {
 
 export type NewAttachment = Omit<Attachment, "created_at">;
 
+/** The most images one chat message takes. */
+export const MAX_CHAT_IMAGES = 5;
+
+/** A chat message's image as a client sends it: its file name and its bytes, base64. */
+export interface ChatImageInput {
+  name: string;
+  data: string;
+}
+
+/**
+ * A chat message's image, checked: its type from its first bytes, its size, its bytes (base64) and who sent it. It is
+ * stored in `controller_attachments` with the user message of its turn (session and seq), with no work item.
+ */
+export interface ChatImage {
+  id: string;
+  name: string;
+  media_type: ImageType;
+  data: string;
+  size_bytes: number;
+  created_by: UserId;
+}
+
+/** A stored chat image as a page reads it: everything but its bytes. */
+export type ChatImageRef = Omit<ChatImage, "data" | "created_by">;
+
 export interface AttachmentStore {
   /**
    * Stores `a` only while its item's stage is NEW, in one conditional insert: null when the item is gone or past
@@ -56,6 +83,8 @@ export interface AttachmentStore {
   addAttachment(a: NewAttachment): Promise<Attachment | null>;
   /** The item's attachments, oldest first, images with their bytes. */
   listAttachments(work_item_id: WorkItemId): Promise<Attachment[]>;
+  /** One stored chat image with its bytes, or null (unknown, or an item's attachment). Chat images are written with their turn (`appendChatMessages`). */
+  getChatImage(id: string): Promise<ChatImage | null>;
 }
 
 /** The type of an image from its first bytes (png, jpeg, gif, webp), else null. */
@@ -79,6 +108,38 @@ export function imageRefusal(bytes: Uint8Array, size = bytes.length): string | n
   if (imageType(bytes) === null) return "nothing was attached: only a png, jpeg, gif or webp image can be attached, and this file is none of those";
   if (size > MAX_IMAGE_BYTES) return `nothing was attached: the image is ${(size / 1024 / 1024).toFixed(1)} MB, and the largest taken is 5 MB`;
   return null;
+}
+
+/** A file name as stored and shown: its last path part, at most MAX_LABEL_CHARS. */
+const baseName = (name: string): string => name.split(/[\\/]/).at(-1)!.slice(0, MAX_LABEL_CHARS);
+
+/**
+ * A chat message's images, checked in order: at most MAX_CHAT_IMAGES, then each one's bytes (base64), type (png,
+ * jpeg, gif or webp, from its first bytes) and size (5 MB). The first problem refuses the whole message, naming the file.
+ */
+export function chatImages(inputs: readonly ChatImageInput[], by: UserId, newId: () => string): { images: ChatImage[] } | { refuse: string } {
+  const images: ChatImage[] = [];
+  for (const [i, input] of inputs.entries()) {
+    const name = baseName(input.name) || "image";
+    const no = (why: string) => ({ refuse: `Nothing was sent: “${name}” ${why}` });
+    if (i >= MAX_CHAT_IMAGES) return no(`is image ${i + 1}, and a message takes at most ${MAX_CHAT_IMAGES}.`);
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(input.data)) return no("did not arrive as base64 bytes.");
+    const bytes = Buffer.from(input.data, "base64");
+    const media_type = imageType(bytes);
+    if (media_type === null) return no("is not a png, jpeg, gif or webp image.");
+    if (bytes.length > MAX_IMAGE_BYTES) return no(`is ${(bytes.length / 1024 / 1024).toFixed(1)} MB, and the largest taken is 5 MB.`);
+    images.push({ id: `at_${newId()}`, name, media_type, data: input.data, size_bytes: bytes.length, created_by: by });
+  }
+  return { images };
+}
+
+/**
+ * The text an image carries, for the egress scan: its file name and every run of printable characters in its bytes
+ * (metadata such as a png text chunk or an EXIF comment). Text drawn in the pixels is not read.
+ */
+export function imageText(image: Pick<ChatImage, "name" | "data">): string {
+  const printable = Buffer.from(image.data, "base64").toString("latin1").replace(/[^\x20-\x7e]+/g, "\n");
+  return `${image.name}\n${printable}`;
 }
 
 /** The refusal of a link's URL and label (http or https only, lengths), else null. */
@@ -107,7 +168,7 @@ export interface TextScanner {
 }
 
 export interface AttachDeps {
-  store: AttachmentStore;
+  store: Pick<AttachmentStore, "addAttachment">;
   scanner: TextScanner;
   newId: () => string;
 }
@@ -125,7 +186,7 @@ export async function attach(d: AttachDeps, item: WorkItem, input: AttachInput, 
     const bad = imageRefusal(input.bytes, Math.max(input.size ?? 0, input.bytes.length));
     if (bad) return { refuse: bad };
     if (input.size !== undefined && input.size !== input.bytes.length) return { refuse: "nothing was attached: the image's bytes are incomplete" };
-    const name = input.name.split(/[\\/]/).at(-1)!.slice(0, MAX_LABEL_CHARS);
+    const name = baseName(input.name);
     row = { ...base, kind: "image", media_type: imageType(input.bytes), data: Buffer.from(input.bytes).toString("base64"), size_bytes: input.bytes.length, name, url: null, label: null };
   } else {
     const url = input.url.trim(), label = input.label?.trim() || null;

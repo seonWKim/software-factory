@@ -16,14 +16,19 @@ export type ActivityActorsOutput = { "as_of": string; "retention_days": number; 
 /** Every autonomous actor with its name, what it does now, its last and next run and its recent actions (outcome, reason, transcript or log link; none older than the retention days), and the open factory alerts (clear one with POST /api/v1/alarms/dismiss). (GET /api/v1/activity, permission read) */
 export const activityActors = (input: ActivityActorsInput): Promise<ActivityActorsOutput> => getJson<ActivityActorsOutput>("/api/v1/activity" + query(input));
 
-export type ChatSendInput = { "session_id"?: string; "text": string };
-export type ChatSendOutput = { "turn_id": string; "session_id": string; "outcome": "answered" | "refused" | "failed"; "reason"?: string; "detail"?: string; "reply"?: string };
-/** Send the owner's message to the chat and run one turn with the Ask model; no session_id starts a new session. A withheld turn answers no reply; a failed model call answers the provider's own words in detail. (POST /api/v1/chat/send, permission owner) */
+export type ChatImageInput = { "id": string };
+export type ChatImageOutput = { "id": string; "name": string; "media_type": string; "size_bytes": number; "data": string };
+/** One image a chat message was sent with (?id=<id> from chat.transcript): its name, type and bytes as base64. An unknown id is a 404. (GET /api/v1/chat/image, permission owner) */
+export const chatImage = (input: ChatImageInput): Promise<ChatImageOutput> => getJson<ChatImageOutput>("/api/v1/chat/image" + query(input));
+
+export type ChatSendInput = { "session_id"?: string; "text": string; "images"?: Array<{ "name": string; "data": string }> };
+export type ChatSendOutput = { "turn_id": string; "session_id": string; "outcome": "answered" | "refused" | "failed"; "reason"?: string; "detail"?: string; "reply"?: string; "images_withheld"?: Array<string> };
+/** Send the owner's message to the chat and run one turn with the Ask model; no session_id starts a new session. It may carry up to 5 images (name and base64 bytes; png, jpeg, gif or webp, 5 MB or less each), with or without text; the model reads them after the text, in order. A sixth image, another type or a larger file refuses the whole message (400) naming the file. An image the leak scanner flags is not sent: images_withheld names it. A withheld turn answers no reply; a failed model call answers the provider's own words in detail. (POST /api/v1/chat/send, permission owner) */
 export const chatSend = (token: string, input: ChatSendInput) => postJson<ChatSendOutput & { error?: string }>("/api/v1/chat/send", token, input);
 
 export type ChatTranscriptInput = { "session_id": string };
 export type ChatTranscriptOutput = { "messages": Array<{ [key: string]: unknown }> };
-/** One chat session's stored messages in order (?session_id=<id>); an unknown session answers none. (GET /api/v1/chat/transcript, permission owner) */
+/** One chat session's stored messages in order (?session_id=<id>); an unknown session answers none. A user message sent with images names them in images (id, name, media_type, size_bytes; the bytes through chat.image). (GET /api/v1/chat/transcript, permission owner) */
 export const chatTranscript = (input: ChatTranscriptInput): Promise<ChatTranscriptOutput> => getJson<ChatTranscriptOutput>("/api/v1/chat/transcript" + query(input));
 
 export type ChatTurnsInput = { "limit"?: number };

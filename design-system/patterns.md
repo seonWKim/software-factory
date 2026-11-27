@@ -31,6 +31,7 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 - `danger` is for an action that cannot be undone or closes work (Reject).
 - Buttons sit in a `ButtonRow` (gap 8 px). Three or more actions on a row: the main one stays visible, the rest go into an `OverflowMenu`.
 - A disabled button says why in a `Tooltip` or the line beside it.
+- Copy: each reply, own message and code block has a `CopyIcon` (a ghost icon `Button`, named "Copy reply", "Copy your message" or "Copy code") in a `ButtonRow`; its "Copied" line sits beside it in an `aria-live="polite"` element for 1.5 s.
 - Never a raw `<button>`: the control set in `web/src/components/ui/` is the only place one appears.
 
 ## Confirmations

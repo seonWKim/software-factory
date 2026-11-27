@@ -257,10 +257,86 @@
         }
       }
     },
+    "/api/v1/chat/image": {
+      "get": {
+        "operationId": "chat.image",
+        "summary": "One image a chat message was sent with (?id=<id> from chat.transcript): its name, type and bytes as base64. An unknown id is a 404.",
+        "tags": [
+          "chat"
+        ],
+        "x-permission": "owner",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "media_type": {
+                      "type": "string"
+                    },
+                    "size_bytes": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "type": "string",
+                      "contentEncoding": "base64"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "media_type",
+                    "size_bytes",
+                    "data"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/chat/send": {
       "post": {
         "operationId": "chat.send",
-        "summary": "Send the owner's message to the chat and run one turn with the Ask model; no session_id starts a new session. A withheld turn answers no reply; a failed model call answers the provider's own words in detail.",
+        "summary": "Send the owner's message to the chat and run one turn with the Ask model; no session_id starts a new session. It may carry up to 5 images (name and base64 bytes; png, jpeg, gif or webp, 5 MB or less each), with or without text; the model reads them after the text, in order. A sixth image, another type or a larger file refuses the whole message (400) naming the file. An image the leak scanner flags is not sent: images_withheld names it. A withheld turn answers no reply; a failed model call answers the provider's own words in detail.",
         "tags": [
           "chat"
         ],
@@ -277,6 +353,26 @@
                   },
                   "text": {
                     "type": "string"
+                  },
+                  "images": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "data": {
+                          "type": "string",
+                          "contentEncoding": "base64"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "data"
+                      ],
+                      "additionalProperties": false
+                    }
                   }
                 },
                 "required": [
@@ -317,6 +413,12 @@
                     },
                     "reply": {
                       "type": "string"
+                    },
+                    "images_withheld": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
@@ -353,7 +455,7 @@
     "/api/v1/chat/transcript": {
       "get": {
         "operationId": "chat.transcript",
-        "summary": "One chat session's stored messages in order (?session_id=<id>); an unknown session answers none.",
+        "summary": "One chat session's stored messages in order (?session_id=<id>); an unknown session answers none. A user message sent with images names them in images (id, name, media_type, size_bytes; the bytes through chat.image).",
         "tags": [
           "chat"
         ],

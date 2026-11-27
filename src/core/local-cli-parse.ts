@@ -37,7 +37,14 @@ export type CliAction =
   | { action: "command"; command: ItemCommand; id: WorkItemId; text: string }
   | { action: "help"; id: WorkItemId | null }
   | { action: "confirm"; proposal: string }
+  /** `confirm hw_…`: a write the permission gate held (design 08-permissions, phase 3). */
+  | { action: "confirm_held"; held: string }
   | { action: "schedule"; command: ScheduleWords };
+
+/** The command a held write's `confirm <id>` stores in the command inbox: args `held`, the held write's ID. */
+export const HELD_CONFIRM_COMMAND = "held_write_confirm";
+/** A held write's ID as the store writes it (`hw_` and 32 hex characters). */
+export const isHeldWriteId = (id: string) => /^hw_[0-9a-f]{32}$/.test(id);
 
 /** This module's commands, from the command table (src/core/command-table.ts). */
 const LOCAL_COMMANDS = COMMAND_TABLE.filter((c) => (CLI_TOP_WORDS as readonly string[]).includes(c.name.split(" ")[0]!));
@@ -140,6 +147,7 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     if (args.length > 1) return bad("help takes at most one work item ID");
     return { action: "help", id: (args[0] as WorkItemId | undefined) ?? null };
   }
+  if (word === CONFIRM_WORD && args.length === 1 && isHeldWriteId(args[0]!)) return { action: "confirm_held", held: args[0]! };
   if (word === CONFIRM_WORD) return args.length === 1 && isProposalId(args[0]!) ? { action: "confirm", proposal: args[0]! } : bad("confirm needs one proposal ID, as `factory \"<words>\"` printed it");
   if (word === MERGE_COMMAND) {
     const [id, ...rest] = args;
