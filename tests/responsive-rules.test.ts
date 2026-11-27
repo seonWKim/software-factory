@@ -37,7 +37,8 @@ const BASE_STYLE = { overflowX: "visible", overflowY: "visible", display: "block
 
 /** A page whose scroll root has the given widths and whose body holds `elements`. */
 function pageWith(scroll: { scrollWidth: number; clientWidth: number }, elements: unknown[] = []) {
-  const root = { ...scroll, setAttribute() {} };
+  // The content column: its left edge at 0, holding none of `elements` (the left-edge rule has its own tests).
+  const root = { ...scroll, setAttribute() {}, contains: () => false, getBoundingClientRect: () => ({ left: 0, top: 0, right: scroll.clientWidth, bottom: 844, width: scroll.clientWidth, height: 844 }) };
   const empty = { querySelectorAll: (q: string) => (q === "*" ? elements : []), querySelector: () => null };
   vi.stubGlobal("window", { innerHeight: 844 });
   // A stand-in's own `css` overrides the default style (a scrolling wrapper's overflowX).

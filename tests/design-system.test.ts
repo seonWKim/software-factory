@@ -386,6 +386,7 @@ const INNER_SPACING: readonly { file: string; snippet: string; reason: string }[
   { file: "spend.tsx", snippet: "spend.tasksCapped", reason: "note above a table, inside a Card" },
   { file: "spend.tsx", snippet: "data-spend-notes", reason: "notes under a table, inside a Card" },
   { file: "rules.tsx", snippet: "mt-3 space-y-6", reason: "the opened Disclosure's body" },
+  { file: "rules.tsx", snippet: "data-how-promoting", reason: "help disclosure under the waiting lists, inside a Card" },
   { file: "decision-card.tsx", snippet: "mb-3 block w-full", reason: "note field above the buttons, inside the decision card" },
   { file: "item-about.tsx", snippet: "data-about-part", reason: "a labelled part of the spec, inside the About Card" },
   { file: "item-about.tsx", snippet: "data-about-checks", reason: "checks under the request, inside the About Card" },

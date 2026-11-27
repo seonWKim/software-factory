@@ -231,14 +231,21 @@ describe("sending a message", () => {
     expect(reply.querySelector("section")).toBeNull();
   });
 
-  it("shows a failed send under its message in plain words, and Try again sends it once more without a second copy", async () => {
+  it("shows a failed send in the chat's place, after your message, in plain words, and Try again sends it once more without a second copy", async () => {
     sendStatus = 503;
     sendBody = { error: "Chat is off: no model is configured (plugins.llm)." };
     page();
     await ask("Hi");
     const alert = await screen.findByRole("alert", {}, SLOW);
     expect(alert.textContent).toBe("Chat is off: no model is set up yet. Add one in Plugins, then try again.");
-    expect(alert.closest('li[data-from="you"]')).not.toBeNull();
+    // Owner 2026-11-27: the error read as yours, right-aligned under your bubble. It is the chat's turn: a row of its own
+    // where the answer would be, holding Try again, right after your message.
+    const row = alert.closest("li")!;
+    expect(row.getAttribute("data-from")).toBe("chat");
+    expect(row.previousElementSibling?.getAttribute("data-from")).toBe("you");
+    expect(within(row).getByRole("button", { name: "Try again" })).toBeTruthy();
+    expect(row.className).not.toMatch(/items-end|justify-end|text-right/);
+    expect(alert.className).not.toMatch(/text-right/);
     sendStatus = 200;
     sendBody = { turn_id: "ct_1", session_id: "cs_1", outcome: "answered", reply: "Now it works." };
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
@@ -254,6 +261,18 @@ describe("sending a message", () => {
     await ask("Hi");
     expect((await screen.findByRole("alert", {}, SLOW)).textContent).toMatch(/held something private/);
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
+  it("says what the model did: its own words on a failed call, or that it refused", async () => {
+    sendBody = { turn_id: "ct_3", session_id: "cs_3", outcome: "failed", reason: "model_error", detail: "claude-cli: Not logged in · Please run /login" };
+    page();
+    await ask("Hi");
+    expect((await screen.findByRole("alert", {}, SLOW)).textContent).toBe("No answer came back. The model call failed: claude-cli: Not logged in · Please run /login");
+    cleanup();
+    sendBody = { turn_id: "ct_4", session_id: "cs_4", outcome: "failed", reason: "model_refused" };
+    page();
+    await ask("Hi");
+    expect((await screen.findByRole("alert", {}, SLOW)).textContent).toBe("No answer came back. The model refused to answer.");
   });
 });
 

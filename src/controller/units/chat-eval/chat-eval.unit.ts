@@ -11,7 +11,7 @@ import { controllerUnit } from "../context.js";
 /** The run as the unit uses it (src/core/chat-eval.ts ChatEvalSchedule). */
 export interface ChatEvalPort {
   claim(day: string): Promise<boolean>;
-  run(): Promise<{ passed: number; total: number; bar: number; ok: boolean }>;
+  run(): Promise<{ passed: number; total: number; bar: number; ok: boolean; results?: readonly { failure: string | null; detail?: string }[] }>;
 }
 
 declare module "../../../core/controller-deps.js" {
@@ -19,6 +19,15 @@ declare module "../../../core/controller-deps.js" {
     /** The daily chat eval run (`chat_eval.schedule` "daily"). Absent: no scheduled run. */
     chat_eval?: ChatEvalPort;
   }
+}
+
+/** The failed turns' reasons counted (`model_error:12`) and the first provider detail, so the log line says why. */
+export function failuresOf(results: readonly { failure: string | null; detail?: string }[]): { failures?: string; failure_detail?: string } {
+  const counts = new Map<string, number>();
+  for (const r of results) if (r.failure !== null) counts.set(r.failure, (counts.get(r.failure) ?? 0) + 1);
+  if (counts.size === 0) return {};
+  const detail = results.find((r) => r.detail !== undefined)?.detail;
+  return { failures: [...counts].map(([k, n]) => `${k}:${n}`).join(","), ...(detail !== undefined && { failure_detail: detail }) };
 }
 
 export class ChatEvalUnit {
@@ -41,7 +50,7 @@ export class ChatEvalUnit {
     if (!claimed) return;
     k.d.log.info("chat eval run started", { day });
     this.running = port.run().then(
-      (r) => k.d.log.info("chat eval run finished", { day, passed: r.passed, total: r.total, bar: r.bar, ok: r.ok }),
+      (r) => k.d.log.info("chat eval run finished", { day, passed: r.passed, total: r.total, bar: r.bar, ok: r.ok, ...failuresOf(r.results ?? []) }),
       (err: unknown) => k.d.log.warn("chat eval run failed", { day, error: err instanceof Error ? err.message : String(err) }),
     ).finally(() => {
       this.running = null;

@@ -9,12 +9,23 @@ import { t } from "../i18n/index.js";
 /** Muted text; break-keep keeps a Korean word whole when the line wraps. */
 export const muted = "text-xs text-pretty break-keep text-text-2";
 
-/** A rule's state as a key of the one state table (src/shared/states.ts), whose label and tone its pill shows. */
-export const RULE_STATE: Readonly<Record<string, string>> = { open: "running", pending: "needs_approval", held: "held" };
+/**
+ * A waiting entry's state pill, as a key of the one state table (src/shared/states.ts): only `held` has one ("Held").
+ * Open and pending entries, and proposed skill drafts, wait for the owner's verdict, which their section already says,
+ * so they show none (2026-11-27: an open proposal showed "Running" while nothing ran).
+ */
+export const waitPill = (state: string): string | null => (state === "held" ? "held" : null);
 /** The reading width of description prose (a group's line, How this works): the one intro width, READ_WIDTH. */
 export const PROSE = READ_WIDTH;
 /** A bordered list of rows. */
 export const LIST = "divide-y divide-border rounded-control border border-border";
+/**
+ * A waiting row's title: the whole text, wrapped, never cut (2026-11-27: a one-line title beside Promote and ⋯ read a
+ * dozen characters on a phone); break-keep keeps a Korean word whole, wrap-anywhere breaks an unbroken identifier.
+ */
+export const WRAP_TITLE = "text-sm font-medium text-pretty break-keep wrap-anywhere";
+/** A row's gist: up to two lines, then an ellipsis; the full text in its tooltip. */
+export const GIST = "line-clamp-2 max-w-full min-w-0 flex-1 basis-40 wrap-anywhere";
 /** A row's padding, reduced below `sm` so a phone keeps its width for text. */
 export const ROW_PAD = "max-sm:p-2";
 /** A KeyValue's labels above their values below `sm` (as `stacked`), two columns from `sm` up. */
@@ -26,10 +37,10 @@ export const VERDICTS: readonly { verdict: RuleVerdict; label: MessageKey; varia
   { verdict: "hold", label: "rules.hold", variant: "secondary" },
   { verdict: "reject", label: "rules.reject", variant: "danger" },
 ];
-/** The two groups, candidates first, each with its line on what promoting one does. */
-export const GROUPS: readonly { classes: boolean; title: MessageKey; line: MessageKey }[] = [
-  { classes: true, title: "rules.groupClasses", line: "rules.groupClassesLine" },
-  { classes: false, title: "rules.groupProposals", line: "rules.groupProposalsLine" },
+/** The two groups, candidates first; what promoting each does is under "How promoting works". */
+export const GROUPS: readonly { classes: boolean; title: MessageKey }[] = [
+  { classes: true, title: "rules.groupClasses" },
+  { classes: false, title: "rules.groupProposals" },
 ];
 export const CONSEQUENCE: Record<RuleVerdict, MessageKey> = {
   promote: "rules.consequencePromoteProposal",
@@ -45,23 +56,25 @@ export const fileLines = "rounded-control bg-surface p-2 font-mono text-xs break
 /** An applied rule's name, else its default, else "not given". */
 export const ruleName = (r: AppliedRule): string => r.name || r.default || t("rules.notGiven");
 
-/** A proposal's kind in plain words: edit-asset, promote-learning and new-asset by name, any other kind "Change"; never the raw kind. */
-const KIND_LABEL: Record<string, MessageKey> = {
+/** A path's file name: its last segment ("agent-skills/review/SKILL.md" reads "SKILL.md"). */
+const fileName = (path: string): string => path.split("/").filter(Boolean).at(-1) ?? path;
+
+/** A proposal's kind as a sentence about its file: edit-asset and any other kind "Changes", promote-learning "Turns a learning into a rule in", new-asset "Adds"; never the raw kind. */
+const KIND_LINE: Record<string, MessageKey> = {
   "edit-asset": "rules.kindEditAsset",
   "promote-learning": "rules.kindPromoteLearning",
   "new-asset": "rules.kindNewAsset",
 };
-export const kindLabel = (kind: string): string => t(KIND_LABEL[kind] ?? "rules.kindOther");
 
 /**
- * A target in short, as a file count: a comma-separated list reads "N files", one file "1 file"; no path or file name
- * shows in a row (since 2026-11-22). The full target stays in "Why and where".
+ * A proposal's change line in plain words with its file name (since 2026-11-27, replacing the "N files" count):
+ * "Changes rules.md", "Turns a learning into a rule in SKILL.md", "Adds learnings.md"; a target of several files names
+ * the first and "and N more"; no target reads "Names no file to change". The full target is the line's tooltip and
+ * stays in "Why and where".
  */
-export function targetLabel(target: string): string {
-  const files = target.split(",").map((f) => f.trim()).filter(Boolean);
-  return files.length > 1 ? t("rules.files", { count: files.length }) : t("rules.fileOne");
+export function proposalLine(kind: string | undefined, target: string | undefined): string {
+  const files = (target ?? "").split(",").map((f) => f.trim()).filter(Boolean);
+  if (files.length === 0) return t("rules.kindNoFile");
+  const file = files.length > 1 ? t("rules.fileAndMore", { file: fileName(files[0]!), count: files.length - 1 }) : fileName(files[0]!);
+  return t(KIND_LINE[kind ?? ""] ?? "rules.kindOther", { file });
 }
-
-/** A proposal's change line: its kind and target in short; a part the ledger did not list reads "not given". */
-export const proposalLine = (kind: string | undefined, target: string | undefined): string =>
-  t("rules.whatProposal", { kind: kind === undefined ? t("rules.notGiven") : kindLabel(kind), target: target === undefined ? t("rules.notGiven") : targetLabel(target) });

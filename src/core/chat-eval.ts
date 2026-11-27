@@ -53,6 +53,8 @@ export interface ChatEvalResult {
   judged: boolean | null;
   /** chatTurn's failure reason; null when it answered. */
   failure: string | null;
+  /** chatTurn's failure detail (the provider's own words), when it gave one. */
+  detail?: string;
 }
 
 export interface ChatEvalReport { results: ChatEvalResult[]; passed: number; total: number; bar: number; ok: boolean }
@@ -77,7 +79,7 @@ export const chatEvalExitCode = (passed: number): number => (chatEvalPasses(pass
 /** The lines the run prints: one per question, then the passed count out of the questions run. */
 export function chatEvalLines(r: ChatEvalReport): string[] {
   const why = (q: ChatEvalResult): string =>
-    q.passed ? "" : q.failure !== null ? ` (turn ${q.failure})` : q.missing_tools.length > 0 ? ` (did not call ${q.missing_tools.join(", ")})` : " (judge said no)";
+    q.passed ? "" : q.failure !== null ? ` (turn ${q.failure}${q.detail !== undefined ? `: ${q.detail}` : ""})` : q.missing_tools.length > 0 ? ` (did not call ${q.missing_tools.join(", ")})` : " (judge said no)";
   return [
     ...r.results.map((q) => `${q.passed ? "PASS" : "FAIL"}  ${q.id}${why(q)}`),
     `chat eval: ${r.passed}/${r.total} passed (bar ${r.bar}): ${r.ok ? "pass" : "fail"}`,
@@ -116,7 +118,7 @@ async function runQuestion(d: ChatEvalDeps, q: ChatEvalQuestion): Promise<ChatEv
   const turn = await chatTurn(deps, session_id, q.question);
   const missing_tools = q.tools.filter((t) => !called.has(t));
   const base = { id: q.id, session_id, missing_tools };
-  if (!turn.ok) return { ...base, passed: false, judged: null, failure: turn.reason };
+  if (!turn.ok) return { ...base, passed: false, judged: null, failure: turn.reason, ...(turn.detail !== undefined && { detail: turn.detail }) };
   if (missing_tools.length > 0) return { ...base, passed: false, judged: null, failure: null };
   const judged = await judgeSaysYes(d.judge, q, turn.reply);
   return { ...base, passed: judged, judged, failure: null };

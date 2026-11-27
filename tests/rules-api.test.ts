@@ -71,6 +71,25 @@ describe("GET /api/v1/rules: excerpts", () => {
   });
 });
 
+describe("GET /api/v1/rules: a waiting proposal's gist", () => {
+  it("is the first line it adds, else its prose change, description or root reason, marks dropped, through the Withholder; null with none or for a class", async () => {
+    const v = (await readRules(await deps([P("P-1"), P("P-2"), P("P-3"), P("P-4"), P("P-5"), { id: "C-1", title: "c", state: "pending" }], async (id) => {
+      if (id === "P-1") return { id, current: "keep\nold", proposed: "keep\n- add a line\nmore" };
+      if (id === "P-5") return { id, proposed: `use ${SECRET} here` };
+      if (id === "P-2") return { id, change: "\n## Split the prompt in two\nthen more", root_reason: "too long" };
+      if (id === "P-3") return { id, root_reason: "x".repeat(300) };
+      return { id };
+    }))).value as { entries: { id: string; gist: string | null }[] };
+    const gist = Object.fromEntries(v.entries.map((e) => [e.id, e.gist]));
+    expect(gist["P-1"]).toBe("add a line");
+    expect(gist["P-5"]).toMatch(/^\[withheld: /);
+    expect(gist["P-2"]).toBe("Split the prompt in two");
+    expect(gist["P-3"]).toHaveLength(160);
+    expect(gist["P-4"]).toBeNull();
+    expect(gist["C-1"]).toBeNull();
+  });
+});
+
 describe("GET /api/v1/rules/entry: a prose change", () => {
   it("passes a proposal's change through the Withholder, beside its Why and its evidence rows", async () => {
     const d = await deps([], async (id) => ({ id, target: "skills/review/SKILL.md", change: `paste ${SECRET} first`, root_reason: "tests skipped", incidents: 1, evidence: [{ ref: "T-20261017-de7e" }] }));
