@@ -3,6 +3,7 @@ import type { SelectionMode, TestSelectionConfig } from "../core/test-selection.
 import type { ToolSpec } from "../core/tools/types.js";
 import type { Run, RunId, RunKind, WorkItemId } from "../core/types.js";
 import type { FactoryStore } from "./factory-store.js";
+import type { LLMImage } from "./llm-provider.js";
 import type { SandboxHandle } from "./sandbox.js";
 
 // The tool-using loop. First impl: ClaudeCodeRunner (`claude -p` in the sandbox workdir).
@@ -129,11 +130,8 @@ export interface AgentRunSpec {
   gate_hooks?: GateHooks;
 }
 
-/** One image for the model: its type (png, jpeg, gif or webp) and its bytes, base64. */
-export interface AgentImage {
-  media_type: string;
-  data: string;
-}
+/** One image for the model: its type (png, jpeg, gif or webp) and its bytes, base64; the LLM call's image too. */
+export type AgentImage = LLMImage;
 
 /**
  * A pack MCP server as a run gets it: its approved descriptor's `command` and `args`. It always starts with an
