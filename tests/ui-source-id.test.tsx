@@ -4,6 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { shortItemId, shortSource } from "../web/src/lib/format.js";
 import { ItemTitle } from "../web/src/views/common.js";
+import { ItemFacts } from "../web/src/views/item-facts.js";
 
 // Local item ids (`local-<uuid>`) are 40+ characters; shown in full they widened the Floor, Queue and Work items
 // pages past a 390px screen. They show short, like `#N` for issues, with the full id kept on hover. A work item itself
@@ -43,5 +44,27 @@ describe("ItemTitle", () => {
     expect(links[0].textContent).toBe("Some work");
     expect(links[0].className).not.toContain("truncate");
     expect(screen.queryByText("30331a68")).toBeNull();
+  });
+});
+
+describe("ItemFacts Source", () => {
+  const item = (link: string) => ({
+    id: "wi_c86970ff1a73401c952d9228d6156b6d", item_phase: "open", close_reason: null, source: { id: LOCAL, link },
+    tier: null, change_ref: null, change_url: null, spec_comment_url: null, loop_count: 0, restart_count: 0, token_cost: 0,
+    updated_at: new Date(0).toISOString(),
+  });
+  const facts = (container: HTMLElement) => [...container.querySelectorAll("dt")].map((d) => d.textContent);
+
+  it("hides the Source fact when the source has no http link: no value repeats the breadcrumb short ID", () => {
+    const { container } = render(<ItemFacts item={item(`local:${LOCAL}`)} now={0} />);
+    expect(facts(container)).not.toContain("Source");
+    const values = [...container.querySelectorAll("dd")].map((d) => d.textContent);
+    expect(values).not.toContain(shortItemId("wi_c86970ff1a73401c952d9228d6156b6d"));
+  });
+
+  it("still shows the Source fact, linked, for an http source", () => {
+    const { container } = render(<ItemFacts item={item("https://github.com/o/r/issues/1")} now={0} />);
+    expect(facts(container)).toContain("Source");
+    expect(container.querySelector("dd a")!.getAttribute("href")).toBe("https://github.com/o/r/issues/1");
   });
 });
