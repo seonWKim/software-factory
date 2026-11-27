@@ -9,7 +9,7 @@ import {
   chatEvalSchedule, parseChatEvalQuestions, runChatEval,
 } from "../src/core/chat-eval.js";
 import { ChatEvalUnit } from "../src/controller/units/chat-eval/chat-eval.unit.js";
-import { CHAT_FAILURE_WORDS, chatEvalFailedKey, failuresOf } from "../src/core/alarms.js";
+import { CHAT_FAILURE_WORDS, chatEvalFailedAlert, failuresOf } from "../src/core/alarms.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { newStore } from "./helpers/store.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -159,8 +159,11 @@ describe("the daily run", () => {
     expect(await b.claim("2026-11-27")).toBe(false);
     expect(await b.claim("2026-11-28")).toBe(true);
     expect(cursors.get(CHAT_EVAL_CURSOR)).toBe("2026-11-28");
+    expect(a).toMatchObject(BUILDERS);
   });
 
+  /** The alarm builders the schedule hands the unit (src/core/alarms.ts), so the unit imports no core module. */
+  const BUILDERS = { failures: failuresOf, failedAlert: chatEvalFailedAlert };
   type Port = ConstructorParameters<typeof ChatEvalUnit>[0]["k"]["d"]["chat_eval"];
   /**
    * The unit on a fake kernel: its `alert` write goes to `store` (the store's own dedupe), and its UI scan flags any
@@ -182,6 +185,7 @@ describe("the daily run", () => {
   function scripted(outcomes: (Awaited<ReturnType<NonNullable<Port>["run"]>> | Error)[]): NonNullable<Port> {
     let i = 0;
     return {
+      ...BUILDERS,
       claim: async () => true,
       run: async () => {
         const o = outcomes[i++]!;
@@ -201,6 +205,7 @@ describe("the daily run", () => {
     let runs = 0;
     const claimed = new Set<string>();
     const port = {
+      ...BUILDERS,
       claim: async (day: string) => (claimed.has(day) ? false : (claimed.add(day), true)),
       run: async () => (runs++, { passed: 8, total: 12, bar: 8, ok: true }),
     };
@@ -233,7 +238,7 @@ describe("the daily run", () => {
     await u.running;
     const alerts = await chatAlerts(store);
     expect(alerts).toHaveLength(1);
-    expect(alerts[0]).toMatchObject({ pattern_key: chatEvalFailedKey("2026-11-27"), count: 0 });
+    expect(alerts[0]).toMatchObject({ count: 0 });
     expect(alerts[0]!.pattern_key).toBe("chat_eval_failed:2026-11-27");
     const detail = alerts[0]!.detail!;
     expect(detail).toContain(`Chat check failed today: 0 of 12 answered (needs ${CHAT_EVAL_PASS_BAR}).`);
@@ -286,7 +291,7 @@ describe("the daily run", () => {
   it("evalStep returns while the run is still running", async () => {
     const { store } = await newStore();
     let finish!: (r: typeof BELOW) => void;
-    const port = { claim: async () => true, run: () => new Promise<typeof BELOW>((res) => { finish = res; }) };
+    const port = { ...BUILDERS, claim: async () => true, run: () => new Promise<typeof BELOW>((res) => { finish = res; }) };
     const { u } = unit(port, { ms: Date.parse("2026-11-27T00:00:00Z") }, store);
     await u.evalStep();
     expect(u.running).not.toBeNull();

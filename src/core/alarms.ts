@@ -556,64 +556,44 @@ export function coordinatorLimitAlert(q: CoordinatorLimit): CoordinatorLimitAler
 }
 
 /** A chat eval turn as the daily run reports it: its failure code (null: answered, or failed on tools or the judge) and the provider's words. */
-export interface ChatEvalTurn {
-  failure: string | null;
-  detail?: string;
-}
+export interface ChatEvalTurn { failure: string | null; detail?: string }
 
 /** The failed turns' codes counted, in the order first seen. */
-function failureCounts(results: readonly ChatEvalTurn[]): Map<string, number> {
+function failureCounts(results: readonly ChatEvalTurn[]): [string, number][] {
   const counts = new Map<string, number>();
   for (const r of results) if (r.failure !== null) counts.set(r.failure, (counts.get(r.failure) ?? 0) + 1);
-  return counts;
+  return [...counts];
 }
 
 /** The failed turns' reasons counted (`model_error:12`) and the first provider detail, so the eval's log line says why. */
 export function failuresOf(results: readonly ChatEvalTurn[]): { failures?: string; failure_detail?: string } {
-  const counts = failureCounts(results);
-  if (counts.size === 0) return {};
-  const detail = results.find((r) => r.detail !== undefined)?.detail;
-  return { failures: [...counts].map(([k, n]) => `${k}:${n}`).join(","), ...(detail !== undefined && { failure_detail: detail }) };
+  const counts = failureCounts(results), detail = results.find((r) => r.detail !== undefined)?.detail;
+  if (counts.length === 0) return {};
+  return { failures: counts.map(([k, n]) => `${k}:${n}`).join(","), ...(detail !== undefined && { failure_detail: detail }) };
 }
 
-/**
- * The chat turn's failure codes (src/core/chat-agent.ts ChatFailure) in plain words, for the chat check's alert. Kept
- * here because src/core imports nothing from src/ui (failureWords).
- */
+/** The chat turn's failure codes (ChatFailure) in plain words for the chat check's alert; here, as src/core imports nothing from src/ui (failureWords). */
 export const CHAT_FAILURE_WORDS: Readonly<Record<ChatFailure, string>> = {
-  model_error: "the model did not finish",
-  model_refused: "the model refused to answer",
-  model_cut_off: "the answer was cut off at its length limit",
-  too_many_steps: "the chat kept asking for tools",
-  withheld: "the safety scan withheld a message",
-  seq_taken: "another message was saved first",
+  model_error: "the model did not finish", model_refused: "the model refused to answer", model_cut_off: "the answer was cut off at its length limit",
+  too_many_steps: "the chat kept asking for tools", withheld: "the safety scan withheld a message", seq_taken: "another message was saved first",
 };
 
-/** How a daily chat eval run ended when it failed: its counts and turns (ok false), or the error it threw. */
-export type ChatEvalFailure =
-  | { passed: number; total: number; bar: number; results?: readonly ChatEvalTurn[] }
-  | { error: string };
-
-/** The Needs-you alert's key for a failed chat check: one per UTC day. */
-export const chatEvalFailedKey = (day: string): string => `chat_eval_failed:${day}`;
+/** How a failed daily chat eval run ended: its counts and turns (ok false), or the error it threw. */
+export type ChatEvalFailure = { passed: number; total: number; bar: number; results?: readonly ChatEvalTurn[] } | { error: string };
 
 /**
- * The failed daily chat check's Needs-you alert (design 04-chat-agent), built here; the chat-eval unit scans `detail`
- * as UI text and stores it through the kernel's `alert` write. Pattern `chat_eval_failed`, key
- * `chat_eval_failed:<UTC day>`, deduped for one day: one alert a day however many runs fail. A run below its bar names
- * its passed count, total and bar, the most common failure reason with its count and the first provider detail; a
- * thrown run names its error.
+ * The failed daily chat check's Needs-you alert (design 04-chat-agent); the chat-eval unit scans `detail` as UI text and
+ * stores it through the kernel's `alert` write. Pattern `chat_eval_failed`, key `chat_eval_failed:<UTC day>`, deduped
+ * for one day: one alert a day however many runs fail. A run below its bar names its passed count, total and bar, the
+ * most common failure reason with its count and the first provider detail; a thrown run names its error.
  */
 export function chatEvalFailedAlert(day: string, f: ChatEvalFailure): { alert: NewAlert & { detail: string }; dedupe_ms: number } {
-  const key = chatEvalFailedKey(day);
-  if ("error" in f) {
-    return { alert: { pattern: "chat_eval_failed", pattern_key: key, error_code: "run_error", count: 0, detail: `Chat check failed today: the run stopped with an error: ${f.error}.` }, dedupe_ms: DAY_MS };
-  }
-  const results = f.results ?? [];
-  const top = [...failureCounts(results)].reduce<[string, number] | null>((a, e) => (a === null || e[1] > a[1] ? e : a), null);
-  const provider = results.find((r) => r.detail !== undefined)?.detail;
+  const base = { pattern: "chat_eval_failed", pattern_key: `chat_eval_failed:${day}` } as const;
+  if ("error" in f) return { alert: { ...base, error_code: "run_error", count: 0, detail: `Chat check failed today: the run stopped with an error: ${f.error}.` }, dedupe_ms: DAY_MS };
+  const results = f.results ?? [], provider = results.find((r) => r.detail !== undefined)?.detail;
+  const top = failureCounts(results).reduce<[string, number] | null>((a, e) => (a === null || e[1] > a[1] ? e : a), null);
   const detail = `Chat check failed today: ${f.passed} of ${f.total} answered (needs ${f.bar}).`
-    + (top === null ? "" : ` Most failures: ${top[0] in CHAT_FAILURE_WORDS ? CHAT_FAILURE_WORDS[top[0] as ChatFailure] : top[0]} (${top[1]}).`)
+    + (top === null ? "" : ` Most failures: ${CHAT_FAILURE_WORDS[top[0] as ChatFailure] ?? top[0]} (${top[1]}).`)
     + (provider === undefined ? "" : ` First provider detail: ${provider}`);
-  return { alert: { pattern: "chat_eval_failed", pattern_key: key, error_code: "below_bar", count: f.passed, detail }, dedupe_ms: DAY_MS };
+  return { alert: { ...base, error_code: "below_bar", count: f.passed, detail }, dedupe_ms: DAY_MS };
 }
