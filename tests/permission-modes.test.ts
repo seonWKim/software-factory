@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { AGENT_WRITE_IN_CHAT, EGRESS_BLOCKED, OwnerAuth, SECRET_READ, type WriteRequest, authorizeWrite, permissionGate } from "../src/core/authorize.js";
 import { type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
 import { HELD_CONFIRM_COMMAND, parseLocalCliArgs } from "../src/core/local-cli-parse.js";
+import { LOCAL_SOURCE } from "../src/core/local-merge.js";
 import type { WorkItemPatch } from "../src/core/types.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
@@ -261,12 +262,13 @@ describe("confirm <id> applies a held write (phase 3)", () => {
   const SPEC_PENDING: WorkItemPatch = { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", tier: 2 };
 
   /** The owner, a held agent `approve` on an item at `patch`, and the controller on a fake issue source whose posts are the thread. */
-  async function harness(patch: WorkItemPatch = SPEC_PENDING, command = "approve") {
+  async function harness(patch: WorkItemPatch = SPEC_PENDING, command = "approve", local = false) {
     const { store, clock } = await newStore();
     const source = new FakeSource();
     const controller = new ControllerRole({ store, source, auth: new OwnerAuth(store), clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false });
     await store.claimOwner(OWNER);
-    const { item: created } = await store.createWorkItem(issue(1), system);
+    const fresh = local ? { ...issue(1), source: { type: LOCAL_SOURCE, id: "local-1", link: "" } } : issue(1);
+    const { item: created } = await store.createWorkItem(fresh, system);
     const r = await store.transition({ id: created.id, expected_version: created.version, actor: system, reason: "test_setup", patch });
     if (!r.ok) throw new Error("setup");
     const { write: held } = await store.holdWrite({ key: `coordinator:approve:${created.id}`, command, args: command === "approve" ? [created.id, "ship it"] : [created.id], actor: "service:coordinator" as UserId, mode: "ask_all" });
@@ -351,6 +353,15 @@ describe("confirm <id> applies a held write (phase 3)", () => {
     const refused = h.posts(/held-refused/);
     expect(refused).toHaveLength(1);
     expect(refused[0]!.body).toMatch(new RegExp(`^\`merge ${h.item.id}\` \\(${h.held.id}\\) was not applied: `));
+  });
+
+  it("a held merge on a local item the local merge refuses gets one reply: the local merge's own", async () => {
+    const h = await harness(SPEC_PENDING, "merge", true);
+    await h.confirm(OWNER);
+    expect((await h.store.getWorkItem(h.item.id))!.version).toBe(h.item.version);
+    expect(await h.status()).toBe("refused");
+    const replies = (await h.store.listItemMessages(h.item.id)).filter((m) => /factory:(refused|held-refused):/.test(m.marker));
+    expect(replies.map((m) => m.body)).toEqual([expect.stringMatching(/^`factory merge` was not applied: .*is not waiting for a merge/)]);
   });
 
   it("an unknown held write fails in the CLI and stores nothing", async () => {

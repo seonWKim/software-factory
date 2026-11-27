@@ -159,8 +159,11 @@ async function apply(c: Ctx, r: Proposal, deps: ConfirmDeps): Promise<string | n
   return c.unit("commands").gateCommand(item, e as CommandEvent);
 }
 
-/** A claimed held write run as the confirm row's actor's typed command on `item`, bound by the commands unit: its refusal, else null. */
-export type HeldRun = (held: Held, item: Item) => Promise<string | null>;
+/**
+ * A claimed held write run as the confirm row's actor's typed command on `item`, bound by the commands unit: its
+ * refusal, else null, and `replied` when that path already posted the refusal itself (a local merge does).
+ */
+export type HeldRun = (held: Held, item: Item) => Promise<{ refusal: string | null; replied: boolean }>;
 
 /**
  * A held write's `confirm <id>` row (`args.held`), modelled on confirmProposal: the held write is claimed (pending →
@@ -182,9 +185,9 @@ export async function confirmHeldWrite(c: Ctx, cmd: Pick<InboxCommand, "key" | "
     log.info("held write not applied: already answered", { held_write: id, status: now?.status, by: cmd.actor });
     return say(`Nothing was applied this time: ${line} (${id}) was already ${now?.status ?? "answered"}.`, `<!-- factory:held-answered:${cmd.key} -->`);
   }
-  const refusal = item ? await run(held, item) : "the work item is no longer stored";
+  const { refusal, replied } = item ? await run(held, item) : { refusal: "the work item is no longer stored", replied: false };
   if (refusal === null) return log.info("held write confirmed", { held_write: id, command: held.command, by: cmd.actor });
   await store.answerHeldWrite({ id, from: "confirmed", to: "refused" });
   log.info("held write refused", { held_write: id, command: held.command, by: cmd.actor, reason: refusal });
-  await say(`${line} (${id}) was not applied: ${refusal}.`, `<!-- factory:held-refused:${id} -->`);
+  if (!replied) await say(`${line} (${id}) was not applied: ${refusal}.`, `<!-- factory:held-refused:${id} -->`);
 }

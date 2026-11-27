@@ -177,13 +177,15 @@ export class CommandsUnit {
 
   /**
    * A confirmed held write as `c`'s actor's typed command on `item` (proposals.ts confirmHeldWrite): a merge as
-   * `factory merge <id>` is, any other command as its comment line through gateCommand. The refusal, else null.
+   * `factory merge <id>` is, any other command as its comment line through gateCommand. The refusal, else null; a
+   * local merge has posted its own refusal (`replied`), so the confirm adds none.
    */
-  private async runHeld(c: CliCommand, command: string, rest: readonly string[], item: WorkItem): Promise<string | null> {
+  private async runHeld(c: CliCommand, command: string, rest: readonly string[], item: WorkItem): Promise<{ refusal: string | null; replied: boolean }> {
     const who = localIdentity(c.actor);
-    if (command === MERGE_COMMAND) return item.source.type === LOCAL_SOURCE ? this.c.unit("local-merge").mergeLocal(item.id, who, c.key) : this.c.unit("pr-events").requestPrMerge(item.id, who, c.key, { command_key: c.key });
+    if (command === MERGE_COMMAND && item.source.type === LOCAL_SOURCE) return { refusal: await this.c.unit("local-merge").mergeLocal(item.id, who, c.key), replied: true };
+    if (command === MERGE_COMMAND) return { refusal: await this.c.unit("pr-events").requestPrMerge(item.id, who, c.key, { command_key: c.key }), replied: false };
     const e = commandEvent({ ...c, command, args: { item: item.id, text: rest.join(" ") } }, item.source);
-    return e && e.kind in COMMAND ? this.gateCommand(item, e as CommandEvent) : "it is not a command a held write can apply";
+    return { refusal: e && e.kind in COMMAND ? await this.gateCommand(item, e as CommandEvent) : "it is not a command a held write can apply", replied: false };
   }
 
   /**
