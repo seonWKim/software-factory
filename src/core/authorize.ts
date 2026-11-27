@@ -171,13 +171,13 @@ export interface WriteGateDeps {
 export type WriteDecision =
   | { outcome: "run"; mode: PermissionMode }
   | { outcome: "held"; mode: PermissionMode; id: string; reply: string }
-  | { outcome: "refused"; reason: string; reply: string };
+  | { outcome: "refused"; reason: string; why: string; reply: string };
 
 /** The guards, then the mode read now, then the gate; a held write is stored once and answered with `confirm <id>`. */
 export async function authorizeWrite(d: WriteGateDeps, w: WriteRequest): Promise<WriteDecision> {
-  const refused = (reason: string, why: string): WriteDecision => ({ outcome: "refused", reason, reply: `\`${w.command}\` was refused: ${why}` });
+  const refused = (reason: string, why: string): WriteDecision => ({ outcome: "refused", reason, why, reply: `\`${w.command}\` was refused: ${why}` });
   if (w.reads_secret ?? SECRET_COMMANDS.includes(w.command)) return refused(SECRET_READ, "it reads a secret");
-  if (!(await d.scanner.scan("tool_result", [w.command, ...w.args].join(" "))).clean) return refused(EGRESS_BLOCKED, "the egress scan flagged it");
+  if (!(await d.scanner.scan("tool_result", [w.command, ...w.args].join(" "))).clean) return refused(EGRESS_BLOCKED, "the leak scanner flagged it, so nothing of it was stored and nothing changed");
   const mode = await readPermissionMode(d.store);
   const gate = permissionGate({ mode, reversible: COMMAND_TABLE.find((c) => c.name === w.command)?.reversible, origin: w.origin, in_chat_turn: w.in_chat_turn });
   if (gate.outcome === "refuse") return refused(gate.reason, "an agent may not write from a chat turn; type the command instead");
