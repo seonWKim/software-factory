@@ -1,10 +1,10 @@
-import { Archive, FileSearch, Pencil } from "lucide-react";
+import { Archive, Copy, FileSearch, Pencil } from "lucide-react";
 import { type RefObject, useRef, useState } from "react";
 import { type RulesView, type AppliedRule, useRuleEntry } from "../api.js";
-import { Dialog } from "../components/ui/dialog.js";
+import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Badge } from "../components/ui/badge.js";
 import { SUB_TITLE } from "../components/ui/card.js";
-import { IdDetails } from "../components/ui/copy.js";
+import { IdDetails, copyToClipboard } from "../components/ui/copy.js";
 import { Disclosure } from "../components/ui/disclosure.js";
 import { Input } from "../components/ui/input.js";
 import { KeyValue, type KeyValueItem, ValueBlock } from "../components/ui/key-value.js";
@@ -16,14 +16,14 @@ import { t } from "../i18n/index.js";
 import { localShortDate } from "../lib/format.js";
 import { EntryDetail } from "./rules-detail.js";
 import { EditDialog, RetireDialog } from "./rules-verdict.js";
-import { LIST, ROW_PAD, STACK_NARROW, muted, ruleName } from "./rules-shared.js";
+import { LIST, ROW_PAD, STACK_NARROW, WRAP_TITLE, muted, ruleName } from "./rules-shared.js";
 import type { ReactNode } from "react";
 
 
 // The Rules page's applied rules, inside its In effect section (since 2026-11-22): the promoted rules file in the file's
-// order, one two-line ListRow per rule (its plain sentence, the rule name else its default, with its ID in a tooltip, then one
-// muted line "<scope> · Seen N times (Mon D)" with the incident IDs in its tooltip, a blank switch column keeping its title level with the standing rows'; the "Suggested to retire" badge; a ⋯ menu with
-// Edit, Open evidence and Retire) whose Details hold a label/value list (stacked below `sm`; each default and exception
+// order, one two-line ListRow per rule (its plain sentence, the rule name else its default, whole and wrapped, its ID the ⋯ menu's Copy ID, then one
+// muted line "<scope> · Seen N times (Mon D)" with the incident IDs in its tooltip, starting at the row's left edge (no blank switch column, 2026-11-27); the "Suggested to retire" badge; a ⋯ menu with
+// Edit, Open evidence, Copy ID and Retire) whose Details hold a label/value list (stacked below `sm`; each default and exception
 // line on its own line) with the default, exception and judged date. A search over ID, name, default and scope sits above the
 // rows; Suggest sits at the right of the In effect card's title (rules.tsx). An unparsable block's raw text is behind Details too. Scope and the
 // encoded-elsewhere lines render through Markdown.
@@ -63,7 +63,7 @@ function seenLabel(incidents: string[] | null): ReactNode {
       ? t(count === 1 ? "rules.seenOne" : "rules.seen", { count })
       : t(count === 1 ? "rules.seenOneOn" : "rules.seenOn", { count, date: localShortDate(last) });
   return (
-    <span data-seen className="[&_button]:text-xs">
+    <span data-seen className={`[&_button]:text-xs`}>
       <IdDetails label={label} id={ids.join(", ")} what="incident IDs" />
     </span>
   );
@@ -109,6 +109,7 @@ function AppliedClass({ rule, id, token, round, applied }: { rule: AppliedRule; 
   const items = [
     { label: t("rules.edit"), icon: Pencil, action: "edit", disabled: !owner, onSelect: () => setOpen("edit") },
     { label: t("rules.openEvidence"), icon: FileSearch, action: "evidence", onSelect: () => setOpen("evidence") },
+    { label: t("copy.id"), icon: Copy, action: "copy-id", onSelect: () => void copyToClipboard(id).then((ok) => ok && announceStatus(t("copy.done"))) },
     { label: t("rules.retire"), icon: Archive, action: "retire", danger: true, disabled: !owner, onSelect: () => setOpen("retire") },
   ];
   // One muted line: "<scope> · Seen 3 times (Oct 17)"; either part alone when the other is missing.
@@ -122,12 +123,12 @@ function AppliedClass({ rule, id, token, round, applied }: { rule: AppliedRule; 
       data-applied={id}
       className={ROW_PAD}
       title={
-        // The name is the rules file's text as written, so it may quote a snake_case name (`data-raw`).
-        <p data-raw className={`${ROW_TITLE} font-medium`} title={name}>
-          <IdDetails label={name} id={id} what="rule ID" />
+        // The rules file's text as written, whole and wrapped, so it may quote a snake_case name (`data-raw`); the ID is
+        // the ⋯ menu's Copy ID.
+        <p data-applied-title data-raw className={WRAP_TITLE}>
+          {name}
         </p>
       }
-      leading={<span aria-hidden data-switch-blank className="w-9 shrink-0" />}
       details={
         <>
           {meta !== null && <span data-rule-meta className="min-w-0 break-keep">{meta}</span>}

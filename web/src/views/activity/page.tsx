@@ -8,7 +8,7 @@ import { Button } from "../../components/ui/button.js";
 import { Card } from "../../components/ui/card.js";
 import { type Column, DataTable } from "../../components/ui/data-table.js";
 import { KeyValue } from "../../components/ui/key-value.js";
-import { Notice, PageHeader } from "../../components/ui/notice.js";
+import { Notice } from "../../components/ui/notice.js";
 import { ErrorNote, Loading } from "../../components/ui/parts.js";
 import { t } from "../../i18n/index.js";
 import { localDateTime, relativeTime } from "../../lib/format.js";
@@ -18,12 +18,12 @@ import { Link, useNavigate } from "../../nav.js";
 import { BASE } from "../../pages.js";
 import { useNow } from "../common.js";
 
-// The Activity page (design 09-dashboard-activity): PageHeader Activity; a Card Actors with a DataTable of one row per
+// Health's Activity tab (design 09-dashboard-activity): a description line; a Card Actors with a DataTable of one row per
 // actor (Badge state, Button Transcript); a Card About <actor> with KeyValue now, last, next run and a DataTable of its
 // recent actions (outcome, reason, Transcript or log link). Open factory alerts come with a Clear button. One read:
 // GET /api/v1/activity, the `activity.actors` capability (the chat reads the same one).
 
-/** The schedule actor's ID: its entry is the one the Schedules page links (`/app/activity?actor=system:schedule`). */
+/** The schedule actor's ID: its entry is the one the Schedules page links (`/app/health?tab=activity&actor=system:schedule`). */
 export const SCHEDULE_ACTOR = "system:schedule";
 
 const STATE_LEVEL = { idle: undefined, running: "info", attention: "warn" } as const;
@@ -85,14 +85,11 @@ function ActionsTable({ actor, days }: { actor: ActivityActor; days: number }) {
   return <DataTable<ActivityAction> label={t("actors.recentLabel", { name: actor.name })} empty={t("actors.noActions", { days })} rowKey={(a) => String(a.seq)} rows={actor.actions} columns={columns} />;
 }
 
-/** The page that owns an actor's work: Schedules for the schedule actor, Health for every other. */
-const backOf = (actor: ActivityActor) =>
-  actor.actor_id === SCHEDULE_ACTOR ? { href: `${BASE}schedules`, text: t("actors.backSchedules") } : { href: `${BASE}health`, text: t("actors.backHealth") };
-
 function ActorDetail({ actor, days, now }: { actor: ActivityActor; days: number; now: number }) {
-  const back = backOf(actor);
+  // The schedule actor's work is on Schedules, so its card links back there; every other actor's is on Health, where the tab already is.
+  const back = actor.actor_id === SCHEDULE_ACTOR ? <Link href={`${BASE}schedules`} className={LINK_CLASS}>{t("actors.backSchedules")}</Link> : undefined;
   return (
-    <Card title={t("actors.about", { name: actor.name })} action={<Link href={back.href} className={LINK_CLASS}>{back.text}</Link>}>
+    <Card title={t("actors.about", { name: actor.name })} action={back}>
       <div className="flex flex-col gap-4">
         <p className="text-sm text-text-2 text-pretty">{actor.about}</p>
         <KeyValue
@@ -108,7 +105,7 @@ function ActorDetail({ actor, days, now }: { actor: ActivityActor; days: number;
   );
 }
 
-/** The Activity page's body: the Actors Card and the About Card of the selected actor. */
+/** The Activity tab's body: the Actors Card and the About Card of the selected actor. */
 export function ActivityBody({ view, now }: { view: ActivityView; now: number }) {
   // `?actor=` selects the actor (a link from Schedules); none, or an unknown one, keeps the first.
   const [selected, setSelected] = useUrlParam("actor");
@@ -136,14 +133,17 @@ export function ActivityBody({ view, now }: { view: ActivityView; now: number })
   );
 }
 
-/** The Activity page: every autonomous actor, what it does now, its last and next run and its recent actions. */
-export function ActivityActorsPage() {
+/**
+ * Health's Activity tab: every autonomous actor, what it does now, its last and next run and its recent actions. No
+ * heading of its own (Health's PageHeader is the page's one h1); a description line, then the Cards.
+ */
+export function ActivityTab() {
   const now = useNow();
   const q = useActivity();
   return (
-    <>
-      <PageHeader title={t("actors.title")} description={t("actors.description", { days: q.data?.retention_days ?? 30 })} />
-      {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={3} label="actors.loading" onRetry={() => void q.refetch()} /> : <ActivityBody view={q.data} now={now} />}
-    </>
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-text-2 text-pretty">{t("actors.description", { days: q.data?.retention_days ?? 30 })}</p>
+      {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={3} label="actors.loading" onRetry={() => void q.refetch()} /> : <div><ActivityBody view={q.data} now={now} /></div>}
+    </div>
   );
 }

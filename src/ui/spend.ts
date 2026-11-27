@@ -2,8 +2,8 @@
 // of UTC days, from the stored run outcomes (src/core/spend.ts). Read-only: server.ts answers 405 to any other
 // method. Runs with no stored cost are counted apart as `unknown`, never added as 0. Item titles pass the
 // Withholder, as on every other route; so do the titles of each day's top items (at most 3, by known cost). Chat
-// turns' spend is answered apart, as `chat` (design 04-chat-agent). Store reads only: one range read of runs, one of
-// chat turns, one read per item shown.
+// turns' spend is answered apart, as `chat` (design 04-chat-agent), and coordinator cycles' as `coordinator` (design
+// 06-spend). Store reads only: one range read of runs, one of chat turns, one of coordinator cycles, one per item shown.
 
 import { DAY_MS, SPEND_MAX_DAYS, readSpend, utcDay, weekStart } from "../core/spend.js";
 import type { WorkItemId } from "../core/types.js";

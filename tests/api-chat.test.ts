@@ -136,6 +136,17 @@ describe("chat.send", () => {
     expect(rows.map((t) => t.status)).not.toContain("running");
   });
 
+  it("answers the provider's words as detail on a failed model call, and a thrown error's message when the scan finds nothing", async () => {
+    const { send } = await setup(scripted([{ text: "claude-cli: Not logged in · Please run /login", stop_reason: "error" }]));
+    expect((await send({ text: "Hi" })).value).toMatchObject({ outcome: "failed", reason: "model_error", detail: "claude-cli: Not logged in · Please run /login" });
+    const thrown = await setup({ complete: async () => { throw new Error("every LLM provider failed: claude-cli: spawn claude ENOENT"); } });
+    expect((await thrown.send({ text: "Hi" })).value).toMatchObject({ outcome: "failed", reason: "error", detail: "every LLM provider failed: claude-cli: spawn claude ENOENT" });
+    const leaky = await setup({ complete: async () => { throw new Error(`bad token ${SECRET}`); } });
+    const r = await leaky.send({ text: "Hi" });
+    expect(r.value).toMatchObject({ outcome: "failed", reason: "error" });
+    expect(r.value).not.toHaveProperty("detail");
+  });
+
   it("with no Ask model configured refuses and stores no turn row", async () => {
     const { send, turns, store } = await setup(null);
     const r = await send({ text: "Hi" });

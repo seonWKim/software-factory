@@ -91,6 +91,8 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
     expect(within(li).getByRole("switch", { name: "Approves risk level 1 plans for you" }).getAttribute("aria-checked")).toBe("false");
     // The row reads one plain sentence; the ID, gate, tier, threshold, who set it and the dates sit behind Details.
     expect(li.querySelector("[data-rule-sentence]")!.textContent).toBe("Approves risk level 1 plans for you");
+    // The sentence wraps whole: a one-line cut read "Approves risk level 1 pl…" at 390px (2026-11-27).
+    expect(li.querySelector("[data-rule-sentence]")!.className).not.toMatch(/\btruncate\b/);
     const raw = li.querySelector<HTMLElement>("[data-raw]")!;
     for (const text of ["Rule ID: spec-t1", "gate spec", "risk level 1", "threshold 10", `created ${localDateTime(AT)}`, "set by a person"]) expect(raw.textContent).toContain(text);
     // The row says when it last fired and how many items it approved in the last 7 days.

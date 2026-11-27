@@ -14,11 +14,11 @@ describe("app shell", () => {
   it("shows the sidebar pages, Needs you (N) from /api/v1/overview, and fetches only /api/v1/* URLs", async () => {
     mount();
     await waitBadge();
-    // No Needs you entry and no Factory group: Tasks leads, with the waiting count as its badge.
+    // No Needs you entry and no Factory group: Chat leads the first block, then Tasks with the waiting count as its badge.
     expect(screen.queryByRole("navigation", { name: "Factory" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Needs you" })).toBeNull();
     const tasks = screen.getByRole("navigation", { name: "Tasks" });
-    expect([...tasks.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Tasks4", "Calendar", "Schedules"]);
+    expect([...tasks.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Chat", "Tasks4", "Calendar", "Schedules"]);
     const nav = screen.getByRole("navigation", { name: "System" });
     expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Health", "Workers"]);
     fireEvent.click(within(nav).getByText("Health"));
@@ -226,7 +226,7 @@ describe("sidebar", () => {
       expect(nav.getAttribute("aria-label")).toBe(name);
     }
     const links = (name: string) => within(screen.getByRole("navigation", { name })).getAllByRole("link").map((a) => a.textContent);
-    expect(links("Tasks")).toEqual(["Tasks", "Calendar", "Schedules"]);
+    expect(links("Tasks")).toEqual(["Chat", "Tasks", "Calendar", "Schedules"]);
     expect(links("System")).toEqual(["Work", "Health", "Workers"]);
     expect(links("Setup")).toEqual(["Rules", "Plugins", "Settings"]);
     expect(document.querySelector("aside details, aside summary, aside [data-chevron]")).toBeNull();
@@ -285,9 +285,9 @@ describe("top bar", () => {
     expect(within(header).getByRole("button", { name: "Search" }).closest(".shrink-0")).toBeTruthy();
   });
 
-  it("holds only the mode, Stop all agents, Search, Chat and More (Refresh, the Appearance choices): no revision or Theme button (issue #79)", async () => {
+  it("holds only the mode, Stop all agents, Search and More (Refresh, the Appearance choices): no revision or Theme button (issue #79)", async () => {
     await atWidth(1024, async (header) => {
-      expect(within(header).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Stop all agents", "Search", "Chat", "More"]);
+      expect(within(header).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Stop all agents", "Search", "More"]);
       fireEvent.click(within(header).getByRole("button", { name: "More" }));
       const menu = within(header).getByRole("menu");
       expect(within(menu).getAllByRole("menuitem").map((m) => [m.textContent, m.getAttribute("aria-keyshortcuts")])).toEqual([["Refresh", "r"]]);
