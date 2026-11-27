@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
 
@@ -134,3 +134,145 @@ export const cap = (name: string) => name[0]!.toUpperCase() + name.slice(1);
 export const rowOf = (name: string) => document.querySelector(`[data-action="${name}"]`) as HTMLElement;
 export const settle = () => act(async () => void (await vi.advanceTimersByTimeAsync(10)));
 export const button = (name: string) => screen.getByRole("button", { name: cap(name) }) as HTMLButtonElement;
+
+// The item page fixtures (tests/item-page*.test.tsx): the builders, the detail items, the fetch stub and the mount.
+
+export const src = (n: number) => ({ type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` });
+export const base = (id: string, n: number, title: string, extra: object = {}) => ({
+  id, source: src(n), title, stage: "READY", close_reason: null, blocked_on: "human", blocked_reason: "spec_pending", tier: 2, loop_count: 0,
+  restart_count: 0, token_cost: 0, change_ref: null, change_url: null, spec_comment_url: null, parent_id: null, phase: null, phases: [], version: 3,
+  created_at: AT, updated_at: AT, why: { code: "human", reason_code: "person", params: { reason: "Waiting for a person" }, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null }, ...extra,
+});
+
+// A fixture spec as triage writes it: a heading, a blank line, a list, and text that must not become HTML.
+export const PROBLEM = "## Problem\n\nThe page prints `JSON`.\n\nSecond paragraph with <b>raw html</b>.";
+export const DONE = ["Phases link to their pages", "No escaped JSON"];
+export const FILES = ["web/src/views/pages.tsx", "src/ui/api.ts"];
+
+export const DETAILS: Record<string, unknown> = {
+  "/api/v1/items/wi_parent": {
+    as_of: AT,
+    item: base("wi_parent", 10, "Split parent", {
+      spec_comment_url: "https://github.com/o/r/issues/10#issuecomment-5",
+      change_ref: "12",
+      change_url: "https://github.com/o/r/pull/12",
+      phases: [
+        { id: "wi_p1", phase: 1, title: "First phase", stage: "RUNNING", source: src(11) },
+        { id: "wi_p2", phase: 2, title: null, stage: "NEW", source: src(13) },
+      ],
+    }),
+    timeline: [
+      { version: 1, at: AT, actor: { kind: "system", id: "system" }, reason: "intake", changes: { stage: { from: "null", to: '"NEW"' } }, detail: null },
+      {
+        version: 2, at: AT, actor: { kind: "system", id: "system" }, reason: "triaged", detail: null,
+        changes: {
+          stage: { from: '"NEW"', to: '"READY"' },
+          problem: { from: JSON.stringify("issue text"), to: JSON.stringify(PROBLEM) },
+          done_criteria: { from: "null", to: JSON.stringify(DONE) },
+          files_to_change: { from: "null", to: JSON.stringify(FILES) },
+          scope: { from: "null", to: JSON.stringify("In scope: the item page.") },
+        },
+      },
+    ],
+    runs: [{ id: "run_triage_1", kind: "triage", status: "succeeded", attempt: 2, started_at: AT, finished_at: AT, created_at: AT, tokens: 10, error: null }],
+  },
+  "/api/v1/items/wi_live": {
+    as_of: AT,
+    item: base("wi_live", 20, "Live interactive"),
+    timeline: [],
+    runs: [{ id: "run_i_1", kind: "interactive", status: "running", attempt: 1, started_at: AT, finished_at: null, created_at: AT, tokens: 0, error: null }],
+  },
+  "/api/v1/items/wi_done": {
+    as_of: AT,
+    item: base("wi_done", 21, "Finished interactive"),
+    timeline: [],
+    runs: [{ id: "run_i_2", kind: "interactive", status: "succeeded", attempt: 1, started_at: AT, finished_at: AT, created_at: AT, tokens: 0, error: null }],
+  },
+  "/api/v1/items/wi_closed": {
+    as_of: AT,
+    item: base("wi_closed", 40, "Rejected plan", {
+      stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null, tier: null, item_phase: "rejected", restart_count: 0, loop_count: 0,
+      why: { code: "closed", reason_code: "closed_as", params: { reason: "rejected" }, alarms: [], holder_id: null, next_actor: "none", refs: [], ref_url: null },
+    }),
+    timeline: [
+      { version: 1, at: AT, actor: { kind: "system", id: "system" }, reason: "intake", changes: { stage: { from: "null", to: '"NEW"' } }, detail: null },
+      { version: 2, at: AT, actor: { kind: "user", id: "local:someone" }, reason: "spec_rejected", changes: { stage: { from: '"READY"', to: '"CLOSED"' } }, detail: null },
+    ],
+    thread: [{ seq: 7, at: AT, kind: "command", author: "local:someone", role: "owner", channel: "local", anchor: "msg-7", body: "/reject out of scope" }],
+    commands: [],
+    runs: [],
+  },
+  "/api/v1/items/wi_about": {
+    as_of: AT,
+    item: base("wi_about", 30, "About spec", {
+      request: "Item page shows what the work is about",
+      spec: { problem: "The page shows no text about the work.", desired_output: "[withheld: github_token]", done_criteria: ["About shows the summary", "[withheld: github_token]", "Spec starts collapsed"] },
+    }),
+    timeline: [],
+    runs: [],
+  },
+  "/api/v1/items/wi_request": {
+    as_of: AT,
+    item: base("wi_request", 31, "Request only", { request: "Only the request so far", spec: null }),
+    timeline: [],
+    runs: [],
+  },
+  "/api/v1/items/wi_withheld": {
+    as_of: AT,
+    item: base("wi_withheld", 32, "Flagged request", { request: "[withheld: github_token]", spec: null }),
+    timeline: [],
+    runs: [],
+  },
+  "/api/v1/items/wi_p1": {
+    as_of: AT,
+    item: base("wi_p1", 11, "First phase", { parent_id: "wi_parent", phase: 1, spec_comment_url: "[withheld: github_token]", change_ref: "14", change_url: "javascript:alert(1)" }),
+    timeline: [],
+    runs: [],
+  },
+};
+
+/** Installs the item page's fetch stub and cleanup for one test file: call it once at the top of the file. */
+export function installItemPageFixtures() {
+  beforeEach(() => {
+    history.replaceState(null, "", "/app/");
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const path = url.split("?")[0]!;
+      const body = DETAILS[path] ?? (path === "/api/v1/overview" ? { as_of: AT, stages: {}, needs_you: 0, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 } } : undefined);
+      if (body === undefined) return new Response(JSON.stringify({ error: "Not found." }), { status: 404 });
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+    vi.stubGlobal("scrollTo", () => undefined);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+}
+
+/** The element at `selector`, once the page shows it. */
+export const found = (selector: string) =>
+  waitFor(() => {
+    const el = document.querySelector<HTMLElement>(selector);
+    if (!el) throw new Error(`no ${selector} yet`);
+    return el;
+  });
+
+export function mountItem(path: string) {
+  history.replaceState(null, "", path);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <App />
+    </QueryClientProvider>,
+  );
+}
+
+/** Installs jsdom's missing dialog methods for one test file: call it once at the top of a file that opens dialogs. */
+export function installDialogStub() {
+  beforeEach(() => {
+    // jsdom has no showModal: open and close by the attribute.
+    HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
+    HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
+  });
+}
