@@ -3,10 +3,14 @@
 // design 09-api-registry) through an injected reader, so the tools come from the registry's declarations and no list
 // of factory tools is kept here. core/ imports only core/ and interfaces/, so the reader is passed in: the wiring binds
 // it to `readFeatureMap(REGISTRY, path)`. The feature map's text is the declarations' own (code, not store text), so
-// it holds no secret; the chat still scans every result (src/core/chat-agent.ts).
+// it holds no secret; the chat still scans every result (src/core/chat-agent.ts). A tool call that names a command
+// of the command table (`task_done`, `merge`) is an agent write in a chat turn: the permission gate refuses it in every
+// mode (design 08-permissions), and the owner types the command instead.
 
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../interfaces/tool-broker.js";
 import type { RunId, WorkItemId } from "./types.js";
+import { permissionGate } from "./authorize.js";
+import { COMMAND_TABLE, type TableCommand } from "./command-table.js";
 
 /** The feature map's answer for a path under /api/v1/feature-map/ (readFeatureMap over a registry), else null. */
 export type FeatureMapReader = (path: string) => { status: number; value: unknown } | null;
@@ -15,6 +19,17 @@ export type FeatureMapReader = (path: string) => { status: number; value: unknow
 export interface ChatTool extends ToolDescriptor {
   read_only: true;
   call(args: unknown): Promise<ToolResult>;
+}
+
+/** The command a chat tool name stands for: its table name, or with `_` for each space (`task_done`); null for any other name. */
+function chatToolCommand(name: string): TableCommand | null {
+  return COMMAND_TABLE.find((c) => c.name === name || c.name.replaceAll(" ", "_") === name) ?? null;
+}
+
+/** The gate's answer to a chat tool call that names a command: refused, even in `full` (no mode lets an agent write from a chat turn). */
+function chatWriteRefusal(c: TableCommand): ToolResult | null {
+  const gate = permissionGate({ mode: "full", reversible: c.reversible, origin: "agent", in_chat_turn: true });
+  return gate.outcome === "refuse" ? { ok: false, error_code: gate.reason, message: `${c.name} is a command, and an agent runs no command from a chat turn. Type \`factory ${c.name}\` instead.` } : null;
 }
 
 /** The feature map's paths (src/api/feature-map.ts). */
@@ -120,6 +135,8 @@ export class ChatToolBroker implements ToolBroker {
 
   async call(_ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     const tool = this.tools.find((t) => t.name === name);
+    const command = tool ? null : chatToolCommand(name);
+    if (command) return chatWriteRefusal(command) ?? { ok: false, error_code: "unknown_tool", message: name };
     if (!tool) return { ok: false, error_code: "unknown_tool", message: name };
     try {
       return await tool.call(args);
