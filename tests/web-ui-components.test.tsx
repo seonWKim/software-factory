@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // @ts-nocheck -- tsconfig.test.json has no DOM or JSX; like the other ui tests this file typechecks under the web config.
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { readdirSync, readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DataTable } from "../web/src/components/ui/data-table.js";
@@ -23,6 +23,9 @@ import { Radio } from "../web/src/components/ui/radio.js";
 import { Select } from "../web/src/components/ui/select.js";
 import { Textarea } from "../web/src/components/ui/textarea.js";
 import { TOAST_MS, Toast } from "../web/src/components/ui/toast.js";
+import { TypingDots } from "../web/src/components/ui/typing-dots.js";
+import { ImageThumb } from "../web/src/components/ui/image-thumb.js";
+import { FilePicker } from "../web/src/components/ui/file-picker.js";
 import { act } from "@testing-library/react";
 
 // Every variant, size and state that design-system/components.md lists for the new components renders.
@@ -541,6 +544,75 @@ describe("ListRow", () => {
     const row = screen.getByTestId("row");
     expect(row.querySelector("[data-details]")).toBeNull();
     expect(row.querySelector("[data-row-menu]")).toBeNull();
+  });
+});
+
+describe("TypingDots", () => {
+  it("is a live status read as its label, with three dots bouncing in turn", () => {
+    render(<TypingDots label="Thinking…" />);
+    const status = screen.getByRole("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.textContent).toBe("Thinking…");
+    const dots = [...status.querySelectorAll("[data-dot]")];
+    expect(dots).toHaveLength(3);
+    for (const d of dots) expect(d.getAttribute("aria-hidden")).toBe("true");
+    // Staggered: each dot's 1.2s loop starts at its own delay, inside the shorthand (a separate delay class is reset by it).
+    const delays = dots.map((d) => d.className.match(/animate-\[typing_1\.2s_ease-in-out_(\d+)ms_infinite\]/)?.[1]);
+    expect(delays).toEqual(["0", "150", "300"]);
+    expect(dots.some((d) => /animation-delay/.test(d.className))).toBe(false);
+    // The keyframes the classes name exist at the top level of index.css, or the dots would stand still everywhere.
+    expect(readFileSync("web/src/index.css", "utf8")).toMatch(/^@keyframes typing \{/m);
+  });
+
+  it("moves only when motion is allowed: with reduced motion the dots stand still", () => {
+    render(<TypingDots label="Thinking…" />);
+    for (const d of screen.getByRole("status").querySelectorAll("[data-dot]")) {
+      const classes = d.className.split(" ");
+      expect(classes.filter((c) => c.includes("animate-")).every((c) => c.startsWith("motion-safe:"))).toBe(true);
+      expect(classes.some((c) => c.startsWith("motion-safe:animate-"))).toBe(true);
+    }
+  });
+});
+
+describe("ImageThumb", () => {
+  it("ready, reading and error; a button that opens it only with onOpen, and a remove Button only with onRemove", () => {
+    const open = vi.fn(), remove = vi.fn();
+    render(
+      <ul>
+        <li><ImageThumb src="blob:a" name="a.png" onOpen={open} openLabel="Open a.png" onRemove={remove} removeLabel="Remove a.png" /></li>
+        <li><ImageThumb name="b.png" state="reading" busyLabel="Reading b.png…" /></li>
+        <li><ImageThumb name="c.pdf" state="error" /></li>
+      </ul>,
+    );
+    const a = screen.getByRole("button", { name: "Open a.png" });
+    expect(a.hasAttribute("data-thumb")).toBe(true);
+    expect(within(a).getByRole("img", { name: "a.png" }).getAttribute("src")).toBe("blob:a");
+    fireEvent.click(a);
+    fireEvent.click(screen.getByRole("button", { name: "Remove a.png" }));
+    expect([open.mock.calls.length, remove.mock.calls.length]).toEqual([1, 1]);
+    expect(screen.getByRole("status").textContent).toBe("Reading b.png…");
+    expect(screen.queryByRole("img", { name: "b.png" })).toBeNull();
+    const c = document.querySelector("[data-thumb-state=error]")!;
+    expect(c.querySelector(".border-failed")).not.toBeNull();
+    // No onOpen, no onRemove: only the open one is a button.
+    expect(screen.getAllByRole("button")).toHaveLength(2);
+  });
+});
+
+describe("FilePicker", () => {
+  it("opens the hidden file input and hands each pick's files over once, then clears the input", () => {
+    const onFiles = vi.fn();
+    render(<FilePicker label="Add images" accept="image/png" multiple onFiles={onFiles}>+</FilePicker>);
+    const input = document.querySelector<HTMLInputElement>("[data-file-picker]")!;
+    expect([input.type, input.hidden, input.accept, input.multiple]).toEqual(["file", true, "image/png", true]);
+    const click = vi.spyOn(input, "click");
+    fireEvent.click(screen.getByRole("button", { name: "Add images" }));
+    expect(click).toHaveBeenCalledTimes(1);
+    const file = new File(["x"], "a.png", { type: "image/png" });
+    fireEvent.change(input, { target: { files: [file] } });
+    expect(onFiles).toHaveBeenCalledWith([file]);
+    fireEvent.change(input, { target: { files: [] } });
+    expect(onFiles).toHaveBeenCalledTimes(1);
   });
 });
 

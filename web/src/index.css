@@ -73,6 +73,21 @@
   --shadow-lg: var(--sh-lg);
 }
 
+/* TypingDots (components/ui/typing-dots.tsx): a dot rises 3px and brightens, then settles; each dot runs it 1.2 s a loop
+   from its own delay. At the top level, not in @theme, so it ships though no `--animate-*` names it. */
+@keyframes typing {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
 /* Nothing moves under prefers-reduced-motion (design §9): state is still shown by words and colour. */
 @media (prefers-reduced-motion: reduce) {
   *,

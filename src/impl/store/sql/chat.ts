@@ -3,13 +3,15 @@
 // src/state/migrations/20261126T1300-state-chat-spend; its kind, design 06-spend, 20261127T1000-state-coordinator-spend)
 // and controller_chat_turns (design 04-chat-agent,
 // src/state/migrations/20261126T1400-state-chat-turns), kept out of sql-factory-store.ts so that file stays within
-// its line budget. Store data only: no model call, no sync plugin.
+// its line budget. Store data only: no model call, no sync plugin. A user message's images are written in the same
+// append transaction into controller_attachments (attachments.ts, design 04-chat-agent) and read back with it.
 
 import type { Timestamp } from "../../../core/types.js";
 import type { ChatSpend } from "../../../core/spend.js";
 import type { ChatMessageRecord, ChatSpendKind, ChatTurnRecord, ChatTurnStatus, NewChatMessage } from "../../../interfaces/factory-store.js";
 import type { LLMToolCall } from "../../../interfaces/llm-provider.js";
 import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
+import { insertChatImages, listChatImages } from "./attachments.js";
 import { insertOnce } from "./store-steps.js";
 
 const INSERT = `INSERT INTO controller_chat_messages (session_id, seq, role, content, tool_calls, tool_call_id, created_at)
@@ -25,6 +27,7 @@ export async function appendChatMessages(db: SqlDriver, session_id: string, mess
       for (const m of messages) {
         const tool_calls = m.tool_calls !== undefined && m.tool_calls.length > 0 ? JSON.stringify(m.tool_calls) : null;
         if (!(await insertOnce(db, tx, INSERT, [session_id, m.seq, m.role, m.content, tool_calls, m.tool_call_id ?? null, at]))) throw new SeqTaken();
+        if (m.images?.length) await insertChatImages(tx, session_id, m.seq, m.images, at);
       }
       return true;
     });
@@ -43,10 +46,11 @@ function rowToMessage(r: Row): ChatMessageRecord {
   };
 }
 
-/** The session's messages in seq order. Read-only. */
-export async function listChatMessages(db: SqlExecutor, session_id: string): Promise<ChatMessageRecord[]> {
+/** The session's messages in seq order, a user message with its images (bytes too). Read-only. */
+export async function listChatMessages(db: SqlDriver, session_id: string): Promise<ChatMessageRecord[]> {
   const rows = await db.all("SELECT * FROM controller_chat_messages WHERE session_id = ? ORDER BY seq", [session_id]);
-  return rows.map(rowToMessage);
+  const images = await listChatImages(db, session_id);
+  return rows.map(rowToMessage).map((m) => (images.has(m.seq) ? { ...m, images: images.get(m.seq)! } : m));
 }
 
 const INSERT_SPEND = `INSERT INTO controller_chat_spend (turn_id, session_id, day, cost_usd, tokens, created_at) VALUES (?, ?, ?, ?, ?, ?)`;

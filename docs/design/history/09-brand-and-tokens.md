@@ -1,5 +1,6 @@
 # 09-brand-and-tokens
 
+- **The CSP took images from 'self' only** (decision changed 2026-11-27, spec chat-images, the `blob:` decision at the top of 09-brand-and-tokens.md). Before: `img-src 'self'`, so a picture the page made from bytes (a `blob:` URL) was refused.
 - **Links were underlined only on hover** (until 2026-11-22, the accent decision at the top). Before: `LINK_CLASS` was `text-text-1 hover:underline`, so a link in a sentence (the Spend note's "Change in Settings") differed from the text by colour alone, 2.63:1 where 3:1 is needed (axe `link-in-text-block`). `ID_CLASS` keeps its hover underline.
 - **The current sidebar link was filled with `surface-2`** (until 2026-11-22, the `sidebar-active` decision at the top). Before: the active link used `bg-surface-2`, `#F3F2EE` on the `#F3F1EC` sidebar in light (`#EEF2EF` on `#EDF1EE` in the Celadon palette), about 1.01:1, so only the bar and weight marked it there.
 - **No page-width tokens** (until 2026-11-20, the page widths decision at the top). Before: the token set had no width; Rules set `max-w-3xl` (768px) itself and the other pages were as wide as `<main>` (1217 to 1232px at 1280 by 800).

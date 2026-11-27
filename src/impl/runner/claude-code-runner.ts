@@ -434,7 +434,7 @@ function parseObject(text: string): Record<string, unknown> | null {
  * The CLI's result object on stdout, or null when stdout holds none: the last `result` event of the stream
  * (stream-json, one event per line), else stdout as one JSON object (the older `--output-format json`).
  */
-function parseJsonResult(stdout: string): ClaudeJsonResult | null {
+export function parseJsonResult(stdout: string): ClaudeJsonResult | null {
   const lines = stdout.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]!.trim();

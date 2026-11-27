@@ -268,6 +268,40 @@ describe("claude-cli provider with tools", () => {
     }
   });
 
+  it("with images, reads one stream-json user message: each message's text, then its images in order as base64 blocks", async () => {
+    const f = fakeClaude();
+    const red = { media_type: "image/png", data: "cmVk" }, blue = { media_type: "image/jpeg", data: "Ymx1ZQ==" };
+    const messages: LLMMessage[] = [
+      { role: "user", content: "Look at these.", images: [red, blue] },
+      { role: "assistant", content: "A red and a blue square." },
+      { role: "user", content: "Which is first?" },
+    ];
+    const r = await cliProvider(f).complete({ ...REQ, messages });
+    expect(r.stop_reason).toBe("end");
+    const argv = f.argv()[0]!;
+    expect(argAfter(argv, "--input-format")).toBe("stream-json");
+    expect(argAfter(argv, "--output-format")).toBe("stream-json");
+    expect(argv).toContain("--verbose");
+    const lines = f.stdin()[0]!.split("\n").filter((l) => l !== "");
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!)).toEqual({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "USER:\nLook at these." },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "cmVk" } },
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "Ymx1ZQ==" } },
+          { type: "text", text: "ASSISTANT:\nA red and a blue square.\n\nUSER:\nWhich is first?" },
+        ],
+      },
+    });
+    // Without images: plain text on stdin and one JSON answer, as before.
+    await cliProvider(f).complete(REQ);
+    expect(argAfter(f.argv()[1]!, "--output-format")).toBe("json");
+    expect(f.argv()[1]).not.toContain("--input-format");
+  });
+
   it("tools with an output schema in one call answer error and run no CLI", async () => {
     const f = fakeClaude();
     const r = await cliProvider(f).complete({ ...REQ, output_schema: { type: "object" } });

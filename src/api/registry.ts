@@ -45,6 +45,8 @@ export interface Capability<I, O> {
   path: string;
   /** A GET reads it from the query parameters, a POST from the JSON body. */
   input: ObjectSchema<I>;
+  /** A POST's largest body in bytes, when it takes more than the write routes' 64 KB (images); a larger one is a 413. */
+  max_body?: number;
   output: Schema<O>;
   run(c: CapabilityCtx, input: I): O | Refusal | Promise<O | Refusal>;
 }
@@ -93,6 +95,9 @@ export function registryReads(r: Registry, path: string): boolean {
 
 /** True when a POST capability is declared at this path. */
 export const registryWrites = (r: Registry, path: string): boolean => capabilityAt(r, "POST", path) !== undefined;
+
+/** The declared largest body of the POST capability at this path, or undefined (the write routes' own limit). */
+export const registryMaxBody = (r: Registry, path: string): number | undefined => capabilityAt(r, "POST", path)?.max_body;
 
 /** Parses the input, runs the capability and renders its answer through the Withholder by its output schema. */
 async function serve(c: Declared, d: ServerDeps, raw: unknown, w: Pick<Withholder, "plain">): Promise<ApiResult> {
