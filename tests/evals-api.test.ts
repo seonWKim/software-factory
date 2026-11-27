@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compareSkillEvalRuns, skillEvalGrid } from "../src/core/skill-eval-compare.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { CLEAN, FLAGGING, OWNER, SKILL, evalGet as get, evalSeeded as seeded, tables } from "./ui-api-fixtures.js";
+import { CLEAN, FLAGGING, OWNER, SKILL, get, seeded, tables } from "./helpers/evals-api-fixtures.js";
 import { newStore } from "./helpers/store.js";
 
 // GET /api/v1/evals/<skill>/runs, /grid and /compare (src/ui/evals-api.ts) through the read route chain: the same

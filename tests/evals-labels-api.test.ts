@@ -10,7 +10,7 @@ import { type ServerDeps, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { PROJECT, silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
-import { CLEAN, FLAGGING, HOST, ORIGIN, OWNER, SKILL, evalGet as get, evalSeeded as seeded, tables } from "./ui-api-fixtures.js";
+import { CLEAN, FLAGGING, HOST, ORIGIN, OWNER, SKILL, get, seeded, tables } from "./helpers/evals-api-fixtures.js";
 
 // The owner's labels on the judge (design 06-measurement, judge labels; 09-dashboard-evals, Judge checks):
 // POST /api/v1/evals/write op label.set behind the request guards and the approve_spec owner check, and
