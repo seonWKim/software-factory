@@ -1,6 +1,6 @@
 # 9. Status page: dashboard Runners page
 
-- **The Runners tab has a Chat Card (decision added 2026-11-26, local-task-tk_eea9af6d phase 2 of 2; current; replaces none).** After Worker processes, `RunnersTab` draws `ChatCard` (`web/src/views/chat-panel.tsx`): the chat's current activity, its recent turns with outcome and reason, and a Transcript button for each, opened in a dialog. The decision, its texts and the panel are in [09-dashboard-chat.md](09-dashboard-chat.md).
+- **The Runners tab has a Chat Card (decision added 2026-11-26, local-task-tk_eea9af6d phase 2 of 2; current; replaces none).** After Worker processes, `RunnersTab` draws `ChatCard` (`web/src/views/chat-card.tsx`): the chat's current activity, its recent turns with outcome and reason, and a Transcript button for each, opened in a dialog. The decision, its texts and the panel are in [09-dashboard-chat.md](09-dashboard-chat.md).
 
 - **Runners is Health's Runners tab, without Running now (decision changed 2026-11-22, wi_149faba7; current; replaces the Runners page at `/app/runners` and its Running now Card, see History).** The page's factory banner, worker setting line and Worker processes Card are Health's Runners tab (`RunnersTab`, `web/src/views/pages.tsx`, [09-health.md](09-health.md)); the code-revision line shows once, above Health's tabs. Running now is on Work's Activity section only. `/app/runners` redirects to `/app/health?tab=runners`. The decisions below apply to the tab's texts and rows.
 

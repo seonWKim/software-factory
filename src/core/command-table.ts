@@ -5,7 +5,7 @@ import type { CommandName } from "./commands.js";
  * its arguments, who may run it, what it prints, and the form it takes in a chat source (typed after a mention of
  * the bot in Slack). The CLI's usage and parsers, the SET_UP.md lists, the dashboard's command list and the chat
  * parser all read it, so adding an entry gives it to every front end; tests/command-table.test.ts fails when one
- * front end lacks an entry. The item commands' phases and replies stay in src/core/commands.ts.
+ * front end lacks an entry. The item commands' phases stay in src/core/command-specs.ts, their replies in src/core/commands.ts.
  */
 
 /** Who may run a command: anyone, anyone who may submit work, or the owner (the actions are the owner check's). */

@@ -38,11 +38,26 @@ export interface ChatDeps {
 export type ChatTurnResult =
   | { ok: true; reply: string }
   /**
-   * `withheld`: the scanner found something in the message, a tool result or a reply. `model_error`: the provider
-   * did not end its answer. `too_many_steps`: still asking for tools after CHAT_MAX_STEPS calls. `seq_taken`: the
-   * session's next seq was written meanwhile. None stores a message.
+   * `withheld`: the scanner found something in the message, a tool result or a reply. `model_refused`: the provider
+   * refused the call. `model_cut_off`: the answer hit max_tokens. `model_error`: the call failed (stop_reason
+   * "error"); `detail` holds the provider's own words (a login, quota or tool problem), scanned and capped at
+   * CHAT_DETAIL_MAX characters, absent when it gave none or the scan flagged it. `too_many_steps`: still asking for
+   * tools after CHAT_MAX_STEPS calls. `seq_taken`: the session's next seq was written meanwhile. None stores a message.
    */
-  | { ok: false; reason: "withheld" | "model_error" | "too_many_steps" | "seq_taken" };
+  | { ok: false; reason: ChatFailure; detail?: string };
+
+export type ChatFailure = "withheld" | "model_refused" | "model_cut_off" | "model_error" | "too_many_steps" | "seq_taken";
+
+/** The most characters of a provider's error text a failed turn passes on as its `detail`. */
+export const CHAT_DETAIL_MAX = 300;
+
+/** A provider answer that did not end as the turn's failure, with the provider's error text when it is clean. */
+async function modelFailure(scanner: EgressScanner, stop: "max_tokens" | "refused" | "error", text: string): Promise<ChatTurnResult> {
+  if (stop === "refused") return { ok: false, reason: "model_refused" };
+  if (stop === "max_tokens") return { ok: false, reason: "model_cut_off" };
+  const detail = text.trim().slice(0, CHAT_DETAIL_MAX);
+  return { ok: false, reason: "model_error", ...(detail !== "" && (await clean(scanner, "ui", detail)) && { detail }) };
+}
 
 /** The tools a chat turn offers: every read-only tool of the broker, in its order. */
 export const chatTools = (broker: ToolBroker): ToolDescriptor[] => broker.allTools().filter((t) => t.read_only);
@@ -89,7 +104,7 @@ export async function chatTurn(d: ChatDeps, session_id: string, text: string): P
     usage.tokens += r.usage.input_tokens + r.usage.output_tokens;
     usage.cost_usd = usage.cost_usd === null || r.usage.cost_usd === null ? null : usage.cost_usd + r.usage.cost_usd;
     if (r.stop_reason !== "end") {
-      result = { ok: false, reason: "model_error" };
+      result = await modelFailure(d.scanner, r.stop_reason, r.text);
       break;
     }
     if (r.text !== "" && !(await clean(d.scanner, "ui", r.text))) {

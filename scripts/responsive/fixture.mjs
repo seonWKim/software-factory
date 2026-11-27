@@ -335,14 +335,20 @@ async function seedStanding(store) {
   }
 }
 
-/** The Rules page's waiting entries, as `evolve pending` prints them: one class and one proposal, each with a long title. */
+/**
+ * The Rules page's waiting entries, as `evolve pending` prints them: a class waiting and one held, and three proposals
+ * (one of each kind, two with Korean titles, as the owner's ledger has them), each with a long title.
+ */
 const PENDING_TEXT = [
-  "## proposals (open) 1",
+  "## proposals (open) 3",
   `- P-0042 [edit-asset] prompts/review.md — Ask the reviewer to name the page and width of each broken rule in ${LONG_WORD}`,
+  "- P-0043 [promote-learning] agent-skills/review/SKILL.md — 리뷰 결과는 깨진 규칙마다 페이지와 화면 폭을 함께 적는다",
+  "- P-0044 [new-asset] agent-skills/ui-check/learnings.md — 화면 점검 스킬의 learnings 파일을 새로 만든다",
   "## proposals (held) 0",
   "## tacit Pending 1",
   "- C-101 open every summary with the answer before any detail, even in a long thread",
-  "## tacit Held 0",
+  "## tacit Held 1",
+  "- C-102 ask before widening a request beyond the named section",
   "",
 ].join("\n");
 
@@ -378,6 +384,9 @@ function seedRulesHome(dir) {
   const show = {
     "C-101": ["### C-101 summary first", "- 인시던트: T-4, T-5", "- 초안: 기본값: Open every summary with the answer. / 예외: 없음", "- 범위: software", "", "# incidents", "# verdicts", ""].join("\n"),
     "P-0042": ["# P-0042 page and width", "target: prompts/review.md", "current: Name the rule.", "proposed: Name the rule, the page and the width.", ""].join("\n"),
+    "P-0043": ["# P-0043 리뷰 결과에 폭", "target: agent-skills/review/SKILL.md", "current: - 깨진 규칙을 적는다.", "proposed: - 깨진 규칙마다 페이지와 화면 폭을 함께 적는다.", ""].join("\n"),
+    "P-0044": ["# P-0044 learnings 파일", "target: agent-skills/ui-check/learnings.md", "proposed: # ui-check learnings", ""].join("\n"),
+    "C-102": ["### C-102 narrow scope", "- 인시던트: T-6, T-7", "- 초안: 기본값: Ask before widening a request. / 예외: 없음", "- 범위: 전역", "", "# incidents", "# verdicts", ""].join("\n"),
   };
   const outputs = {
     tacit: { "show --active --unclustered": "# active, unclustered\n" },

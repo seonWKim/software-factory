@@ -1,6 +1,5 @@
-// English text, area: activity (the Activity page of the autonomous actors). A key's prefix (before its first dot) belongs to this file only.
+// English text, area: activity (Health's Activity tab of the autonomous actors). A key's prefix (before its first dot) belongs to this file only.
 export const activity = {
-  "actors.title": "Activity",
   "actors.loading": "Activity",
   "actors.description": "What the factory does on its own: each actor, what it is doing now, and its recent actions. Entries are kept for {days} days.",
   "actors.actors": "Actors",
@@ -34,7 +33,6 @@ export const activity = {
   "actors.alerts": "Factory alerts",
   "actors.alertsLabel": "Factory alerts",
   "actors.backSchedules": "Back to Schedules",
-  "actors.backHealth": "Back to Health",
   "actors.clear": "Clear",
   "actors.clearFor": "Clear alert: {text}",
   "actors.clearFailed": "Could not clear the alert: {error}",

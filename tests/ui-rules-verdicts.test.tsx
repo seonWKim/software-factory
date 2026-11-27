@@ -113,17 +113,16 @@ describe("Rules page", () => {
     expect(screen.getByRole("status").textContent).toBe("Promote sent for Review runs the tests.");
   });
 
-  it("a waiting proposal with no target: Promote and its menu item are off, the row says why, and no dialog opens", async () => {
+  it("a waiting proposal with no target: Promote is off, the row says why, and no dialog opens", async () => {
     s.current = view({ entries: [{ id: "P-0010", title: "No file named", state: "open", kind: "edit-asset", judged: null, draft: null, draft_error: null }] });
     await show();
     await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     const promote = within(card("P-0010")).getByRole("button", { name: "Promote" }) as HTMLButtonElement;
     expect(promote.disabled).toBe(true);
-    fireEvent.click(within(card("P-0010")).getByRole("button", { name: /^Decide:/ }));
-    const item = within(card("P-0010")).getByRole("menuitem", { name: "Promote" }) as HTMLButtonElement;
-    expect(item.disabled).toBe(true);
-    fireEvent.click(item);
+    fireEvent.click(promote);
     expect(document.querySelector("dialog[data-dialog]")).toBeNull();
+    expect(card("P-0010").querySelector("[data-rule-gist]")!.textContent).toBe("Names no file to change");
+    fireEvent.click(within(card("P-0010")).getByRole("button", { name: /^Decide:/ }));
     expect((within(card("P-0010")).getByRole("menuitem", { name: "Hold" }) as HTMLButtonElement).disabled).toBe(false);
     expect(card("P-0010").querySelector("[data-no-target]")!.textContent).toBe("Promote is off: this proposal names no file it changes.");
     expect(card("P-0007")).toBeNull();
@@ -165,8 +164,10 @@ describe("Rules page", () => {
     s.current = view({ judge: "Only the owner judges rules; you are local:alice." });
     await show();
     expect((await screen.findByRole("alert", {}, SLOW)).textContent).toContain("Only the owner");
-    // Read-only: the detail opens, but no verdict button shows.
-    expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Keep existing CLI flags."]);
+    // Read-only: the detail opens, but no verdict button shows; the ⋯ menu holds Copy ID only.
+    expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["⋯"]);
+    fireEvent.click(within(card("C-012")).getByRole("button", { name: /^Actions:/ }));
+    expect(within(card("C-012")).getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Copy ID"]);
     expect(whyToggle("C-012")).not.toBeNull();
   });
 

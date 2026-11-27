@@ -4,7 +4,7 @@
 // read-only tools, the egress scan and a spend row per turn. No live model call: a fake provider, a stubbed fetch, a
 // CLI that never runs.
 
-import { chmodSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -176,26 +176,103 @@ describe("openai-compatible provider with tools", () => {
   });
 });
 
-describe("claude-cli provider with tools", () => {
-  it("answers stop_reason error and never runs the CLI", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sf-chat-cli-"));
-    const marker = join(dir, "ran");
-    const bin = join(dir, "claude");
-    writeFileSync(bin, `#!/bin/sh\ntouch "${marker}"\necho '{"result":"ran"}'\n`);
-    chmodSync(bin, 0o755);
-    const p = new ClaudeCliLLMProvider({
-      secrets: new OneSecret("unused"),
-      claudeConfigDir: join(dir, "config"),
-      workDir: join(dir, "work"),
-      models: { cheap: "c", standard: "s", strong: "x" },
-      claudeBin: bin,
-    });
+/**
+ * A fake claude CLI: it keeps each call's argv and stdin, and answers a tool call until the prompt holds a tool
+ * result, then the answer. `is_error` makes it answer like a CLI whose login has expired.
+ */
+function fakeClaude(opts: { is_error?: boolean } = {}): { bin: string; dir: string; argv: () => string[][]; stdin: () => string[] } {
+  const dir = mkdtempSync(join(tmpdir(), "sf-chat-cli-"));
+  const bin = join(dir, "claude");
+  const asked = JSON.stringify({ is_error: false, result: "", structured_output: { answer: "", tool_calls: [{ name: "list_features", arguments: { area: "store" } }] }, usage: { input_tokens: 3, output_tokens: 2 }, total_cost_usd: 0.001 });
+  const answered = JSON.stringify({ is_error: false, result: "", structured_output: { answer: "There is one: store.ping.", tool_calls: [] }, usage: { input_tokens: 4, output_tokens: 3 }, total_cost_usd: 0.001 });
+  const expired = JSON.stringify({ is_error: true, result: "Invalid API key · Please run /login", usage: { input_tokens: 0, output_tokens: 0 } });
+  writeFileSync(bin, [
+    "#!/bin/sh",
+    `n=$(ls "${dir}" | grep -c '^in-')`,
+    `cat > "${dir}/in-$n"`,
+    `for a in "$@"; do printf '%s\\0' "$a"; done > "${dir}/argv-$n"`,
+    ...(opts.is_error
+      ? [`echo '${expired}'`]
+      : [`if grep -q 'TOOL RESULT' "${dir}/in-$n"; then echo '${answered}'; else echo '${asked}'; fi`]),
+    "",
+  ].join("\n"));
+  chmodSync(bin, 0o755);
+  const files = (prefix: string) => readdirSync(dir).filter((f) => f.startsWith(prefix)).sort().map((f) => readFileSync(join(dir, f), "utf8"));
+  return { bin, dir, argv: () => files("argv-").map((a) => a.split("\0").slice(0, -1)), stdin: () => files("in-") };
+}
 
-    const r = await p.complete(REQ);
+const cliProvider = (f: { bin: string; dir: string }) => new ClaudeCliLLMProvider({
+  secrets: new OneSecret("unused"),
+  claudeConfigDir: join(f.dir, "config"),
+  workDir: join(f.dir, "work"),
+  models: { cheap: "c", standard: "s", strong: "x" },
+  claudeBin: f.bin,
+});
+
+const argAfter = (argv: string[], flag: string): string => argv[argv.indexOf(flag) + 1]!;
+
+describe("claude-cli provider with tools", () => {
+  // The bug: claude-cli answered every request with tools stop_reason "error" without running the CLI, and the
+  // chat always offers tools, so every chat turn on the subscription login failed as model_error (2026-11-27).
+  it("runs the CLI with the tools in the system prompt and the reply shape, and returns the asked tool calls", async () => {
+    const f = fakeClaude();
+    const r = await cliProvider(f).complete({ ...REQ, system: "Answer briefly." });
+    expect(r.stop_reason).toBe("end");
+    expect(r.tool_calls).toEqual([{ id: expect.stringMatching(/^call_/), name: "list_features", arguments: '{"area":"store"}' }]);
+    const argv = f.argv()[0]!;
+    expect(argv).toContain("--tools");
+    expect(argAfter(argv, "--tools")).toBe("");
+    const system = argAfter(argv, "--system-prompt");
+    expect(system).toMatch(/^Answer briefly\.\n\n## Tools/);
+    expect(system).toContain(`- list_features: Lists the feature map's features. Arguments schema: ${JSON.stringify(TOOL.parameters)}`);
+    const schema = JSON.parse(argAfter(argv, "--json-schema")) as { properties: { tool_calls: { items: { properties: { name: { enum: string[] } } } } } };
+    expect(schema.properties.tool_calls.items.properties.name.enum).toEqual(["list_features"]);
+  });
+
+  it("sends the earlier tool calls and results as prompt text, and returns the answer", async () => {
+    const f = fakeClaude();
+    const messages: LLMMessage[] = [
+      REQ.messages[0]!,
+      { role: "assistant", content: "", tool_calls: [{ id: "call_1", name: "list_features", arguments: '{"area":"store"}' }] },
+      { role: "tool", content: '["store.ping"]', tool_call_id: "call_1" },
+    ];
+    const r = await cliProvider(f).complete({ ...REQ, messages });
+    expect(r).toMatchObject({ text: "There is one: store.ping.", stop_reason: "end", usage: { input_tokens: 4, output_tokens: 3, cost_usd: 0.001 } });
+    expect(r).not.toHaveProperty("tool_calls");
+    expect(f.stdin()[0]).toBe([
+      "USER:\nWhat features are there?",
+      'ASSISTANT (tool calls):\n[{"id":"call_1","name":"list_features","arguments":{"area":"store"}}]',
+      'TOOL RESULT (call_1):\n["store.ping"]',
+    ].join("\n\n"));
+  });
+
+  it("a whole chat turn answers over the CLI: tool call, tool result, reply", async () => {
+    const f = fakeClaude();
+    const { d, store } = await turnDeps(cliProvider(f));
+    try {
+      expect(await chatTurn(d, "s1", "What features are there?")).toEqual({ ok: true, reply: "There is one: store.ping." });
+      expect(f.stdin()).toHaveLength(2);
+      expect(f.stdin()[1]).toMatch(/TOOL RESULT \(call_[^)]+\):\n.*store\.ping/);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("a CLI error answer (an expired login) fails the turn as model_error with the CLI's words as detail", async () => {
+    const f = fakeClaude({ is_error: true });
+    const { d, store } = await turnDeps(cliProvider(f));
+    try {
+      expect(await chatTurn(d, "s1", "Hi")).toEqual({ ok: false, reason: "model_error", detail: "Invalid API key · Please run /login" });
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("tools with an output schema in one call answer error and run no CLI", async () => {
+    const f = fakeClaude();
+    const r = await cliProvider(f).complete({ ...REQ, output_schema: { type: "object" } });
     expect(r.stop_reason).toBe("error");
-    expect(r.usage.output_tokens).toBe(0);
-    expect(existsSync(marker)).toBe(false);
-    expect(existsSync(join(dir, "work"))).toBe(false);
+    expect(f.stdin()).toEqual([]);
   });
 });
 
@@ -335,6 +412,26 @@ describe("chatTurn", () => {
       expect(await store.listChatMessages("s2")).toEqual([]);
       const spend = await store.listChatSpendBetween("2026-11-26", "2026-11-26");
       expect(spend.find((s) => s.session_id === "s1")).toMatchObject({ cost_usd: null, tokens: 1 });
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("names what the provider did: refused, cut off, or failed with its own words (a scanned secret is dropped)", async () => {
+    const steps: Step[] = [
+      { text: "", stop_reason: "refused" },
+      { text: "partial", stop_reason: "max_tokens" },
+      { text: "  every LLM provider failed: claude-cli: Not logged in · Please run /login  ", stop_reason: "error" },
+      { text: `bad key ${SECRET}`, stop_reason: "error" },
+      { text: "x".repeat(400), stop_reason: "error" },
+    ];
+    const { d, store } = await turnDeps(scripted(steps));
+    try {
+      expect(await chatTurn(d, "s1", "Hi")).toEqual({ ok: false, reason: "model_refused" });
+      expect(await chatTurn(d, "s1", "Hi")).toEqual({ ok: false, reason: "model_cut_off" });
+      expect(await chatTurn(d, "s1", "Hi")).toEqual({ ok: false, reason: "model_error", detail: "every LLM provider failed: claude-cli: Not logged in · Please run /login" });
+      expect(await chatTurn(d, "s1", "Hi")).toEqual({ ok: false, reason: "model_error" });
+      expect(await chatTurn(d, "s1", "Hi")).toEqual({ ok: false, reason: "model_error", detail: "x".repeat(300) });
     } finally {
       await store.close();
     }
