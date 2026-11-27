@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
 
@@ -276,3 +276,85 @@ export function installDialogStub() {
     HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
   });
 }
+
+
+// The item page's DecisionCard setup (design 09-dashboard-item-commands), shared by the decide test files.
+export const DECIDE_AT = "2026-11-12T00:00:00.000Z";
+export const decideCmd = (name: string) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null });
+export const SPEC = {
+  in_short: "AS-IS: nothing checks the scope.\nTO-BE: CI checks the scope.",
+  decisions: [
+    { question: "Fail the job, or only warn?", options: ["Fail the job", "Only warn"], default: "Fail the job", reason: "A failing job blocks merges.", owner_only: false },
+    { question: "Name the step?", options: [], default: "scope", reason: null, owner_only: false },
+  ],
+};
+export const item = (extra: object = {}) => ({
+  id: "wi_9f3c2a", source: { type: "github_issue", id: "o/r#30", link: "https://github.com/o/r/issues/30" }, title: "Check the scope in CI",
+  stage: "READY", close_reason: null, blocked_on: "human", blocked_reason: "spec_pending", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0,
+  change_ref: null, change_url: null, spec_comment_url: null, parent_id: null, phase: null, phases: [], version: 3, created_at: DECIDE_AT, updated_at: DECIDE_AT,
+  why: { code: "human", reason_code: "spec_pending", params: {}, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null },
+  ...extra,
+});
+export const decideDetail = (extra: object = {}) => ({
+  as_of: DECIDE_AT,
+  item: item(),
+  timeline: [
+    { version: 1, at: DECIDE_AT, actor: { kind: "user", id: "local:me" }, reason: "intake", changes: {}, detail: null },
+    { version: 2, at: DECIDE_AT, actor: { kind: "user", id: "github:4711", name: null }, reason: "retry_requested", changes: {}, detail: null },
+  ],
+  runs: [{ id: "run_t1", kind: "triage", status: "succeeded", attempt: 1, started_at: DECIDE_AT, finished_at: DECIDE_AT, created_at: DECIDE_AT, tokens: 5, error: null, attempts: [{ attempt: 1, worker_id: "mac-mini:4242:3" }] }],
+  commands: ["approve", "revise", "reject"].map(decideCmd),
+  replies: [],
+  spec: SPEC,
+  ...extra,
+});
+
+/** The mutable state of the DecisionCard tests: one object, so no file assigns to an imported binding. */
+export const decideState = {
+  body: {} as Record<string, unknown>,
+  /** The commands POSTs the page sent, with their JSON bodies. */
+  posts: [] as { url: string; body: unknown }[],
+};
+
+/** Registers the beforeEach (fetch and scrollTo stubs, history path) and afterEach (cleanup, unstub) of the DecisionCard tests. */
+export function installDecideFixtures() {
+  beforeEach(() => {
+    decideState.body = decideDetail();
+    decideState.posts = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.split("?")[0]!;
+      if (init?.method === "POST") {
+        decideState.posts.push({ url, body: JSON.parse(String(init.body)) });
+        return new Response(JSON.stringify({ request_id: "app:1", seq: 1, command: "x", work_item_id: "wi_9f3c2a" }), { status: 202, headers: { "content-type": "application/json" } });
+      }
+      const bodies: Record<string, unknown> = {
+        "/api/v1/items/wi_9f3c2a": decideState.body,
+        "/api/v1/session": { as_of: DECIDE_AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
+        "/api/v1/overview": { as_of: DECIDE_AT, stages: {}, needs_you: 1, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 } },
+      };
+      const out = bodies[path];
+      if (out === undefined) return new Response(JSON.stringify({ error: "Not found." }), { status: 404 });
+      return new Response(JSON.stringify(out), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+    vi.stubGlobal("scrollTo", () => undefined);
+    history.replaceState(null, "", "/app/items/wi_9f3c2a");
+  });
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+}
+
+export function mountDecide() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(<QueryClientProvider client={client}><App /></QueryClientProvider>);
+}
+
+/** The card, once the session has enabled its buttons. */
+export async function box() {
+  const decide = await screen.findByRole("region", { name: "What you need to decide" });
+  await vi.waitFor(() => expect((within(decide).getByRole("button", { name: "Approve" }) as HTMLButtonElement).disabled).toBe(false));
+  return decide;
+}
+
+export const FACTORY_MSG = { seq: 7, at: DECIDE_AT, kind: "spec", author: "factory", role: "factory", channel: "github_issue", anchor: "msg-7", body: "## Spec ready for approval\n\nLonger text of the spec." };
