@@ -19,6 +19,8 @@ const { FailuresSection } = (await import(/* @vite-ignore */ FAILURES_MODULE)) a
 
 const TOKEN = "tok_credential";
 const SECRETS = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"];
+const LABELS = ["Claude subscription token", "Anthropic API key"];
+let served = SECRETS;
 /** A secret-like value built from parts, so no literal credential sits in the repository. */
 const VALUE = ["sk", "ant", "oat01", "z".repeat(24)].join("-");
 const AT = "2026-11-22T09:00:00.000Z";
@@ -29,6 +31,7 @@ let answer: { status: number; body: unknown };
 
 beforeEach(() => {
   posts = [];
+  served = SECRETS;
   answer = { status: 200, body: { saved: [SECRETS[0]] } };
   // jsdom has no showModal: open by the attribute.
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
@@ -40,7 +43,7 @@ beforeEach(() => {
       return json(answer.status, answer.body);
     }
     const path = new URL(url, "http://127.0.0.1").pathname;
-    if (path === "/api/v1/model-credential") return json(200, { secrets: SECRETS, csrf_token: TOKEN });
+    if (path === "/api/v1/model-credential") return json(200, { secrets: served, csrf_token: TOKEN });
     if (path === "/api/v1/failures") {
       const runs = [{ id: "run_1", work_item_id: "wi_1", kind: "triage", attempt: 1, detail: "x", worker: null, finished_at: AT }];
       return json(200, { as_of: AT, window: "24h", cap: 200, total: 2, capped: false, groups: ["setup_missing", "tests_failed"].map((code) => ({ code, count: 1, last_seen: AT, items: 1, runs })) });
@@ -81,15 +84,50 @@ describe("Needs you: the model credential row", () => {
     expect(within(row).queryByRole("button", { name: "More commands" })).toBeNull();
     fireEvent.click(within(row).getByRole("button", { name: "Add model credential" }));
     const d = await dialog();
-    for (const name of SECRETS) expect((await within(d).findByLabelText(name)).getAttribute("type")).toBe("password");
+    for (const name of LABELS) expect((await within(d).findByLabelText(name)).getAttribute("type")).toBe("password");
     expect(within(d).getByRole("button", { name: "Cancel" })).toBeTruthy();
+  });
+
+  it("labels each field plainly with its help, the raw name only under Details, and says which to choose", async () => {
+    mount(createElement(CheckRow, { action: ROW }));
+    fireEvent.click(screen.getByRole("button", { name: "Add model credential" }));
+    const d = await dialog();
+    await within(d).findByLabelText(LABELS[0]!);
+    expect(d.textContent).toContain("Fill in one. Use the Claude subscription token if you have a Claude plan; use the Anthropic API key if you pay per use.");
+    for (const l of d.querySelectorAll("label")) {
+      expect(l.textContent).not.toMatch(/^[A-Z][A-Z0-9_]+$/);
+      expect(l.querySelector("code")).toBeNull();
+    }
+    const hints = [...d.querySelectorAll("[data-field-hint]")];
+    expect(hints.map((h) => h.textContent)).toEqual(["From claude setup-token; uses your Claude plan", "From console.anthropic.com; billed per use"]);
+    expect(hints[0]!.querySelector("code")!.textContent).toBe("claude setup-token");
+    const details = [...d.querySelectorAll("details")];
+    expect(details.map((x) => x.querySelector("summary")!.textContent)).toEqual(["Details", "Details"]);
+    expect(details.map((x) => x.querySelector("code")!.textContent)).toEqual(SECRETS);
+    for (const name of SECRETS) expect([...d.querySelectorAll("code")].filter((c) => c.textContent === name).every((c) => c.closest("details"))).toBe(true);
+    for (const h of hints) expect(h.textContent).not.toMatch(/[A-Z_]{6,}/);
+  });
+
+  it("a name the dialog does not know gets the fallback label and help, its raw name only under Details, and posts by that name", async () => {
+    served = ["MYSTERY_MODEL_KEY"];
+    mount(createElement(CheckRow, { action: ROW }));
+    fireEvent.click(screen.getByRole("button", { name: "Add model credential" }));
+    const d = await dialog();
+    await within(d).findByLabelText("Other model key");
+    expect(d.querySelector("[data-field-hint]")!.textContent).toBe("Needed by the agent you use. Its name is under Details.");
+    expect(d.querySelector("label")!.textContent).toBe("Other model key");
+    expect(d.textContent).not.toContain("Fill in one");
+    expect([...d.querySelectorAll("code")].filter((c) => c.textContent === "MYSTERY_MODEL_KEY").every((c) => c.closest("details"))).toBe(true);
+    expect(d.querySelector("details code")!.textContent).toBe("MYSTERY_MODEL_KEY");
+    await saveIn(d, "Other model key", VALUE);
+    expect(posts[0]!.body).toEqual({ values: { MYSTERY_MODEL_KEY: VALUE } });
   });
 
   it("Save posts the filled field only, with the page's CSRF token, and closes; the value stays nowhere on the page", async () => {
     mount(createElement("ul", null, createElement(CheckRow, { action: ROW })));
     const row = screen.getByText("Add a model credential").closest("li")!;
     fireEvent.click(within(row).getByRole("button", { name: "Add model credential" }));
-    await saveIn(await dialog(), SECRETS[0]!, VALUE);
+    await saveIn(await dialog(), LABELS[0]!, VALUE);
     expect(posts).toEqual([{ url: "/api/v1/model-credential", token: TOKEN, body: { values: { [SECRETS[0]!]: VALUE } } }]);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.body.innerHTML).not.toContain(VALUE);
@@ -101,7 +139,7 @@ describe("Needs you: the model credential row", () => {
     const row = screen.getByText("Add a model credential").closest("li")!;
     fireEvent.click(within(row).getByRole("button", { name: "Add model credential" }));
     const d = await dialog();
-    await saveIn(d, SECRETS[1]!, VALUE);
+    await saveIn(d, LABELS[1]!, VALUE);
     expect(within(d).getByRole("alert").textContent).toMatch(/Only the owner adds a model credential/);
   });
 });
@@ -113,7 +151,7 @@ describe("Failures: the setup_missing group", () => {
     expect(buttons).toHaveLength(1);
     expect(buttons[0]!.closest("[data-testid=failure-group]")!.textContent).toContain("Model credential missing");
     fireEvent.click(buttons[0]!);
-    await saveIn(await dialog(), SECRETS[0]!, VALUE);
+    await saveIn(await dialog(), LABELS[0]!, VALUE);
     expect(posts.map((p) => p.url)).toEqual(["/api/v1/model-credential"]);
   });
 });
