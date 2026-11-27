@@ -2,7 +2,9 @@
 // Each run's cost is the harness's own figure (`outcomeCost`), never computed here; a run with none counts as
 // unknown, apart, never as 0. Days and weeks are UTC: a day starts at 00:00 UTC, a week on Monday 00:00 UTC.
 // Chat turns (design 04-chat-agent) are no runs: their spend is stored per turn (controller_chat_spend) and totalled
-// apart, under `chat`, never added to the run totals. Pure, apart from readSpend's two store reads.
+// apart, under `chat`, never added to the run totals. Coordinator cycles (design 06-spend) store one row each in the
+// same table with kind `coordinator`: totalled apart, under `coordinator`, added to neither the runs nor `chat`.
+// Pure, apart from readSpend's three store reads.
 
 import { type Run, type RunKind, type Timestamp, type WorkItemId, outcomeCost, runTokenCount } from "./types.js";
 import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
@@ -44,6 +46,8 @@ export interface Spend {
   items: SpendItem[];
   /** The chat turns of the range, apart from the runs. */
   chat: ChatSpendTotals;
+  /** The coordinator cycles of the range, apart from the runs and the chat turns; `turns` counts cycles. */
+  coordinator: ChatSpendTotals;
 }
 
 /** One chat turn's stored spend (controller_chat_spend). */
@@ -95,8 +99,8 @@ export function spendTotals(runs: readonly Run[]): SpendTotals {
 const byCostThenId = (a: { cost_usd: number; work_item_id: WorkItemId }, b: { cost_usd: number; work_item_id: WorkItemId }): number =>
   b.cost_usd - a.cost_usd || (a.work_item_id < b.work_item_id ? -1 : 1);
 
-/** Spend of `runs` and chat `turns` over the UTC days `from` to `to` (both inclusive, YYYY-MM-DD), by day and by item. */
-export function summarizeSpend(runs: readonly Run[], from: string, to: string, turns: readonly ChatSpend[]): Spend {
+/** Spend of `runs`, chat `turns` and coordinator `cycles` over the UTC days `from` to `to` (both inclusive, YYYY-MM-DD), by day and by item. */
+export function summarizeSpend(runs: readonly Run[], from: string, to: string, turns: readonly ChatSpend[], cycles: readonly ChatSpend[]): Spend {
   const days = new Map<string, SpendDay>();
   for (let ms = Date.parse(`${from}T00:00:00.000Z`); ms <= Date.parse(`${to}T00:00:00.000Z`); ms += DAY_MS) {
     days.set(utcDay(ms), { day: utcDay(ms), ...zero(), top: [] });
@@ -127,14 +131,15 @@ export function summarizeSpend(runs: readonly Run[], from: string, to: string, t
     days.get(day)!.top = top.sort(byCostThenId).slice(0, SPEND_DAY_TOP);
   }
   const byCost = [...items.values()].sort(byCostThenId);
-  return { from, to, total, days: [...days.values()], items: byCost, chat: chatSpendTotals(turns) };
+  return { from, to, total, days: [...days.values()], items: byCost, chat: chatSpendTotals(turns), coordinator: chatSpendTotals(cycles) };
 }
 
-/** Spend over the UTC days `from` to `to` (both inclusive): the runs that finished in them and the chat turns, two store reads. */
+/** Spend over the UTC days `from` to `to` (both inclusive): the runs that finished in them, the chat turns and the coordinator cycles, three store reads. */
 export async function readSpend(store: Pick<FactoryStore, "listRunsFinishedBetween" | "listChatSpendBetween">, from: string, to: string): Promise<Spend> {
   const start = `${from}T00:00:00.000Z` as Timestamp;
   const end = new Date(Date.parse(`${to}T00:00:00.000Z`) + DAY_MS).toISOString() as Timestamp;
-  return summarizeSpend(await store.listRunsFinishedBetween(start, end), from, to, await store.listChatSpendBetween(from, to));
+  const runs = await store.listRunsFinishedBetween(start, end);
+  return summarizeSpend(runs, from, to, await store.listChatSpendBetween(from, to, "chat"), await store.listChatSpendBetween(from, to, "coordinator"));
 }
 
 /** A dollar amount as the owner reads it ($5.00): the coordinator limit texts and the spend budget alert use it. */
