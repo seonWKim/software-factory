@@ -4,6 +4,8 @@ import { Fragment, type KeyboardEvent, useEffect, useId, useLayoutEffect, useRef
 import { API, type Session, useApi } from "../api.js";
 import { chatSend, itemsList } from "../api/generated.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
+import { CopyIcon } from "../components/ui/copy.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { PageHeader } from "../components/ui/notice.js";
 import { Textarea } from "../components/ui/textarea.js";
@@ -54,6 +56,7 @@ function ChatReply({ text }: { text: string }) {
   return (
     <div className="min-w-0 space-y-3">
       {groups.map((g, i) => (g.kind === "md" ? <Markdown key={i} text={g.text} /> : <ReplyTable key={i} rows={g.rows} />))}
+      <ButtonRow><CopyIcon value={text} what={t("chat.copyReply")} /></ButtonRow>
     </div>
   );
 }
@@ -203,6 +206,7 @@ export function ChatPage() {
                   <p data-raw className="max-w-[85%] min-w-0 rounded-card bg-surface-2 px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap wrap-anywhere">
                     {m.text}
                   </p>
+                  <ButtonRow><CopyIcon value={m.text} what={t("chat.copyYours")} /></ButtonRow>
                 </li>
                 {/*
                   A failed send reads as the chat's turn: where its answer would be, at the left. The text may hold one long
