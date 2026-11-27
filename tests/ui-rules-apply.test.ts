@@ -135,8 +135,9 @@ async function show(d: PauseDeps) {
 }
 
 const card = () => document.querySelector<HTMLElement>('[data-rule="P-0007"]')!;
-/** Picks a verdict from a card's ⋯ menu. */
+/** Picks a verdict: Promote is the row's visible button; Hold and Reject are items of its ⋯ menu. */
 const choose = (el: HTMLElement, label: string) => {
+  if (label === "Promote") return void fireEvent.click(within(el).getByRole("button", { name: "Promote" }));
   fireEvent.click(within(el).getByRole("button", { name: /^Decide:/ }));
   fireEvent.click(within(el).getByRole("menuitem", { name: label }));
 };
@@ -167,7 +168,7 @@ describe("Rules page: promote of a proposal applies it", () => {
     await openPromote();
     expect(dialog()!.querySelector('[data-change="current"]')!.textContent).toBe("Review the change.");
     expect(dialog()!.querySelector('[data-change="proposed"]')!.textContent).toBe("Review the change, then its tests.");
-    expect(dialog()!.textContent).toContain(`Changes: ${TARGET}`);
+    expect(dialog()!.textContent).toContain(`Path: ${TARGET}`);
     expect(within(dialog()!).queryByRole("textbox", { name: "Applied to" })).toBeNull();
     fireEvent.click(within(dialog()!).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(dialog()).toBeNull());

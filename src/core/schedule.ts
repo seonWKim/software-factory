@@ -76,7 +76,7 @@ export interface Schedule {
   action: ScheduleActionSpec | null;
   /** Tokens its runs may use in its `token_period`; null: SCHEDULE_TOKEN_CAP. */
   token_cap: number | null;
-  /** The runs its token cap counts; null (stored before the period existed) counts as `lifetime`. */
+  /** The runs its token cap counts; null (stored before the period existed) resolves from the cadence (tokenPeriod). */
   token_period: TokenPeriod | null;
   /** A Check a page row's trigger form (a routine's); null with a cadence. */
   trigger: RoutineTrigger | null;
@@ -226,17 +226,17 @@ export async function addSchedule(store: Pick<ScheduleStore, "addSchedule">, { r
   if (problem) return { ok: false, problem };
   const first = nextDue(input.cadence, input.zone, now, now);
   if (!first) return { ok: false, problem: "the cadence never falls due" };
-  const token_period = input.token_period ?? (input.cadence.kind === "daily" ? "day" : "lifetime");
+  const token_period = tokenPeriod({ token_period: input.token_period ?? null, cadence: input.cadence });
   const schedule = await store.addSchedule({ ...input, token_period, created_at: now.toISOString() as Timestamp, next_due_at: (run_now ? now : first).toISOString() as Timestamp });
   return { ok: true, schedule };
 }
 
 /** The schedule's token cap: its own, else SCHEDULE_TOKEN_CAP. */
 export const tokenCap = (s: Pick<Schedule, "token_cap">): number => s.token_cap ?? SCHEDULE_TOKEN_CAP;
-
+/** The runs `s`'s token cap counts: its stored `token_period`, else (null, stored before the period existed) `day` for a daily cadence and `lifetime` for any other. */
+export const tokenPeriod = (s: Pick<Schedule, "token_period" | "cadence">): TokenPeriod => s.token_period ?? (s.cadence?.kind === "daily" ? "day" : "lifetime");
 /** The tokens `s`'s cap counts for its occurrence at `slot`: a `day` cap's, that slot's UTC date's runs; else all its runs. */
-const tokensUsed = (store: Pick<ScheduleStore, "scheduleTokensUsed">, s: Schedule, slot: string | null): Promise<number> =>
-  s.token_period === "day" && slot !== null ? store.scheduleTokensUsed(s.id, new Date(slot).toISOString().slice(0, 10)) : store.scheduleTokensUsed(s.id);
+const tokensUsed = (store: Pick<ScheduleStore, "scheduleTokensUsed">, s: Schedule, slot: string | null): Promise<number> => tokenPeriod(s) === "day" && slot !== null ? store.scheduleTokensUsed(s.id, new Date(slot).toISOString().slice(0, 10)) : store.scheduleTokensUsed(s.id);
 
 /** Whether `s`'s occurrence at `slot` (its due one by default) is held: its action calls a model and its runs used its cap (budget's overBudget). */
 export async function overCap(store: Pick<ScheduleStore, "scheduleTokensUsed">, s: Schedule, slot: string | null = s.next_due_at): Promise<boolean> {

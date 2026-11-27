@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
-// The Work page's Coordinator card (design 09-dashboard-system): above the work list, its switch (read-only), its current
+// The Work page's Coordinator card (design 09-dashboard-system): above the work list, its switch (a press sets the
+// `coordinator` setting through POST /api/v1/settings; a refusal shows under the card), its current
 // activity, the next check and the recent actions with outcome, reason and a transcript entry in the row menu. Every read
 // is a fake fetch; no model and no remote service is called.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -29,11 +30,25 @@ const EMPTY_LIST = { items: [], counts: { open: 0, running: 0 }, facets: { state
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 
 let answer: unknown;
+/** What POST /api/v1/settings answers: a set stores the value (the next coordinator read shows it), a refusal does not. */
+let refusal: string | null;
+let writes: { body: unknown; token: string | null }[];
 beforeEach(() => {
   answer = status();
+  refusal = null;
+  writes = [];
   history.replaceState(null, "", "/app/items");
-  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     const path = url.split("?")[0]!;
+    if (path === "/api/v1/settings" && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as { key: string; value: string };
+      writes.push({ body, token: new Headers(init.headers).get("x-csrf-token") });
+      if (refusal !== null) return new Response(JSON.stringify({ error: refusal }), { status: 403, headers: { "content-type": "application/json" } });
+      const on = body.value === "true";
+      answer = status({ on, next_check_at: on ? null : NEXT, actions: [] });
+      return json({ ok: true, lines: [`coordinator = ${body.value}`] });
+    }
+    if (path === "/api/v1/session") return json({ as_of: "2026-11-27T09:05:00.000Z", csrf_token: "tok", commands_enabled: true, actor: "owner", actor_source: "config" });
     if (path === "/api/v1/coordinator") return json(answer);
     if (path === "/api/v1/items") return json(EMPTY_LIST);
     return new Response(JSON.stringify({ error: "Not found." }), { status: 404 });
@@ -74,18 +89,48 @@ describe("the Coordinator card", () => {
     expect(await screen.findByRole("menuitem", { name: "Copy transcript link" })).toBeTruthy();
   });
 
-  it("shows the switch read-only, with the text that it changes with factory settings set coordinator", async () => {
+  it("shows the off state: no next check and no actions", async () => {
     answer = status({ on: false, next_check_at: null, actions: [] });
     const c = await card();
     const sw = await within(c).findByRole("switch", { name: "Coordinator on" });
     expect(sw.getAttribute("aria-checked")).toBe("false");
-    expect(sw.getAttribute("aria-readonly")).toBe("true");
-    fireEvent.click(sw);
-    expect(sw.getAttribute("aria-checked")).toBe("false");
-    expect(within(c).getByText("Changes with factory settings set coordinator.")).toBeTruthy();
+    expect(sw.getAttribute("aria-readonly")).toBeNull();
     expect(within(c).getByText("Off: it starts no check.")).toBeTruthy();
     expect(within(c).queryByText(/^Next check/)).toBeNull();
     expect(within(c).getByText("No actions yet")).toBeTruthy();
+  });
+
+  it("turns the coordinator on with one press: one settings write of coordinator=true, then the card reads it again", async () => {
+    answer = status({ on: false, next_check_at: null, actions: [] });
+    const c = await card();
+    await within(c).findByText("Off: it starts no check.");
+    fireEvent.click(within(c).getByRole("switch", { name: "Coordinator on" }));
+    expect(await within(c).findByText("On: waiting for its first check.")).toBeTruthy();
+    expect(writes.map((w) => w.body)).toEqual([{ action: "set", key: "coordinator", value: "true" }]);
+    expect(writes[0]!.token).toBe("tok");
+    expect(within(c).getByRole("switch", { name: "Coordinator on" }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("turns it off with coordinator=false", async () => {
+    const c = await card();
+    await within(c).findByText("On: checking the work items.");
+    fireEvent.click(within(c).getByRole("switch", { name: "Coordinator on" }));
+    expect(await within(c).findByText("Off: it starts no check.")).toBeTruthy();
+    expect(writes.map((w) => w.body)).toEqual([{ action: "set", key: "coordinator", value: "false" }]);
+  });
+
+  it("shows a refusal under the card and keeps the switch at its stored value", async () => {
+    answer = status({ on: false, next_check_at: null, actions: [] });
+    refusal = "Only the owner can change coordinator.";
+    const c = await card();
+    await within(c).findByText("Off: it starts no check.");
+    const sw = within(c).getByRole("switch", { name: "Coordinator on" });
+    fireEvent.click(sw);
+    expect((await within(c).findByRole("alert")).textContent).toBe("Only the owner can change coordinator.");
+    expect(writes).toHaveLength(1);
+    expect(sw.getAttribute("aria-checked")).toBe("false");
+    expect(within(c).getByText("Off: it starts no check.")).toBeTruthy();
+    expect((sw as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("draws only shared components: no raw control and no English text in the view", () => {

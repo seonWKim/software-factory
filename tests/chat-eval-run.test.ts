@@ -8,7 +8,7 @@ import {
   CHAT_EVAL_CURSOR, CHAT_EVAL_PASS_BAR, CHAT_EVAL_QUESTIONS, type ChatEvalDeps, type ChatEvalQuestion, chatEvalDaily, chatEvalExitCode,
   chatEvalSchedule, parseChatEvalQuestions, runChatEval,
 } from "../src/core/chat-eval.js";
-import { ChatEvalUnit } from "../src/controller/units/chat-eval/chat-eval.unit.js";
+import { ChatEvalUnit, failuresOf } from "../src/controller/units/chat-eval/chat-eval.unit.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { main } from "../scripts/chat-eval.js";
@@ -183,6 +183,14 @@ describe("the daily run", () => {
     await u.evalStep();
     await u.running;
     expect(runs).toBe(2);
+  });
+
+  it("the finished line counts the failed turns by reason with the first provider detail, so 0/12 says why", () => {
+    const results = [
+      { failure: "model_error", detail: "claude-cli: Not logged in" }, { failure: "model_error" }, { failure: null }, { failure: "too_many_steps" },
+    ];
+    expect(failuresOf(results)).toEqual({ failures: "model_error:2,too_many_steps:1", failure_detail: "claude-cli: Not logged in" });
+    expect(failuresOf([{ failure: null }])).toEqual({});
   });
 
   it("with no run wired (the key absent) the unit does nothing", async () => {

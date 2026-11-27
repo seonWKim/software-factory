@@ -46,8 +46,8 @@ describe("Rules page", () => {
     fireEvent.click(whyToggle("P-0007"));
     await waitFor(() => expect(card("P-0007").querySelector("[data-detail-part]")).not.toBeNull(), SLOW);
     const part = (name: string) => card("P-0007").querySelector(`[data-detail-part="${name}"]`);
-    expect(part("what")!.textContent).toContain("Kind: Edit a file: 1 file");
-    expect(part("what")!.textContent).toContain("Changes: prompts/review.md");
+    expect(part("what")!.textContent).toContain("Changes review.md");
+    expect(part("what")!.textContent).toContain("Path: prompts/review.md");
     for (const name of ["why", "where", "examples", "status", "related"]) expect(part(name)).toBeNull();
     expect(card("P-0007").querySelector("[data-detail-long]")).toBeNull();
     expect(card("P-0007").querySelector("[data-rule-detail]")!.textContent).not.toContain("not given");
@@ -70,10 +70,10 @@ describe("Rules page", () => {
     });
   }
 
-  it("a waiting proposal's row shows its kind and file count only; its before and after lines are behind Why and where; one without lines shows no excerpt", async () => {
+  it("a waiting proposal's row shows its change line and gist only; its before and after lines are behind Why and where; one without lines shows no excerpt", async () => {
     s.current = view({
       entries: [
-        { id: "P-20261103-34e9", title: "Quiet notify", state: "open", kind: "edit-asset", target: "bin/evolve", judged: null, draft: null, draft_error: null },
+        { id: "P-20261103-34e9", title: "Quiet notify", state: "open", kind: "edit-asset", target: "bin/evolve", gist: "notify at 8am", judged: null, draft: null, draft_error: null },
         { id: "P-0007", title: "Split the review prompt", state: "held", kind: "edit-asset", target: "prompts/review.md", judged: null, draft: null, draft_error: null },
       ],
       excerpts: { "P-20261103-34e9": { before: "notify every hour", after: "notify at 8am" } },
@@ -81,14 +81,14 @@ describe("Rules page", () => {
     await show();
     await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
     const row = card("P-20261103-34e9");
-    expect(row.querySelector("[data-rule-what]")!.textContent).toBe("Edit a file: 1 file");
+    expect(row.querySelector("[data-rule-gist]")!.textContent).toBe("Changes evolve: notify at 8am");
     expect(row.querySelector("[data-rule-excerpt]")).toBeNull();
     expect(row.textContent).not.toContain("notify every hour");
     fireEvent.click(whyToggle("P-20261103-34e9"));
     await waitFor(() => expect(row.querySelector("details [data-rule-excerpt]")).not.toBeNull(), SLOW);
     expect(row.querySelector('[data-excerpt="before"]')!.textContent).toBe("Beforenotify every hour");
     expect(row.querySelector('[data-excerpt="after"]')!.textContent).toBe("Afternotify at 8am");
-    expect(row.querySelector("[data-rule-what]")!.textContent).not.toContain("bin/");
+    expect(row.querySelector("[data-rule-gist]")!.textContent).not.toContain("bin/");
     fireEvent.click(whyToggle("P-0007"));
     await waitFor(() => expect(card("P-0007").querySelector("[data-rule-detail]")).not.toBeNull(), SLOW);
     expect(card("P-0007").querySelector("[data-rule-excerpt]")).toBeNull();
@@ -132,7 +132,7 @@ describe("Rules page", () => {
     expect(order(dialog())).toEqual(["what", "why", "examples", "status"]);
     const part = (name: string) => dialog().querySelector<HTMLElement>(`[data-detail-part="${name}"]`)!;
     expect(part("what").textContent).toContain("Add quiet hours to evolve.");
-    expect(part("what").textContent).toContain("Changes: bin/evolve");
+    expect(part("what").textContent).toContain("Path: bin/evolve");
     // Why is the root reason's first sentence; the whole rationale waits in the Disclosure.
     expect(part("why").textContent).toContain("Root reason: Notices wake the owner at night.");
     expect(part("why").textContent).not.toContain("real alerts");
@@ -227,7 +227,7 @@ describe("Rules page", () => {
     expect(dialog().querySelector("[data-rule-detail]")!.className).toContain("min-w-0");
   });
 
-  it("kinds read in plain words and a target of several files reads as a count, in the row and in the detail; the full target stays in Why and where", async () => {
+  it("kinds read as plain sentences with the file name, several files as the first and \"and N more\", in the row and in the detail; the full target stays in Why and where", async () => {
     s.current = view({
       entries: [
         { id: "P-1", title: "Many files", state: "open", kind: "edit-asset", target: "prompts/a.md, prompts/b.md, bin/evolve, docs/c.md", judged: null, draft: null, draft_error: null },
@@ -239,9 +239,9 @@ describe("Rules page", () => {
     s.detail = (id) => ({ id, error: null, detail: { id } });
     await show();
     await screen.findByRole("region", { name: "Waiting for you" }, SLOW);
-    const what = (id: string) => card(id).querySelector("[data-rule-what]")!.textContent;
+    const what = (id: string) => card(id).querySelector("[data-rule-gist]")!.textContent;
     expect(["P-1", "P-2", "P-3", "P-4"].map(what)).toEqual([
-      "Edit a file: 4 files", "Turn a learning into a rule: 1 file", "Add a new file: 1 file", "Change: 1 file",
+      "Changes a.md and 3 more", "Turns a learning into a rule in learnings.md", "Adds SKILL.md", "Changes x.md",
     ]);
     for (const raw of ["edit-asset", "promote-learning", "new-asset", "rename-thing"]) expect(document.body.textContent).not.toContain(raw);
     fireEvent.click(within(card("P-1")).getByText("Why and where").closest("summary")!);
@@ -250,8 +250,8 @@ describe("Rules page", () => {
       if (!el) throw new Error("the detail is not open yet");
       return el;
     }, SLOW);
-    expect(part.textContent).toContain("Kind: Edit a file: 4 files");
-    expect(part.textContent).toContain("Changes: prompts/a.md, prompts/b.md, bin/evolve, docs/c.md");
+    expect(part.textContent).toContain("Changes a.md and 3 more");
+    expect(part.textContent).toContain("Path: prompts/a.md, prompts/b.md, bin/evolve, docs/c.md");
     expect(part.textContent).not.toContain("edit-asset");
   });
 });

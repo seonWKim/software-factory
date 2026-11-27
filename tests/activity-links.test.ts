@@ -8,9 +8,9 @@ import { redirectFor } from "../web/src/pages.js";
 import { ActivityBody } from "../web/src/views/activity/page.js";
 import { RESPONSES, installShellFixtures, mount } from "./ui-shell-fixtures.js";
 
-// The links between the Activity page and the pages whose runs it lists (design 09-dashboard-activity,
-// 09-dashboard-schedules, 09-health): the route, Schedules and Health and the item page linking in, the About card
-// linking back, and the schedules runs read giving each run its transcript link. The read is loaded by a specifier
+// The links between Health's Activity tab and the pages whose runs it lists (design 09-dashboard-activity,
+// 09-dashboard-schedules, 09-health): the tab and the old path's redirect, Schedules and the item page linking in, the
+// schedule actor's About card linking back, and the schedules runs read giving each run its transcript link. The read is loaded by a specifier
 // vite does not follow, because it reaches the store, which jsdom cannot bundle; it runs here over a fake store.
 
 // The read imports two modules that reach the store and the repo root, which jsdom cannot load; it uses neither beyond apiError.
@@ -29,63 +29,74 @@ function show(view = VIEW) {
   return render(createElement(QueryClientProvider, { client }, createElement(ActivityBody, { view, now: Date.parse(T0) })));
 }
 
-describe("the Activity route", () => {
-  it("/app/activity opens the Activity page, not Work", async () => {
+describe("Health's Activity tab", () => {
+  it("/app/health?tab=activity draws the actors under Health's one h1, the Activity tab selected", async () => {
     RESPONSES["/api/v1/activity"] = VIEW;
-    history.replaceState(null, "", "/app/activity");
+    history.replaceState(null, "", "/app/health?tab=activity");
     mount();
-    expect(await screen.findByRole("heading", { level: 1, name: "Activity" })).toBeTruthy();
-    expect(location.pathname).toBe("/app/activity");
-    expect(screen.queryByRole("heading", { level: 1, name: "Work" })).toBeNull();
-    expect(redirectFor("/app/activity")).toBeNull();
+    expect(await screen.findByRole("table", { name: "Actors" })).toBeTruthy();
+    expect(screen.getAllByRole("heading", { level: 1 }).map((h) => h.textContent)).toEqual(["Health"]);
+    expect(screen.getByRole("tab", { name: "Activity" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.queryByRole("heading", { name: "Checks" })).toBeNull();
+  });
+
+  it("/app/activity redirects to the tab, keeping ?actor=", async () => {
+    expect(redirectFor("/app/activity")).toBe("/app/health?tab=activity");
+    expect(redirectFor("/app/activity", "?actor=system:schedule")).toBe("/app/health?tab=activity&actor=system:schedule");
+    RESPONSES["/api/v1/activity"] = VIEW;
+    history.replaceState(null, "", "/app/health?tab=activity&actor=system:schedule");
+    mount();
+    expect(await screen.findByRole("heading", { name: "About Schedules" })).toBeTruthy();
+    expect(`${location.pathname}${location.search}`).toBe("/app/health?tab=activity&actor=system:schedule");
+  });
+
+  it("no sidebar entry or page header link names Activity: the tab is its one way in on Health", async () => {
+    history.replaceState(null, "", "/app/health");
+    mount();
+    await screen.findByRole("tab", { name: "Activity" });
+    const sidebar = screen.getByRole("complementary", { name: "Sidebar" });
+    expect(within(sidebar).queryByRole("link", { name: "Activity" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Activity" })).toBeNull();
   });
 });
 
-describe("links to the Activity page", () => {
+describe("links to the Activity tab", () => {
   it("Schedules links to the schedule actor's entry", async () => {
     RESPONSES["/api/v1/schedules"] = { schedules: [] };
     history.replaceState(null, "", "/app/schedules");
     mount();
     const link = await screen.findByRole("link", { name: "Activity" });
-    expect(link.getAttribute("href")).toBe("/app/activity?actor=system:schedule");
+    expect(link.getAttribute("href")).toBe("/app/health?tab=activity&actor=system:schedule");
   });
 
-  it("Health links to the Activity page", async () => {
-    history.replaceState(null, "", "/app/health");
-    mount();
-    const link = await screen.findByRole("link", { name: "Activity" });
-    expect(link.getAttribute("href")).toBe("/app/activity");
-  });
-
-  it("the item page links to the Activity page", async () => {
+  it("the item page links to Health's Activity tab", async () => {
     history.replaceState(null, "", "/app/items/wi_1");
     mount();
     const link = await screen.findByRole("link", { name: "Activity" });
-    expect(link.getAttribute("href")).toBe("/app/activity");
+    expect(link.getAttribute("href")).toBe("/app/health?tab=activity");
   });
 });
 
 describe("the About card's Back link", () => {
-  it("the schedule actor links back to Schedules; every other actor to Health", () => {
-    history.replaceState(null, "", "/app/activity?actor=system:schedule");
+  it("the schedule actor links back to Schedules; every other actor has no Back link, as it is on Health already", () => {
+    history.replaceState(null, "", "/app/health?tab=activity&actor=system:schedule");
     show();
     expect(screen.getByRole("heading", { name: "About Schedules" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Back to Schedules" }).getAttribute("href")).toBe("/app/schedules");
     expect(screen.queryByRole("link", { name: "Back to Health" })).toBeNull();
     cleanup();
-    history.replaceState(null, "", "/app/activity?actor=system:cleanup");
+    history.replaceState(null, "", "/app/health?tab=activity&actor=system:cleanup");
     show();
     expect(screen.getByRole("heading", { name: "About Workspace cleanup" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Back to Health" }).getAttribute("href")).toBe("/app/health");
+    expect(screen.queryByRole("link", { name: /^Back to/ })).toBeNull();
   });
 
   it("selects the actor ?actor= names; with none it keeps the first, and picking a row opens that actor", () => {
-    history.replaceState(null, "", "/app/activity");
+    history.replaceState(null, "", "/app/health?tab=activity");
     show();
     expect(screen.getByRole("heading", { name: "About Run reaper" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Back to Health" })).toBeTruthy();
     cleanup();
-    history.replaceState(null, "", "/app/activity?actor=system:nobody");
+    history.replaceState(null, "", "/app/health?tab=activity&actor=system:nobody");
     show();
     expect(screen.getByRole("heading", { name: "About Run reaper" })).toBeTruthy();
     fireEvent.click(within(screen.getByRole("table", { name: "Actors" })).getByText("Schedules"));

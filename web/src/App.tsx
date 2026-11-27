@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { MessageSquare, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { type JSX, useEffect, useState } from "react";
 import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
 import { Brand } from "./components/ui/brand.js";
@@ -14,10 +14,10 @@ import { ShortcutsLink, SideLinks, pageLabel } from "./shell/sidebar.js";
 import { ModeChip } from "./shell/mode-chip.js";
 import { MoreMenu } from "./shell/more-menu.js";
 import { startTheme } from "./theme.js";
-import { ChatPanel } from "./views/chat-panel.js";
+import { ChatPage } from "./views/chat-page.js";
 import { DataPage } from "./views/data.js";
 import { EvalsPage, skillName } from "./views/evals.js";
-import { ActivityActorsPage, HealthPage, ItemPage, ItemsPage } from "./views/pages.js";
+import { HealthPage, ItemPage, ItemsPage } from "./views/pages.js";
 import { PluginsPage } from "./views/plugins.js";
 import { SettingsPage } from "./views/settings.js";
 import { FactoryRevision, RevisionBanner, StopAllAgents, UnpushedMerges, UpdateNote } from "./views/system-banner.js";
@@ -34,6 +34,7 @@ const VIEWS: Record<string, () => JSX.Element> = {
   tasks: TasksPage,
   calendar: CalendarPage,
   schedules: SchedulesPage,
+  chat: ChatPage,
   workers: WorkersPage,
   health: HealthPage,
   rules: RulesPage,
@@ -60,7 +61,6 @@ export function App() {
   useEffect(() => startTheme(), []);
   const [path, navigate] = useLocationPath();
   const [dialog, setDialog] = useState<"search" | "help" | null>(null);
-  const [chatOpen, setChatOpen] = useState(false);
   useShortcuts({ navigate, openSearch: () => setDialog("search"), openHelp: () => setDialog("help"), refresh: () => void client.invalidateQueries(), path });
   const route = routeFor(path);
   // An old page path (/app/queue) swaps itself for its new one in the address bar, keeping its query.
@@ -72,16 +72,14 @@ export function App() {
   const transcript = transcriptRoute(path);
   // An evals page (evals/<skill>) has no sidebar link: Data, also hidden, is its current page, so no link is marked.
   const evalsSkill = evalsRoute(path);
-  // The Activity page (/app/activity) has no sidebar link either: Health, which links it, is its current page.
-  const activity = path.replace(/\/+$/, "") === `${BASE}activity`;
-  const current = transcript ? routeFor(`${BASE}items`).page : evalsSkill ? routeFor(`${BASE}data`).page : activity ? routeFor(`${BASE}health`).page : route.page;
+  const current = transcript ? routeFor(`${BASE}items`).page : evalsSkill ? routeFor(`${BASE}data`).page : route.page;
   const needs = overview.data?.needs_you;
   const View = VIEWS[route.page.path] ?? TasksPage;
   useEffect(() => {
     // The Needs you count leads the tab title, so a background tab shows it: "(4) Needs you · Gongbang".
     const count = needs ? `(${needs}) ` : "";
-    document.title = `${count}${transcript ? t("app.runTranscript") : activity ? t("actors.title") : evalsSkill ? skillName(evalsSkill) : route.itemId ? t("app.workItem") : pageLabel(route.page)} · ${t("app.name")}`;
-  }, [route.page, route.itemId, transcript, evalsSkill, activity, needs]);
+    document.title = `${count}${transcript ? t("app.runTranscript") : evalsSkill ? skillName(evalsSkill) : route.itemId ? t("app.workItem") : pageLabel(route.page)} · ${t("app.name")}`;
+  }, [route.page, route.itemId, transcript, evalsSkill, needs]);
 
   return (
     <NavProvider value={navigate}>
@@ -123,24 +121,18 @@ export function App() {
                 <Search aria-hidden className="size-4" />
               </Button>
             </Tooltip>
-            <Tooltip text={t("chat.open")} placement="bottom" align="end" className="shrink-0">
-              <Button variant="ghost" size="icon" aria-label={t("chat.open")} aria-pressed={chatOpen} onClick={() => setChatOpen((o) => !o)}>
-                <MessageSquare aria-hidden className="size-4" />
-              </Button>
-            </Tooltip>
             {/* Refresh is for the pages that do not poll (Data, Plugins); Appearance picks the theme in place, as Settings does. */}
             <MoreMenu />
           </header>
           <RevisionBanner server={overview.data?.server_rev} web={WEB_REV} />
           <UnpushedMerges count={overview.data?.unpushed_merges} />
           <UpdateNote factory={overview.data?.factory} />
-          <main className="w-full min-w-0 p-4 max-w-page-wide has-[[data-page-width=read]]:max-w-page-read">
+          {/* A page marked data-page-fill (Chat) fills the column's height, so its composer can sit at the bottom. */}
+          <main className="w-full min-w-0 p-4 max-w-page-wide has-[[data-page-width=read]]:max-w-page-read has-[[data-page-fill]]:flex has-[[data-page-fill]]:flex-1 has-[[data-page-fill]]:flex-col">
             {transcript ? (
               <TranscriptView key={`${transcript.itemId}/${transcript.runId}`} itemId={transcript.itemId} runId={transcript.runId} />
             ) : evalsSkill ? (
               <EvalsPage key={evalsSkill} skill={evalsSkill} />
-            ) : activity ? (
-              <ActivityActorsPage />
             ) : route.itemId ? (
               <ItemPage key={route.itemId} id={route.itemId} />
             ) : moved ? null : (
@@ -149,8 +141,6 @@ export function App() {
             )}
           </main>
         </div>
-        {/* Beside the page, not over it: the page stays visible and keeps its place while the chat is open. */}
-        <ChatPanel open={chatOpen} onClose={() => setChatOpen(false)} page={pageLabel(current)} itemId={route.itemId ?? null} />
         {dialog === "search" && <SearchDialog navigate={navigate} onClose={() => setDialog(null)} />}
         {dialog === "help" && <HelpDialog onClose={() => setDialog(null)} />}
       </div>

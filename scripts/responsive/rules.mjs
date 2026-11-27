@@ -11,7 +11,10 @@
 //                   Runs actions at 768-1024px, both 2026-11-24). A wrapper marked [data-scroll-x] holds a table that
 //                   scrolls sideways on purpose and is skipped. The scroll root, plots that scroll on purpose (the
 //                   Workers timeline and graph), tab lists and code blocks are not table wrappers and stay skipped.
-//                   Only the outermost such element of a chain is reported.
+//                   Only the outermost such element of a chain is reported. Inside the [data-scroll-root] content
+//                   column, an element that starts left of the column's left edge is reported too: the column scrolls
+//                   only to the right, so that part is out of reach (Chat's error row, a long request id in a
+//                   right-aligned flex row, ran under the sidebar at 390-768px, 2026-11-27).
 //   letter-wrap     text in a box narrower than 12ch breaks a word across lines (the old model_by column, PR #530,
 //                   was 9ch wide).
 //   tall-fixed      a position:fixed or sticky element covers more than 40% of the viewport's height (an open
@@ -222,6 +225,12 @@ export function checkLayout(limits) {
   };
 
   const interactive = 'button, a[href], input:not([type=hidden]), select, textarea, summary, [role=button], [role=menuitem], [role=checkbox], [role=radio], [role=switch], [role=tab]';
+  const rootLeft = root ? root.getBoundingClientRect().left : null;
+  // Whether an ancestor between `el` and the content column clips or scrolls sideways.
+  const clippedBelowRoot = (el) => {
+    for (let a = el.parentElement; a && a !== root; a = a.parentElement) if (style(a).overflowX !== "visible") return true;
+    return false;
+  };
   const overlays = "dialog[open], :popover-open, [role=dialog], [role=alertdialog], [role=menu], [role=listbox], [role=tooltip]";
   for (const el of document.body.querySelectorAll("*")) {
     if (!painted(el)) continue;
@@ -237,6 +246,14 @@ export function checkLayout(limits) {
     } else if (!insideClipX(el) && s.overflowX === "visible") {
       const right = Math.max(0, ...[...el.childNodes].filter((n) => n.nodeType === 3 && n.textContent.trim()).map((n) => textRight(n)));
       if (right > W + 1) fail("offscreen", el, `its text runs to ${Math.round(right)}px, viewport ${W}px`);
+    }
+
+    // offscreen (left): past the content column's left edge, with nothing between it and the column clipping it.
+    if (rootLeft !== null && root.contains(el) && el !== root && r.left < rootLeft - 1 && !clippedBelowRoot(el)) {
+      const p = el.parentElement;
+      if (!(p && p !== root && painted(p) && p.getBoundingClientRect().left < rootLeft - 1 && !clippedBelowRoot(p))) {
+        fail("offscreen", el, `left edge at ${Math.round(r.left)}px, the content column starts at ${Math.round(rootLeft)}px`);
+      }
     }
 
     // small-target
