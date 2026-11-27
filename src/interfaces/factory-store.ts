@@ -91,7 +91,7 @@ export interface NewRun {
 /** The patterns the alarm step looks for across items (design 05-alarms); `spend_budget`: spend passed 80% or 100% of a budget (06-spend). */
 /** `auto_stopped`: a stop condition set auto mode back to manual; `red_main`: the base fails a check on its own, keyed on its sha (design 03-risk). The controller stores both. */
 /** `dead_letter`: the bus dead-lettered a message (RFC 0015 §5.4); the controller's dead-letter-alarm handler stores it. */
-export type AlertPattern = "repeated_error" | "zero_tokens" | "child_restarts" | "auto_stopped" | "dead_letter" | "spend_budget" | "red_main" | "skill_draft_limit" | "skill_version_gate" | "ci_rerun_failed" | "coordinator_limit"; // coordinator_limit: the coordinator reached its daily spend limit, one owner question per UTC day (design 06-spend); skill_draft_limit: a skill draft cap or token budget was reached; skill_version_gate: a new skill version is held (design 07); ci_rerun_failed: an item's cancelled CI jobs could not be rerun, keyed on item and head (design 05-ci-gate)
+export type AlertPattern = "repeated_error" | "zero_tokens" | "child_restarts" | "auto_stopped" | "dead_letter" | "spend_budget" | "red_main" | "skill_draft_limit" | "skill_version_gate" | "ci_rerun_failed" | "coordinator_limit" | "chat_eval_failed"; // chat_eval_failed: the daily chat check failed or threw, one per UTC day, open until dismissed (design 04-chat-agent); coordinator_limit: the coordinator reached its daily spend limit, one owner question per UTC day (design 06-spend); skill_draft_limit: a skill draft cap or token budget was reached; skill_version_gate: a new skill version is held (design 07); ci_rerun_failed: an item's cancelled CI jobs could not be rerun, keyed on item and head (design 05-ci-gate)
 
 /** An alert as the alarm step builds it; the store adds `id` and `created_at`. */
 export interface NewAlert {
@@ -1143,15 +1143,15 @@ export interface NewCliCommand {
   mirror?: boolean;
   /** The edge passport the command entered with (RFC 0015 §8, Identity); absent on rows from before M9. */
   passport_id?: string;
-  /** Who wrote it (design 08-permissions): a person's CLI, chat or comment command, or an agent; absent on older rows and app requests. */ write_origin?: "human_command" | "agent";
+  /** Who wrote it (design 08-permissions): a person's CLI, chat or comment command (stored as `human_command` when none is passed), or an agent; absent on older rows and app requests. */ write_origin?: "human_command" | "agent";
 }
 
 export interface CliCommand extends NewCliCommand {
   seq: number;
   /** Its id (CommandReceived carries it) and origin, the channel (`cli`, `app`, or the provider of a comment poll), RFC 0015 D7. */
   id: string; origin: string;
-  /** Store clock's now when the command was first appended. */
-  created_at: Timestamp;
+  /** Store clock's now when the command was first appended; the permission mode read from the store at that write (absent on older rows and app requests). */
+  created_at: Timestamp; permission_mode?: HeldWrite["mode"];
 }
 
 export interface NewAppCommandRequest {

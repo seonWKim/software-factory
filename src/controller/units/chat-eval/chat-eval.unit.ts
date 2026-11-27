@@ -2,16 +2,28 @@
 // the current UTC day through the run compose built (src/core/chat-eval.ts: a conditional store cursor advance, so
 // replicas on one store run the day once) and starts the run against the code this controller runs, main. The run
 // is not awaited: its model calls never hold up the controller's other steps. The result is logged with the pass
-// bar. With the key absent compose builds no run, and the step returns before any call. The unit reaches no store
-// of its own and imports no core module: the run comes in through the controller's deps.
+// bar. A run that ends below its bar (ok false) or throws stores one Needs-you alert for the UTC day, its detail
+// scanned as UI text first, through the kernel's `alert` write. With the key absent compose builds no run, and the
+// step returns before any call. The unit reaches no store of its own and imports no core module: the run, and the
+// alarm builders it logs and alerts with (failuresOf, chatEvalFailedAlert in src/core/alarms.ts), come in through the
+// controller's deps.
 
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
+import type { ControllerWrite } from "../kernel.js";
+
+type Turn = { failure: string | null; detail?: string };
+/** How a failed run ended: its counts and turns (ok false), or the error it threw. */
+type Failure = { passed: number; total: number; bar: number; results?: readonly Turn[] } | { error: string };
 
 /** The run as the unit uses it (src/core/chat-eval.ts ChatEvalSchedule). */
 export interface ChatEvalPort {
   claim(day: string): Promise<boolean>;
-  run(): Promise<{ passed: number; total: number; bar: number; ok: boolean; results?: readonly { failure: string | null; detail?: string }[] }>;
+  run(): Promise<{ passed: number; total: number; bar: number; ok: boolean; results?: readonly Turn[] }>;
+  /** The failed turns' reasons counted, for the log line (failuresOf). */
+  failures(results: readonly Turn[]): { failures?: string; failure_detail?: string };
+  /** The UTC day's Needs-you alert for a failed run, its detail not yet scanned (chatEvalFailedAlert). */
+  failedAlert(day: string, f: Failure): { alert: Extract<ControllerWrite, { kind: "alert" }>["alert"] & { detail: string }; dedupe_ms: number };
 }
 
 declare module "../../../core/controller-deps.js" {
@@ -19,15 +31,6 @@ declare module "../../../core/controller-deps.js" {
     /** The daily chat eval run (`chat_eval.schedule` "daily"). Absent: no scheduled run. */
     chat_eval?: ChatEvalPort;
   }
-}
-
-/** The failed turns' reasons counted (`model_error:12`) and the first provider detail, so the log line says why. */
-export function failuresOf(results: readonly { failure: string | null; detail?: string }[]): { failures?: string; failure_detail?: string } {
-  const counts = new Map<string, number>();
-  for (const r of results) if (r.failure !== null) counts.set(r.failure, (counts.get(r.failure) ?? 0) + 1);
-  if (counts.size === 0) return {};
-  const detail = results.find((r) => r.detail !== undefined)?.detail;
-  return { failures: [...counts].map(([k, n]) => `${k}:${n}`).join(","), ...(detail !== undefined && { failure_detail: detail }) };
 }
 
 export class ChatEvalUnit {
@@ -50,11 +53,27 @@ export class ChatEvalUnit {
     if (!claimed) return;
     k.d.log.info("chat eval run started", { day });
     this.running = port.run().then(
-      (r) => k.d.log.info("chat eval run finished", { day, passed: r.passed, total: r.total, bar: r.bar, ok: r.ok, ...failuresOf(r.results ?? []) }),
-      (err: unknown) => k.d.log.warn("chat eval run failed", { day, error: err instanceof Error ? err.message : String(err) }),
-    ).finally(() => {
+      async (r) => {
+        k.d.log.info("chat eval run finished", { day, passed: r.passed, total: r.total, bar: r.bar, ok: r.ok, ...port.failures(r.results ?? []) });
+        if (!r.ok) await this.alert(port, day, r);
+      },
+      async (err: unknown) => {
+        const error = err instanceof Error ? err.message : String(err);
+        k.d.log.warn("chat eval run failed", { day, error });
+        await this.alert(port, day, { error });
+      },
+    ).catch((err: unknown) => {
+      k.d.log.warn("chat eval alert not stored", { day, error: err instanceof Error ? err.message : String(err) });
+    }).finally(() => {
       this.running = null;
     });
+  }
+
+  /** Stores the day's failed-check alert, its detail scanned as UI text (null when flagged); the store's dedupe keeps one per day. */
+  private async alert(port: ChatEvalPort, day: string, f: Failure): Promise<void> {
+    const { alert, dedupe_ms } = port.failedAlert(day, f);
+    const clean = (await this.c.k.reader.scan("ui", alert.detail)).clean;
+    await this.c.k.commit({ writes: [{ kind: "alert", alert: { ...alert, detail: clean ? alert.detail : null }, dedupe_ms }] });
   }
 }
 

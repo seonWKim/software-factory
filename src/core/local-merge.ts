@@ -168,6 +168,19 @@ export function canReadLocal(sandbox: Sandbox | undefined): sandbox is LocalRead
   return !!sandbox && typeof (sandbox as Partial<LocalReadSandbox>).localBranch === "function";
 }
 
+/**
+ * A sandbox that reads which files changed between two commits of the factory repo, from objects only (no fetch, no
+ * checkout): the red-main check runs the UI check only when the merge's own change touches its paths (design 03-risk).
+ */
+export type ChangedFilesSandbox = Sandbox & {
+  /** The paths changed from `from` (absent: `to`'s first parent) to `to`, sorted; null when either commit cannot be read. */
+  localChangedFiles(spec: { repo: string; to: string; from?: string }): Promise<string[] | null>;
+};
+
+export function canReadChangedFiles(sandbox: Sandbox | undefined): sandbox is ChangedFilesSandbox {
+  return !!sandbox && typeof (sandbox as Partial<ChangedFilesSandbox>).localChangedFiles === "function";
+}
+
 /** What the red-main revert asks the sandbox (design 03-risk): revert one automatic merge at the tip of the local base. */
 export interface LocalRevertSpec {
   repo: string;
