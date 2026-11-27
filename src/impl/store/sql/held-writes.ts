@@ -9,12 +9,13 @@ import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
 import { newId } from "./rows.js";
 import { insertOnce } from "./store-steps.js";
 
-const INSERT = "INSERT INTO controller_held_writes (id, write_key, command, args, actor, mode, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)";
+/** Every held write is an agent's (design 08-permissions, phase 4): its row records origin `agent`. */
+const INSERT = "INSERT INTO controller_held_writes (id, write_key, command, args, actor, mode, write_origin, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'agent', 'pending', ?)";
 
 function rowToHeld(r: Row): HeldWrite {
   return {
     id: String(r.id), key: String(r.write_key), command: String(r.command), args: JSON.parse(String(r.args)) as string[], actor: String(r.actor) as UserId,
-    mode: String(r.mode) as HeldWrite["mode"], status: String(r.status), created_at: String(r.created_at) as Timestamp,
+    mode: String(r.mode) as HeldWrite["mode"], write_origin: r.write_origin == null ? null : "agent", status: String(r.status), created_at: String(r.created_at) as Timestamp,
   };
 }
 

@@ -295,7 +295,7 @@ async function storeLimitAnswer(
   if ("refused" in limit) return { code: 1, lines: [limit.refused] };
   if (!(await isOwner())) return { code: 1, lines: [`only the owner answers the coordinator limit question; you are ${user}`] };
   const args = { coordinator_limit: limit.alert.pattern_key, ...(value !== null ? { text: value } : {}) };
-  const { command: row } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command, args });
+  const { command: row } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command, args, write_origin: "human_command" });
   const next = limit.set_usd === null
     ? `leaves ${COORDINATOR_LIMIT_KEY} as it is, so coordinator cycles stay stopped until the UTC day ends`
     : `sets ${COORDINATOR_LIMIT_KEY} to ${usd(limit.set_usd)}, so coordinator cycles run again once today's coordinator spend is below it`;
