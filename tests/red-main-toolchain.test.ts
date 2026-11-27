@@ -25,6 +25,7 @@ import { cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fak
 import { newStore } from "./helpers/store.js";
 import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
 import { seedMergeRecord } from "./helpers/merge-record.js";
+import { alarmCommand, alarmFullText, alarmText } from "../src/ui/alarms.js";
 
 // Red main after an automatic merge (design 03-risk): a merge-time check that fails because the host's tools are
 // missing, or whose command could not run, is an environment problem, not the merge's fault. A local factory over a
@@ -139,6 +140,14 @@ describe("red main after an automatic merge: a missing toolchain or a command th
     expect(alert.detail).toContain("JDK");
     expect(alert.detail).toContain("JAVA_HOME is not set");
     expect(alert.detail).toContain("not a red main");
+    // The dashboard names it an environment problem, not a red base, and says no fix item was filed.
+    const shown = `${alarmFullText(alert)} ${alarmCommand(alert)}`;
+    expect(alarmText(alert)).toContain("environment problem, not a red base");
+    expect(alarmText(alert)).toContain(f.merge.slice(0, 12));
+    expect(shown).toContain("JDK");
+    expect(shown).not.toContain("fails its checks on its own");
+    expect(shown).not.toContain("fix item is filed");
+    expect(shown).not.toContain("wait until it moves");
   });
 
   it("a command that could not run (a sandbox exec error) reverts nothing, reopens nothing, and the alert names the command", async () => {
