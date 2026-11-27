@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ALERT_DEDUPE_MS, GRANT_REFUSED_PREFIX, RERAISE_WINDOW_MS, RESTART_WINDOW_MS, alarmStep, coordinatorLimitAlert, detectAlarms, uncountedCycles } from "../src/core/alarms.js";
+import { ALERT_DEDUPE_MS, GRANT_REFUSED_PREFIX, RERAISE_WINDOW_MS, RESTART_WINDOW_MS, alarmStep, chatEvalFailedAlert, coordinatorLimitAlert, detectAlarms, uncountedCycles } from "../src/core/alarms.js";
 import { usd } from "../src/core/spend.js";
 import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "../src/core/config.js";
 import { type ControllerDeps } from "../src/core/controller-deps.js";
@@ -12,7 +12,7 @@ import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { ChildRestart } from "../src/interfaces/updater.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { alarmCommand, alarmFullText, alarmText, alarmsFor, openAlarms } from "../src/ui/alarms.js";
+import { alarmCommand, alarmFullText, alarmText, alarmUntil, alarmsFor, openAlarms } from "../src/ui/alarms.js";
 import { UNKNOWN_FAILURE } from "../src/ui/why.js";
 import { FakeAuth } from "./helpers/fakes/runner.js";
 import { FakeSource } from "./helpers/fakes/source.js";
@@ -672,5 +672,29 @@ describe("coordinator limit question text", () => {
     expect(uncountedCycles(2)).toBe("; 2 cycles with no reported cost not counted");
     expect(uncountedCycles(1)).toBe("; 1 cycle with no reported cost not counted");
     expect(uncountedCycles(0)).toBe("");
+  });
+});
+
+// A failed daily chat check (design 04-chat-agent): one alert per UTC day, shown in Needs you until the owner dismisses
+// it, whatever its age. It holds up no item's runs.
+describe("alarms: failed chat check", () => {
+  it("alarmText and alarmCommand name it, it holds no item, and it stays open past the dedupe window until dismissed", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const { alert, dedupe_ms } = chatEvalFailedAlert("2026-11-27", { passed: 0, total: 12, bar: 8, results: [{ failure: "model_error" }] });
+    expect(alert.detail).toBe("Chat check failed today: 0 of 12 answered (needs 8). Most failures: the model did not finish (1).");
+    const r = await store.recordAlert(alert, dedupe_ms);
+    expect(r.created).toBe(true);
+    clock.advance(ALERT_DEDUPE_MS * 4);
+    const [open] = await openAlarms(store, clock.now());
+    expect(open).toMatchObject({ pattern: "chat_eval_failed", pattern_key: "chat_eval_failed:2026-11-27" });
+    expect(alarmText(open!)).toBe("Alarm: the daily chat check failed; chat answers may be broken until the cause is fixed");
+    expect(alarmCommand(open!)).toContain("factory alarm dismiss");
+    expect(alarmFullText(open!)).toContain("0 of 12 answered");
+    expect(alarmUntil(open!)).toBeNull();
+    const { item } = await store.createWorkItem(issue(904), system);
+    expect(alarmsFor([open!], item, [])).toEqual([]);
+    expect(await store.dismissAlert(open!.id, "owner" as UserId)).toBeTruthy();
+    expect((await openAlarms(store, clock.now())).filter((a) => a.pattern === "chat_eval_failed")).toEqual([]);
   });
 });
