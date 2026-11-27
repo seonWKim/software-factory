@@ -261,7 +261,7 @@ describe("confirm <id> applies a held write (phase 3)", () => {
   const SPEC_PENDING: WorkItemPatch = { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", tier: 2 };
 
   /** The owner, a held agent `approve` on an item at `patch`, and the controller on a fake issue source whose posts are the thread. */
-  async function harness(patch: WorkItemPatch = SPEC_PENDING) {
+  async function harness(patch: WorkItemPatch = SPEC_PENDING, command = "approve") {
     const { store, clock } = await newStore();
     const source = new FakeSource();
     const controller = new ControllerRole({ store, source, auth: new OwnerAuth(store), clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false });
@@ -269,7 +269,7 @@ describe("confirm <id> applies a held write (phase 3)", () => {
     const { item: created } = await store.createWorkItem(issue(1), system);
     const r = await store.transition({ id: created.id, expected_version: created.version, actor: system, reason: "test_setup", patch });
     if (!r.ok) throw new Error("setup");
-    const { write: held } = await store.holdWrite({ key: `coordinator:approve:${created.id}`, command: "approve", args: [created.id, "ship it"], actor: "service:coordinator" as UserId, mode: "ask_all" });
+    const { write: held } = await store.holdWrite({ key: `coordinator:approve:${created.id}`, command, args: command === "approve" ? [created.id, "ship it"] : [created.id], actor: "service:coordinator" as UserId, mode: "ask_all" });
     let n = 0;
     const cli = (user: UserId): LocalCliDeps => ({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => `k${++n}` });
     /** `confirm <id>` as `user`, then the controller's command step; the CLI's lines. */
@@ -341,6 +341,16 @@ describe("confirm <id> applies a held write (phase 3)", () => {
     expect(await h.store.getWorkItem(h.item.id)).toEqual(before);
     expect(await h.status()).toBe("refused");
     expect(h.posts(/held-refused/)).toHaveLength(1);
+  });
+
+  it("a held merge runs through the typed merge's own path: an item with no PR to merge gets it refused", async () => {
+    const h = await harness(SPEC_PENDING, "merge");
+    await h.confirm(OWNER);
+    expect((await h.store.getWorkItem(h.item.id))!.version).toBe(h.item.version);
+    expect(await h.status()).toBe("refused");
+    const refused = h.posts(/held-refused/);
+    expect(refused).toHaveLength(1);
+    expect(refused[0]!.body).toMatch(new RegExp(`^\`merge ${h.item.id}\` \\(${h.held.id}\\) was not applied: `));
   });
 
   it("an unknown held write fails in the CLI and stores nothing", async () => {
