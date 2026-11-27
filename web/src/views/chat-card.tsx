@@ -75,7 +75,7 @@ function Reply({ text, copy }: { text: string; copy?: boolean }) {
         ) : p.kind === "code" ? (
           <Card key={i} label={t("chat.code")}>
             <pre className="overflow-x-auto font-mono text-xs whitespace-pre">{p.text}</pre>
-            <ButtonRow className="mt-1"><CopyIcon value={p.text} what={t("chat.copyCode")} /></ButtonRow>
+            <ButtonRow><CopyIcon value={p.text} what={t("chat.copyCode")} /></ButtonRow>
           </Card>
         ) : (
           <Card key={i} label={t("chat.table")}>

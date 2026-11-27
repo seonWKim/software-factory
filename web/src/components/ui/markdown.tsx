@@ -134,7 +134,7 @@ function renderBlock(b: Block, n: number): ReactNode {
       return (
         <div key={n} className="min-w-0">
           <pre className="overflow-x-auto rounded-control bg-surface-2 p-3 font-mono text-xs leading-normal"><code>{b.text}</code></pre>
-          <ButtonRow className="mt-1"><CopyIcon value={b.text} what={t("chat.copyCode")} /></ButtonRow>
+          <ButtonRow><CopyIcon value={b.text} what={t("chat.copyCode")} /></ButtonRow>
         </div>
       );
     case "details":
