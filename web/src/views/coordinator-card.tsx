@@ -1,5 +1,9 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { Copy } from "lucide-react";
+import { useApi } from "../api/client.js";
 import { type CoordinatorAction, type CoordinatorView, useCoordinator } from "../api/coordinator.js";
+import type { Session } from "../api/overview.js";
+import { API } from "../api/routes.js";
 import { Badge } from "../components/ui/badge.js";
 import { Card } from "../components/ui/card.js";
 import { copyToClipboard } from "../components/ui/copy.js";
@@ -13,11 +17,14 @@ import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { localDateTime, relativeTime } from "../lib/format.js";
 import { useNow } from "./common.js";
+import { Outcome, useWrite } from "./settings-file-keys.js";
 
 // The Coordinator card of the Work page (design 09-dashboard-system): above the work list, the coordinator's switch
-// (read-only: it changes with `factory settings set coordinator`), what it does now, when its next check is due (every
+// (one press sets the `coordinator` setting through POST /api/v1/settings, the Settings page's write, postSettings; the
+// server checks the owner, and a refusal shows under the card), what it does now, when its next check is due (every
 // 15 minutes) and its recent actions, newest first. One read: GET /api/v1/coordinator, the `coordinator.status`
-// capability. Built from Card, ListRow, Switch, Badge and EmptyState; each action's menu holds its transcript.
+// capability, read again after a write. Built from Card, ListRow, Switch, Badge and EmptyState; each action's menu holds
+// its transcript.
 
 const outcomeText = (o: string): string => {
   switch (o) {
@@ -58,18 +65,17 @@ function ActionRow({ a, now }: { a: CoordinatorAction; now: number }) {
   );
 }
 
-function Body({ view, now }: { view: CoordinatorView; now: number }) {
+function Body({ view, now, busy, onSwitch }: { view: CoordinatorView; now: number; busy: boolean; onSwitch(next: boolean): Promise<void> }) {
   const next = view.on && view.next_check_at !== null ? t("coordinator.next", { time: relativeTime(view.next_check_at, now) }) : null;
   return (
     <ul aria-label={t("coordinator.label")} className={cn("divide-y divide-border", LIST_BOX)}>
       <ListRow
         data-coordinator-status
-        leading={<Switch checked={view.on} readOnly onCheckedChange={() => undefined} aria-label={t("coordinator.switch")} />}
+        leading={<Switch checked={view.on} disabled={busy} onCheckedChange={(next) => void onSwitch(next)} aria-label={t("coordinator.switch")} />}
         title={<span className={ROW_TITLE}>{activityText(view)}</span>}
         details={<>
           <span>{t("coordinator.every")}</span>
           {next !== null && <span title={localDateTime(view.next_check_at ?? "")}>{next}</span>}
-          <span>{t("coordinator.setting")}</span>
         </>}
       />
       {view.actions.map((a) => <ActionRow key={`${a.cycle_id}:${a.seq}`} a={a} now={now} />)}
@@ -81,11 +87,20 @@ function Body({ view, now }: { view: CoordinatorView; now: number }) {
 export function CoordinatorCard() {
   const now = useNow();
   const q = useCoordinator();
+  const client = useQueryClient();
+  // The token from the session read; a missing or stale one is refreshed and retried once by postJson.
+  const token = useApi<Session>(API.session, false).data?.csrf_token ?? "";
+  const { busy, error, write } = useWrite(token);
+  // The switch shows the stored value only: it moves when the read after a successful write says so.
+  const onSwitch = async (next: boolean) => {
+    if (await write({ action: "set", key: "coordinator", value: String(next) })) await client.invalidateQueries({ queryKey: ["/api/v1/coordinator"] });
+  };
   return (
     <Card title={t("coordinator.title")} label={t("coordinator.label")}>
       {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={2} label="loading.coordinator" onRetry={() => void q.refetch()} /> : (
         <>
-          <Body view={q.data} now={now} />
+          <Body view={q.data} now={now} busy={busy} onSwitch={onSwitch} />
+          <Outcome error={error} done={null} />
           {q.data.actions.length === 0 && <EmptyState title={t("coordinator.noActions")} />}
         </>
       )}
