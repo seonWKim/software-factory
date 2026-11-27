@@ -4,7 +4,8 @@
 // dashboard's sentence, Confirm all and Cancel (app requests, `appProposal`); and the one answer to a plain message. Each pending command it names goes through the typed command's
 // path (CommandsUnit.gateCommand): the same AuthProvider check, note scan and state checks. Imports only the
 // controller's own modules; what needs the legacy core comes in from the commands unit (`ConfirmDeps`). It reads
-// and writes proposal rows through the store, since the kernel has no proposal write yet.
+// and writes proposal rows through the store, since the kernel has no proposal write yet. A held write's `confirm <id>`
+// (design 08-permissions, phase 3) follows the same claim-then-apply pattern (`confirmHeldWrite`).
 
 import { createHash } from "node:crypto";
 import { COMMAND, type CommandEvent } from "../support.js";
@@ -17,6 +18,7 @@ type Item = Parameters<CommandsUnit["gateCommand"]>[0];
 type InboxCommand = Parameters<CommandsUnit["handleInboxCommand"]>[0];
 type AppRequest = Parameters<CommandsUnit["appProposal"]>[0];
 type PlainMessage = NonNullable<Parameters<CommandsUnit["readMessage"]>[2]>["e"];
+type Held = NonNullable<Awaited<ReturnType<Store["getHeldWrite"]>>>;
 
 /** The interpretation's shape this file reads: a `commands` answer's proposals. */
 interface Answer {
@@ -155,4 +157,34 @@ async function apply(c: Ctx, r: Proposal, deps: ConfirmDeps): Promise<string | n
   const e = deps.event(r, item.source);
   if (!e || !(e.kind in COMMAND)) return "it is not a command a proposal can apply";
   return c.unit("commands").gateCommand(item, e as CommandEvent);
+}
+
+/** A claimed held write run as the confirm row's actor's typed command on `item`, bound by the commands unit: its refusal, else null. */
+export type HeldRun = (held: Held, item: Item) => Promise<string | null>;
+
+/**
+ * A held write's `confirm <id>` row (`args.held`), modelled on confirmProposal: the held write is claimed (pending →
+ * confirmed, conditional, so a second confirm, a redelivery or another replica runs it once), then run through the
+ * typed command's path (`run`) on the item its first argument names; a refusal stores it refused and gets one reply
+ * saying why, keyed on the held write. A confirm that finds it already confirmed or refused applies nothing and gets
+ * one reply, keyed on its command row, saying so. The replies go to the item's thread; with no stored item, the log.
+ */
+export async function confirmHeldWrite(c: Ctx, cmd: Pick<InboxCommand, "key" | "actor" | "args">, run: HeldRun): Promise<void> {
+  const store = c.k.d.store, log = c.k.d.log;
+  const id = typeof cmd.args.held === "string" ? cmd.args.held : "";
+  const held = await store.getHeldWrite(id);
+  if (!held) return log.info("held write not applied: it is not stored", { held_write: id, by: cmd.actor });
+  const item = held.args[0] ? await c.k.reader.getWorkItem(held.args[0] as Item["id"]) : null;
+  const line = `\`${[held.command, ...held.args].join(" ")}\``;
+  const say = async (body: string, marker: string) => { if (item) await c.unit("outbox").post(item, item.source, body, marker); };
+  if (!(await store.answerHeldWrite({ id, from: "pending", to: "confirmed" }))) {
+    const now = await store.getHeldWrite(id);
+    log.info("held write not applied: already answered", { held_write: id, status: now?.status, by: cmd.actor });
+    return say(`Nothing was applied this time: ${line} (${id}) was already ${now?.status ?? "answered"}.`, `<!-- factory:held-answered:${cmd.key} -->`);
+  }
+  const refusal = item ? await run(held, item) : "the work item is no longer stored";
+  if (refusal === null) return log.info("held write confirmed", { held_write: id, command: held.command, by: cmd.actor });
+  await store.answerHeldWrite({ id, from: "confirmed", to: "refused" });
+  log.info("held write refused", { held_write: id, command: held.command, by: cmd.actor, reason: refusal });
+  await say(`${line} (${id}) was not applied: ${refusal}.`, `<!-- factory:held-refused:${id} -->`);
 }

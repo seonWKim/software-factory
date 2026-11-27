@@ -3,9 +3,17 @@
 // toward `full` needs approve_merge, a set toward a tighter value does not; each set or reset writes one audit row.
 // Phase 2: the gate (`permissionGate`, `authorizeWrite`, src/core/authorize.ts) over mode, reversible, origin and chat
 // turn, after the secret and egress guards; held agent writes in controller_held_writes, once per key.
+// Phase 3: `confirm hw_…` claims a held write (pending → confirmed) and runs it as the confirmer's typed command; a
+// refusal stores it refused; a second confirm applies nothing and says so.
 
 import { describe, expect, it } from "vitest";
-import { AGENT_WRITE_IN_CHAT, EGRESS_BLOCKED, SECRET_READ, type WriteRequest, authorizeWrite, permissionGate } from "../src/core/authorize.js";
+import { AGENT_WRITE_IN_CHAT, EGRESS_BLOCKED, OwnerAuth, SECRET_READ, type WriteRequest, authorizeWrite, permissionGate } from "../src/core/authorize.js";
+import { type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
+import { HELD_CONFIRM_COMMAND, parseLocalCliArgs } from "../src/core/local-cli-parse.js";
+import type { WorkItemPatch } from "../src/core/types.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { answersDetail, splitAnswers } from "../src/shared/command-notes.js";
+import { FakeSource } from "./helpers/fakes/source.js";
 import { ChatToolBroker, chatCallContext } from "../src/core/chat-agent-tools.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { PERMISSION_MODES } from "../src/controller/settings/permission-mode.setting.js";
@@ -18,8 +26,8 @@ import { type SettingsDeps, runSettings } from "../src/settings-cmd.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import type { PauseDeps } from "../src/ui/pause-api.js";
 import { type UiSettings, effectiveGlobal, newCsrfToken, readSettings, storeProjectResolver, writeSettings } from "../src/ui/settings-api.js";
-import { PROJECT, config, silent } from "./helpers/fakes/config.js";
-import { BACKENDS, newStore } from "./helpers/store.js";
+import { PROJECT, cleanScanner, config, silent } from "./helpers/fakes/config.js";
+import { BACKENDS, PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 const KEY = "permission_mode";
 const base: SettingsBase = { file: {}, layers: { defaults: {}, projects: {} } };
@@ -244,5 +252,102 @@ describe("a chat tool call that names a command", () => {
     expect(await broker.call(ctx, "task_done", { task_id: "tk_1" })).toMatchObject({ ok: false, error_code: AGENT_WRITE_IN_CHAT });
     expect(await broker.call(ctx, "merge", {})).toMatchObject({ ok: false, error_code: AGENT_WRITE_IN_CHAT });
     expect(await broker.call(ctx, "no_such_tool", {})).toMatchObject({ ok: false, error_code: "unknown_tool" });
+  });
+});
+
+describe("confirm <id> applies a held write (phase 3)", () => {
+  const OWNER = "local:owner@example.com" as UserId;
+  const HELPER = "local:helper@example.com" as UserId;
+  const SPEC_PENDING: WorkItemPatch = { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", tier: 2 };
+
+  /** The owner, a held agent `approve` on an item at `patch`, and the controller on a fake issue source whose posts are the thread. */
+  async function harness(patch: WorkItemPatch = SPEC_PENDING) {
+    const { store, clock } = await newStore();
+    const source = new FakeSource();
+    const controller = new ControllerRole({ store, source, auth: new OwnerAuth(store), clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false });
+    await store.claimOwner(OWNER);
+    const { item: created } = await store.createWorkItem(issue(1), system);
+    const r = await store.transition({ id: created.id, expected_version: created.version, actor: system, reason: "test_setup", patch });
+    if (!r.ok) throw new Error("setup");
+    const { write: held } = await store.holdWrite({ key: `coordinator:approve:${created.id}`, command: "approve", args: [created.id, "ship it"], actor: "service:coordinator" as UserId, mode: "ask_all" });
+    let n = 0;
+    const cli = (user: UserId): LocalCliDeps => ({ answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => `k${++n}` });
+    /** `confirm <id>` as `user`, then the controller's command step; the CLI's lines. */
+    const confirm = async (user: UserId) => {
+      const out = await runLocalCli(cli(user), { action: "confirm_held", held: held.id });
+      await controller.tickCommands();
+      return out;
+    };
+    const status = async () => (await store.getHeldWrite(held.id))?.status;
+    const posts = (re: RegExp) => source.comments.filter((c) => re.test(c.marker));
+    return { store, controller, item: r.item, held, confirm, status, posts };
+  }
+
+  it("parses `confirm hw_…` as a held-write confirm; a proposal ID stays a proposal confirm", () => {
+    const id = `hw_${"a1".repeat(16)}`;
+    expect(parseLocalCliArgs("confirm", [id])).toEqual({ action: "confirm_held", held: id });
+    expect(parseLocalCliArgs("confirm", ["prop_abc"])).toEqual({ action: "confirm", proposal: "prop_abc" });
+  });
+
+  it("applies the held write once through the typed command's path as the owner, and stores it confirmed", async () => {
+    const h = await harness();
+    const out = await h.confirm(OWNER);
+    expect(out.code).toBe(0);
+    expect(out.lines[0]).toContain(`confirm ${h.held.id}\` as ${OWNER}`);
+    const [row] = (await h.store.listCliCommandsAfter(0, 10)).filter((c) => c.command === HELD_CONFIRM_COMMAND);
+    expect(row).toMatchObject({ actor: OWNER, args: { held: h.held.id }, write_origin: "human_command" });
+    expect((await h.store.getWorkItem(h.item.id))!.stage).toBe("RUNNING");
+    const approved = (await h.store.listStateChanges(h.item.id)).filter((c) => c.reason === "spec_approved");
+    expect(approved.map((c) => [c.actor, c.detail?.note])).toEqual([[{ kind: "user", id: OWNER }, "ship it"]]);
+    expect(await h.status()).toBe("confirmed");
+    expect(h.posts(/held-(refused|answered)/)).toEqual([]);
+  });
+
+  it("a second confirm applies nothing and says so, from the CLI and from a row stored anyway", async () => {
+    const h = await harness();
+    await h.confirm(OWNER);
+    const version = (await h.store.getWorkItem(h.item.id))!.version;
+    const rows = (await h.store.listCliCommandsAfter(0, 50)).length;
+    const again = await h.confirm(OWNER);
+    expect(again).toEqual({ code: 0, lines: [`nothing was applied: held write ${h.held.id} (\`approve ${h.item.id} ship it\`) was already confirmed`] });
+    expect((await h.store.listCliCommandsAfter(0, 50)).length).toBe(rows);
+    // A race: a second row stored before the first was applied.
+    await h.store.appendCliCommand({ key: "cli:race", actor: OWNER, command: HELD_CONFIRM_COMMAND, args: { held: h.held.id } });
+    await h.controller.tickCommands();
+    await h.controller.tickCommands();
+    expect((await h.store.getWorkItem(h.item.id))!.version).toBe(version);
+    const answered = h.posts(/held-answered/);
+    expect(answered).toHaveLength(1);
+    expect(answered[0]!.body).toMatch(/^Nothing was applied this time: .* was already confirmed/);
+    expect(await h.status()).toBe("confirmed");
+  });
+
+  it("a held write the typed path refuses is stored refused with one reply saying why, and is never applied again", async () => {
+    const h = await harness({ stage: "RUNNING", tier: 2 });
+    await h.confirm(OWNER);
+    expect((await h.store.getWorkItem(h.item.id))!.version).toBe(h.item.version);
+    expect(await h.status()).toBe("refused");
+    const refused = h.posts(/held-refused/);
+    expect(refused).toHaveLength(1);
+    expect(refused[0]!.body).toMatch(new RegExp(`^\`approve ${h.item.id} ship it\` \\(${h.held.id}\\) was not applied: .*implementing`));
+    expect((await h.confirm(OWNER)).lines[0]).toContain("was already refused");
+    expect(await h.status()).toBe("refused");
+  });
+
+  it("a confirmer the typed path's own check refuses gets the held write refused, the item unchanged", async () => {
+    const h = await harness();
+    const before = await h.store.getWorkItem(h.item.id);
+    await h.confirm(HELPER);
+    expect(await h.store.getWorkItem(h.item.id)).toEqual(before);
+    expect(await h.status()).toBe("refused");
+    expect(h.posts(/held-refused/)).toHaveLength(1);
+  });
+
+  it("an unknown held write fails in the CLI and stores nothing", async () => {
+    const { store } = await newStore();
+    const d: LocalCliDeps = { answers: { split: splitAnswers, detail: answersDetail }, store, identity: { user: OWNER, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "k" };
+    const id = `hw_${"0".repeat(32)}`;
+    expect(await runLocalCli(d, { action: "confirm_held", held: id })).toEqual({ code: 1, lines: [`no held write ${id}`] });
+    expect(await store.listCliCommandsAfter(0, 10)).toEqual([]);
   });
 });
