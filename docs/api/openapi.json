@@ -702,7 +702,7 @@
     "/api/v1/items": {
       "get": {
         "operationId": "items.list",
-        "summary": "The work items, ranked, with the list's facets and counts; filtered by state, stage, tier, run kind, unblocks, closed, words (q) and task project.",
+        "summary": "The work items, ranked, with the list's facets and counts; filtered by state, stage, tier, run kind, unblocks, closed, words (q), task project and blocked_on (human: the items blocked on the owner).",
         "tags": [
           "items"
         ],
@@ -766,6 +766,14 @@
           },
           {
             "name": "project",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "blocked_on",
             "in": "query",
             "required": false,
             "schema": {
