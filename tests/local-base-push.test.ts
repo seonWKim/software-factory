@@ -7,7 +7,7 @@ import { localProject } from "../src/load-config.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { gitHost } from "../src/runtime/host-id.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import type { BaseSyncResult, BaseSyncSpec, LocalMergeResult, LocalMergeSpec } from "../src/core/local-merge.js";
+import type { BasePullResult, BaseSyncResult, BaseSyncSpec, LocalMergeResult, LocalMergeSpec } from "../src/core/local-merge.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkItemId } from "../src/core/types.js";
 import { OwnerAuth } from "../src/core/authorize.js";
@@ -54,6 +54,15 @@ class FakeMergeSandbox {
   async syncBase(spec: BaseSyncSpec): Promise<BaseSyncResult> {
     this.syncs.push(spec);
     return this.sync();
+  }
+}
+
+/** The merge sandbox that can also fast-forward the local base to the remote one, recording each pull. */
+class FakePullSandbox extends FakeMergeSandbox {
+  pulls: { repo: string; base_ref: string }[] = [];
+  async pullBase(spec: { repo: string; base_ref: string }): Promise<BasePullResult> {
+    this.pulls.push(spec);
+    return { pulled: true, from: SHA("0"), to: SHA("d"), not_updated: [] };
   }
 }
 
@@ -278,6 +287,43 @@ describe("base push: queued by the merge's delivery, made by outbound's local ta
   });
 });
 
+// The base pull (design 05-github-sync, base pull): a PR merged on the forge moves origin's base, and the local base
+// follows it, so a local merge checked afterwards is checked on, and lands on, the base origin has.
+describe("base pull: a merge made on the forge fast-forwards the local base", () => {
+  async function pullRows(store: FactoryStore) {
+    const db = (store as unknown as { db: SqlDriver }).db;
+    return (await db.all("SELECT * FROM outbound_actions WHERE action = 'pull_base'")).map((r) => {
+      const a = actionOf(r);
+      return { key: (r.intent_key as string | null) ?? null, target: a.target, args: a.args, delivered: a.delivered_at !== null, outcome: a.delivered_ref === null ? null : JSON.parse(a.delivered_ref) };
+    });
+  }
+
+  it("a merged PR queues one keyed pull of the base, which outbound's local target makes; the same merge again queues nothing more", async () => {
+    const g = fakeForge();
+    const f = await setup({ forge: g.forge });
+    const sandbox = new FakePullSandbox();
+    const controller = replica(f.store, f.clock, sandbox, g.forge);
+    const merged = { kind: "change_merged" as const, change_ref: "845", head_branch: "factory/wi_x", merge_sha: SHA("d"), merger: null };
+    await controller.handleEvent(merged);
+    await controller.handleEvent(merged);
+    await controller.tickOutbox();
+    expect(await pullRows(f.store)).toMatchObject([
+      { key: `pull_base:main:${SHA("d")}`, target: { type: "git", id: "local:main:push" }, args: { base_ref: "main", merge_sha: SHA("d") }, delivered: true, outcome: { pulled: SHA("d") } },
+    ]);
+    expect(sandbox.pulls).toEqual([{ repo: "/nowhere", base_ref: "main" }]);
+    // Never a push: the remote already has the merge.
+    expect(g.pushes).toEqual([]);
+  });
+
+  it("with no remote to read (no forge that pushes the base) a merged PR queues no pull", async () => {
+    const f = await setup({ forge: new LocalForge("factory/") });
+    const sandbox = new FakePullSandbox();
+    const controller = replica(f.store, f.clock, sandbox, new LocalForge("factory/"));
+    await controller.handleEvent({ kind: "change_merged", change_ref: "b", head_branch: "b", merge_sha: SHA("d"), merger: null });
+    expect(await pullRows(f.store)).toEqual([]);
+  });
+});
+
 // The git side against a bare repo standing in for the remote: the sandbox's fetch and merge, the forge's push.
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: GIT_ENV }).trim();
@@ -364,6 +410,28 @@ describe.each(["github", "local"])("base push with the %s forge: fetch, merge a 
     const theirs = git(r.origin, "rev-parse", "main");
     const s = await r.sandbox.syncBase(r.spec);
     expect(s).toEqual({ synced: false, conflicts: ["local.txt"], remote: theirs });
+    expect(git(r.repo, "rev-parse", "main")).toBe(r.merge_sha);
+  });
+});
+
+describe("NoOpSandbox.pullBase (local bare remote)", { timeout: 60_000 }, () => {
+  it("a local base behind origin (a PR merged on the forge) is fast-forwarded to origin's", async () => {
+    const r = remoteSetup();
+    // The local merge was pushed; then a PR merged on the forge moved origin past it.
+    git(r.repo, "push", "--quiet", "origin", "main");
+    const theirs = r.push("pr.txt", "a PR merged on GitHub");
+    expect(await r.sandbox.pullBase({ repo: r.repo, base_ref: "main" })).toEqual({ pulled: true, from: r.merge_sha, to: theirs, not_updated: [] });
+    expect(git(r.repo, "rev-parse", "main")).toBe(theirs);
+    // Again: nothing left to pull.
+    expect(await r.sandbox.pullBase({ repo: r.repo, base_ref: "main" })).toEqual({ pulled: false, local: theirs, remote: theirs, diverged: false });
+  });
+
+  it("a local base ahead of origin (its push pending) or diverged from it moves nothing", async () => {
+    const r = remoteSetup();
+    const before = git(r.origin, "rev-parse", "main");
+    expect(await r.sandbox.pullBase({ repo: r.repo, base_ref: "main" })).toEqual({ pulled: false, local: r.merge_sha, remote: before, diverged: false });
+    const theirs = r.push("pr.txt", "a PR merged on GitHub");
+    expect(await r.sandbox.pullBase({ repo: r.repo, base_ref: "main" })).toEqual({ pulled: false, local: r.merge_sha, remote: theirs, diverged: true });
     expect(git(r.repo, "rev-parse", "main")).toBe(r.merge_sha);
   });
 });

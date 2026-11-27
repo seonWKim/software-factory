@@ -120,32 +120,41 @@ const CLEAN_SCRIPT = [
   "mkdir -p .claude/skills",
 ].join("\n");
 
+/** The skill a clean sandbox holds: its folder name, its folder on the host, and the SKILL.md text under test. */
+export interface CleanSandboxSkill {
+  /** The skill's folder name: it is copied to `.claude/skills/<name>/`. */
+  name: string;
+  /** The skill's folder on the host. */
+  folder: string;
+  /** The SKILL.md text under test (a stored version's or a draft's), written over the copied one. */
+  text: string;
+}
+
 /** What the clean sandbox holds besides the checkout: the skill under test, and the case's seed folder when it names one. */
 export interface CleanSandboxSpec {
-  /** The skill's folder name: it is copied to `.claude/skills/<name>/`. */
-  skill_name: string;
-  /** The skill's folder on the host. */
-  skill_folder: string;
-  /** The SKILL.md text under test (a stored version's or a draft's), written over the copied one. */
-  skill_text: string;
+  /** Absent: a baseline replay (design 07-self-improvement), with no skill folder and no SKILL.md. */
+  skill?: CleanSandboxSkill;
   /** The case's seed folder on the host, copied into the checkout's root; absent: none. */
   seed_folder?: string;
 }
 
 /**
  * Prepares a replay's sandbox for a skill eval (design 06-measurement, clean replays): cleans the checkout
- * (CLEAN_SCRIPT), copies the skill to `.claude/skills/<name>/` with the SKILL.md under test, then the seed folder.
- * Throws when a step fails, so the agent never starts in a half-cleaned sandbox.
+ * (CLEAN_SCRIPT), copies the skill to `.claude/skills/<name>/` with the SKILL.md under test (none for a baseline
+ * replay), then the seed folder. Throws when a step fails, so the agent never starts in a half-cleaned sandbox.
  */
 export async function cleanSkillSandbox<H>(sandbox: ReplaySandbox<H>, handle: H, s: CleanSandboxSpec, signal?: AbortSignal): Promise<void> {
   const run = async (cmd: readonly string[], stdin?: string) => {
     const r = await sandbox.exec(handle, cmd, { env: CLEAN_ENV, ...(stdin !== undefined ? { stdin } : {}), ...(signal ? { signal } : {}) });
     if (r.exit_code !== 0) throw new Error(`skill-eval sandbox clean-up failed (${cmd[0]}): ${r.stderr.trim()}`);
   };
-  if (!/^[A-Za-z0-9_.-]+$/.test(s.skill_name) || /^\.+$/.test(s.skill_name)) throw new Error(`skill-eval replay: bad skill name ${JSON.stringify(s.skill_name)}`);
+  const skill = s.skill;
+  if (skill && (!/^[A-Za-z0-9_.-]+$/.test(skill.name) || /^\.+$/.test(skill.name))) throw new Error(`skill-eval replay: bad skill name ${JSON.stringify(skill.name)}`);
   await run(["sh", "-c", CLEAN_SCRIPT]);
-  const target = `.claude/skills/${s.skill_name}`;
-  await sandbox.copyIn(handle, s.skill_folder, target);
-  await run(["sh", "-c", 'cat > "$1"', "sh", `${target}/SKILL.md`], s.skill_text);
+  if (skill) {
+    const target = `.claude/skills/${skill.name}`;
+    await sandbox.copyIn(handle, skill.folder, target);
+    await run(["sh", "-c", 'cat > "$1"', "sh", `${target}/SKILL.md`], skill.text);
+  }
   if (s.seed_folder !== undefined) await sandbox.copyIn(handle, s.seed_folder, ".");
 }

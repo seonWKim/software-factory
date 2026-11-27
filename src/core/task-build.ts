@@ -1,5 +1,6 @@
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { dependsOnLines } from "./coordination.js";
+export { LOCAL_ID, dependsOnId, localItemOf } from "./coordination.js";
 import { ProjectRefused, type Task, projectRefusal, taskBody } from "./tasks.js";
 import type { UserId, WorkItem, WorkItemId } from "./types.js";
 
@@ -10,12 +11,22 @@ import type { UserId, WorkItem, WorkItemId } from "./types.js";
  */
 export const dependsOnLine = (id: string): string => `Depends on: ${id}`;
 
+/**
+ * Records `item`'s edge to `dep` (the local item a `--depends-on` id names, by its source id) as soon as the item is
+ * created (design 05-dependencies, 2026-11-27): the claim holds a queued implement run on an unmerged edge, and the
+ * coordination pass, which otherwise writes the edge from the `Depends on:` line, may come only after a free worker
+ * has claimed the run that the spec's approval queued. The links stay unread, so that pass still reads them.
+ */
+export async function recordDependsOn(
+  store: Pick<FactoryStore, "replaceDependencyEdges">, item: Pick<WorkItem, "id">, dep: Pick<WorkItem, "source">,
+): Promise<void> {
+  await store.replaceDependencyEdges(item.id, [{ depends_on: dep.source.id, kind: "depends_on" }]);
+}
+
 /** `task create --help`: its flags, `--depends-on` among them. */
 export const CREATE_HELP = "--title <t> --body-file <f> [--project <project_slug>] [--depends-on <id>]. `--depends-on <id>` writes a " +
-  "`Depends on: <id>` line in the item's problem, so its implement run waits until that local item (wi_…, or a built task tk_…) merges";
+  "`Depends on: <id>` line in the item's problem, so its implement run (and every phase's, if it is split) waits until that local item (wi_… or its short ID, `wi_` optional, or a built task tk_…) merges";
 
-/** A wi_ or tk_ id as `--depends-on` and `/hold` take it. */
-export const LOCAL_ID = /^(?:wi|tk)_[\w-]+$/;
 
 /** The wi_ and tk_ ids on the `Depends on:` lines of `text`, in order, each once. */
 export function dependsOnIds(text: string): string[] {
@@ -62,13 +73,6 @@ export function wantedDependsOn(
   return [...new Set([...yes, ...dependsOnIds(it.issue_text ?? "")])].filter((id) => id !== it.id);
 }
 
-/** The local work item a wi_ id names, or the one task tk_'s build made; null for none, or an item that is not local. */
-export async function localItemOf(store: Pick<FactoryStore, "getTask" | "getWorkItem">, id: string): Promise<WorkItem | null> {
-  if (!LOCAL_ID.test(id)) return null;
-  const wi = id.startsWith("tk_") ? (await store.getTask(id))?.work_item_id ?? null : (id as WorkItemId);
-  const item = wi ? await store.getWorkItem(wi) : null;
-  return item?.source.type === "local" ? item : null;
-}
 
 /**
  * Build this (design 02-tasks, issue #607): a plain task sent to intake as one local work item, the link stored on

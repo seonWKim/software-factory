@@ -22,10 +22,6 @@ import type { Logger } from "../core/log.js";
 import { type ApiResult, apiError } from "./api.js";
 import type { UiDeps } from "./deps.js";
 
-export const SCHEDULES_PATH = "/api/v1/schedules";
-export const SCHEDULE_RUNS_PATH = "/api/v1/schedules/runs";
-export const SCHEDULE_SUGGESTIONS_PATH = "/api/v1/schedules/suggestions";
-
 /** A schedule as the routes return it: as stored, with `skip_when_busy` (true when `missed_rule` is skip), which the Schedules page reads. */
 const withSkip = (s: Schedule) => ({ ...s, skip_when_busy: s.missed_rule === "skip" });
 
@@ -43,9 +39,22 @@ async function oneSchedule(d: Pick<UiDeps, "store">, id: string | null): Promise
   return !(await isStored(d, id)) ? apiError(404, `No schedule ${id}.`) : null;
 }
 
-/** GET /api/v1/schedules/runs?schedule=<id>: its run rows, oldest first. */
+/**
+ * GET /api/v1/schedules/runs?schedule=<id>: its run rows, oldest first, each with `transcript`: the dashboard href of the
+ * run's transcript, or null. A run's claim wrote its `schedule_run` Activity row in the same transaction, so the row
+ * with the schedule's ID as subject and the run's `recorded_at` as time is the run's claim; its stored ref gives the link.
+ */
 export async function readScheduleRuns(d: Pick<UiDeps, "store">, id: string | null): Promise<ApiResult> {
-  return (await oneSchedule(d, id)) ?? { status: 200, value: { runs: await d.store.listScheduleRuns(id!) } };
+  const refused = await oneSchedule(d, id);
+  if (refused !== null) return refused;
+  // Loaded inside the read, as readActivity loads its modules: a top-level import would add a feature→feature edge to the layering ratchet.
+  const { linkOf } = await import("./activity-api.js");
+  const claims = new Map((await d.store.listActivity({ kind: "schedule_run" })).filter((a) => a.subject === id).map((a) => [String(a.at), a.ref]));
+  const runs = (await d.store.listScheduleRuns(id!)).map((r) => {
+    const link = linkOf(claims.get(String(r.recorded_at)) ?? null);
+    return { ...r, transcript: link?.kind === "transcript" ? link.href : null };
+  });
+  return { status: 200, value: { runs } };
 }
 
 /** GET /api/v1/schedules/suggestions?schedule=<id>: its suggestions, oldest first, each state as of now. */
@@ -98,12 +107,6 @@ export interface ScheduleWriteDeps {
   log: Logger;
 }
 
-/** The write each POST path runs. */
-export const SCHEDULE_WRITE_PATHS: Readonly<Record<string, ScheduleWrite>> = {
-  [`${SCHEDULES_PATH}/add`]: "add", [`${SCHEDULES_PATH}/edit`]: "edit", [`${SCHEDULES_PATH}/pause`]: "pause", [`${SCHEDULES_PATH}/resume`]: "resume", [`${SCHEDULES_PATH}/run`]: "run",
-  [`${SCHEDULES_PATH}/delete`]: "delete",
-};
-
 /** One POST: the body, then the owner, then the core's write. */
 export async function postSchedule(d: Pick<UiDeps, "store" | "clock">, w: ScheduleWrite, body: unknown, c: ScheduleWriteDeps): Promise<ApiResult> {
   const b = bodyOf(w, body);
@@ -128,9 +131,6 @@ export interface ScheduleDraftDeps {
 }
 
 export type ScheduleDraftVerb = "draft" | "improve";
-
-/** The verb each POST path runs. */
-export const SCHEDULE_DRAFT_PATHS: Readonly<Record<string, ScheduleDraftVerb>> = { [`${SCHEDULES_PATH}/draft`]: "draft", [`${SCHEDULES_PATH}/improve`]: "improve" };
 
 /** One draft or improve POST: the body, then the owner, then the model; stores nothing. */
 export async function postScheduleDraft(d: Pick<UiDeps, "store" | "scanner">, v: ScheduleDraftVerb, body: unknown, c: ScheduleDraftDeps): Promise<ApiResult> {

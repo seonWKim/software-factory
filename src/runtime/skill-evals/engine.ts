@@ -281,9 +281,13 @@ export interface SkillUnderTest {
   name: string;
 }
 
-/** What a skill-eval replay runs with: the skill's text as the system prompt, the skill, and the repo, class and limits. */
+/**
+ * What a skill-eval replay runs with: the skill's text as the system prompt, the skill, and the repo, class and limits.
+ * With no `skill` it is a baseline replay (design 07-self-improvement): no skill folder, no SKILL.md and no tools from
+ * front matter; the case's seed folder and MCP servers still apply.
+ */
 export type SkillReplayOptions<T> = Omit<ReplayRequest<T>, "run_id" | "work_item_id" | "prompt" | "tools" | "tool_grants" | "mcp_servers" | "prepare" | "output_schema" | "signal"> & {
-  skill: SkillUnderTest;
+  skill?: SkillUnderTest;
   /** The `sandbox` plugin's name: under `noop` a replay with tools or MCP servers is refused (`noop_tools_refused`). Absent: not noop. */
   sandbox_plugin?: string;
   /** The tools the ToolBroker serves; only a read-only one may be granted. Absent: none. */
@@ -298,7 +302,7 @@ export type SkillReplayOptions<T> = Omit<ReplayRequest<T>, "run_id" | "work_item
 
 /** The tools and MCP servers a replay gets, or why it is refused; checked before any sandbox is made. */
 async function grantsOf<T>(o: SkillReplayOptions<T>, c: ReplayCase): Promise<{ tool_grants: string[]; mcp_servers?: readonly ReplayMcpServer[] }> {
-  const tool_grants = frontMatterTools(o.system_prompt);
+  const tool_grants = o.skill ? frontMatterTools(o.system_prompt) : [];
   const names = c.mcp ?? [];
   if ((tool_grants.length > 0 || names.length > 0) && o.sandbox_plugin === "noop") {
     throw new ReplayRefused("noop_tools_refused", "the noop sandbox runs no replay with tools or MCP servers");
@@ -317,8 +321,8 @@ const answerText = (output: unknown): string | null => (typeof output === "strin
 
 /**
  * The skill-eval replay over replayInSandbox: each case runs in a fresh sandbox, cleaned before the agent starts
- * (cleanSkillSandbox: no CLAUDE.md, AGENTS.md or other skill, the skill in `.claude/skills/<name>/`, the case's
- * seed), with the tools the skill's `tools:` front matter names (none when absent), the MCP servers the case names
+ * (cleanSkillSandbox: no CLAUDE.md, AGENTS.md or other skill, the skill in `.claude/skills/<name>/` unless it is a
+ * baseline replay, the case's seed), with the tools the skill's `tools:` front matter names (none when absent), the MCP servers the case names
  * (none when it names none), no session and no doc index, the sandbox destroyed after. A replay with tools under
  * the noop sandbox, or one naming a tool or server that is not served, is refused before any sandbox is made. Its
  * output is the final answer as text, else its transcript; its record holds both, the usage and the wall time. A
@@ -332,7 +336,8 @@ export function skillEvalReplay<H, T, R extends { status: string; output: unknow
   return async (c, signal) => {
     const grants = await grantsOf(o, c);
     const seed_folder = c.seed ? skillFolderPath(c.seed, root) : undefined;
-    const prepare = (h: H) => cleanSkillSandbox(parts.sandbox, h, { skill_name: skill.name, skill_folder: skill.folder, skill_text: o.system_prompt, ...(seed_folder ? { seed_folder } : {}) }, signal);
+    const under = skill ? { skill: { name: skill.name, folder: skill.folder, text: o.system_prompt } } : {};
+    const prepare = (h: H) => cleanSkillSandbox(parts.sandbox, h, { ...under, ...(seed_folder ? { seed_folder } : {}) }, signal);
     const started = now?.();
     const result = await replayInSandbox(parts, { ...request, ...grants, prepare, run_id: `skill_eval_${c.run_id}_${c.case_id}`, work_item_id: `skill_eval_${c.run_id}`, prompt: c.input, signal });
     if (result.status !== "completed") throw new Error(`skill-eval replay ${result.status}`);

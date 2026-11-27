@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
 import { Button } from "./button.js";
+import { CARD_TITLE } from "./card.js";
 import { FOCUS } from "./control.js";
 import { ModalPanel } from "./dialog.js";
 import { useWide } from "./parts.js";
@@ -150,7 +151,7 @@ function AnchoredPanel({ anchor, title, onClose, children, footer }: PopoverProp
       )}
     >
       <header className="flex shrink-0 items-start gap-2 border-b border-border py-2 pr-2 pl-4">
-        <h2 id={titleId} data-raw className="min-w-0 flex-1 pt-1.5 text-base font-semibold text-pretty wrap-anywhere">
+        <h2 id={titleId} data-raw className={cn(CARD_TITLE, "min-w-0 flex-1 pt-1.5 text-pretty wrap-anywhere")}>
           {title}
         </h2>
         <Button variant="ghost" size="icon" aria-label={t("common.close")} onClick={onClose} className="text-text-2">

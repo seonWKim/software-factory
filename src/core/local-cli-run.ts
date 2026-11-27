@@ -1,17 +1,23 @@
 import type { WorkItem, WorkItemId } from "./types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { MERGE_COMMAND } from "./local-merge.js";
-import { CLOSED_REFUSAL, approveRefusal, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText } from "./commands.js";
+import { CLOSED_REFUSAL, approveRefusal, settleHeldSkillVersion, helpReply, itemCommandState, latestSpec, overCap, overCapApproval, refusalText } from "./commands.js";
+import { COORDINATOR_LIMIT_KEY, type CoordinatorLimitAnswer, LIMIT_ALERTS_SCAN, coordinatorLimitAnswer, usd } from "./spend.js";
 import type { NoteAnswers } from "./request-transition.js";
 import { verdictRefusal } from "./verdict.js";
 import { CONFIRM_COMMAND } from "./interpret.js";
 import { needsDueDate } from "./quick-add.js"; import { type Project, projectSlug } from "./projects.js";
 export { storedProjectCaps } from "./size-cap.js"; // the project's size caps for `approve` (LocalCliDeps.caps), for the CLI handler
 import { ProjectRefused, projectRefusal, taskLine } from "./tasks.js";
-import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask, localItemOf, withDependsOn } from "./task-build.js";
+import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask, dependsOnId, localItemOf, recordDependsOn, withDependsOn } from "./task-build.js";
 import { type DraftTerminal, runScheduleWords } from "./schedule-draft.js";
 import { ANONYMOUS_USER, CLI_KEY_PREFIX, type CliIdentity, DEFAULT_CLI_NAME } from "./local-cli-identity.js";
-import type { CliAction } from "./local-cli-parse.js";
+import { type CliAction as ParsedAction, parseLocalCliArgs } from "./local-cli-parse.js";
+/**
+ * Every action runLocalCli runs: the parser's, and a bare `approve` (`value`: a dollar amount) or `reject`, which answers
+ * today's open coordinator limit question, else settles the newest held skill version (parseLocalCliArgs in local-cli.ts).
+ */
+export type CliAction = ParsedAction | { action: "settle"; command: "approve" | "reject"; value?: string };
 /** `task create`'s last line: what happens to the new item next. */ export const CREATE_NEXT_STEP = "triage queued; you'll be asked to approve the spec";
 const UI_PORT = 4310; // `ui.port` unset: compose.ts DEFAULT_UI_PORT, which core cannot import
 
@@ -31,11 +37,12 @@ async function orRefused(fail: (line: string) => CliResult, run: () => Promise<C
 export interface LocalCliDeps extends DraftTerminal { // DraftTerminal: `schedule draft` and `improve`'s model, scanner and y/N ask
   store: Pick<
     FactoryStore,
-    "createWorkItem" | "getWorkItem" | "findWorkItemIds" | "listWorkItems" | "listPhases" | "listRuns" | "listStateChanges" | "listItemMessages" | "appendCliCommand"
+    "createWorkItem" | "getWorkItem" | "findWorkItemIds" | "replaceDependencyEdges" | "listWorkItems" | "listPhases" | "listRuns" | "listStateChanges" | "listItemMessages" | "appendCliCommand"
     | "claimOwner" | "addTask" | "listTasks" | "completeTask" | "reopenTask" | "listCommandProposals"
     | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
     | "createProject" | "listProjects" | "renameProject" | "archiveProject" | "restoreProject" | "deleteProject" | "getProjectBySlug"
     | "addTaskToProject" | "removeTaskFromProject" | "moveTaskToProject" | "listTaskProjectSlugs" | "listSchedules" | "listScheduleRuns" | "addSchedule" | "updateSchedule" | "deleteSchedule" | "scheduleNow"
+    | "listHeldSkillVersionGates" | "settleSkillVersionGate" | "listAlerts"
   >;
   /** Who every command acts as (`cliIdentity`). */
   identity: CliIdentity;
@@ -49,6 +56,7 @@ export interface LocalCliDeps extends DraftTerminal { // DraftTerminal: `schedul
   caps?: (project: string) => Promise<{ max_diff_lines: number; max_diff_files: number }>; // the project's size caps as the controller reads them (storedProjectCaps): `approve` refuses an over-cap approval with no note before any write; absent (chat): the controller does
   cli?: string; // the hints' command name (cliName); absent: DEFAULT_CLI_NAME, as chat callers leave it
   ui?: { port?: number }; // factory.config.json's `ui` (validated at load): `task create` prints the item's loopback link on its port; absent: no link (chat)
+  clock?: () => Promise<{ now(): Date }>; // today's UTC day, for the coordinator limit question a bare `approve <usd>` or `reject` answers (design 06-spend); absent (chat): those settle a held skill version only
   answers: NoteAnswers<{ question: string; answer: string | null; accepted_default: boolean }>; // splitAnswers, answersDetail (src/shared/command-notes.ts)
 }
 
@@ -81,16 +89,25 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
     case "create": {
       const project = await d.project();
       if (project === null) return fail(NO_PROJECT_KEY);
-      if (a.depends_on !== undefined && (await localItemOf(d.store, a.depends_on)) === null) return fail(`--depends-on ${a.depends_on} names no local work item or built task, so nothing was created`);
-      const body = withDependsOn((await d.read(a.bodyFile)).trim(), a.depends_on === undefined ? [] : [a.depends_on]);
+      const dep = a.depends_on === undefined ? null : await localItemOf(d.store, a.depends_on);
+      if (a.depends_on !== undefined && !dep) {
+        const several = /^wi_[0-9a-f]+$/.test(a.depends_on) ? (await d.store.findWorkItemIds(a.depends_on)).length : 0;
+        return fail(several > 1
+          ? `--depends-on ${a.depends_on} names ${several} work items; give more of its ID, so nothing was created`
+          : `--depends-on ${a.depends_on} names no local work item or built task, so nothing was created`);
+      }
+      // The line names the item's full wi_ ID, so a short ID given here resolves the same way for the local source.
+      const body = withDependsOn((await d.read(a.bodyFile)).trim(), a.depends_on !== undefined && dep ? [dependsOnId(a.depends_on, dep)] : []);
       if (a.project !== undefined) {
         const r = await createProjectTask(d.store, { task_id: `tk_${d.newId()}`, title: a.title, body, slug: a.project, project, user });
         if (!r.ok) return fail(r.reason);
+        if (dep) await recordDependsOn(d.store, r.item, dep);
         await claim();
         return created(r.item.id, `task ${r.task.id} in +${a.project}`);
       }
       await claim();
       const { item } = await createLocalItem(d.store, { source_id: `local-${d.newId()}`, title: a.title, body, project, user });
+      if (dep) await recordDependsOn(d.store, item, dep);
       return created(item.id);
     }
     case "build": {
@@ -208,7 +225,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       // a command typed in the item's own thread is already there. A verdict changes no state and a merge answers on
       // its own (design 04-gate-commands), so neither is mirrored.
       const mirror = a.command !== "verdict" && a.command !== MERGE_COMMAND && item.source.type !== "local" && item.source.type !== d.origin;
-      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}) });
+      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}), write_origin: "human_command" });
       const decisions = "answers" in d.answers.detail(ans.answers) ? ans.answers.map((x, i) => `${i + 1}. ${x.question} → ${x.answer === null ? "(no answer and no default)" : `${x.answer} (${x.accepted_default ? "default taken" : "your answer"})`}`) : [];
       return { code: 0, lines: [`stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`${cli} task show ${item.id}\``, ...decisions] };
     }
@@ -221,9 +238,31 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       // The controller's confirm path (src/controller/units/commands/proposals.ts) claims and applies each pending row,
       // and answers a refusal in the thread of the first pending command's item.
       const args = { item: pending[0]!.work_item_id, proposal: a.proposal };
-      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: CONFIRM_COMMAND, args });
+      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: CONFIRM_COMMAND, args, write_origin: "human_command" });
       const n = pending.length === 1 ? "its pending command" : `its ${pending.length} pending commands`;
       return { code: 0, lines: [`stored \`${cli} confirm ${a.proposal}\` as ${user} (command ${command.seq}); the controller applies ${n} on its next poll`] };
+    }
+    case "settle": {
+      // Today's open coordinator limit question (design 06-spend) takes `approve <usd>` and `reject`, stored for the
+      // controller, which checks and applies it (the commands unit's answerLimit). A bare `approve` settles a held skill
+      // version first: the question needs an amount.
+      const value = a.value ?? null;
+      const limit = d.clock ? coordinatorLimitAnswer(await d.store.listAlerts({ limit: LIMIT_ALERTS_SCAN }), (await d.clock()).now().getTime(), a.command, value) : null;
+      if (limit !== null && !(a.command === "approve" && value === null)) return storeLimitAnswer(d, limit, a.command, value, user, cli, async () => (await claim()) === user);
+      // `approve <usd>` with no question open: the item command it reads as.
+      if (a.value !== undefined) {
+        const p = parseLocalCliArgs(a.command, [a.value]);
+        return "error" in p ? { code: 1, lines: p.error.split("\n") } : runLocalCli(d, p);
+      }
+      // No held version and the question open: a bare approve's refusal names the amount it needs.
+      const r = await settleHeldSkillVersion(d.store, a.command, user);
+      if (r === null && limit !== null && "refused" in limit) return fail(limit.refused);
+      // No held version: the parser's refusal of a bare item command, word for word, as before (design 07-self-improvement).
+      if (r === null) { const p = parseLocalCliArgs(a.command, []); return { code: 1, lines: "error" in p ? p.error.split("\n") : [] }; }
+      const v = `version ${r.gate.version} of skill ${r.gate.ref_id}`;
+      if (!r.settled) return { code: 0, lines: [`${v} was settled already`] };
+      await claim();
+      return { code: 0, lines: [a.command === "approve" ? `approved held ${v}: it is current unless a newer version passed` : `rejected held ${v}: the version current before it stays current`] };
     }
     case "help": {
       if (a.id === null) return { code: 0, lines: helpReply(null).split("\n") };
@@ -232,6 +271,24 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       return { code: 0, lines: helpReply(itemCommandState(item, await d.store.listRuns(item.id))).split("\n") };
     }
   }
+}
+
+/**
+ * `approve <usd>` or `reject` on today's coordinator limit question, after the checks the controller makes again
+ * (coordinatorLimitAnswer, the owner check): one command row naming the question's key, which the controller applies
+ * (the setting through the settings path, the alert dismissed by the owner). A refusal stores nothing.
+ */
+async function storeLimitAnswer(
+  d: LocalCliDeps, limit: CoordinatorLimitAnswer, command: "approve" | "reject", value: string | null, user: CliIdentity["user"], cli: string, isOwner: () => Promise<boolean>,
+): Promise<CliResult> {
+  if ("refused" in limit) return { code: 1, lines: [limit.refused] };
+  if (!(await isOwner())) return { code: 1, lines: [`only the owner answers the coordinator limit question; you are ${user}`] };
+  const args = { coordinator_limit: limit.alert.pattern_key, ...(value !== null ? { text: value } : {}) };
+  const { command: row } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command, args });
+  const next = limit.set_usd === null
+    ? `leaves ${COORDINATOR_LIMIT_KEY} as it is, so coordinator cycles stay stopped until the UTC day ends`
+    : `sets ${COORDINATOR_LIMIT_KEY} to ${usd(limit.set_usd)}, so coordinator cycles run again once today's coordinator spend is below it`;
+  return { code: 0, lines: [`stored \`${cli} ${command}${value !== null ? ` ${value}` : ""}\` on the coordinator limit question as ${user} (command ${row.seq}); on its next poll the controller ${next}`] };
 }
 
 /** `factory project <verb>`: the task projects' store methods, a slug looked up active or archived. */

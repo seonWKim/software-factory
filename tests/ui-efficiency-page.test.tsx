@@ -126,25 +126,25 @@ describe("Health page: Efficiency tab", () => {
     expect(location.search).toBe("?tab=efficiency");
   });
 
-  it("shows the per-tier merge record and whether each tier meets the rule, in a table under Merges by tier", async () => {
+  it("shows the per-tier merge record and whether each tier meets the rule, in a table under Merges by risk level", async () => {
     const card = await show();
-    const table = await within(card).findByRole("table", { name: "Merges by tier" }, SLOW);
+    const table = await within(card).findByRole("table", { name: "Merges by risk level" }, SLOW);
     const rows = within(table).getAllByRole("row").slice(1).map((r) => within(r).getAllByRole("cell").map((c) => c.textContent));
     expect(rows).toEqual([
-      ["Tier 1", "12", "1", "2", "Met"],
-      ["Tier 2", "7", "2", "0", "Not met: 2 reverted or fixed forward, 1 critical"],
-      ["Tier 3", "3", "0", "0", "Too few merges: 30 of 50"],
-      ["Tier 4", "0", "0", "0", "Never"],
-      ["Tier 5", "0", "0", "0", "Never"],
-      ["Untiered", "0", "0", "0", "Too few merges: 0 of 50"],
+      ["Risk level 1", "12", "1", "2", "Met"],
+      ["Risk level 2", "7", "2", "0", "Not met: 2 reverted or fixed forward, 1 critical"],
+      ["Risk level 3", "3", "0", "0", "Too few merges: 30 of 50"],
+      ["Risk level 4", "0", "0", "0", "Never"],
+      ["Risk level 5", "0", "0", "0", "Never"],
+      ["No risk level", "0", "0", "0", "Too few merges: 0 of 50"],
     ]);
-    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Tier", "Merges, 30 days", "Reverted or fixed forward", "Your verdicts other than accept", "Rule"]);
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Risk level", "Merges, 30 days", "Reverted or fixed forward", "Your verdicts other than accept", "Rule"]);
   });
 
-  it("with no merge recorded, Merges by tier shows an empty state instead of the table", async () => {
+  it("with no merge recorded, Merges by risk level shows an empty state instead of the table", async () => {
     merges = tierRows.map((r) => tierRow(r.tier, { rule: r.rule === "never" ? "never" : "too_few" }));
     const card = await show();
     expect(await within(card).findByText("No merge is recorded yet.", undefined, SLOW)).toBeTruthy();
-    expect(within(card).queryByRole("table", { name: "Merges by tier" })).toBeNull();
+    expect(within(card).queryByRole("table", { name: "Merges by risk level" })).toBeNull();
   });
 });

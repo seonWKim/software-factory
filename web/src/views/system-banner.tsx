@@ -19,7 +19,8 @@ import { alarmAnchor } from "./settings/general.js";
 import { Outcome, useWrite } from "./settings-file-keys.js";
 import { ModeDialog } from "./settings/mode-dialog.js";
 import { ShowFailuresDialog, WhatFailedDialog } from "./alarm-dialogs.js";
-import { ModelCredentialDialog } from "./model-credential-dialog.js";
+import { HeldCases, HeldVersionActions, heldRates, useHeldVersions } from "./evals.js";
+import { AddModelCredential } from "./model-credential-dialog.js";
 import { Toast } from "../components/ui/toast.js";
 
 /**
@@ -178,18 +179,17 @@ function PauseCheckRow({ action, pause }: { action: SystemAction; pause: string 
 }
 
 /**
- * The missing model credential's Needs-you row (design 09-status-page): its sentence, no command, and Add model
- * credential in its "⋯" menu, which opens the dialog; the row keeps its height.
+ * The missing model credential's Needs-you row (design 09-status-page): its sentence, why it matters in the details
+ * line, no command, and a visible Add model credential button that opens the dialog.
  */
 function ModelCredentialRow({ action }: { action: SystemAction }) {
-  const [open, setOpen] = useState(false);
   return (
     <ListRow
       data-check="model_credential"
       title={<p title={action.text} className={cn(ROW_TITLE, "text-text-1")}>{action.text}</p>}
-      menu={<OverflowMenu label={t("commands.more")} items={[{ label: t("needs.addCredential"), action: "add_model_credential", onSelect: () => setOpen(true) }]} />}
+      details={<span>{t("needs.credentialWhy")}</span>}
     >
-      {open && <ModelCredentialDialog onClose={() => setOpen(false)} />}
+      <AddModelCredential />
     </ListRow>
   );
 }
@@ -420,11 +420,35 @@ const clockTime = (at: string) => new Date(at).toLocaleTimeString([], { hour: "2
 
 /**
  * An open alarm's row on the shared ListRow (design 09-dashboard-tasks-needs): Dismiss at the row's end, then its "⋯"
- * menu. The auto-mode stop's alarm (design 03-risk) is AutoStopRow, which has no Dismiss. A red_main alarm has What
- * failed; a repeated error has Show failures; both open a dialog on this page. Other alarms have no menu.
+ * menu. The auto-mode stop's alarm (design 03-risk) is AutoStopRow, which has no Dismiss. A held skill version's alarm is
+ * HeldVersionAlarmRow, settled by its buttons. A red_main alarm has What failed; a repeated error has Show failures; both
+ * open a dialog on this page. Other alarms have no menu.
  */
 function AlarmRow({ action }: { action: SystemAction }) {
-  return action.auto_stop ? <AutoStopRow action={action} stop={action.auto_stop} /> : <PlainAlarmRow action={action} />;
+  if (action.auto_stop) return <AutoStopRow action={action} stop={action.auto_stop} />;
+  return action.pattern === "skill_version_gate" ? <HeldVersionAlarmRow action={action} /> : <PlainAlarmRow action={action} />;
+}
+
+/**
+ * A held skill version's alarm (design 07-self-improvement): its sentence, the version and its pass rates, the cases that
+ * got worse, then "Keep the current version" and "Use this version", the Evals page's own actions; settling either way
+ * dismisses the alarm. Until the held versions load, or when this alarm names none of them, the plain alarm row.
+ */
+function HeldVersionAlarmRow({ action }: { action: SystemAction }) {
+  const held = useHeldVersions().data?.held?.find((h) => h.alert_id !== null && h.alert_id === action.alert_id);
+  if (!held?.skill) return <PlainAlarmRow action={action} />;
+  return (
+    <ListRow
+      data-check="alarm"
+      data-held-alarm={held.version}
+      title={<p data-alarm-summary data-raw title={action.text} className={cn(ROW_TITLE, "text-text-1")}>{action.text}</p>}
+      details={<><span>{t("evals.heldTitle", { n: held.version })}</span><span>{heldRates(held)}</span></>}
+    >
+      <p className="text-xs font-medium text-text-2">{t("evals.heldWorse")}</p>
+      <HeldCases held={held} />
+      <HeldVersionActions held={held} skill={held.skill} size="sm" />
+    </ListRow>
+  );
 }
 
 /** A non-auto-stop alarm's row: Dismiss and its refusal, then the "⋯" menu when the alarm has a dialog. */

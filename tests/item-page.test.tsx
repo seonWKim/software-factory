@@ -211,19 +211,22 @@ describe("item page: links and runs", () => {
     expect(document.querySelector("[data-commands-none]")).toBeNull();
     expect(screen.queryByText(/^Closed: rejected$/)).toBeNull();
     const facts = [...document.querySelectorAll("[data-item-facts] dt")].map((d) => d.textContent);
-    expect(facts).toEqual(["State", "Source", "Tokens", "Updated"]);
+    expect(facts).toEqual(["State", "Source", "Updated"]);
     expect(document.querySelector("[data-item-facts]")!.textContent).not.toContain("–");
   });
 
-  it("an open item keeps every fact, a dash where there is no value", async () => {
+  it("an open item shows only the facts with a value: no dash, no zero", async () => {
     mount("/app/items/wi_live");
     const facts = await waitFor(() => {
       const dts = [...document.querySelectorAll("[data-item-facts] dt")].map((d) => d.textContent);
       expect(dts.length).toBeGreaterThan(0);
       return dts;
     });
-    expect(facts).toContain("PR");
-    expect(facts).toContain("Plan");
+    expect(facts).toContain("State");
+    expect(facts).toContain("Updated");
+    const dds = [...document.querySelectorAll("[data-item-facts] dd")].map((d) => d.textContent);
+    expect(dds).not.toContain("–");
+    expect(dds).not.toContain("0");
     expect(document.querySelector("[data-closed-status]")).toBeNull();
   });
 
@@ -376,8 +379,8 @@ describe("item page: In short, decisions and the approve confirm (issue #526)", 
     const confirm = await approve();
     expect(screen.queryByRole("region", { name: "In short" })).toBeNull();
     expect(confirm.querySelector("[data-confirm-answers]")).toBeNull();
-    expect(confirm.textContent).toContain("You approve a tier raise to the tier the floor check needs.");
-    expect(confirm.textContent).toContain("Next: The item's tier is raised and the implement run starts again.");
+    expect(confirm.textContent).toContain("You approve a risk level raise to the risk level the floor check needs.");
+    expect(confirm.textContent).toContain("Next: The item's risk level is raised and the implement run starts again.");
     await send({ command: "approve" });
   });
 
@@ -404,7 +407,7 @@ describe("item page: the Reject and Revise dialogs (issue #527)", () => {
   /** Serves wi_r at the spec gate with approve, revise and reject; `extra` sets the item's fields (a PR). */
   function serve(extra: object = {}) {
     const detail = {
-      as_of: AT, item: base("wi_r", 40, "Forms", extra), timeline: [], runs: [], commands: ["approve", "revise", "reject"].map(cmd), replies: [], spec: null,
+      as_of: AT, item: base("wi_r", 40, "Forms", extra), timeline: [], runs: [], commands: ["approve", "revise", "reject"].map(cmd), replies: [], spec: { in_short: "AS-IS: a.\nTO-BE: b.", decisions: [] },
     };
     posts = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {

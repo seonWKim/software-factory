@@ -81,3 +81,42 @@ describe("recordSkillEvalReplay: replay numbers", () => {
     expect(stored).toHaveLength(3);
   });
 });
+
+describe("recordSkillEvalLabel and listSkillEvalLabels: the owner's labels on the judge", () => {
+  it("stores a right or wrong label on a judged check with its run, case, replay number, check and owner ID", async () => {
+    const { store } = await twoSkills();
+    await store.startSkillEvalRun({ id: "r1", suite_id: "s1", created_by: OWNER });
+    const right = { run_id: "r1", case_id: "c1", replay: 1, check: "cites the source", verdict: "right" as const, owner_id: OWNER };
+    const wrong = { ...right, replay: 2, verdict: "wrong" as const };
+    expect(await store.recordSkillEvalLabel(right)).toEqual({ ...right, created_at: expect.any(String) });
+    expect(await store.recordSkillEvalLabel(wrong)).toEqual({ ...wrong, created_at: expect.any(String) });
+    const rows = await store.db.all("SELECT run_id, case_id, replay, check_text, verdict, owner_id FROM controller_skill_eval_labels ORDER BY replay");
+    expect(rows).toEqual([
+      { run_id: "r1", case_id: "c1", replay: 1, check_text: "cites the source", verdict: "right", owner_id: OWNER },
+      { run_id: "r1", case_id: "c1", replay: 2, check_text: "cites the source", verdict: "wrong", owner_id: OWNER },
+    ]);
+  });
+
+  it("a second label on the same run, case, replay and check keeps the first", async () => {
+    const { store, clock } = await twoSkills();
+    await store.startSkillEvalRun({ id: "r1", suite_id: "s1", created_by: OWNER });
+    const first = await store.recordSkillEvalLabel({ run_id: "r1", case_id: "c1", replay: 1, check: "k", verdict: "right", owner_id: OWNER });
+    clock.advance(1000);
+    expect(await store.recordSkillEvalLabel({ ...first, verdict: "wrong", owner_id: "local:other" as UserId })).toEqual(first);
+    expect(await store.listSkillEvalLabels("skills/a")).toEqual([first]);
+  });
+
+  it("lists the labels on the runs of every suite of the skill, and no other skill's", async () => {
+    const { store, clock } = await twoSkills();
+    await store.startSkillEvalRun({ id: "a1", suite_id: "s1", created_by: OWNER });
+    await store.startSkillEvalRun({ id: "a2", suite_id: "s2", created_by: OWNER });
+    await store.startSkillEvalRun({ id: "b1", suite_id: "s3", created_by: OWNER });
+    for (const run_id of ["a1", "b1", "a2"]) {
+      await store.recordSkillEvalLabel({ run_id, case_id: "c1", replay: 0, check: "k", verdict: "right", owner_id: OWNER });
+      clock.advance(1000);
+    }
+    expect((await store.listSkillEvalLabels("skills/a")).map((l) => l.run_id)).toEqual(["a1", "a2"]);
+    expect((await store.listSkillEvalLabels("skills/b")).map((l) => l.run_id)).toEqual(["b1"]);
+    expect(await store.listSkillEvalLabels("skills/none")).toEqual([]);
+  });
+});

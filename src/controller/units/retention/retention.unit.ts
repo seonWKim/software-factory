@@ -1,7 +1,9 @@
 // The daily retention pass (design 08-retention): delivered outbox rows and their batches, handled commands and old
 // history (claim decisions, host sleeps, alerts, authz_audit, ended claim pauses, expired passports) deleted in bounded batches, at most once per UTC day, under the store lease
 // `retention`, with the day it finished in the store cursor `retention`. The controller role's `retention` tick runs
-// it and hands it the store's retention calls: the unit reaches no store of its own (unit-purity).
+// it and hands it the store's retention calls: the unit reaches no store of its own (unit-purity). Each store batch
+// that deletes rows writes its `retention` Activity row in its transaction, and the history class also deletes
+// Activity rows past 30 days (design 08-schedules-actions).
 
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";

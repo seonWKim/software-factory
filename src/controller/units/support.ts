@@ -75,20 +75,38 @@ export function retryWip(runs: readonly Pick<Run, "kind" | "outcome" | "input">[
   const last = runs.filter((r) => r.kind === "implement" && r.outcome).at(-1);
   return last ? keptWip(last) : undefined;
 }
+/** The `/retry` refusal on an item waiting on its merge conflict (2026-11-26): the `/resolve` replies that apply there. */
+const RESOLVE_NOT_RETRY = "the item is waiting on its merge conflict, so there is no failed run to retry; reply `/resolve [notes]` to resolve it again, " +
+  "or `/resolve +paths <path>...` with the notes on the lines below to also allow files outside the conflicts and allowed paths";
 /**
  * `/retry [notes]`: the failed step again under a new key. `widen` (a `+paths`, issue #280) applies only to a
  * failed implement or resolve run; on any other kind it is refused and nothing changes. The note, without its
  * `+paths` line, goes on the state change (and is a resolve run's notes). At the review loop limit it is an implement run with loop_count back at 0 and
- * the item RUNNING (a human chose to try again). On a `recurring_failure` hold it only lifts the hold. `label` names a
+ * the item RUNNING (a human chose to try again). On a `recurring_failure` hold it only lifts the hold, or with `widen`
+ * (its failed run an implement run, `kind`) cancels the held queued runs and queues a fresh implement run. `label` names a
  * run kind in the refusal: the run-results unit's `kindLabel`, which this shared file takes as an argument. `wip`: where
  * the last implement run kept its commits (keptWip, design §5 Restarts); an implement retry starts from it.
  */
 export function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, note: string | null, widen: Widening | null, label: (kind: RunKind) => string, wip?: WipRef): Decision | Refusal {
-  // A recurring failure's hold (design 05-alarms) has its runs queued already: lifted, they are claimed.
+  // A recurring failure's hold (design 05-alarms) has its runs queued already: lifted, they are claimed. With `+paths`
+  // on a failed implement run, the queued runs are cancelled and a fresh implement run on the widened paths replaces them.
   if (it.blocked_on === "human" && it.blocked_reason === RECURRING_FAILURE) {
-    if (widen) return { refuse: "`+paths` does not apply to an item held for a recurring failure, which has no failed run to widen; reply `/retry` without `+paths`" };
-    return { patch: { blocked_on: "none", blocked_reason: null }, actor, reason: "retry_requested", ...(note ? { detail: { note } } : {}) };
+    if (!widen) return { patch: { blocked_on: "none", blocked_reason: null }, actor, reason: "retry_requested", ...(note ? { detail: { note } } : {}) };
+    if (kind !== "implement") {
+      return { refuse: `\`+paths\` on an item held for a recurring failure applies only when its failed run is an implement run, and this item's ${kind ? `is a ${label(kind)} run` : "has no failed run"}; reply \`/retry\` without \`+paths\`` };
+    }
+    const next = { ...it, restart_count: it.restart_count + 1 };
+    return {
+      patch: { blocked_on: "none", blocked_reason: null, restart_count: next.restart_count, ...widen.patch },
+      actor,
+      reason: "retry_requested",
+      detail: { ...(note ? { note } : {}), ...widen.detail },
+      cancel_queued_runs: true,
+      enqueue: { kind, idempotency_key: runKey(next, kind), ...(wip ? { input: { wip } } : {}) },
+    };
   }
+  // A failed resolve run leaves the item on its merge conflict, not on a failed run: `/resolve` (with `+paths`) answers it.
+  if (it.blocked_on === "human" && it.blocked_reason === CONFLICT_PENDING) return { refuse: RESOLVE_NOT_RETRY };
   if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };
   if (widen && kind !== "implement" && kind !== "resolve") {
     return { refuse: `\`+paths\` applies only to a failed implement or resolve run, and this item's failed run is a ${label(kind)} run; reply \`/retry\` without \`+paths\`` };

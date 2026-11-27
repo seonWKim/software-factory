@@ -377,7 +377,8 @@ export class RunResultsUnit {
     if (run.outcome?.status === "failed" && run.outcome.error_code === PREFLIGHT_ACCESS && run.outcome.pause_started) {
       await preflightAccessComment(this.c, it, run);
     }
-    if (takenOver(run) || !this.c.unit("transitions").expects(it, run.kind)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", ack_run: run.id };
+    // A run a transition cancelled with no outcome (a close, a block, or a `/retry +paths` that queued its replacement) is no failure to retry.
+    if (takenOver(run) || (run.status === "cancelled" && !run.outcome) || !this.c.unit("transitions").expects(it, run.kind)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", ack_run: run.id };
     const code = failedCode(run);
     if (run.kind === "resolve") return resolveFailed(this.c, it, run, code);
     if (run.kind === "interactive") return sessionReleased(it, run, code);

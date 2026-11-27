@@ -8,6 +8,7 @@ import type { GitHubApi, GitHubCredentials } from "../../interfaces/github-crede
 import { factoryGit, factoryRemoteUrl } from "../broker/trusted-git.js";
 import { pushBaseToOrigin } from "../git/base-push.js";
 import { GitHubError, GitHubRateLimitError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
+import { cancelledRun, summedUp } from "./check-summary.js";
 import { forgeAuthRefused, openOrUpdatePr } from "./pull-requests.js";
 import { resolveProject } from "./forge.plugin.js";
 import type { ProjectRef } from "../../core/project.js";
@@ -359,8 +360,9 @@ export class GitHubForge implements Forge {
     return this.issues.postComment(this.prRef(pr), body, marker);
   }
 
-  setPrStatus(source: SourceRef, status: WorkStatus, pr: number): Promise<void> {
-    return this.issues.setStatus(source, status, String(pr));
+  setPrStatus(source: SourceRef, status: WorkStatus, pr: number): Promise<void> { return this.issues.setStatus(source, status, String(pr)); }
+  async prTitle(pr: number): Promise<string | null> {
+    return (await this.client.request<Pick<GhPull, "title"> | undefined>("GET", `${this.base}/pulls/${pr}`))?.title || null;
   }
 
   /** Every path the PR changes, both sides of a rename. GitHub lists at most 3000 files per PR. */
@@ -557,7 +559,7 @@ export class GitHubForge implements Forge {
    * Each check on commit `sha`: its check runs (GitHub Actions and apps; the latest run per name, GitHub's default),
    * then its commit statuses (older integrations). Two read-only GETs and at most CHECK_PAGES pages of check runs. A
    * check run with a conclusion other than success, neutral or skipped, and a status in `failure` or `error`, is
-   * failed; any unfinished one is pending.
+   * failed (a cancelled or timed-out check run marked `cancelled`); any unfinished one is pending.
    */
   private async commitCheckResults(commit: string): Promise<PrCheckResult[]> {
     const sha = encodeURIComponent(commit);
@@ -573,6 +575,7 @@ export class GitHubForge implements Forge {
       ...runs.map((r): PrCheckResult => ({
         name: r.name,
         result: r.status !== "completed" ? "pending" : failedRun(r) ? "failed" : "passed",
+        ...(cancelledRun(r) ? { cancelled: true as const } : {}),
       })),
       ...status.statuses.map((s): PrCheckResult => ({
         name: s.context,
@@ -585,14 +588,4 @@ export class GitHubForge implements Forge {
 /** A finished workflow run or job whose conclusion fails the gate (the check-run rule). */
 function failedRun(r: { status: string; conclusion: string | null }): boolean {
   return r.status === "completed" && !PASSING_CONCLUSIONS.has(r.conclusion ?? "");
-}
-
-/**
- * The CI gate's summary of a commit's checks: any failed check fails it (with the failed names), else any pending one
- * keeps it pending, else (none at all included) it passed.
- */
-function summedUp(results: readonly PrCheckResult[]): PrChecks {
-  const failed = results.filter((r) => r.result === "failed").map((r) => r.name);
-  if (failed.length) return { state: "failed", failed };
-  return results.some((r) => r.result === "pending") ? { state: "pending" } : { state: "passed" };
 }

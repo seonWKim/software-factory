@@ -22,8 +22,8 @@ export type AdvancedGroupId = (typeof ADVANCED_GROUPS)[number]["id"];
 export const GROUP_KEYS: Readonly<Record<AdvancedGroupId, readonly string[]>> = {
   limits: [
     // How much runs at once, and how far auto mode goes on its own.
-    "workers", "worker_kinds", "mode", "auto_merge_max_tier", "spend.daily_budget_usd", "spend.weekly_budget_usd", "hold_policy",
-    "phases_auto_approve", "standing_approvals.threshold",
+    "workers", "worker_kinds", "mode", "auto_merge_max_tier", "permission_mode", "spend.daily_budget_usd", "spend.weekly_budget_usd", "spend.coordinator_daily_usd", "hold_policy",
+    "phases_auto_approve", "coordinator", "standing_approvals.threshold",
     // The size and time limits of one run.
     "max_diff_lines", "max_diff_files", "run_timeout_ms", "agent_stop_check_ms", "stall_ms", "first_output_ms", "probe_interval_ms",
     // What a run may touch, then alarms and intake.
@@ -32,7 +32,7 @@ export const GROUP_KEYS: Readonly<Record<AdvancedGroupId, readonly string[]>> = 
   ],
   retries: ["max_attempts", "max_loops", "max_restart", "auth_pause_ms", "retry_base_ms", "retry_max_ms"],
   models: ["models", "model_by", "message_style"],
-  notices: ["notice_kinds", "quiet_hours", "review_time", "notify_channels", "integrations", "calendar"],
+  notices: ["notice_kinds", "quiet_hours", "review_time", "summary_morning_time", "summary_evening_time", "notify_channels", "integrations", "calendar"],
   developers: ["lease_ms", "heartbeat_ms", "hotspot_weight", "mechanical_weight", "max_coordination_cost", "tick_ms", "poll_interval_ms"],
 };
 

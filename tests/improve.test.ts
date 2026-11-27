@@ -35,8 +35,11 @@ async function parts(as: UserId = OWNER) {
   const wiring: SkillImproveWiring = {
     config: SKILL_IMPROVE_DEFAULTS, skill_folders: ["/repo/skills"], folderOf: (ref) => `/repo/${ref}`, prompt: async () => null,
     readSkill: async (f) => files.get(f) ?? null, writeSkill: async (f, t) => void files.set(f, t), version: async () => "v1", newId: () => "n1",
-    scratch: async () => null, rerun: async (r) => (reruns.push(r.skill_ref), null),
+    scratch: async (r) => ({ id: r.run_id, pass_rate: 1 }) as never, rerun: async (r) => (reruns.push(r.skill_ref), null),
   };
+  // skills/a has a held-out case, so a promotion runs its held-out check (each scratch run scores 1).
+  await (store as FactoryStore).createSkillEvalSuite({ id: "suite:a", skill_ref: "skills/a", title: "a", created_by: OWNER });
+  await (store as FactoryStore).addSkillEvalCase({ id: "h1", suite_id: "suite:a", input: "held", expected: ["x"], split: "held-out" });
   const pauses: UiPauses = { principal: async () => as, authorize: async () => ({ allow: true }), csrfToken: "t", log: silent };
   const skillImprove = { hold: holdSkillDraft, reject: rejectSkillDraft, promote: promoteSkillDraft, wiring };
   const p = { store, pauses, settings: { resolveProject: async () => PROJECT }, skillImprove, close: async () => {} };

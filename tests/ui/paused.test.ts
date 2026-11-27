@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { WorkerId } from "../../src/core/types.js";
 import { api } from "../../src/ui/api.js";
+import { readApi } from "../../src/ui/read-routes.js";
 import { HealthMonitor } from "../../src/ui/health.js";
 import { type PriorityInput, badgesOf, levelOf } from "../../src/ui/priority.js";
 import { cleanScanner } from "../helpers/fakes/config.js";
@@ -15,7 +16,7 @@ const BY = "github:42";
 type Row = { id: string; item_phase: string; run: { kind: string; status: string } | null };
 
 async function rows(deps: Parameters<typeof api>[0]): Promise<Row[]> {
-  const r = await api(deps, new URL("http://127.0.0.1/api/v1/items"));
+  const r = await readApi(deps, new URL("http://127.0.0.1/api/v1/items"), { method: "GET", url: "/api/v1/items", host: "127.0.0.1" });
   expect(r.status).toBe(200);
   return (r.value as { items: Row[] }).items;
 }

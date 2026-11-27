@@ -6,7 +6,7 @@ The dashboard's design source. Decisions: `docs/design/09-brand-and-tokens.md`.
 - `web/src/tokens.css` is generated from it: `npm run build:tokens`. Never edit it.
 - `foundations.md` states the colour, type, spacing and radius scales with the values `tokens.json` gives them.
 - `components.md` has a section for every shared component under `web/src/components/ui`: purpose, variants, sizes and states.
-- `patterns.md` states how a page is laid out: rows, actions, confirmations, states, forms and keyboard.
+- `patterns.md` states how a page is laid out: rows, actions, confirmations, states, where autonomous work shows, forms and keyboard.
 - `writing.md` states the rules for the words on a page and for `t()`.
 - `dx.md` lists the build steps, each check with its test and npm script, and the PR checklist for UI changes.
 - `icon.svg` is the master mark of Gongbang: a white open loop round a plain file on a dark square, ending in the ember dot. It has no letters.
@@ -24,6 +24,7 @@ A UI change keeps these as they are. The triage spec lists them for a change und
 
 ## Changelog
 
+- 2026-11-26: `patterns.md` gains "Autonomous work is visible" (owner decision): every actor that acts without the owner has a place on a factory page with its current activity, its recent actions with outcome and reason, and a link to the transcript or log; a new autonomous feature is not done without it. `tests/design-system.test.ts` checks every schedule action kind is named on the Schedules page (`AUTONOMOUS_SURFACES`). No token changes.
 - 2026-11-24: `Button` gains `flush` (a ghost Button that opens a block lines its label up with the text above); `READ_WIDTH` (32rem) is the one intro width in place of `max-w-prose`; `LIST_BOX` drops a list box's side border inside a Card below `sm` (the Work tree, a Table's cards); `Field` with no `htmlFor` is a labelled group and its `help` is the hint slot; check:responsive gains `disclosure-align`. No token changes.
 - 2026-11-24: new `Popover` (the details of one thing beside it; a `ModalPanel` sheet below `sm`) and `ChipButton` (a content chip that opens one, marked `data-chip`, which check:responsive's button-height rule skips); first used by the Calendar's event chips. No token changes.
 - 2026-11-24: `Dialog`'s body scrolls between a fixed title and footer, so Cancel and the confirm stay in view in a tall dialog; `DataTable` gains `select` (a plain text button in the first cell, the selected row `current`) and `Tr` gains `current` (`surface-2` fill and a 2 px `nav-active` bar, like the current sidebar link). No token changes.

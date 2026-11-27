@@ -51,8 +51,8 @@ beforeEach(() => {
   schedules = [schedule("sch_aaaa1111", "Nightly docs check"), schedule("sch_bbbb2222", "Weekly review", { next_due_at: null, cadence: { kind: "weekly", spec: "mon 09:00" } })];
   runs = {
     sch_aaaa1111: [
-      { schedule_id: "sch_aaaa1111", occurrence_at: "2026-11-23T08:00:00.000Z", outcome: "fired", recorded_at: "2026-11-23T08:00:05.000Z", output: "Found two stale pages.", cost_usd: 0.0123 },
-      { schedule_id: "sch_aaaa1111", occurrence_at: "2026-11-24T08:00:00.000Z", outcome: "skipped", recorded_at: "2026-11-24T08:00:05.000Z" },
+      { schedule_id: "sch_aaaa1111", occurrence_at: "2026-11-23T08:00:00.000Z", outcome: "fired", recorded_at: "2026-11-23T08:00:05.000Z", transcript: null, output: "Found two stale pages.", cost_usd: 0.0123 },
+      { schedule_id: "sch_aaaa1111", occurrence_at: "2026-11-24T08:00:00.000Z", outcome: "skipped", recorded_at: "2026-11-24T08:00:05.000Z", transcript: null },
     ],
     sch_bbbb2222: [],
   };
@@ -214,6 +214,76 @@ describe("Schedules page", () => {
     expect(body[1]?.slice(1)).toEqual(["Ran", "$0.0123", "Found two stale pages."]);
   });
 
+  /** Selects Nightly docs check with one run whose output is `output`, and returns that run's Output cell. */
+  const outputCell = async (output: string) => {
+    runs.sch_aaaa1111 = [{ schedule_id: "sch_aaaa1111", occurrence_at: "2026-11-23T08:00:00.000Z", outcome: "fired", recorded_at: "2026-11-23T08:00:05.000Z", transcript: null, output, cost_usd: 0.5 }];
+    show();
+    await ready();
+    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "Show what Nightly docs check does and its runs" }));
+    const table = await screen.findByRole("table", { name: "Runs" }, SLOW);
+    return [...table.querySelectorAll<HTMLElement>("tbody tr td")].at(-1)!;
+  };
+  /** The text a reader sees outside `[data-raw]` (stored text) in `el`. */
+  const plainText = (el: HTMLElement) => {
+    const copy = el.cloneNode(true) as HTMLElement;
+    copy.querySelectorAll("[data-raw]").forEach((r) => r.remove());
+    return copy.textContent ?? "";
+  };
+  const FILED = "wi_29b26f39e33d40c59a22b72dff5e2d91";
+  const feedback = (filed: { id: string; title: string; created: boolean }[], unfiled: { title: string; reason: string }[] = []) => JSON.stringify({ filed, unfiled });
+
+  it("a feedback run's output reads as Filed N items over its titles, each a link to its item page, with no JSON or ID in the text (owner: output should be readable)", async () => {
+    const cell = await outputCell(feedback(
+      [
+        { id: FILED, title: "Margin guard allows whole files", created: true },
+        { id: "wi_00779d00000000000000000000000000", title: "Dialog and popover titles", created: false },
+      ],
+      [{ title: "Tidy the footer", reason: "no_evidence" }],
+    ));
+    expect(cell.querySelector("p")!.textContent).toBe("Filed 2 items");
+    const links = within(cell).getAllByRole("link");
+    expect(links.map((a) => a.textContent)).toEqual(["Margin guard allows whole files", "Dialog and popover titles"]);
+    expect(links[0]!.getAttribute("href")).toMatch(new RegExp(`/items/${FILED}$`));
+    expect(cell.textContent).toContain("Already filed");
+    expect(cell.textContent).toContain("Tidy the footer");
+    expect(cell.textContent).toContain("Not filed: no evidence from the code");
+    expect(cell.textContent).not.toMatch(/[{}]|wi_|no_evidence|"filed"/);
+    // The stored text stays one press away, for debugging, inside [data-raw].
+    fireEvent.click(within(cell).getByText("Raw output"));
+    const raw = cell.querySelector("pre [data-raw]")!;
+    expect(raw.textContent).toContain(FILED);
+    expect(plainText(cell)).not.toMatch(/[{}]|wi_|no_evidence/);
+  });
+
+  it("a long filed list shows three entries and opens the rest in place with Show N more, so the row keeps a sensible height", async () => {
+    const cell = await outputCell(feedback(["One", "Two", "Three", "Four", "Five"].map((title, i) => ({ id: `wi_${i}aaaaaaaa`, title, created: true }))));
+    expect(within(cell).getAllByRole("link").map((a) => a.textContent)).toEqual(["One", "Two", "Three"]);
+    fireEvent.click(within(cell).getByRole("button", { name: "Show 2 more" }));
+    expect(within(cell).getAllByRole("link")).toHaveLength(5);
+  });
+
+  it("a feedback run that filed nothing says Nothing filed", async () => {
+    const cell = await outputCell(feedback([]));
+    expect(cell.querySelector("p")!.textContent).toBe("Nothing filed");
+    expect(within(cell).queryAllByRole("link")).toHaveLength(0);
+  });
+
+  it("another JSON output reads as key: value lines, never a JSON blob, with the raw text behind Raw output", async () => {
+    const cell = await outputCell(JSON.stringify({ checked: 12, broken: ["a", "b"], ok: false }));
+    const terms = [...cell.querySelectorAll("dt")].map((d) => d.textContent);
+    const values = [...cell.querySelectorAll("dd")].map((d) => d.textContent);
+    expect(terms).toEqual(["checked", "broken", "ok"]);
+    expect(values).toEqual(["12", "2 entries", "false"]);
+    expect(cell.textContent).not.toMatch(/[{}[\]]/);
+    expect(within(cell).getByText("Raw output")).toBeTruthy();
+  });
+
+  it("a plain text output shows as written, with no Raw output", async () => {
+    const cell = await outputCell("Found two stale pages.\nBoth under docs/.");
+    expect(cell.textContent).toBe("Found two stale pages.\nBoth under docs/.");
+    expect(within(cell).queryByText("Raw output")).toBeNull();
+  });
+
   it("each title has one muted line under it saying what the schedule does: its text's first sentence, else what its action does (owner #84)", async () => {
     schedules.push(
       schedule("sch_persona", "Daily design check", { action: { kind: "feedback", settings: { prompt: "Once a day, an agent playing a designer files tasks. It reads the code.\nYou are the gongbang-designer persona." } } }),
@@ -272,6 +342,31 @@ describe("Schedules page", () => {
     expect([...dl.querySelectorAll("dd")].every((dd) => dd.className.includes("min-w-0") && dd.className.includes("wrap-anywhere"))).toBe(true);
     // The text is clamped to two lines (the shared Clamp), not cut by the page.
     expect(dl.querySelector("dd p")!.className).toContain("line-clamp-2");
+  });
+
+  it("a run row links its transcript when its claim started one, and shows no link when none", async () => {
+    runs.sch_aaaa1111![0]!.transcript = "/app/items/wi_9/runs/run_9";
+    show();
+    await ready();
+    fireEvent.click(within(await row("Nightly docs check")).getByRole("button", { name: "Show what Nightly docs check does and its runs" }));
+    const table = await screen.findByRole("table", { name: "Runs" }, SLOW);
+    const links = within(table).getAllByRole("link", { name: /Transcript of the run due/ });
+    expect(links).toHaveLength(1);
+    expect(links[0]!.getAttribute("href")).toBe("/app/items/wi_9/runs/run_9");
+  });
+
+  it("a summary schedule setup adds shows its Last run and Next run in its detail Card", async () => {
+    schedules.push(schedule("summary-morning", "Morning summary", { action: { kind: "summary", settings: {} }, cadence: { kind: "interval", spec: "15" }, next_due_at: "2026-11-25T08:15:00.000Z" }));
+    runs["summary-morning"] = [{ schedule_id: "summary-morning", occurrence_at: "2026-11-25T08:00:00.000Z", outcome: "fired", recorded_at: "2026-11-25T08:00:05.000Z", transcript: null, output: "nothing to report" }];
+    show();
+    await ready();
+    fireEvent.click(within(await row("Morning summary")).getByRole("button", { name: "Show what Morning summary does and its runs" }));
+    const detail = await screen.findByRole("region", { name: "About Morning summary" }, SLOW);
+    const pairs = () => Object.fromEntries([...detail.querySelectorAll("dt")].map((dt) => [dt.textContent, dt.nextElementSibling!.textContent]));
+    await waitFor(() => expect(pairs()["Last run"]).toMatch(/Nov 2[45], 2026/), SLOW);
+    expect(pairs()["Next run"]).toMatch(/Nov 2[45], 2026/);
+    expect(pairs()["Does"]).toMatch(/^Sends you a summary/);
+    expect(pairs()["Repeats"]).toBe("Every 15 minutes");
   });
 
   it("a schedule with no token limit shows the default, and one that has not run says so", async () => {

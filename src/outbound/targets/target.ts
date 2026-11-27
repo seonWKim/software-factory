@@ -82,6 +82,7 @@ export async function act(adapter: SourceAdapter, row: ActionRow): Promise<{ url
       throw new Error(`a ${row.action} goes through the forge (github-change, github-push)`);
     case "merge":
     case "push_base":
+    case "pull_base":
     case "append_lines":
       throw new Error(`a ${row.action} goes through the local target`);
     case "tacit_capture":

@@ -7,12 +7,15 @@
 // migrate-api.ts), /api/v1/calendar/events (the Calendar page's range read; calendar-events-api.ts), /api/v1/screenshot
 // (one stored image of an item's screenshot run; item-screenshots.ts) and /api/v1/evals/<skill>/runs, /grid, /compare
 // and /suite (a skill's eval runs, grid, compare, suite and cases; evals-api.ts, a path pattern), /versions and /diff
-// (a skill's versions and the diff of two; plugins-api.ts, a path pattern),
-// /api/v1/items/:id/changes (the item page's Changes tab; changes.ts) and /api/v1/schedules and
-// /api/v1/schedules/runs and /api/v1/schedules/suggestions (`?schedule=<id>`; schedules-api.ts); every other
-// path is api.ts's. They are served here beside api.ts so it stays within its size budget. A new read route adds one
+// (a skill's versions and the diff of two; plugins-api.ts, a path pattern), /calibration (the owner's labels on the
+// judge; evals-api.ts) and
+// /api/v1/items/:id/changes (the item page's Changes tab; changes.ts); the API registry's GET capabilities (among them
+// /api/v1/items and /api/v1/schedules, /runs and /suggestions; src/api/capabilities/) and the feature map are its one
+// entry, last; every other path is api.ts's. They are served here beside api.ts so it stays within its size budget. A new read route adds one
 // entry to READ_ROUTES, not a line in server.ts.
 
+import { judgeAgreement, judgeCalibrated } from "../core/skill-eval-calibration.js";
+import { wilsonInterval } from "../core/skill-eval-stats.js";
 import { caseResults, compareSkillEvalRuns, latestLinkedRun, lineDiff, skillEvalGrid, skillVersionRows, unlinkedRuns } from "../core/skill-eval-compare.js";
 import { type ApiResult, api, apiError } from "./api.js";
 import { staleCsrf } from "./commands.js";
@@ -30,12 +33,14 @@ import { SUPERVISOR_PATH, readSupervisor } from "./migrate-api.js";
 import { SCREENSHOT_PATH, readScreenshot } from "./item-screenshots.js";
 import { EVALS_LIST_PATH, EVALS_PATH, readEvalSuites, readSkillEvals, skillOf } from "./evals-api.js";
 import { changesPathId, readItemChanges } from "./changes.js";
-import { SCHEDULES_PATH, SCHEDULE_RUNS_PATH, SCHEDULE_SUGGESTIONS_PATH, readScheduleRuns, readScheduleSuggestions, readSchedules } from "./schedules-api.js";
+import { registryOf } from "../api/index.js";
+import { registryRead, registryReads } from "../api/registry.js";
+import { Withholder } from "./withhold.js";
 import type { ServerDeps, UiRequest } from "./server.js";
 
-/** One GET (or HEAD) route under /api/v1: its path (or a pattern over it) and its read. */
+/** One GET (or HEAD) route under /api/v1: its path (or a pattern over it, or a test of it) and its read. */
 interface ReadRoute {
-  path: string | RegExp;
+  path: string | RegExp | ((d: ServerDeps, path: string) => boolean);
   run(d: ServerDeps, url: URL, req: UiRequest): ApiResult | Promise<ApiResult>;
 }
 
@@ -62,16 +67,18 @@ const READ_ROUTES: readonly ReadRoute[] = [
   { path: CALENDAR_EVENTS_PATH, run: (d, u) => readCalendarEvents(d, u.searchParams.get("from"), u.searchParams.get("to")) },
   { path: SCREENSHOT_PATH, run: (d, u) => readScreenshot(d, u.searchParams) },
   { path: EVALS_LIST_PATH, run: (d) => readEvalSuites(d) },
-  { path: EVALS_VERSIONS_PATH, run: (d, u) => readSkillVersions(d, { skillVersionRows, unlinkedRuns, latestLinkedRun, lineDiff, caseResults, skillOf }, u) },
-  { path: EVALS_PATH, run: (d, u) => readSkillEvals(d, { grid: skillEvalGrid, compare: compareSkillEvalRuns }, u) },
-  { path: SCHEDULES_PATH, run: (d) => readSchedules(d) },
-  { path: SCHEDULE_RUNS_PATH, run: (d, u) => readScheduleRuns(d, u.searchParams.get("schedule")) },
-  { path: SCHEDULE_SUGGESTIONS_PATH, run: (d, u) => readScheduleSuggestions(d, u.searchParams.get("schedule")) },
+  { path: EVALS_VERSIONS_PATH, run: (d, u) => readSkillVersions(d, { skillVersionRows, unlinkedRuns, latestLinkedRun, lineDiff, caseResults, wilsonInterval, skillOf }, u) },
+  { path: EVALS_PATH, run: (d, u) => readSkillEvals(d, { grid: skillEvalGrid, compare: compareSkillEvalRuns, agreement: judgeAgreement, calibrated: judgeCalibrated }, u) },
+  // After every route above, before api.ts's paths: a capability declares a new path, or one whose route it replaces.
+  { path: (d, p) => registryReads(registryOf(d), p), run: (d, u) => registryRead(registryOf(d), d, u, new Withholder(d.scanner)) },
 ];
+
+const matches = (r: ReadRoute, d: ServerDeps, path: string): boolean =>
+  typeof r.path === "string" ? r.path === path : r.path instanceof RegExp ? r.path.test(path) : r.path(d, path);
 
 /** Answers one GET (or HEAD) under /api/v1 on its parsed URL. */
 export async function readApi(d: ServerDeps, url: URL, req: UiRequest): Promise<ApiResult> {
-  const route = READ_ROUTES.find((r) => (typeof r.path === "string" ? r.path === url.pathname : r.path.test(url.pathname)));
+  const route = READ_ROUTES.find((r) => matches(r, d, url.pathname));
   if (route) return route.run(d, url, req);
   const changesId = changesPathId(url.pathname);
   return changesId !== null ? readItemChanges(d, changesId, url.searchParams.get("path")) : api(d, url);

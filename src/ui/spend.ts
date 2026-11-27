@@ -1,8 +1,9 @@
 // GET /api/v1/spend?from=&to= (design 06-spend): cost, tokens and runs per UTC day and per work item over a range
 // of UTC days, from the stored run outcomes (src/core/spend.ts). Read-only: server.ts answers 405 to any other
 // method. Runs with no stored cost are counted apart as `unknown`, never added as 0. Item titles pass the
-// Withholder, as on every other route; so do the titles of each day's top items (at most 3, by known cost). Store
-// reads only: one range read of runs, one read per item shown.
+// Withholder, as on every other route; so do the titles of each day's top items (at most 3, by known cost). Chat
+// turns' spend is answered apart, as `chat` (design 04-chat-agent), and coordinator cycles' as `coordinator` (design
+// 06-spend). Store reads only: one range read of runs, one of chat turns, one of coordinator cycles, one per item shown.
 
 import { DAY_MS, SPEND_MAX_DAYS, readSpend, utcDay, weekStart } from "../core/spend.js";
 import type { WorkItemId } from "../core/types.js";
@@ -14,7 +15,7 @@ export const SPEND_DEFAULT_DAYS = 30;
 export const SPEND_ITEMS_CAP = 200;
 
 export interface SpendCtx {
-  store: Pick<FactoryStore, "listRunsFinishedBetween" | "getWorkItem">;
+  store: Pick<FactoryStore, "listRunsFinishedBetween" | "listChatSpendBetween" | "getWorkItem">;
   /** The value, or the withheld marker. */
   text(value: string): Promise<string>;
   now: Date;

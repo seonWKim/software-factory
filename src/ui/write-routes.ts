@@ -1,111 +1,42 @@
-// The dashboard's POST route table (design §9): each write route's path match, CSRF token and handler, and the
-// guards every one passes after server.ts's Host check, in this order: Origin equal to the Host's own http origin,
-// Content-Type application/json, the per-process CSRF token in x-csrf-token, the body size, then the route. The
-// resume, stop, alarm dismiss, standing, improve, proposal verdict, migrate, supervisor and evals write routes then check the owner
-// (approve_spec), the rules, schedules (draft and improve before any model call), calendar, model credential, Ask and evals run routes the owner (ownerOf), the pack approvals route
-// approve_tool, the task, local calendar event (calendar-local-api.ts) and attachments routes the commands actor (the project file routes, project-files.ts PROJECT_FILE_ROUTES, only to
-// set the folder and to save; their reads are POSTs too, so they pass every guard), the plugins import the page's factory user, Re-check (design 09-dashboard-item; changes.ts) the commands token. The item commands
-// route (commands.ts) runs its own guards in the same order. A new write route adds one entry to WRITE_ROUTES (and
-// its name to POST_ONLY), not a line in server.ts.
+// The dashboard's POST guard chain (design §9) and route lookup. The routes themselves are in three area files,
+// grouped by the CSRF token they check: write-routes-settings.ts (settings token), write-routes-owner.ts (pauses
+// token: the owner's writes) and write-routes-work.ts (commands token). Every route passes these guards after
+// server.ts's Host check, in this order: Origin equal to the Host's own http origin, Content-Type application/json,
+// the route's CSRF token in x-csrf-token, the body size, then the route. The owner, rules and evals routes then check
+// the owner (approve_spec or ownerOf), the pack approvals route approve_tool, and the work routes the commands actor.
+// The item commands route (commands.ts) runs its own guards in the same order. A new write route adds one entry to
+// its area file (and its name to POST_ONLY), not to this file's lookup or to server.ts. A POST capability of the API
+// registry (src/api/registry.ts, design 09-api-registry) needs no entry: the one registry entry, last, takes every
+// declared POST path behind the same guards, with the pauses token.
 
 import { type ApiResult, apiError } from "./api.js";
 import { commandsPathId, commandsPost, staleCsrf } from "./commands.js";
-import { SETTINGS_PATH, csrfMatches, writeSettings } from "./settings-api.js";
-import { RESUME_PATH, STOP_PATH, resumePause, stopAllAgents } from "./pause-api.js";
-import { ALARM_DISMISS_PATH, dismissPost } from "./alarm-api.js";
-import { STANDING_PATH, writeStanding } from "./standing-api.js";
-import { PACK_APPROVALS_PATH, writePackApproval } from "./packs-api.js";
-import { TASK_WRITES } from "./tasks-api.js";
-import { RULE_WRITES, ownerOf } from "./rules-api.js";
-import { SCHEDULE_DRAFT_PATHS, SCHEDULE_WRITE_PATHS, postSchedule, postScheduleDraft } from "./schedules-api.js";
-import { writeSchedule } from "../core/schedule.js";
-import { draftSchedule, improveSchedule } from "../core/schedule-draft.js";
-import { randomUUID } from "node:crypto";
-import { IMPROVE_RUN_PATH, type ImproveRunDeps, PROPOSAL_VERDICT_PATH, improveRunWired, runImproveNow, writeProposalVerdict } from "./improve-api.js";
-import { PLUGINS_IMPORT_PATH, writePluginsImport } from "./plugins-import-api.js";
-import { PROJECT_FILE_ROUTES } from "./project-files.js";
-import { CALENDAR_CONNECT_PATH, CALENDAR_DISCONNECT_PATH, CALENDAR_SYNC_PATH, writeCalendar, writeCalendarSync } from "./calendar-api.js";
-import { LOCAL_EVENT_WRITES } from "./calendar-local-api.js";
-import { localEvents } from "../calendar/index.js";
-import { storeSql } from "../impl/store/sql/store-sql.js";
-import { DATA_ASK_PATH, askData } from "./data-ask.js";
-import { MODEL_CREDENTIAL_PATH, writeModelCredential } from "./model-credential.js";
-import { MIGRATE_PATH, SUPERVISOR_PATH, postMigrate, postSupervisor } from "./migrate-api.js";
-import { ATTACH_PATH, writeAttachment } from "./attachments-api.js";
-import { attach } from "../core/attachments.js";
-import { recheckMergeCheck, recheckPathId } from "./changes.js";
-import { EVALS_WRITE_PATH, skillOf, writeEvals } from "./evals-api.js";
-import { EVALS_RUNS_PATH, postSkillEvalRun } from "./evals-run-api.js";
-import { liveEvalSource } from "../runtime/live-eval-source.js";
+import { csrfMatches } from "./settings-api.js";
+import { type WriteRoute, pausesToken } from "./write-route-types.js";
+import { SETTINGS_WRITE_ROUTES } from "./write-routes-settings.js";
+import { OWNER_WRITE_ROUTES } from "./write-routes-owner.js";
+import { WORK_WRITE_ROUTES } from "./write-routes-work.js";
+import { registryOf } from "../api/index.js";
+import { registryWrite, registryWrites } from "../api/registry.js";
+import { Withholder } from "./withhold.js";
 import type { ServerDeps, UiRequest } from "./server.js";
 
 /** The 405 text for a POST to any path no write route takes. */
 export const POST_ONLY =
-  "Only the settings, item commands, pause resume, alarm dismiss, standing, improve run, pack approvals, plugins import, rule verdict, rule edit, pushback dismiss, schedule (draft and improve too), proposal verdict, task, project file, calendar, local calendar event, model credential, data ask, migrate, supervisor, attachments, evals write, evals run and Re-check routes take a POST.";
+  "Only the settings, item commands, pause resume, alarm dismiss, standing, improve run, pack approvals, plugins import, rule verdict, rule edit, pushback dismiss, schedule (draft and improve too), proposal verdict, task, project file, calendar, local calendar event, model credential, data ask, migrate, supervisor, attachments, evals write, evals run, Re-check and API registry capability routes take a POST.";
 
-/** One POST route: when it is wired for `path`, the CSRF token it checks, and its handler (after the guards). */
-export interface WriteRoute {
-  matches(d: ServerDeps, path: string): boolean;
-  token(d: ServerDeps): string;
-  run(d: ServerDeps, path: string, body: unknown): ApiResult | Promise<ApiResult>;
-}
+/** The API registry's POST capabilities: the owner's writes, so the pauses token. */
+const REGISTRY_WRITES: WriteRoute = {
+  matches: (d, p) => d.pauses !== undefined && registryWrites(registryOf(d), p),
+  token: pausesToken,
+  run: (d, p, b) => registryWrite(registryOf(d), d, p, b, new Withholder(d.scanner)),
+};
 
-const settingsToken = (d: ServerDeps): string => d.settings!.csrfToken;
-const pausesToken = (d: ServerDeps): string => d.pauses!.csrfToken;
-
-/** First match wins. A query string is ignored: `path` is the raw URL's path. */
-const WRITE_ROUTES: readonly WriteRoute[] = [
-  { matches: (d, p) => p === SETTINGS_PATH && d.settings !== undefined, token: settingsToken, run: (d, _p, b) => writeSettings(d, d.settings!, b) },
-  { matches: (d, p) => p === RESUME_PATH && d.pauses !== undefined, token: pausesToken, run: (d, _p, b) => resumePause(d, d.pauses!, b) },
-  { matches: (d, p) => p === STOP_PATH && d.pauses !== undefined, token: pausesToken, run: (d) => stopAllAgents(d, d.pauses!) },
-  { matches: (d, p) => p === ALARM_DISMISS_PATH && d.pauses !== undefined, token: pausesToken, run: (d, _p, b) => dismissPost(d, d.pauses!, b) },
-  { matches: (d, p) => p === STANDING_PATH && d.pauses !== undefined, token: pausesToken, run: (d, _p, b) => writeStanding(d, d.pauses!, b) },
-  { matches: (d, p) => p === IMPROVE_RUN_PATH && improveRunWired(d), token: pausesToken, run: (d) => runImproveNow(d as ImproveRunDeps) },
-  { matches: (d, p) => p === PACK_APPROVALS_PATH && d.pauses?.auth !== undefined, token: pausesToken, run: (d, _p, b) => writePackApproval(d, d.pauses!, b) },
-  { matches: (d, p) => p === PLUGINS_IMPORT_PATH && d.pauses !== undefined, token: pausesToken, run: (d, _p, b) => writePluginsImport(d, d.pauses!, b) },
-  { matches: (d, p) => Object.hasOwn(RULE_WRITES, p) && d.pauses !== undefined, token: pausesToken, run: (d, p, b) => RULE_WRITES[p]!(d, d.pauses!, b) },
-  {
-    matches: (d, p) => Object.hasOwn(SCHEDULE_WRITE_PATHS, p) && d.pauses !== undefined,
-    token: pausesToken,
-    run: (d, p, b) => postSchedule(d, SCHEDULE_WRITE_PATHS[p]!, b, { write: writeSchedule, owner: (does) => ownerOf(d, d.pauses!, does), log: d.pauses!.log }),
-  },
-  {
-    matches: (d, p) => Object.hasOwn(SCHEDULE_DRAFT_PATHS, p) && d.pauses !== undefined,
-    token: pausesToken,
-    run: (d, p, b) => postScheduleDraft(d, SCHEDULE_DRAFT_PATHS[p]!, b, {
-      draft: draftSchedule, improve: improveSchedule, owner: (does) => ownerOf(d, d.pauses!, does), llm: d.settings?.ask?.llm ?? null, newId: randomUUID, log: d.pauses!.log,
-    }),
-  },
-  { matches: (d, p) => p === PROPOSAL_VERDICT_PATH && d.pauses !== undefined, token: pausesToken, run: (d, _p, b) => writeProposalVerdict(d, d.pauses!, b) },
-  { matches: (d, p) => Object.hasOwn(TASK_WRITES, p) && d.commands !== undefined, token: (d) => d.commands!.token, run: (d, p, b) => TASK_WRITES[p]!(d, b) },
-  {
-    matches: (d, p) => Object.hasOwn(LOCAL_EVENT_WRITES, p) && d.commands !== undefined,
-    token: (d) => d.commands!.token,
-    run: (d, p, b) => LOCAL_EVENT_WRITES[p]!(d, b, localEvents(storeSql(d.store))),
-  },
-  { matches: (d, p) => p === ATTACH_PATH && d.commands !== undefined, token: (d) => d.commands!.token, run: (d, _p, b) => writeAttachment(d, b, attach) },
-  { matches: (d, p) => Object.hasOwn(PROJECT_FILE_ROUTES, p) && d.commands !== undefined, token: (d) => d.commands!.token, run: (d, p, b) => PROJECT_FILE_ROUTES[p]!.run(d, b) },
-  {
-    matches: (d, p) => (p === CALENDAR_CONNECT_PATH || p === CALENDAR_DISCONNECT_PATH || p === CALENDAR_SYNC_PATH) && d.settings?.calendar !== undefined,
-    token: settingsToken,
-    run: (d, p, b) => (p === CALENDAR_SYNC_PATH ? writeCalendarSync(d, b) : writeCalendar(d, p, b)),
-  },
-  {
-    matches: (d, p) => p === MODEL_CREDENTIAL_PATH && d.settings?.modelCredential !== undefined,
-    token: settingsToken,
-    run: (d, _p, b) => writeModelCredential(d, d.pauses ? (does) => ownerOf(d, d.pauses!, does) : null, b),
-  },
-  { matches: (d, p) => p === DATA_ASK_PATH && d.settings?.ask !== undefined, token: settingsToken, run: (d, _p, b) => askData(d, d.settings!.ask!, b) },
-  { matches: (d, p) => p === MIGRATE_PATH && d.pauses !== undefined && d.migrate !== undefined, token: pausesToken, run: (d, _p, b) => postMigrate(d.migrate!, d.pauses!, b) },
-  { matches: (d, p) => p === SUPERVISOR_PATH && d.pauses !== undefined && d.migrate !== undefined, token: pausesToken, run: (d, _p, b) => postSupervisor(d.migrate!, d.pauses!, b) },
-  { matches: (d, p) => p === EVALS_WRITE_PATH && d.pauses !== undefined && d.evals !== undefined, token: pausesToken, run: (d, _p, b) => writeEvals(d, d.evals!, d.pauses!, b, liveEvalSource) },
-  {
-    matches: (d, p) => EVALS_RUNS_PATH.test(p) && d.pauses !== undefined && d.evals?.run !== undefined,
-    token: pausesToken,
-    run: (d, p, b) => postSkillEvalRun(d, skillOf(EVALS_RUNS_PATH.exec(p)?.[1]), b, { run: d.evals!.run!, owner: (does) => ownerOf(d, d.pauses!, does), log: d.pauses!.log }),
-  },
-  { matches: (d, p) => recheckPathId(p) !== null && d.commands !== undefined, token: (d) => d.commands!.token, run: (d, p) => recheckMergeCheck(d, recheckPathId(p)!) },
-];
+/**
+ * First match wins. A query string is ignored: `path` is the raw URL's path. The areas' paths do not overlap; the
+ * registry's entry is last, so a declared path never takes an existing route's.
+ */
+const WRITE_ROUTES: readonly WriteRoute[] = [...SETTINGS_WRITE_ROUTES, ...OWNER_WRITE_ROUTES, ...WORK_WRITE_ROUTES, REGISTRY_WRITES];
 
 /** A raw request URL's path, without its query string or fragment. */
 export const pathOf = (rawUrl: string | undefined): string => (rawUrl ?? "/").split(/[?#]/, 1)[0]!;

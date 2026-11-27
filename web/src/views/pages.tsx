@@ -44,7 +44,10 @@ import { Disclosure } from "../components/ui/disclosure.js";
 import { Card, SUB_TITLE } from "../components/ui/card.js";
 import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { Tooltip } from "../components/ui/menu.js";
+import { ChatCard } from "./chat-card.js";
 import { HostSleeps, sleptMinutes } from "./host-sleeps.js";
+import { ActivityTab } from "./activity/page.js";
+import { CoordinatorCard } from "./coordinator-card.js";
 
 /** "host slept N min" for a host sleep's gap, on the item timeline. */
 export const sleptText = (gap_ms: number): string => t("host.slept", { min: sleptMinutes(gap_ms) });
@@ -344,6 +347,7 @@ export function ItemsPage() {
         </div>
       )}
       {rateLimit?.ends_at && <Notice tone="warn">{t("items.rateLimit", { state: t("items.ratePaused", { time: rateLimit.ends_at }) })}</Notice>}
+      <CoordinatorCard />
       <div className="min-w-0">
       {queuedView ? (
         <Card title={t("queue.title")} count={queue.data?.queue.length}>
@@ -408,7 +412,7 @@ export function ItemPage({ id }: { id: string }) {
         <span className="text-text-3"> / </span>
         <Link href={itemPath(item.id)} aria-current="page" title={item.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", ID_CLASS)}>{short}</Link>
       </nav>
-      <PageHeader title={<span data-raw>{item.title ?? short}</span>} actions={runs.some(isInteractiveRun) ? <InteractiveBadge /> : undefined} />
+      <PageHeader title={<span data-raw>{item.title ?? short}</span>} actions={<div className="flex items-center gap-3">{runs.some(isInteractiveRun) && <InteractiveBadge />}<Link href={`${BASE}health?tab=activity`} className={LINK_CLASS}>{t("health.tabActivity")}</Link></div>} />
       {hasTabs && <PageToolbar tabs={<Tabs label={t("item.views")} options={tabs} value={tab} onChange={(v) => pick(v === "overview" ? null : v)} />} />}
       {item.parent_id && (
         <p data-testid="parent" className="mt-1 text-sm">
@@ -743,6 +747,7 @@ export function RunnersTab() {
           </ul>
         )}
       </Card>
+      <ChatCard />
     </div>
   );
 }
@@ -776,7 +781,8 @@ function CheckList({ checks }: { checks: HealthCheck[] }) {
 }
 
 /**
- * Health's four tabs and the sections each holds, in order (design 09-health, 2026-11-24). A section's ID is the tab ID
+ * Health's five tabs and the sections each holds, in order (design 09-health, 2026-11-24; Activity, design
+ * 09-dashboard-activity, 2026-11-27). A section's ID is the tab ID
  * it had before the merge, so an old link (`?tab=sleeps`) still names it: it opens the tab that holds it, scrolled to it.
  */
 const HEALTH_TABS = {
@@ -784,6 +790,7 @@ const HEALTH_TABS = {
   runs: ["runners", "failures", "sleeps"],
   cost: ["spend", "efficiency", "github"],
   review: ["merges", "improve"],
+  activity: ["actors"],
 } as const;
 type HealthTab = keyof typeof HEALTH_TABS;
 type HealthSection = (typeof HEALTH_TABS)[HealthTab][number];
@@ -897,6 +904,7 @@ export function HealthPage() {
     { id: "runs", label: t("health.tabRuns") },
     { id: "cost", label: t("health.tabCost") },
     { id: "review", label: counted(t("health.tabReview"), mergeList?.length) },
+    { id: "activity", label: t("health.tabActivity") },
   ];
   // Each section of the open tab, in order; a section with nothing to show (no pause held, no budget stored, no report) is not drawn.
   const draw: Record<HealthSection, () => ReactNode> = {
@@ -942,6 +950,7 @@ export function HealthPage() {
       </div>
     ),
     improve: () => improve && <Improve view={improve} />,
+    actors: () => <ActivityTab />,
   };
   return (
     <>

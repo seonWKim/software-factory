@@ -15,25 +15,35 @@
 // With `repo.check_tz` (design §4), every command here (install, checks, UI check, base UI rerun) runs with TZ set to
 // that zone, so a test that passes only in the machine's zone fails before merge; absent, no TZ is set.
 // Install and checks run on the project's Node major (.nvmrc, else package.json engines; node-version.ts); a project
-// whose Node is not installed fails the run with checks_env rather than checking on another Node.
+// whose Node is not installed fails the run with checks_env rather than checking on another Node. A project naming a
+// JDK major (.java-version, else the root Gradle toolchain; jdk-version.ts) fails the run with checks_env when the
+// worker's JDK has another major or there is none, rather than checking on another JDK.
 
 import { NO_HOOKS, RunFailure, failingTestNames, gitIdentity } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, defineRunKind, type RunCall } from "../../run-kind.js";
 import { cachedInstall } from "../../install-cache.js";
 import { type NodeChoice, chooseNode, offNode, onNode, projectNode } from "./node-version.js";
+import { checkJdk, projectJdk } from "./jdk-version.js";
 
 /** The check helpers the runner hands this run (core/checks.ts), so the run imports none of them. */
 export interface MergeCheckTools {
-  checkCommands(repo: Worker["cfg"]["repo"]): string[][];
+  checkCommands(repo: Worker["cfg"]["repo"]): GateEntry[];
+  /** The install step (design 04-gate-commands): `repo.install_commands`, else `repo.install_command` through `cache`. */
+  installStep<R>(repo: Worker["cfg"]["repo"], run: (commands: GateEntry[]) => Promise<R>, cache: (install: () => Promise<R>) => Promise<R | null>): Promise<R | null>;
   failingTestFiles(text: string): string[];
-  withTestFiles(cmd: readonly string[], files: readonly string[]): string[];
+  withTestFiles(cmd: GateEntry, files: readonly string[]): GateEntry;
+  /** The entry a check result ran (its argv, in its folder when it had one). */
+  ranEntry(r: Failed): GateEntry;
+  /** A command as it is shown: its argv, then `(in <dir>/)` for a folder entry. */
+  commandText(cmd: GateEntry): string;
   /** Test selection's revert (design §4): failing files the item's enforced selection left out switch it back to shadow. */
   mergeMiss(d: Worker["d"], item: RunCall["item"], failing: readonly string[], run_id: RunCall["run"]["id"]): Promise<{ selection_miss?: string[] }>;
 }
 
 type CheckRound = Awaited<ReturnType<Worker["runCheckList"]>>;
-type Failed = { command: readonly string[]; how: string; tail: string };
+type GateEntry = NonNullable<Worker["cfg"]["repo"]["check_commands"]>[number];
+type Failed = { command: string[]; dir?: string; how: string; tail: string };
 
 /** The env every merge-check command runs with: TZ from `repo.check_tz`, else nothing added. */
 const checkEnv = (w: Worker): Record<string, string> => (w.cfg.repo.check_tz ? { TZ: w.cfg.repo.check_tz } : {});
@@ -75,18 +85,20 @@ async function mergeCheck(w: Worker, c: RunCall): Promise<Record<string, unknown
     // changes its paths. The install command and the UI check are not rerun.
     const ui = w.cfg.repo.ui_check;
     const changed = ui ? (await w.git(handle, ["diff", "--name-only", "-z", "--no-renames", base_sha, merged_sha])).split("\0").filter(Boolean) : [];
-    const uiCheck = ui && changed.some((f) => ui.paths.some((p) => f.startsWith(p))) ? [[...ui.command]] : null;
+    const uiCheck = ui && changed.some((f) => ui.paths.some((p) => f.startsWith(p))) ? [ui.command] : null;
     const want = await projectNode(w, handle, merged_sha);
     const node: NodeChoice = want ? await chooseNode(w, handle, want) : { bin: null, version: "" };
     // Which Node ran the checks, in the worker log and the run's result: no version named is said, never silent.
     const nodeUsed = want ? `Node ${node.version} (${want.from})` : "the worker's Node: no version in .nvmrc or package.json engines";
     w.d.log.info(`merge check runs on ${nodeUsed}`, { run_id: run.id, node_bin: node.bin ?? "worker" });
+    const jdk = await projectJdk(w, handle, merged_sha);
+    if (jdk) w.d.log.info(`merge check runs on JDK ${await checkJdk(w, handle, jdk)} (${jdk.from})`, { run_id: run.id });
     const red = async (failed: Failed, ui = false) => ({ result: "red", why: "checks", ...(await failure(w, failed, ui)), base_sha, merged_sha, node: nodeUsed });
-    const runOn = async (commands: string[][]) => {
-      const r = await w.runCheckList(run, handle, signal, { commands: commands.map((c) => onNode(node, c)), env: checkEnv(w) });
+    const runOn = async (commands: readonly GateEntry[]) => {
+      const r = await w.runCheckList(run, handle, signal, { commands: commands.map((c) => viaNode(node, c)), env: checkEnv(w) });
       return { ...r, failed: r.failed && { ...r.failed, command: offNode(r.failed.command) } };
     };
-    const install = await cachedInstall(w, handle, () => runOn([[...w.cfg.repo.install_command]]));
+    const install = await w.checkTools.installStep(w.cfg.repo, runOn, (go) => cachedInstall(w, handle, go));
     if (install?.failed) return red(install.failed);
     const list = await checkList(w, runOn);
     // The list stays whole in every selection mode; a failing file the item's enforced selection skipped is a miss.
@@ -109,14 +121,14 @@ async function mergeCheck(w: Worker, c: RunCall): Promise<Record<string, unknown
  * checked `base_sha`, the install command, then the UI check, on the same Node as the change. Returns its failure, or
  * null when the base passes.
  */
-async function baseUiCheck(w: Worker, { run, item, signal }: RunCall, base_ref: string, base_sha: string, uiCheck: string[][], node: NodeChoice): Promise<Failed | null> {
+async function baseUiCheck(w: Worker, { run, item, signal }: RunCall, base_ref: string, base_sha: string, uiCheck: readonly GateEntry[], node: NodeChoice): Promise<Failed | null> {
   const handle = await w.route(item).sandbox.create({ repo: w.cfg.repo.path, branch: null, base_ref }).catch((err: unknown) => {
     throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
   });
   try {
     await w.git(handle, [...NO_HOOKS, "checkout", "--quiet", "--detach", base_sha]);
-    const runOn = async (commands: string[][]) => (await w.runCheckList(run, handle, signal, { commands: commands.map((cmd) => onNode(node, cmd)), env: checkEnv(w) })).failed;
-    const failed = (await cachedInstall(w, handle, async () => ({ failed: await runOn([[...w.cfg.repo.install_command]]) })))?.failed ?? (await runOn(uiCheck));
+    const runOn = async (commands: readonly GateEntry[]) => (await w.runCheckList(run, handle, signal, { commands: commands.map((cmd) => viaNode(node, cmd)), env: checkEnv(w) })).failed;
+    const failed = (await w.checkTools.installStep(w.cfg.repo, async (install) => ({ failed: await runOn(install) }), (go) => cachedInstall(w, handle, go)))?.failed ?? (await runOn(uiCheck));
     return failed && { ...failed, command: offNode(failed.command) };
   } finally {
     await w.d.sandbox.destroy(handle);
@@ -128,7 +140,7 @@ async function baseUiCheck(w: Worker, { run, item, signal }: RunCall, base_ref: 
  * files its output names: a passing rerun counts those tests as flaky (`file > name`) and the list goes on after
  * that command; a failing rerun, one that cannot start, or a failure naming no test file returns the first failure.
  */
-async function checkList(w: Worker, runOn: (commands: string[][]) => Promise<CheckRound>): Promise<{ failed: Failed | null; flaky: string[] }> {
+async function checkList(w: Worker, runOn: (commands: readonly GateEntry[]) => Promise<CheckRound>): Promise<{ failed: Failed | null; flaky: string[] }> {
   const tools: MergeCheckTools = w.checkTools;
   let rest = tools.checkCommands(w.cfg.repo);
   const flaky: string[] = [];
@@ -137,12 +149,17 @@ async function checkList(w: Worker, runOn: (commands: string[][]) => Promise<Che
     if (!r.failed) break;
     const files = tools.failingTestFiles(r.failed.tail);
     if (files.length === 0) return { failed: r.failed, flaky };
-    const again = await runOn([tools.withTestFiles(r.failed.command, files)]);
+    const again = await runOn([tools.withTestFiles(tools.ranEntry(r.failed), files)]);
     if (again.failed) return { failed: r.failed, flaky };
     flaky.push(...failingTestNames(r.failed.tail).filter((t) => !flaky.includes(t)));
     rest = rest.slice(r.results.length);
   }
   return { failed: null, flaky };
+}
+
+/** A gate entry on the chosen Node (onNode), its folder kept. */
+function viaNode(node: NodeChoice, e: GateEntry): GateEntry {
+  return "argv" in e ? { dir: e.dir, argv: onNode(node, e.argv) } : onNode(node, e);
 }
 
 /**
@@ -155,7 +172,7 @@ async function failure(w: Worker, failed: Failed, ui = false): Promise<Record<st
   const tail = ui && failed.tail === "" ? failed.how : failed.tail;
   const clean = tail === "" || (await w.d.scanner.scan("run_outcome", tail)).clean;
   return {
-    command: failed.command.join(" "),
+    command: w.checkTools.commandText(w.checkTools.ranEntry(failed)),
     how: failed.how,
     failing_tests: failingTestNames(failed.tail),
     output_tail: clean ? tail : null,

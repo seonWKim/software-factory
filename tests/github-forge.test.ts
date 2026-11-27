@@ -202,7 +202,23 @@ describe("GitHubForge.prChecks", () => {
       run("ok", "completed", "success"),
     ];
     client.statuses = [{ context: "ci/legacy", state: "error" }, { context: "ci/fine", state: "success" }];
-    expect(await forge.prChecks(42)).toEqual({ state: "failed", failed: ["test", "typecheck", "cancelled-one", "ci/legacy"] });
+    expect(await forge.prChecks(42)).toEqual({
+      state: "failed", failed: ["test", "typecheck", "cancelled-one", "ci/legacy"], cancelled: ["typecheck", "cancelled-one"],
+    });
+  });
+
+  it("checks that were only cancelled or timed out are failed with every name in `cancelled` once nothing runs (design 05-ci-gate, Cancelled checks)", async () => {
+    const { client, forge } = make();
+    client.runs = [run("responsive", "completed", "cancelled"), run("e2e", "completed", "timed_out"), run("test", "completed", "success")];
+    expect(await forge.prChecks(42)).toEqual({ state: "failed", failed: ["responsive", "e2e"], cancelled: ["responsive", "e2e"] });
+  });
+
+  it("checks that were only cancelled while another still runs are pending: their workflow run cannot be rerun before it ends", async () => {
+    const { client, forge } = make();
+    client.runs = [run("responsive", "completed", "cancelled"), run("test", "in_progress")];
+    expect(await forge.prChecks(42)).toEqual({ state: "pending" });
+    client.runs = [run("responsive", "completed", "cancelled"), run("lint", "completed", "failure"), run("test", "in_progress")];
+    expect(await forge.prChecks(42)).toEqual({ state: "failed", failed: ["responsive", "lint"], cancelled: ["responsive"] });
   });
 });
 
@@ -240,6 +256,13 @@ describe("GitHubForge: rerunFailedJobs and failedJobLog (design 05-ci-gate)", ()
       ["GET", "/repos/o/r/actions/runs?head_sha=h1&per_page=100"],
       ["POST", "/repos/o/r/actions/runs/7/rerun-failed-jobs"],
     ]);
+  });
+
+  it("reruns a cancelled workflow run's jobs like a failed one's", async () => {
+    const { client, forge } = make();
+    client.workflowRuns = [{ id: 7, status: "completed", conclusion: "cancelled" }, { id: 8, status: "completed", conclusion: "success" }];
+    await forge.rerunFailedJobs("h1");
+    expect(client.calls.filter((c) => c.method === "POST").map((c) => c.path)).toEqual(["/repos/o/r/actions/runs/7/rerun-failed-jobs"]);
   });
 
   it("throws, rerunning nothing, when the head has no failed workflow run (e.g. only a commit status failed)", async () => {
@@ -467,6 +490,15 @@ describe("GitHubForge: pull requests the factory did not open (design 2026-11-01
     client.commits.def = { sha: "def", author: null };
     expect(await forge.commitAuthor("abc")).toEqual(bobId);
     expect(await forge.commitAuthor("def")).toBeNull();
+  });
+
+  it("prTitle reads the PR's title with one GET, null when it has none", async () => {
+    const { client, forge } = make();
+    client.byNumber[436] = pull(436, "feature/x", { title: "Show PR titles" });
+    client.byNumber[437] = pull(437, "feature/y", { title: "" });
+    expect(await forge.prTitle(436)).toBe("Show PR titles");
+    expect(await forge.prTitle(437)).toBeNull();
+    expect(client.calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /repos/o/r/pulls/436", "GET /repos/o/r/pulls/437"]);
   });
 });
 

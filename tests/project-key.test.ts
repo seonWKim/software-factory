@@ -19,7 +19,7 @@ import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { projectKeyChecks } from "../src/ui/factory-status.js";
-import { api } from "../src/ui/api.js";
+import { readApi } from "../src/ui/read-routes.js";
 import type { UiDeps } from "../src/ui/deps.js";
 import type { Secret } from "../src/interfaces/secret-store.js";
 import { REGISTRY, withPlugin } from "../src/plugins.js";
@@ -334,7 +334,7 @@ describe("the label, never the key, is shown", () => {
   }
 
   async function apiGet(d: UiDeps, path: string): Promise<unknown> {
-    const r = await api(d, new URL(`http://127.0.0.1/api/v1${path}`));
+    const r = await readApi(d, new URL(`http://127.0.0.1/api/v1${path}`), { method: "GET", url: `/api/v1${path}`, host: "127.0.0.1" });
     expect(r.status).toBe(200);
     return r.value;
   }

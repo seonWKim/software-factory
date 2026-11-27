@@ -2,16 +2,16 @@
 // lives in load-config.ts and config-values.ts, so code that only reads config does not load this file.
 // Environment (local / cloud) is chosen here; core code never branches on it.
 
-import { mkdir, realpath, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { type FactoryConfig, cliUserConfig, toolGrantsConfig } from "./core/config.js";
 import type { ProjectRef } from "./core/project.js";
 import { routineQueue, scheduledAction } from "./core/controller-deps.js";
-import { agentAction } from "./controller/units/schedule/plugins/agent/agent-action.js";
-import { buildAction } from "./controller/units/schedule/plugins/build/build-action.js";
+import { agentAction } from "./controller/units/schedule/plugins/agent/agent-action.js"; import { buildAction } from "./controller/units/schedule/plugins/build/build-action.js";
 import { checkPageAction } from "./controller/units/schedule/plugins/check-page/check-page-action.js";
-import { feedbackActionWith } from "./controller/units/schedule/plugins/feedback/feedback-action.js";
+import { summaryAction } from "./controller/units/schedule/plugins/summary/summary-action.js"; import { NO_OWNER_CHAT, summaryDeps } from "./core/summary.js";
+import { feedbackActionWith } from "./controller/units/schedule/plugins/feedback/feedback-action.js"; import { nodeGrantDeps } from "./impl/schedule-action/routed-action.js";
 import { improveAction } from "./controller/units/schedule/plugins/improve/improve-action.js";
 import { dailyTriggerOn, enqueueImprove } from "./core/improver.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
@@ -22,11 +22,11 @@ import { StoredLearnedSettings } from "./core/learned-settings.js";
 import type { UserId } from "./core/types.js";
 import { gitHost, hostId } from "./runtime/host-id.js";
 import { ControllerRole } from "./runtime/roles/controller-role.js";
-import { SqlHookAudit, loadHooks } from "./runtime/index.js";
+import { SqlHookAudit, loadHooks, validateCase } from "./runtime/index.js";
+import { skillFolderPath } from "./runtime/capabilities/capabilities.js"; import { type SkillStarter, STARTER_PROMPT, skillStarter } from "./core/skill-eval-starter.js";
 import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
 import { feedbackGrantHandOut, scheduleGrantTools, storedScheduleGrants, withSchedulePassports } from "./core/schedule-grants.js";
-import { nodeGrantDeps } from "./impl/schedule-action/routed-action.js";
 import { type LearnedSettingsSource, LiveSettings, maxWorkers, workerCount } from "./core/settings.js";
 import { settingsBase } from "./core/settings-base.js";
 import { type LocalRoute, READ_TOOLS, WorkerPool } from "./worker/index.js";
@@ -70,6 +70,7 @@ import { brokerGuard, skillImproveWiring } from "./skill-evals.js";
 import { holdSkillDraft, promoteSkillDraft, rejectSkillDraft, withHandOff } from "./core/skill-improve.js";
 import { Cleaner, type CleanupStore, agentTempRoots, cleanupConfig, hostProcesses } from "./cleanup/index.js";
 import { RUN_FOLDER } from "./setup-paths.js";
+import { randomUUID } from "node:crypto"; import { CHAT_EVAL_QUESTIONS, chatEvalDaily, chatEvalSchedule } from "./core/chat-eval.js"; import { readFeatureMap } from "./api/feature-map.js"; import { REGISTRY } from "./api/index.js";
 
 export { CODE_ROOT_ENV, CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 
@@ -190,7 +191,6 @@ export interface Built {
   close(): Promise<void>;
 }
 
-
 export async function build(
   loaded: Loaded,
   opts: { clock?: Clock; extraScanValues?: string[]; workerIndexBase?: number; repoLookup?: RepoLookup; signal?: AbortSignal } = {},
@@ -266,7 +266,7 @@ export async function build(
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
   // What a fired schedule occurrence runs (design 08-schedules): none unless `plugins.schedule_action` names one; its routes are the schedule unit's action folders.
-  const routes = { build: buildAction, agent: agentAction, feedback: feedbackActionWith(feedbackGrantHandOut({ tools: READ_TOOLS, repo: resolve(loaded.config.repo.path), base_ref: loaded.config.repo.base_branch }, nodeGrantDeps)), improve: improveAction((slot) => enqueueImprove({ store, clock }, project.key, { slot })), check_page: checkPageAction(routineQueue(store, project.key)) }, actionCtx = { ...base, store, runner: withSchedulePassports(runner, passports, project.key), sandbox, scanner, tools: READ_TOOLS, project: project.key, routes };
+  const routes = { build: buildAction, agent: agentAction, feedback: feedbackActionWith(feedbackGrantHandOut({ tools: READ_TOOLS, repo: resolve(loaded.config.repo.path), base_ref: loaded.config.repo.base_branch }, nodeGrantDeps)), improve: improveAction((slot) => enqueueImprove({ store, clock }, project.key, { slot })), check_page: checkPageAction(routineQueue(store, project.key)), summary: summaryAction(summaryDeps({ store, scanner, times: () => settings.values(), post: NO_OWNER_CHAT })) }, actionCtx = { ...base, store, runner: withSchedulePassports(runner, passports, project.key), sandbox, scanner, tools: READ_TOOLS, project: project.key, routes };
   const schedule_action = sel.schedule_action === undefined ? undefined : scheduledAction(store, await createPlugin(registry, "schedule_action", sel.schedule_action, actionCtx), new ConsoleLogger(clock, "schedule"), project.key);
   // The pack checks `hooks` names (design §4, issue #494), refused here when bad; its other names are `*.hook.ts`.
   const checks = packChecks(loaded.packs, config.hooks ?? [], { toolHooks: runner.supports_tool_hooks === true });
@@ -302,7 +302,7 @@ export async function build(
     git_host: gitHost(stateDir, sel.store),
     settings, learned,
     // The worker pool's sandbox: the controller's local merge check fetches and checks through it (design §5).
-    sandbox, repo_entries: async (names) => (await Promise.all(names.map((n) => stat(join(config.repo.path, n)).then(() => [n], () => [])))).flat(), // the merge reply's run hint
+    sandbox, coordinator: (await import("./coordinator/wire.js")).coordinatorWiring({ store, clock, config, owner: `${hostname()}:${process.pid}`, codeRoot: loaded.codeRoot, runner, sandbox, scanner, storage, tools: READ_TOOLS, log: new ConsoleLogger(clock, "coordinator") }), repo_entries: async (names) => (await Promise.all(names.map((n) => stat(join(config.repo.path, n)).then(() => [n], () => [])))).flat(), // the merge reply's run hint
     // The alarm step's restart count (design 05-alarms): this host's supervisor status file.
     restarts: () => readRestarts(join(loaded.stateDir, SUPERVISOR_STATUS_FILE)),
     // This process's GitHub budget, stored after each poll for the status page (design §5, GitHub call budget).
@@ -311,7 +311,7 @@ export async function build(
     ...(loaded.config.local_only === true ? {} : { github_budget: () => github.status(), refresh_forge_budget: () => github.refreshSharedBudget() }),
     // The red-main check after an automatic merge (design 03-risk) runs the checks with the worker's base env.
     check_env: baseEnv(),
-    cleanup: await hostCleaner(loaded, store, clock), // closed items' run folders, branches, processes and agent temp folders (design 08-cleanup)
+    cleanup: await hostCleaner(loaded, store, clock), ...(chatEvalDaily(loaded.file) && { chat_eval: chatEvalSchedule(store, { llm, judge: llm, read: (p) => readFeatureMap(REGISTRY, p), scanner, clock, newId: randomUUID }, () => readFile(join(loaded.codeRoot, CHAT_EVAL_QUESTIONS), "utf8")) }), // closed items' leftovers (design 08-cleanup); the daily chat eval run with chat_eval.schedule "daily" (design 04-chat-agent)
   });
 
   const id_prefix = `${hostname()}:${process.pid}`;
@@ -449,6 +449,7 @@ export interface UiParts {
   migrate: import("./ui/migrate-api.js").UiMigrate; // Migrate now, Start and Restart now (design 08-self-update): state dir, clock, run_timeout_ms, steps
   changes: import("./ui/changes.js").UiChanges | undefined; // the sandbox's readChanges on repo.path and its base: the Changes tab and Re-check (design 09-dashboard-item)
   skillImprove: import("./ui/deps.js").UiSkillImprove; // a skill draft's verdicts and Promote's wiring (design 09-dashboard-rules-waiting)
+  starter: SkillStarter; // Draft starter cases on the Evals card: the Model plugin, prompts/skill-starter.md and the skill's SKILL.md (design 07-self-improvement)
   close(): Promise<void>;
 }
 
@@ -500,6 +501,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   const modelCredential = modelCredentialDialog(loaded);
   if (modelCredential) settings.modelCredential = modelCredential; // the Add model credential dialog (Needs you, Failures)
   const llm = await p.llm(secrets).catch(() => null), wiring = llm ? await p.runner(sbx, secrets).then((runner) => skillImproveWiring(store, loaded, { sandbox: sbx, runner, llm, scanner }), () => undefined) : undefined;
+  const starter = skillStarter({ llm, scanner, validate: validateCase, prompt: () => readFile(join(loaded.codeRoot, STARTER_PROMPT), "utf8").catch(() => null), readSkill: (ref) => readFile(join(skillFolderPath(ref, loaded.root), "SKILL.md"), "utf8").catch(() => null) });
   settings.ask = { llm, log: new ConsoleLogger(clock, "ask") }; // the Data page's Ask: the Model plugin, null when it cannot be built; wiring: Promote's re-run, none without capabilities.skill_folders
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {
@@ -513,7 +515,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   const profiles = new ProfileStore(storeSql(store)), displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
   const tacit = await uiTacit(loaded.plugins.tacit, (n) => createPlugin(loaded.registry, "tacit", n, p.base), { config: loaded.config, base: settingsBase(loaded), source: store, log: new ConsoleLogger(clock, "tacit") });
   const migrate = (await import("./ui/migrate-api.js")).uiMigrate({ stateDir: loaded.stateDir, clock, runTimeoutMs: loaded.config.run_timeout_ms, githubApi: () => p.githubApi(), resolveProject }); // its GitHub client only for owner/name rows
-  return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, migrate, changes, skillImprove: { hold: holdSkillDraft, reject: rejectSkillDraft, promote: promoteSkillDraft, wiring }, close: () => identity.stop().then(() => store.close()) };
+  return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, migrate, changes, skillImprove: { hold: holdSkillDraft, reject: rejectSkillDraft, promote: promoteSkillDraft, wiring }, starter, close: () => identity.stop().then(() => store.close()) };
 }
 
 const refusalOf = (d: AuthDecision): string | null => (d.allow ? null : d.reason);

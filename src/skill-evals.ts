@@ -5,7 +5,9 @@
 // run through runSkillEval (each case --replays times), then records the run's figures through the store. The run's
 // options (--model, --judge-model, --replays 1 to 10) are checked here before anything is read or written. A run replays the
 // skill's current version (its folder as it is now) by default; `version` names a stored version of the imported skill
-// by its folder hash (design 06-measurement), and the run replays that version's text and stores its hash.
+// by its folder hash (design 06-measurement), and the run replays that version's text and stores its hash. `baseline`
+// (`eval run --baseline`, design 07-self-improvement) replays the suite with no skill: an empty system prompt, no skill
+// folder or SKILL.md in the sandbox and no tools from front matter, stored as `baseline:<folder hash>`.
 //
 // Each replay runs in a clean sandbox (design 06-measurement, clean replays): the `sandbox` plugin's name (a replay with
 // tools is refused under `noop`), the skill's folder, the approved pack MCP servers a case names, and the Clock's time
@@ -15,14 +17,18 @@
 //
 // main.ts passes skillEvalRun to every command through the command call (CommandCall.runSkillEval), so the CLI
 // handler imports no root or legacy module. The composition root builds the improve run's skill improvement wiring
-// here (skillImproveWiring, design 07-self-improvement): the scratch run, the re-run after a promote, and SKILL.md I/O.
+// here (skillImproveWiring, design 07-self-improvement): the scratch run (one split's cases only), the re-run after a
+// promote (every case, as `eval run`), and SKILL.md I/O.
+// The new-version gate pass (gatedImport, design 07-self-improvement) runs a new version's suite through
+// runSkillEvalFor on that stored version, after a plugin import records one.
 
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { codeVersion } from "./config-values.js";
 import { type ToolGrants, capabilitiesConfig, skillImproveConfig, toolGrantsConfig } from "./core/config.js";
-import type { SkillImproveWiring } from "./core/skill-improve.js";
+import { type SkillImproveWiring, baselineVersion } from "./core/skill-improve.js";
+import { type SkillGateWiring, runSkillVersionGates } from "./core/skill-eval-gate.js";
 import type { UserId } from "./core/types.js";
 import { type Loaded, localProject } from "./load-config.js";
 import { Plugins } from "./plugin-set.js";
@@ -42,12 +48,12 @@ import { PassportToolBroker } from "./impl/broker/passport-broker.js";
 import { packToolBrokers } from "./impl/broker/pack-tools.js";
 import { RunPassports } from "./worker/passports/run-passports.js";
 import { storeProjectResolver } from "./ui/settings-api.js";
-import type { SkillEvalRun, SkillEvalRunFigures, SkillEvalStore } from "./interfaces/skill-eval-store.js";
+import type { SkillEvalRun, SkillEvalRunFigures, SkillEvalSplit, SkillEvalStore } from "./interfaces/skill-eval-store.js";
 import { frontMatterTools, skillFolderPath, skillVersion } from "./runtime/capabilities/capabilities.js";
 import { skillVersionsOf } from "./ui/plugins-api.js";
 import { storeSql, storeSqlOrNull } from "./impl/store/sql/store-sql.js";
 import { checkPackGrants } from "./packs/pack-grants.js";
-import { type Authored, type CaseVerdict, type SkillEvalAuthoring, type SkillEvalEngineDeps, type TriedCase, addSkillEvalCase, addSkillEvalSuite, deleteSkillEvalSuite, editSkillEvalCase, renameSkillEvalSuite, runSkillEval, skillEvalReplay, tryCase } from "./runtime/index.js";
+import { type Authored, type CaseVerdict, type SkillEvalAuthoring, type SkillEvalEngineDeps, type TriedCase, addSkillEvalCase, addSkillEvalSuite, caseFromRun, deleteSkillEvalSuite, editSkillEvalCase, renameSkillEvalSuite, runSkillEval, skillEvalReplay, tryCase } from "./runtime/index.js";
 
 /** The most replays per case one run makes (`eval run --replays N`, design 06-measurement, repeats). */
 export const MAX_REPLAYS = 10;
@@ -72,6 +78,8 @@ export interface SkillEvalRequest {
   replays?: number | undefined;
   /** A previous version's folder hash (an `ext_skill_versions` row of the skill) to re-run (absent: the current version). */
   version?: string | undefined;
+  /** --baseline: replay with no skill text and no skill folder, stored as `baseline:<folder hash>` (absent: the skill's run). */
+  baseline?: boolean | undefined;
 }
 
 /** The stored run with its figures, or why nothing was run (and no run written). */
@@ -139,14 +147,14 @@ export function judgeVersion(judge: string, pairwise: string): string {
 
 /**
  * The previous answer of a case for a run on `skill_version`: the stored answer for that case from the newest run of
- * `skill` on another (known) skill version that holds one, its replay numbered 1 when it has one (else its replay
+ * `skill` on another (known) skill version that holds one, a baseline run (`baseline:`) left out, its replay numbered 1 when it has one (else its replay
  * stored with no number). Reads the runs once and each run's replays at most once.
  */
 export function previousAnswers(store: Pick<SkillEvalStore, "listSkillEvalRuns" | "listSkillEvalReplays">, skill: string, skill_version: string): (case_id: string) => Promise<string | null> {
   let runs: Promise<SkillEvalRun[]> | null = null;
   const replays = new Map<string, ReturnType<typeof store.listSkillEvalReplays>>();
   return async (case_id) => {
-    runs ??= store.listSkillEvalRuns(skill).then((rs) => rs.filter((r) => r.skill_version !== null && r.skill_version !== skill_version));
+    runs ??= store.listSkillEvalRuns(skill).then((rs) => rs.filter((r) => r.skill_version !== null && r.skill_version !== skill_version && !r.skill_version.startsWith("baseline:")));
     for (const run of await runs) {
       if (!replays.has(run.id)) replays.set(run.id, store.listSkillEvalReplays(run.id));
       const ofCase = (await replays.get(run.id)!).filter((x) => x.case_id === case_id);
@@ -157,12 +165,15 @@ export function previousAnswers(store: Pick<SkillEvalStore, "listSkillEvalRuns" 
   };
 }
 
-/** The engine's store with the run's judge and factory versions added to its start (the suite version the store reads). */
-function versionedStore(store: SkillEvalWiring["store"], v: { judge_version: string; factory_version: string }): SkillEvalEngineDeps["store"] {
+/**
+ * The engine's store with the run's judge and factory versions added to its start (the suite version the store reads),
+ * and its case list narrowed to `split` when one is given (a scratch run, design 07-self-improvement).
+ */
+function versionedStore(store: SkillEvalWiring["store"], v: { judge_version: string; factory_version: string }, split?: SkillEvalSplit): SkillEvalEngineDeps["store"] {
   return {
     // The engine passes the run's created_by as text; it is the request's user or agent ID.
     startSkillEvalRun: (r) => store.startSkillEvalRun({ ...r, created_by: r.created_by as UserId, skill_version: r.skill_version ?? null, ...v }),
-    listSkillEvalCases: (id) => store.listSkillEvalCases(id),
+    listSkillEvalCases: async (id) => (await store.listSkillEvalCases(id)).filter((c) => split === undefined || c.split === split),
     listSkillEvalReplays: (id) => store.listSkillEvalReplays(id),
     recordSkillEvalReplay: (r) => store.recordSkillEvalReplay(r),
     finishSkillEvalRun: (id, status) => store.finishSkillEvalRun(id, status),
@@ -226,17 +237,18 @@ function passportedRunner(runner: AgentRunner, t: ReplayTools): Pick<AgentRunner
  * `broker_tools`, and each replay run holds a run passport narrowed to its granted tools. A named tool the broker does
  * not serve read-only still errors the case `tool_not_served`. A replay run holds no `worker_runs` lease, so a real
  * broker answers its tool call `lease_lost` until the follow-up "replay lease rule" (a broker lease rule for replay
- * runs, filed as its own issue) lands.
+ * runs, filed as its own issue) lands. With `baseline` the replay gets no skill: `system_prompt` is empty, no skill
+ * folder is copied and no tool is named; the case's MCP servers apply as for the skill's run.
  */
-async function engineOf(d: SkillEvalWiring, skill: string, system_prompt: string, model_class: ModelClass, skill_version: string): Promise<Engine> {
-  const named = frontMatterTools(system_prompt).length > 0 && d.sandbox_plugin !== "noop";
+async function engineOf(d: SkillEvalWiring, skill: string, system_prompt: string, model_class: ModelClass, skill_version: string, baseline = false): Promise<Engine> {
+  const named = !baseline && frontMatterTools(system_prompt).length > 0 && d.sandbox_plugin !== "noop";
   const [p, system, pairwise] = await Promise.all([d.plugins({ tools: named }), d.judgePrompt(), d.pairwisePrompt?.() ?? null]);
   const folder = skillFolderPath(skill, d.root);
   const mcpServers = d.mcpServers;
   const t = named ? p.tools : undefined;
   const replay = skillEvalReplay({ sandbox: p.sandbox, runner: t ? passportedRunner(p.runner, t) : p.runner }, {
     repo: d.repo, role: REPLAY_ROLE, system_prompt, env_allowlist: {}, deny_paths: d.deny_paths, model_class, timeout_ms: d.timeout_ms,
-    skill: { folder, name: basename(folder) }, root: d.root, ...(d.sandbox_plugin !== undefined ? { sandbox_plugin: d.sandbox_plugin } : {}),
+    ...(baseline ? {} : { skill: { folder, name: basename(folder) } }), root: d.root, ...(d.sandbox_plugin !== undefined ? { sandbox_plugin: d.sandbox_plugin } : {}),
     ...(t ? { broker_tools: t.broker.allTools().filter((x) => x.read_only).map((x) => ({ name: x.name, read_only: true })) } : {}),
     ...(mcpServers ? { mcpServers: (names: readonly string[]) => mcpServers(names, p.runner.runs_mcp_servers === true) } : {}),
     ...(p.now ? { now: p.now } : {}),
@@ -261,6 +273,17 @@ async function engineParts(d: SkillEvalWiring, skill: string, model_class: Model
 }
 
 /**
+ * The engine's parts for a baseline run of `skill` (no skill text, no skill folder) on `model_class`, stored as
+ * `baseline:<folder hash>` with the folder's version now; refused when the folder cannot be read.
+ */
+async function baselineParts(d: SkillEvalWiring, skill: string, model_class: ModelClass): Promise<{ engine: Engine; skill_version: string } | { refused: string }> {
+  const hash = await skillVersion(skillFolderPath(skill, d.root)).catch(() => null);
+  if (hash === null) return { refused: `cannot read the folder of ${skill}: nothing run` };
+  const skill_version = baselineVersion(hash);
+  return { engine: await engineOf(d, skill, "", model_class, skill_version, true), skill_version };
+}
+
+/**
  * The engine's parts for the stored version `hash` of `skill` on `model_class`: its text as the system prompt, its hash
  * as the run's. The skill's versions are those of the imported skill that holds its folder's hash now or one of its
  * runs' hashes (skillVersionsOf); a hash that is none of them is refused.
@@ -273,12 +296,12 @@ async function versionParts(d: SkillEvalWiring, skill: string, hash: string, mod
   return { engine: await engineOf(d, skill, v.text, model_class, v.folder_hash), skill_version: v.folder_hash };
 }
 
-/** Runs the suite through the engine as run `id`, records its figures and returns the stored run. */
+/** Runs the suite (only its `split` cases when given) through the engine as run `id`, records its figures and returns the stored run. */
 async function runAndRecord(
-  d: SkillEvalWiring, engine: Engine, r: { id: string; suite_id: string; created_by: string; skill_version: string; model_class: ModelClass; replays?: number }, signal: AbortSignal,
+  d: SkillEvalWiring, engine: Engine, r: { id: string; suite_id: string; created_by: string; skill_version: string; model_class: ModelClass; replays?: number; split?: SkillEvalSplit }, signal: AbortSignal,
 ): Promise<SkillEvalRun> {
   const { judge_version, close, ...parts } = engine;
-  const store = versionedStore(d.store, { judge_version, factory_version: d.factory_version ?? "dev" });
+  const store = versionedStore(d.store, { judge_version, factory_version: d.factory_version ?? "dev" }, r.split);
   const input = { id: r.id, suite_id: r.suite_id, created_by: r.created_by, skill_version: r.skill_version, ...(r.replays !== undefined ? { replays: r.replays } : {}) };
   const outcome = await runSkillEval({ store, ...parts }, input, signal).finally(close);
   if (outcome.status !== null) await d.store.recordSkillEvalRunFigures(r.id, runFigures(r.model_class, outcome.verdicts));
@@ -290,7 +313,8 @@ async function runAndRecord(
 /**
  * Runs one skill eval of `r.skill`'s suite (its first, by creation) on its current version, or on `r.version`, then
  * records the run's figures. Refuses, naming the skill and writing no run, when no suite exists for it, its folder's
- * SKILL.md cannot be read, `r.version` is no version of it, and on an option runClass refuses.
+ * SKILL.md cannot be read, `r.version` is no version of it, `r.baseline` is given with `r.version`, and on an option
+ * runClass refuses. With `r.baseline` it runs the suite with no skill (baselineParts).
  */
 export async function runSkillEvalFor(d: SkillEvalWiring, r: SkillEvalRequest): Promise<SkillEvalResult> {
   const chosen = runClass(r);
@@ -298,7 +322,9 @@ export async function runSkillEvalFor(d: SkillEvalWiring, r: SkillEvalRequest): 
   const { model_class } = chosen;
   const suite = (await d.store.listSkillEvalSuites()).find((s) => s.skill_ref === r.skill);
   if (!suite) return { refused: `no skill eval suite for ${r.skill}: nothing run` };
-  const parts = r.version === undefined ? await engineParts(d, r.skill, model_class) : await versionParts(d, r.skill, r.version, model_class);
+  if (r.baseline === true && r.version !== undefined) return { refused: `a baseline run replays no skill version: nothing run` };
+  const parts = r.baseline === true ? await baselineParts(d, r.skill, model_class)
+    : r.version === undefined ? await engineParts(d, r.skill, model_class) : await versionParts(d, r.skill, r.version, model_class);
   if ("refused" in parts) return parts;
   const run = await runAndRecord(d, parts.engine, {
     id: d.newId(), suite_id: suite.id, created_by: r.created_by, skill_version: parts.skill_version, model_class, ...(r.replays !== undefined ? { replays: r.replays } : {}),
@@ -307,16 +333,18 @@ export async function runSkillEvalFor(d: SkillEvalWiring, r: SkillEvalRequest): 
 }
 
 /**
- * A scratch run (design 07-self-improvement): `skill`'s suite replayed with `system_prompt` (a draft) as the skill's
- * system prompt instead of its SKILL.md, judged, stored under `skill_version` with its figures. Reads no skill file and
- * writes none. Null when the skill has no suite.
+ * A scratch run (design 07-self-improvement): only the `split` cases of `skill`'s suite (`dev` to measure a draft,
+ * `held-out` for the check before a promotion) replayed with `system_prompt` as the skill's system prompt instead of
+ * its SKILL.md, judged, stored under `skill_version` with its figures, which count those cases only. Reads no skill
+ * file and writes none. Null when the skill has no suite.
  */
 export async function scratchRunFor(
-  d: SkillEvalWiring, r: { skill_ref: string; system_prompt: string; run_id: string; skill_version: string; model_class: ModelClass; created_by: UserId }, signal: AbortSignal,
+  d: SkillEvalWiring, r: { skill_ref: string; system_prompt: string; run_id: string; skill_version: string; model_class: ModelClass; created_by: UserId; split: SkillEvalSplit }, signal: AbortSignal,
 ): Promise<SkillEvalRun | null> {
   const suite = (await d.store.listSkillEvalSuites()).find((s) => s.skill_ref === r.skill_ref);
   if (!suite) return null;
-  return runAndRecord(d, await engineOf(d, r.skill_ref, r.system_prompt, r.model_class, r.skill_version), { id: r.run_id, suite_id: suite.id, created_by: r.created_by, skill_version: r.skill_version, model_class: r.model_class }, signal);
+  const run = { id: r.run_id, suite_id: suite.id, created_by: r.created_by, skill_version: r.skill_version, model_class: r.model_class, split: r.split };
+  return runAndRecord(d, await engineOf(d, r.skill_ref, r.system_prompt, r.model_class, r.skill_version), run, signal);
 }
 
 /** The improve run's skill improvement over `d` (SkillImproveWiring): `folders` are capabilities.skill_folders, absolute. */
@@ -333,6 +361,59 @@ export function improveWiring(d: SkillEvalWiring, config: SkillImproveWiring["co
       return "run" in res ? res.run : null;
     },
   };
+}
+
+/**
+ * The gate pass's wiring over `d` (SkillGateWiring): an imported skill's suite is the one whose skill_ref resolves to
+ * the folder of its SKILL.md (`refPath`, null for an unknown ref), and a gate run is `eval run` on the stored version.
+ */
+export function gateWiring(d: SkillEvalWiring, refPath: (ref_id: string) => Promise<string | null>): SkillGateWiring {
+  return {
+    newToken: d.newId,
+    suiteOf: async (ref_id) => {
+      const path = await refPath(ref_id);
+      if (path === null) return null;
+      const folder = resolve(dirname(path));
+      return (await d.store.listSkillEvalSuites()).find((s) => resolve(skillFolderPath(s.skill_ref, d.root)) === folder)?.skill_ref ?? null;
+    },
+    run: async (r, signal) => {
+      const res = await runSkillEvalFor(d, { skill: r.skill_ref, version: r.folder_hash, replays: r.replays, model_class: r.model_class, created_by: r.created_by, signal });
+      return "run" in res ? res.run : null;
+    },
+  };
+}
+
+/** What `gatedImport` hands the import's store step: the configured store (migrated), its Clock and egress scanner. */
+export interface GatedImportPlugins {
+  store: FactoryStore;
+  clock: { now(): Date };
+  scanner: EgressScanner;
+}
+
+/**
+ * `factory plugins import`'s storage over the configured plugins (src/import/import-plugins.ts): opens the store
+ * (migrated) with the configured clock and scanner, runs `step`, then one new-version gate pass over the store's due
+ * gates (`refPath`: the SKILL.md path of a ref, from step's result), and closes the store. Kept in the composition
+ * root so the import engine imports no plugin set.
+ */
+export async function gatedImport<T>(
+  loaded: Loaded, step: (p: GatedImportPlugins) => Promise<{ result: T; refPath: (ref_id: string) => Promise<string | null> }>,
+): Promise<T> {
+  const p = new Plugins(loaded);
+  const clock = await p.clock();
+  const secrets = await p.secrets();
+  const scanner = await p.scanner(secrets);
+  await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
+  const store = await p.store(secrets, clock);
+  try {
+    await store.migrate();
+    const { result, refPath } = await step({ store, clock, scanner });
+    const signal = new AbortController().signal;
+    await runSkillVersionGates({ store, scanner, clock, wiring: gateWiring(wiringOf(store, loaded), refPath), signal });
+    return result;
+  } finally {
+    await store.close();
+  }
 }
 
 /** One `eval case try <case>`: the case id, the class the replay runs on, and the stop signal. */
@@ -458,4 +539,5 @@ export const skillEvalAuthoring: SkillEvalAuthoring = {
   deleteSuite: deleteSkillEvalSuite,
   addCase: (store, skill, f) => addSkillEvalCase({ store, newId: () => randomUUID() }, skill, f),
   editCase: editSkillEvalCase,
+  caseFromRun,
 };

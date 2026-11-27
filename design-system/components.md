@@ -14,7 +14,7 @@ Pick the component by the need, before drawing anything by hand. A UI spec names
 | long text in a row or card (a description, a title, an example) | `Clamp` | Clamps to 2 lines and opens in place with Show more / Show less, the button only when the text is cut off; never a hand-written `line-clamp`. Decision rule 7. |
 | a row's extra actions | `OverflowMenu` | The row's secondary actions behind one "more" button at its end, so the row stays one line. |
 | a row of a list of work items | `ItemRow` (`web/src/views/item-row.tsx`) | Tasks, Needs you, Work (table and tree), Runners' running runs, the item page's Runs: title (the link) · StatusBadge · why · project · worker · age · one primary action · ⋯ menu (the tree: the PR link before the age); Copy ID in the menu, never an ID in the text. Design 09-dashboard-tasks. |
-| any other row in a bordered list | `ListRow` | Leading control, one-line title with ellipsis, details line, every action in its ⋯ menu. |
+| any other row in a bordered list | `ListRow` | Leading control, one-line title with ellipsis, details line, at most one visible action, the rest in its ⋯ menu. |
 | a reference list or a search over the page, with no confirm | `ModalPanel` | Header with the title (or the search field) and a close icon button; the body scrolls. Never a hand-made overlay `div`. |
 | the whole details of one thing on a page (a calendar event), opened from it | `Popover`, opened by a `ChipButton` | Beside the chip from `sm` up, a sheet below; never a hand-made floating `div` or a tooltip for content the owner must read. |
 | input inside a list row | `Dialog` | A field a row action needs opens in a Dialog; the row's height never changes. |
@@ -122,7 +122,7 @@ States: closed, open (below or above, end or start); item default, highlighted, 
 
 ## ListRow
 
-One row of a bordered list that is not a work item (`list-row.tsx`; the Check and alarm rows of Needs you, Rules and Standing rules; a work item's row is `ItemRow`): an optional `leading` control (a Switch or Checkbox), the `title` on one full-width line cut with an ellipsis (the exported `ROW_TITLE` classes; the element carries the full text in `title`), a `details` line under it in `text-xs text-2` (state Badges, dates, projects, a reason), any `children` below (a form, an error), and the `menu` at the right: one `OverflowMenu` holding every action of the row, the primary first. The 32px leading control and the 32px menu button are both pulled up 6px, so they centre on the title's 20px line. No buttons beside the title and no raw IDs. 12px padding, 12px gaps; it never wraps the menu under the title. No variants or sizes.
+One row of a bordered list that is not a work item (`list-row.tsx`; the Check and alarm rows of Needs you, Rules and Standing rules; a work item's row is `ItemRow`): an optional `leading` control (a Switch or Checkbox), the `title` on one full-width line cut with an ellipsis (the exported `ROW_TITLE` classes; the element carries the full text in `title`), a `details` line under it in `text-xs text-2` (state Badges, dates, projects, a reason), any `children` below (a form, an error), and at the right an optional `action`, the row's one visible next step (a `size="sm"` Button, as ItemRow's primary action: Promote, Accept), then the `menu`: one `OverflowMenu` holding the row's other actions. The 32px leading control, the action (`data-row-action`) and the menu (`data-row-menu`) are pulled up 6px, so they centre on the title's 20px line; below `sm` the action takes a line of its own under the content and the ⋯ stays top right. No other buttons beside the title and no raw IDs. 12px padding, 12px gaps; it never wraps the menu under the title. No variants or sizes.
 
 ## ItemRow
 
@@ -175,10 +175,6 @@ The native modal `<dialog>`, opened on mount and closed on unmount, rendered int
 ## ModalPanel
 
 A modal with no confirm, for a reference list (the shortcut list) or a search: the same native `<dialog>` as Dialog (showModal, so the page behind is inert and Tab stays inside; rendered into `document.body`). A header row (12 px top and bottom, 20 px left, a bottom `border`) holds the `text-base` semibold title, or `header` in its place (the search field; the title stays as a hidden heading), and a ghost icon Button with an X (Close) at its right; under it the body (20 px across, 16 px down, `text-sm`) keeps its content height, shrinks to the panel's max height and scrolls by itself, so the header stays put. Radius `card`, `shadow-lg`, the Dialog's backdrop. Sizes: `lg` (42rem, default) and `md` (32rem); both leave a 16 px gutter on a phone. Placement: `center` (default) or `top` (10% down, at most 80% of the window high, so a list that filters as you type does not move it). Esc, a click on the backdrop and the close button close it; a press that starts inside and ends on the backdrop does not. Focus goes to its first field, else its body, and back to `returnFocusTo`, else the element focused when it opened, without scrolling the page.
-
-## DiffView
-
-A unified diff in one column (`diff-view.tsx`; the Evals page's Compare panel): `lines` (`op` `same`, `removed` or `added`, and `text`), `label` (its accessible name; a `role=group`) and `empty` (the text for no lines). Each line is `font-mono text-xs`, one `li` of an `ol`, behind a 12px mark column: `−` for removed, `+` for added, blank for same, so colour is never the only cue (the mark is text, not `aria-hidden`). A removed line has the `pill-bad` fill, an added one the `pill-ok` fill, a same line is `text-2`. Lines keep their spaces and never wrap; the block (radius `control`, 1 px `border`) scrolls sideways. Each `li` carries `data-op`. No variants or sizes. States: with lines, empty.
 
 ## Popover
 

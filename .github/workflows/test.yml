@@ -48,10 +48,17 @@ jobs:
 
   # The dashboard at five window sizes, light and dark (docs/design/09-dashboard-app.md, Responsive check): a local
   # development check, so it is not in repo.check_commands (the factory's sandbox has no browser) and its step is
-  # written as name + run, which tests/check-commands.test.ts does not count. ubuntu-latest has google-chrome.
+  # written as name + run, which tests/check-commands.test.ts does not count.
+  # The job runs in Playwright's own image, which ships Chromium, WebKit and their system libraries, so nothing is
+  # installed with apt (apt hung on a slow mirror 3 times on 2026-11-26; docs/design/05-ci-gate.md, Cancelled checks).
+  # The image tag must name the playwright-core version in package-lock.json (tests/ci-playwright-image.test.ts).
+  # `--user 1001` is the runner's user, as Playwright's CI docs advise, so the checkout and npm cache stay writable.
   responsive:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    container:
+      image: mcr.microsoft.com/playwright:v1.65.1-noble
+      options: --user 1001
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -59,9 +66,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      # The check's WebKit pass (scripts/responsive/webkit.mjs) needs playwright-core's WebKit and its system libraries.
-      - name: WebKit for the responsive check
-        run: npx playwright-core install --with-deps webkit
+      # The image has no google-chrome; the check's CDP pass (scripts/responsive/cdp.mjs) uses the image's Chromium.
+      - name: Chromium of the image for the responsive check
+        run: echo "CHROME_PATH=$(node -p "require('playwright-core').chromium.executablePath()")" >> "$GITHUB_ENV"
       - name: npm run check:responsive
         run: npm run check:responsive
       - name: Screenshots of the failures

@@ -66,7 +66,7 @@ const json = (parsed: unknown): LLMResponse => ({ text: JSON.stringify(parsed), 
 const yesNo = (...answers: ("yes" | "no")[]) => json({ answers: answers.map((answer, i) => ({ answer, reason: `check ${i + 1} ${answer}` })) });
 
 /** A store with one suite and its cases (each case's `expected` is its rubric). */
-async function suiteWith(cases: Record<string, { input: unknown; expected: unknown }>) {
+async function suiteWith(cases: Record<string, { input: unknown; expected: unknown; split?: "dev" | "held-out" }>) {
   const { store } = await newStore();
   await store.createSkillEvalSuite({ id: "s1", skill_ref: "skills/tests-first", title: "Tests first", created_by: OWNER });
   for (const [id, c] of Object.entries(cases)) await store.addSkillEvalCase({ id, suite_id: "s1", ...c });
@@ -412,23 +412,47 @@ describe("the eval wiring (runSkillEvalFor)", () => {
     expect(await previousAnswers(store, "skills/tests-first", "v1")("c1")).toBe("unnumbered");
   });
 
+  it("previousAnswers skips baseline: runs, so a pairwise check never compares against a no-skill answer", async () => {
+    const store = await suiteWith({ c1: { input: "x", expected: ["a"] } });
+    for (const [id, v] of [["old", "v0"], ["base", "baseline:v1"]] as const) await store.startSkillEvalRun({ id, suite_id: "s1", created_by: OWNER, skill_version: v });
+    await store.recordSkillEvalReplay({ run_id: "old", case_id: "c1", replay: 1, verdict: "pass", detail: {}, answer: "skill answer" });
+    await store.recordSkillEvalReplay({ run_id: "base", case_id: "c1", replay: 1, verdict: "pass", detail: {}, answer: "no-skill answer" });
+    expect(await previousAnswers(store, "skills/tests-first", "v1")("c1")).toBe("skill answer");
+  });
+
   it("figures: one replay per case, a null pass rate with no replays, the judge on judgeClass of the replay's class", () => {
     expect(runFigures("standard", [])).toEqual({ model_class: "standard", judge_model_class: "strong", replays: 0, pass_rate: null, errored: 0 });
     expect(runFigures("strong", [{ verdict: "pass" }, { verdict: "errored" }])).toEqual({ model_class: "strong", judge_model_class: "standard", replays: 2, pass_rate: 0.5, errored: 1 });
   });
 
-  it("a scratch run replays each case with the draft as the skill's system prompt, judges it with skill-judge.md and stores it; SKILL.md is unchanged", async () => {
-    const store = await suiteWith({ c1: { input: "good", expected: ["a"] }, c2: { input: "bad", expected: ["a"] } });
+  it("a scratch run replays each dev case with the draft as the skill's system prompt, judges it with skill-judge.md and stores it; SKILL.md is unchanged", async () => {
+    const store = await suiteWith({ c1: { input: "good", expected: ["a"] }, c2: { input: "bad", expected: ["a"] }, h1: { input: "held", expected: ["a"], split: "held-out" } });
     const llm = new FakeLLM((req) => (req.messages[0]!.content.includes("did good") ? yesNo("yes") : yesNo("no")));
     const { d, folder, runner } = await wiring(store, llm);
 
-    const run = await scratchRunFor(d, { skill_ref: "skills/tests-first", system_prompt: "DRAFT TEXT", run_id: "scratch1", skill_version: "draft:d1", model_class: "standard", created_by: OWNER }, signal());
+    const run = await scratchRunFor(d, { skill_ref: "skills/tests-first", system_prompt: "DRAFT TEXT", run_id: "scratch1", skill_version: "draft:d1", model_class: "standard", created_by: OWNER, split: "dev" }, signal());
 
     expect(run).toMatchObject({ id: "scratch1", skill_version: "draft:d1", model_class: "standard", replays: 2, pass_rate: 0.5 });
     expect(runner.specs.map((s) => s.system_prompt)).toEqual(["DRAFT TEXT", "DRAFT TEXT"]);
+    expect(runner.specs.map((s) => s.prompt).join("\n")).not.toContain("held");
+    expect((await store.listSkillEvalReplays("scratch1")).map((r) => r.case_id).sort()).toEqual(["c1", "c2"]);
     expect(llm.requests.map((r) => r.system)).toEqual([JUDGE_PROMPT, JUDGE_PROMPT]);
     expect(await readFile(join(folder, "SKILL.md"), "utf8")).toBe("Write the test first.");
-    expect(await scratchRunFor(d, { skill_ref: "skills/none", system_prompt: "x", run_id: "s2", skill_version: "draft:d2", model_class: "standard", created_by: OWNER }, signal())).toBeNull();
+    expect(await scratchRunFor(d, { skill_ref: "skills/none", system_prompt: "x", run_id: "s2", skill_version: "draft:d2", model_class: "standard", created_by: OWNER, split: "dev" }, signal())).toBeNull();
+  });
+
+  it("a held-out scratch run replays only the held-out cases; eval run replays every case whatever its split", async () => {
+    const store = await suiteWith({ c1: { input: "good", expected: ["a"] }, h1: { input: "held", expected: ["a"], split: "held-out" } });
+    const llm = new FakeLLM(() => yesNo("yes"));
+    const { d } = await wiring(store, llm);
+
+    const held = await scratchRunFor(d, { skill_ref: "skills/tests-first", system_prompt: "DRAFT", run_id: "held1", skill_version: "draft:d1", model_class: "standard", created_by: OWNER, split: "held-out" }, signal());
+    expect(held).toMatchObject({ replays: 1, pass_rate: 1 });
+    expect((await store.listSkillEvalReplays("held1")).map((r) => r.case_id)).toEqual(["h1"]);
+
+    const all = await runSkillEvalFor({ ...d, newId: () => "all1" }, { skill: "skills/tests-first", created_by: OWNER, signal: signal() });
+    expect(all).toEqual({ run: expect.objectContaining({ id: "all1", replays: 2 }) });
+    expect((await store.listSkillEvalReplays("all1")).map((r) => r.case_id).sort()).toEqual(["c1", "h1"]);
   });
 
   it("the improve wiring reads, versions and writes SKILL.md in the skill folder and re-runs the suite as it is now", async () => {

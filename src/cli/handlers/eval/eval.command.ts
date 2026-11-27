@@ -1,6 +1,7 @@
 // `factory eval run|results|compare|suite|case|import` (design 06-measurement, skill evals). Suites and cases are
 // written through the authoring rules (src/runtime/skill-evals/authoring.ts), `import` through its importCases (the
-// configured SkillEvalSource, src/runtime/skill-evals/import.ts); `case try` is the call's trySkillEvalCase. The
+// configured SkillEvalSource, src/runtime/skill-evals/import.ts); `case try` is the call's trySkillEvalCase; `case split`
+// (design 07-self-improvement) is a store call on a stored case and `case from-run` the authoring's caseFromRun. The
 // run itself is the root wiring (src/skill-evals.ts) and the grid and compare are src/core/skill-eval-compare.ts, both
 // passed in by main.ts through the command call (runSkillEval, skillEvalReads), so this handler imports no root or
 // legacy module. <skill> is a suite's skill_ref: a skill folder.
@@ -10,14 +11,16 @@ import { parseArgs as parseFlags } from "node:util";
 import { type CommandContext, type FactoryStore, type SkillEvalReads, type SkillEvalRunOptions, type SkillEvalRunRow, type SkillEvalRunStats, type SkillEvalRunSummary, defineCommand } from "../../command.js";
 import { stopOnSignals } from "../../support.js";
 
-const USAGE = `  eval run <skill> [--model <class>] [--judge-model <class>] [--replays <n>]
+const USAGE = `  eval run <skill> [--model <class>] [--judge-model <class>] [--replays <n>] [--baseline]
                runs the skill's eval suite once (each case replayed n times, each replay judged; model calls)
                and stores the run with its skill version, model class, judge model class, replays (cases × n),
                pass rate and errored replays, then prints them with pass@1 (passes over replays), pass^k (share
                of cases that pass all k = n replays) and the 95% Wilson interval of pass@1; exit 0 when the run
                passed. --model: cheap, standard or strong (default standard); --judge-model: only the judge
                class of --model; --replays: a whole number from 1 to 10 (default 1), any other value is a usage
-               error. Refuses, running nothing, when no suite exists for <skill> or an option is refused
+               error; --baseline: replays the suite with no skill text and no skill folder, stored with skill
+               version baseline:<folder hash> beside the skill's runs (self-improve does not read it as measured).
+               Refuses, running nothing, when no suite exists for <skill> or an option is refused
   eval results <skill> [--by version,model] [--json]
                lists the skill's stored runs, newest first, each with pass@1, pass^k and the 95% Wilson
                interval over its replays (--json: one JSON array, the same fields as
@@ -35,8 +38,8 @@ const USAGE = `  eval run <skill> [--model <class>] [--judge-model <class>] [--r
                skill's one suite (title defaults to the skill); suite rename <skill> <title>; suite delete
                <skill> refuses while a run of it is running, else says how many runs keep their history, then
                deletes the suite and its cases (its runs stay in the store, unlisted)
-  eval case list|add|edit|delete|try
-               case list <skill>; case add <skill> (--file <json> | --input <text> --check <text> ...) where the
+  eval case list|add|edit|delete|try|split|from-run
+               case list <skill> (each case with its split, dev or held-out); case add <skill> (--file <json> | --input <text> --check <text> ...) where the
                json is {"input": ..., "expected": [checks]} or {"expected": {"checks": [...], "threshold": n}};
                a check is a text (a must-have yes/no the judge answers) or an object with a kind: contains,
                does-not-contain, regex, max length, valid JSON, JSON schema subset (run first, no model call),
@@ -45,7 +48,12 @@ const USAGE = `  eval run <skill> [--model <class>] [--judge-model <class>] [--r
                case edit <case-id> takes the same, a field not given keeps its value; case delete <case-id>;
                case try <case-id> [--model cheap|standard|strong] replays and checks one case (default
                standard), prints each check as yes or no with its reason, the score and threshold, then
-               "verdict: pass|fail|errored" (exit 0 on pass), and stores no run and no replay
+               "verdict: pass|fail|errored" (exit 0 on pass), and stores no run and no replay;
+               case split <case-id> dev|held-out sets the case's split (the suite's version is unchanged):
+               self-improve tunes and measures drafts on dev cases and checks a draft on held-out cases before
+               it is promoted, while eval run replays every case; case from-run <run-id> <case-id> adds a new dev
+               case with an id from the run and the case (a repeat adds nothing), copying the input, expected, seed and MCP servers of <case-id>, only when
+               <case-id> has a replay with verdict fail in <run-id> (else refused, nothing written)
   eval import <skill> [--source <plugin>]
                copies the skill's cases from the eval source (--source, else plugins.eval_source; default none)
                into its suite as import:<source>:<skill>:<source case id>; ids already stored are kept as they
@@ -114,14 +122,28 @@ async function suiteCommand(argv: readonly string[], ctx: CommandContext, author
   });
 }
 
+// The store's split values (`SKILL_EVAL_SPLITS`), kept here so the cli component imports no legacy interface.
+type SkillEvalSplit = "dev" | "held-out";
+const isSplit = (v: string | undefined): v is SkillEvalSplit => v === "dev" || v === "held-out";
+
+/** `case split <case-id> dev|held-out`: sets one case's split, bumping no suite version; an unknown case is refused. */
+async function setSplit(store: FactoryStore, case_id: string, split: SkillEvalSplit): Promise<number> {
+  const c = await store.setSkillEvalCaseSplit(case_id, split);
+  return report(c ? { value: c } : { refused: `no skill eval case ${case_id}: nothing changed` }, (x) => console.log(`case ${x.id} is ${x.split}`));
+}
+
 async function caseCommand(argv: readonly string[], ctx: CommandContext, authoring: NonNullable<CommandContext["authoring"]>): Promise<number | null> {
-  const { values, positionals: [sub, target, ...extra] } = parseFlags({
+  const { values, positionals: [sub, target, second, ...extra] } = parseFlags({
     args: [...argv], allowPositionals: true, options: { file: { type: "string" }, input: { type: "string" }, check: { type: "string", multiple: true }, model: { type: "string" } },
   });
   const writes = sub === "add" || sub === "edit";
   const modelOk = values.model === undefined || sub === "try";
   const flagsOk = writes || (values.file === undefined && values.input === undefined && values.check === undefined);
-  if (!["list", "add", "edit", "delete", "try"].includes(sub ?? "") || !target || extra.length > 0 || !modelOk || !flagsOk) return null;
+  const pair = sub === "split" || sub === "from-run";
+  const secondOk = pair ? second !== undefined && (sub !== "split" || isSplit(second)) : second === undefined;
+  if (!["list", "add", "edit", "delete", "try", "split", "from-run"].includes(sub ?? "") || !target || !secondOk || extra.length > 0 || !modelOk || !flagsOk) return null;
+  if (sub === "split") return ctx.withStore((store) => setSplit(store, target, second as SkillEvalSplit));
+  if (sub === "from-run") return ctx.withStore(async (store) => report(await authoring.caseFromRun(store, target, second!), (c) => console.log(`added case ${c.id} (dev) from case ${second} of eval run ${target}`)));
   if (sub === "try") {
     const tryCase = ctx.trySkillEvalCase;
     if (!tryCase) {
@@ -147,7 +169,7 @@ async function caseCommand(argv: readonly string[], ctx: CommandContext, authori
       if (!suite) return report({ refused: `no skill eval suite for ${target}` }, () => {});
       const cases = await store.listSkillEvalCases(suite.id);
       if (cases.length === 0) console.log(`no eval cases for ${target}`);
-      for (const c of cases) console.log(`${c.id}  ${JSON.stringify(c.input)}  ${JSON.stringify(c.expected)}`);
+      for (const c of cases) console.log(`${c.id}  ${c.split}  ${JSON.stringify(c.input)}  ${JSON.stringify(c.expected)}`);
       return 0;
     }
     if (sub === "add") return report(await authoring.addCase(store, target, fields), (c) => console.log(`added case ${c.id}`));
@@ -173,14 +195,15 @@ async function importCommand(argv: readonly string[], ctx: CommandContext, autho
 const summaryLine = (r: SkillEvalRunSummary) =>
   `skill version ${orDash(r.skill_version)}  model ${orDash(r.model_class)}  pass rate ${rate(r.pass_rate)}  replays ${orDash(r.replays)}  (run ${r.run_id}, ${r.started_at})`;
 
-/** The words and flags after the subcommand: positionals, value flags and --json; null on an unknown or valueless flag. */
-function parseArgs(args: readonly string[], valued: readonly string[]): { words: string[]; values: Map<string, string>; json: boolean } | null {
+/** The words and flags after the subcommand: positionals, value flags, --json and `--baseline` (run only); null on an unknown or valueless flag. */
+function parseArgs(args: readonly string[], valued: readonly string[], sub: string): { words: string[]; values: Map<string, string>; json: boolean; baseline: boolean } | null {
   const words: string[] = [];
   const values = new Map<string, string>();
-  let json = false;
+  let json = false, baseline = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === "--json") json = true;
+    else if (a === "--baseline" && sub === "run") baseline = true;
     else if (valued.includes(a)) {
       const v = args[++i];
       if (v === undefined || v.startsWith("-") || values.has(a)) return null;
@@ -188,15 +211,15 @@ function parseArgs(args: readonly string[], valued: readonly string[]): { words:
     } else if (a.startsWith("-")) return null;
     else words.push(a);
   }
-  return { words, values, json };
+  return { words, values, json, baseline };
 }
 
 /** --replays: a whole number from 1 to 10 (MAX_REPLAYS in src/skill-evals.ts, whose run check refuses the same). */
 const REPLAYS = /^(?:[1-9]|10)$/;
 
-/** --model, --judge-model and --replays as the run function takes them; null on a --replays that is not 1 to 10. */
-function runOptions(values: Map<string, string>): SkillEvalRunOptions | null {
-  const o: SkillEvalRunOptions = {};
+/** --model, --judge-model, --replays and --baseline (only when set) as the run function takes them; null on a --replays that is not 1 to 10. */
+function runOptions(values: Map<string, string>, baseline: boolean): SkillEvalRunOptions | null {
+  const o: SkillEvalRunOptions = baseline ? { baseline: true } : {};
   const model = values.get("--model"), judge = values.get("--judge-model"), replays = values.get("--replays");
   if (model !== undefined) o.model_class = model;
   if (judge !== undefined) o.judge_model_class = judge;
@@ -230,10 +253,10 @@ export default defineCommand({
       return code ?? 1;
     }
     const [sub, ...rest] = argv;
-    const parsed = sub !== undefined && Object.hasOwn(VALUED, sub) ? parseArgs(rest, VALUED[sub]!) : null;
+    const parsed = sub !== undefined && Object.hasOwn(VALUED, sub) ? parseArgs(rest, VALUED[sub]!, sub) : null;
     const usage = () => (console.error(`usage:\n${USAGE}`), 1);
     if (!parsed || parsed.words.length !== (sub === "compare" ? 2 : 1) || (sub === "run" && parsed.json)) return usage();
-    const { words, values, json } = parsed;
+    const { words, values, json, baseline } = parsed;
     const reads = ctx.skillEvalReads;
     if (sub === "compare") {
       if (!reads) return (console.error("eval compare is not available here: run it as `factory eval compare <run-a> <run-b>`"), 1);
@@ -262,7 +285,7 @@ export default defineCommand({
       else for (const l of lines) console.log(l);
       return 0;
     }
-    const options = runOptions(values);
+    const options = runOptions(values, baseline);
     if (!options) return usage();
     const runSkillEval = ctx.runSkillEval;
     if (!runSkillEval) {

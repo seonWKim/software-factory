@@ -3,7 +3,7 @@ import type {
   Actor, BudgetCheckpoint, BudgetCheckpointId, BudgetOutcome, ClaimDecision, CloseReason, DependencyState, FiledPattern,
   FiledPatternId, Handoff, HostSleep, ImproveReport, ImproveReportId, Run, RunAttempt, RunAttemptStatus, RunId, RunKind, RunOutcome,
   RunInput, RunStatus, SessionRecord, SourceRef, SourceType, Stage, StandingGate, StandingProposal, StandingProposalId, StandingRule, StateChange,
-  StateChangeDetail, StateChangeId, Tier, Timestamp, UnreviewedMerge, UnreviewedMergeId, UserId, Verdict, VerdictId, VerdictSeverity,
+  StateChangeDetail, StateChangeId, Tier, Timestamp, UnreviewedMergeId, UserId, Verdict, VerdictId, VerdictSeverity,
   WorkItem, WorkItemId, WorkItemPatch, ClaimPauseName, RunResume, WorkerId, WorkerPause,
 } from "../../../core/types.js";
 import { RECURRING_FAILURE, outcomeTokens } from "../../../core/types.js";
@@ -80,17 +80,15 @@ import { type ChildRestart, migrationPendingError } from "../../../interfaces/up
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
 import { countLegacyProjectRows, legacyRowsMessage } from "../project-keys.js";
 import { changeAssignments, changeFields } from "./change-fields.js";
-import {
-  diffPatch, newId, newWorkItem, rowToBudgetCheckpoint, rowToRun,
-  rowToRunAttempt, rowToStateChange, rowToUnreviewedMerge, rowToVerdict, rowToWorkItem, workItemInsert,
-} from "./rows.js";
+import { diffPatch, newId, newWorkItem, rowToBudgetCheckpoint, rowToRun, rowToRunAttempt, rowToStateChange, rowToVerdict, rowToWorkItem, workItemInsert } from "./rows.js";
 import * as filed from "./filed-patterns.js";
 import * as settingsSql from "./settings.js";
 import { PAUSE_END_INSERT, PAUSE_INSERT_ROW, pauseAt, placeholders, pruneDeliveredOutbox, pruneHandledCommands, pruneHistory } from "./retention.js";
+import { insertActivity, leaseExpiryActivity, migrateWithActivity, prunedWithActivity } from "./activity.js";
 import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
-import * as tasks from "./tasks.js";
+import * as tasks from "./tasks.js"; import * as chat from "./chat.js"; import * as held from "./held-writes.js";
 import { SqlRoutineStore } from "./routines.js";
 import { claimLock, endReservations, liveReservations, reservationOf } from "./reservations.js";
 import { type CoordContext, claimDecisionsOf, claimOrder, claimOrderSql, implementTimes, releaseHolder, writeClaimDecision } from "./claim-coordination.js";
@@ -106,6 +104,7 @@ import * as sessions from "./sessions.js";
 import * as improve from "./improve-reports.js";
 import * as deps from "./dependencies.js";
 import * as prHeads from "./pr-heads.js";
+import * as merges from "./unreviewed-merges.js";
 import * as intake from "./intake.js";
 import * as links from "./identity-links.js";
 import * as sync from "./github-sync.js";
@@ -135,7 +134,7 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
    * never runs on unmigrated rows. `npm run migrate` rewrites them.
    */
   async migrate(): Promise<void> {
-    await this.db.migrate();
+    await migrateWithActivity(this.db, () => this.now(), "open"); // each migration this open applies gets its Activity row (./activity.ts)
     const legacy = await countLegacyProjectRows(this.db);
     if (legacy > 0) throw migrationPendingError(legacyRowsMessage(legacy));
   }
@@ -275,9 +274,8 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
     );
     if (updated !== 1) return { ok: false, reason: "version_conflict", current };
 
-    const state_change = await this.insertStateChange(
-      tx, input.id, version, input.actor, input.reason, changes, input.detail ?? null,
-    );
+    const state_change = await this.insertStateChange(tx, input.id, version, input.actor, input.reason, changes, input.detail ?? null);
+    if (input.activity) await insertActivity(tx, now, input.activity);
     if (input.ack_run !== undefined) {
       await tx.run("UPDATE worker_runs SET acknowledged_at = ?, updated_at = ? WHERE id = ?", [now, now, input.ack_run]);
     }
@@ -382,6 +380,7 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
   recordCommandProposals(rows: Parameters<FactoryStore["recordCommandProposals"]>[0]) { return proposals.recordCommandProposals(this.db, rows, this.now()); }
   listCommandProposals(proposal_id: string) { return proposals.listCommandProposals(this.db, proposal_id); }
   answerCommandProposal(a: Parameters<FactoryStore["answerCommandProposal"]>[0]) { return proposals.answerCommandProposal(this.db, a, this.now()); }
+  appendChatMessages(id: string, m: Parameters<FactoryStore["appendChatMessages"]>[1]) { return chat.appendChatMessages(this.db, id, m, this.now()); } listChatMessages(id: string) { return chat.listChatMessages(this.db, id); } recordChatSpend(s: Parameters<FactoryStore["recordChatSpend"]>[0]) { return chat.recordChatSpend(this.db, s, this.now()); } listChatSpendBetween(...[from, to, kind]: Parameters<FactoryStore["listChatSpendBetween"]>) { return chat.listChatSpendBetween(this.db, from, to, kind); } startChatTurn(id: string, session: string) { return chat.startChatTurn(this.db, id, session, this.now()); } finishChatTurn(...a: Parameters<FactoryStore["finishChatTurn"]>) { return chat.finishChatTurn(this.db, ...a, this.now()); } listChatTurns(limit: number) { return chat.listChatTurns(this.db, limit); } holdWrite(w: Parameters<FactoryStore["holdWrite"]>[0]) { return held.holdWrite(this.db, w, this.now()); } listHeldWrites(limit: number) { return held.listHeldWrites(this.db, limit); } // chat.ts, held-writes.ts
   // Plain tasks (design 02-tasks, issue #606): tasks.ts
   addTask(t: Parameters<FactoryStore["addTask"]>[0]) { return tasks.addTask(this.db, t, this.clock.now()); }
   listTasks(limit: number) { return tasks.listTasks(this.db, limit); } listDoneTasks(w: Parameters<FactoryStore["listDoneTasks"]>[0]) { return tasks.listDoneTasks(this.db, w); }
@@ -392,8 +391,7 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
   updateTask(id: string, edit: Parameters<FactoryStore["updateTask"]>[1]) { return tasks.updateTask(this.db, id, edit, this.clock.now()); }
   setTaskBody(id: string, body: string | null) { return tasks.setTaskBody(this.db, id, body); } deleteTask(id: string, opts?: { with_sub_tasks?: boolean }) { return tasks.deleteTask(this.db, id, opts); }
   addSubTask(parent_task_id: string, t: Parameters<FactoryStore["addSubTask"]>[1]) { return tasks.addSubTask(this.db, parent_task_id, t, this.clock.now()); }
-  listDueReminders(now: Date) { return tasks.listDueReminders(this.db, now); }
-  remindTask(...a: Parameters<FactoryStore["remindTask"]>) { return tasks.remindTask(this.db, ...a); }
+  listDueReminders(now: Date) { return tasks.listDueReminders(this.db, now); } remindTask(...a: Parameters<FactoryStore["remindTask"]>) { return tasks.remindTask(this.db, ...a); }
   // Owner notices (design 09-notifications): notices.ts
   recordNotice(n: Parameters<FactoryStore["recordNotice"]>[0]) { return notices.recordNotice(this.db, n); }
   listNoticesFor(work_item_ids: readonly string[]) { return notices.listNoticesFor(this.db, work_item_ids); }
@@ -1014,6 +1012,7 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
           await this.closeAttempt(tx, run.id as RunId, Number(run.lease_token), "lease_expired", now);
         }
       }
+      await leaseExpiryActivity(tx, now, abandoned, max_attempts); // one Activity row per run moved, in this transaction
       return { ids: expired.map((r) => r.id as RunId), abandoned };
     });
     // After the commit, so a rolled-back expiry reports nothing.
@@ -1245,30 +1244,12 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
   appendHandoff(input: Omit<Handoff, "id" | "at">, token: number) { return prHeads.appendHandoff(this.db, this.time, input, token); }
   listHandoffs(id: WorkItemId) { return prHeads.listHandoffs(this.db, id); }
 
-  // Unreviewed merges
-
-  async recordUnreviewedMerge(input: NewUnreviewedMerge): Promise<{ merge: UnreviewedMerge; created: boolean }> {
-    assertProjectKey(input.project);
-    return this.db.transaction(async (tx) => {
-      const created = await this.insertOnce(
-        tx,
-        "INSERT INTO controller_unreviewed_merges (id, project, change_ref, merge_sha, merger_id, at, title) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [newId("um") as UnreviewedMergeId, input.project, input.change_ref, input.merge_sha, input.merger_id, this.now(), input.title ?? null],
-      );
-      const [row] = await tx.all("SELECT * FROM controller_unreviewed_merges WHERE project = ? AND change_ref = ?", [input.project, input.change_ref]);
-      return { merge: rowToUnreviewedMerge(row!), created };
-    });
-  }
-
-  async listUnreviewedMerges(limit: number): Promise<UnreviewedMerge[]> {
-    const rows = await this.db.all(`SELECT * FROM controller_unreviewed_merges ORDER BY at DESC, ${this.db.dialect.seq} DESC LIMIT ?`, [limit]);
-    return rows.map(rowToUnreviewedMerge);
-  }
-
-  async countUnreviewedMergesSince(since: Timestamp): Promise<number> {
-    const [row] = await this.db.all("SELECT COUNT(*) AS n FROM controller_unreviewed_merges WHERE at >= ?", [since]);
-    return Number(row!.n);
-  }
+  // Unreviewed merges: unreviewed-merges.ts
+  async recordUnreviewedMerge(input: NewUnreviewedMerge) { assertProjectKey(input.project); return merges.recordUnreviewedMerge(this.db, this.now(), input); }
+  listUnreviewedMerges(limit: number) { return merges.listUnreviewedMerges(this.db, limit); }
+  countUnreviewedMergesSince(since: Timestamp) { return merges.countUnreviewedMergesSince(this.db, since); }
+  listUntitledUnreviewedMerges(project: string, limit: number) { return merges.listUntitledUnreviewedMerges(this.db, project, limit); }
+  setUnreviewedMergeTitle(id: UnreviewedMergeId, title: string) { return merges.setUnreviewedMergeTitle(this.db, id, title); }
 
   // Cursors and stream intake: intake.ts
   getCursor(name: string) { return intake.getCursor(this.db, name); }
@@ -1347,9 +1328,10 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
   async getSyncLease(name: string): Promise<SyncLease | null> {
     return this.selectSyncLease(this.db, name);
   }
-  pruneDeliveredOutbox(older_than_ms: number, limit: number) { return pruneDeliveredOutbox(this.db, this.after(-older_than_ms), limit); } // ./retention.ts
-  pruneHandledCommands(older_than_ms: number, limit: number) { return pruneHandledCommands(this.db, this.after(-older_than_ms), limit); }
-  pruneHistory(older_than_ms: number, limit: number) { return pruneHistory(this.db, this.after(-older_than_ms), this.now(), limit); }
+  // ./retention.ts; each batch that deletes rows writes its Activity row in its transaction (./activity.ts)
+  pruneDeliveredOutbox(ms: number, limit: number) { return prunedWithActivity(this.db, () => this.now(), "outbox", ms, (tx) => pruneDeliveredOutbox(tx, this.after(-ms), limit)); }
+  pruneHandledCommands(ms: number, limit: number) { return prunedWithActivity(this.db, () => this.now(), "commands", ms, (tx) => pruneHandledCommands(tx, this.after(-ms), limit)); }
+  pruneHistory(ms: number, limit: number) { return prunedWithActivity(this.db, () => this.now(), "history", ms, (tx) => pruneHistory(tx, this.after(-ms), this.now(), limit)); }
   recordEndedPause(p: Parameters<FactoryStore["recordEndedPause"]>[0]) { return this.insertOnce(this.db, PAUSE_INSERT_ROW, [p.name, p.started_at, p.ended_at]); } // ./retention.ts
   pauseAt(at: Timestamp) { return pauseAt(this.db, at); }
 

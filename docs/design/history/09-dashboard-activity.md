@@ -1,4 +1,6 @@
 ## History
 
+- **`/app/activity` was its own page** (2026-11-26 until 2026-11-27, the Activity tab decision at the top). Before: `App` drew `ActivityActorsPage` at `/app/activity` with its own `PageHeader` Activity and Health as its current page; Health's header and the item page linked `/app/activity`, Schedules `/app/activity?actor=system:schedule`, and every actor but the schedule actor had a "Back to Health" link on its About card.
+- **`/app/activity` redirected to Work** (until 2026-11-26, the route decision at the top). Before: `REDIRECTS` sent `activity` to `items`, so the Activity page of the autonomous actors had no route, and no page linked to it or back from it.
 - **Running now on Work and on Runners** (until 2026-11-22, the Running now decision at the top). Before: the hidden Runners page drew its own Running now Card, the same table as Work's Activity section; "Runs failed" linked to `/app/failures?window=24h`.
 - **Work and Activity were in the Factory group** (until 2026-11-15, the sidebar decision at the top). Before: `PAGES` gave Work and Activity group `factory`, after Needs you, so Factory listed Needs you, Work, Activity and System listed Health, Failures, Spend, Rules, Runners, Data.

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ALERT_DEDUPE_MS, GRANT_REFUSED_PREFIX, RERAISE_WINDOW_MS, RESTART_WINDOW_MS, alarmStep, detectAlarms } from "../src/core/alarms.js";
+import { ALERT_DEDUPE_MS, GRANT_REFUSED_PREFIX, RERAISE_WINDOW_MS, RESTART_WINDOW_MS, alarmStep, coordinatorLimitAlert, detectAlarms, uncountedCycles } from "../src/core/alarms.js";
+import { usd } from "../src/core/spend.js";
 import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "../src/core/config.js";
 import { type ControllerDeps } from "../src/core/controller-deps.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
@@ -630,6 +631,22 @@ describe("alarms: red main", () => {
   });
 });
 
+// Cancelled CI jobs not rerun (design 05-ci-gate, Cancelled checks): the CI gate stores one alert per item and head;
+// it shows on that item only.
+describe("alarms: cancelled CI jobs not rerun", () => {
+  it("alarmText names the wait, and only the item its key names is held up", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const { item } = await store.createWorkItem(issue(902), system);
+    const { item: other } = await store.createWorkItem(issue(903), system);
+    await store.recordAlert({ pattern: "ci_rerun_failed", pattern_key: `ci_rerun_failed:${item.id}:h1`, error_code: "ci_rerun_failed", count: 0, detail: "not rerun" }, ALERT_DEDUPE_MS);
+    const [open] = await openAlarms(store, clock.now());
+    expect(alarmText(open!)).toBe("Alarm: an item's cancelled CI jobs could not be rerun; it waits on its checks with no loop counted");
+    expect(alarmsFor([open!], item, [])).toEqual([open]);
+    expect(alarmsFor([open!], other, [])).toEqual([]);
+  });
+});
+
 // A skill draft limit (design 07-self-improvement): the improve run stores one owner question per limit and UTC day; the
 // status views name the limit and its value, and its detail the proposed change. It holds up no item's runs.
 describe("alarms: skill draft limit", () => {
@@ -644,5 +661,16 @@ describe("alarms: skill draft limit", () => {
     expect(alarmCommand(open!)).toBe("skill_drafts_per_day in factory.config.json");
     const { item } = await store.createWorkItem(issue(901), system);
     expect(alarmsFor([open!], item, [])).toEqual([]);
+  });
+});
+
+describe("coordinator limit question text", () => {
+  it("shows the current and proposed limit, and the cycles with no reported cost through the shared helpers", () => {
+    const { alert } = coordinatorLimitAlert({ day: "2026-01-01", limit_usd: 5, spent_usd: 5.25, unknown: 2 });
+    expect(alert.detail).toContain(`${usd(5.25)} spent on UTC day 2026-01-01${uncountedCycles(2)}.`);
+    expect(alert.detail).toContain("Current limit $5.00, proposed limit $10.00");
+    expect(uncountedCycles(2)).toBe("; 2 cycles with no reported cost not counted");
+    expect(uncountedCycles(1)).toBe("; 1 cycle with no reported cost not counted");
+    expect(uncountedCycles(0)).toBe("");
   });
 });

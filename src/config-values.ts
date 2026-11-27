@@ -3,8 +3,9 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, readOnlyFolders,
+  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, STALL_DEFAULTS, type GateEntry, type StatsConfig, type ToolchainConfig, readOnlyFolders,
 } from "./core/config.js";
+import { gateListConfig } from "./core/checks.js";
 import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
 import type { CliIdentity } from "./core/local-cli.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
@@ -106,14 +107,21 @@ export function testCommand(value: unknown): string[] {
 
 /**
  * `repo.check_commands`: absent → nothing (the core falls back to `[test_command]`); otherwise a non-empty list
- * of argv, each a non-empty array of non-empty strings, or startup fails.
+ * of gate entries (gateListConfig, design 04-gate-commands: an argv, or `{ "dir": <folder>, "argv": [...] }`), or
+ * startup fails naming the entry.
  */
-export function checkCommandsConfig(value: unknown): { check_commands?: string[][] } {
-  if (value === undefined) return {};
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new Error('repo.check_commands must be a non-empty list of argv, e.g. [["npm", "run", "typecheck"], ["npm", "test"]]');
-  }
-  return { check_commands: value.map((v, i) => argvConfig(`repo.check_commands[${i}]`, v, ["npm", "test"])) };
+export function checkCommandsConfig(value: unknown): { check_commands?: GateEntry[] } {
+  const check_commands = gateListConfig("repo.check_commands", value, '["npm", "test"]');
+  return check_commands ? { check_commands } : {};
+}
+
+/**
+ * `repo.install_commands`: absent → nothing (the install step is `[install_command]`); otherwise a non-empty list of
+ * gate entries run in order (gateListConfig), e.g. a Gradle install in `backend` and an npm install in `frontend`.
+ */
+export function installCommandsConfig(value: unknown): { install_commands?: GateEntry[] } {
+  const install_commands = gateListConfig("repo.install_commands", value, '["npm", "ci"]');
+  return install_commands ? { install_commands } : {};
 }
 
 /**

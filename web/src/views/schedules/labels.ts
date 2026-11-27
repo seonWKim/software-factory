@@ -23,6 +23,7 @@ export const ACTION_TEXT: Record<ActionKind, MessageKey> = {
   feedback: "schedules.actionKind.feedback",
   check_page: "schedules.actionKind.checkPage",
   improve: "schedules.actionKind.improve",
+  summary: "schedules.actionKind.summary",
 };
 
 /** What each action does, one sentence, for the detail Card and the line under a title that has no text of its own. */
@@ -32,6 +33,7 @@ export const ACTION_ABOUT: Record<ActionKind, MessageKey> = {
   feedback: "schedules.actionAbout.feedback",
   check_page: "schedules.actionAbout.checkPage",
   improve: "schedules.actionAbout.improve",
+  summary: "schedules.actionAbout.summary",
 };
 
 /** The missed-time rule in the owner's words, by the rule it stores (`skip_when_busy` true is skip). */

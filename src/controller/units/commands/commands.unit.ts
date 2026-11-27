@@ -1,5 +1,6 @@
 // Gate commands from any source (approve, reject, revise, retry, resolve, budget), help, plain comments, links and PR feedback.
 // Moved out of the legacy controller (RFC 0015 M5); it reads through the kernel's reader and writes through the kernel.
+// PR feedback (pr-feedback.ts), the budget checkpoint answer (checkpoint.ts) and the info and link replies (replies.ts) are its siblings.
 //
 // The store-only checks of Approve, a command's note and Merge live in src/core/request-transition.ts (design
 // 04-gate-commands, 2026-11-15); the dashboard's request path runs them too, and `afterRequestApprove` does its rest.
@@ -8,54 +9,34 @@ import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import { latestSpec, overCap, overCapApproval,
   APPROVED_RUN_QUEUED, APP_REQUEST, CHECKPOINT_REFUSAL, CLOSED_REFUSAL, HOLD_PATHS, RECHECK_PATHS_REFUSAL, appliesLocally, noFilesRefusal, appliesOnPr, approveCheck, approvesHold, awaitingSpec, commandFooter, commandNote, commandPhase, commandSpec,
   commandState, failedRunKind, floorCommand, floorTierNeeded, floorWip, helpReply, parseLink, phaseLabel, refusalText, ruleOfTwoCommand, scanNote, specDecision,
-  specNotWaiting, unknownCommandReply, withTag, CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity, specKind, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge, mergeCheckAgain, mergeCheckRetryRefusal, mergeCheckStopped, LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND,
+  specNotWaiting, unknownCommandReply, withTag, COORDINATOR_LIMIT_KEY, LIMIT_ALERTS_SCAN, coordinatorLimitAnswer, CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity, specKind, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge, mergeCheckAgain, mergeCheckRetryRefusal, mergeCheckStopped, LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND, type WriteRequest, authorizeWrite,
 } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, syncedCommand } from "../../../core/command-inbox.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMessage, interpretReply, interpretTexts, openItems, proposalEvent } from "../../../core/interpret.js";
-import { type Actor, type RunKind, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
-import type { AppCommandRequest, CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
-import type { ForgeEvent } from "../../../interfaces/forge.js";
+import { type Actor, RECURRING_FAILURE, type RunKind, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
+import type { AppCommandRequest, CliCommand } from "../../../interfaces/factory-store.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
-import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, SYSTEM, retry, retryWip, footerAfter, alreadyAllowed } from "../support.js";
+import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, SYSTEM, retry, retryWip, footerAfter, alreadyAllowed } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
-import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js"; import { RUN_NEXT_COMMAND, runNext } from "./run-next.js";
-import { FEEDBACK_REQUIRED, applyQueued, feedbackScan, queueRevise, replyQueued } from "./queued-revise.js"; import { scanClean } from "./scan.js"; import { recheckRetry } from "./premise-recheck.js"; import { commandText, pathsCommand } from "./paths.js"; import { noteCommand, noteOnSource } from "./note.js";
+import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js"; import { writeGateDeps } from "./held-writes.js"; import { RUN_NEXT_COMMAND, runNext } from "./run-next.js";
+import { FEEDBACK_REQUIRED, applyQueued, queueRevise, replyQueued } from "./queued-revise.js"; import { scanClean } from "./scan.js"; import { recheckRetry } from "./premise-recheck.js"; import { commandText, pathsCommand } from "./paths.js"; import { noteCommand, noteOnSource } from "./note.js";
+import { PR_REVISE, type PrFeedbackDeps, handlePrReview, itemOfPr, prFeedback } from "./pr-feedback.js"; import { RETRY, answerCheckpoint } from "./checkpoint.js"; import { type InfoSay, handleInfo, handleLink } from "./replies.js";
 
 type AppSender = { user_id: UserId } | null;
 type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
-type ResolveEvent = Extract<SourceEvent, { kind: "resolve_requested" }>; type PrReviewEvent = Extract<ForgeEvent, { kind: "pr_changes_requested" }>;
-type InfoEvent = Extract<SourceEvent, { kind: "help_requested" | "unknown_command" }>;
+type ResolveEvent = Extract<SourceEvent, { kind: "resolve_requested" }>;
 type PlainCommentEvent = Extract<SourceEvent, { kind: "plain_comment" }>;
-/** Tells applyCommand to re-read the item and try again (a version conflict or a concurrent answer). */
-const RETRY = Symbol("retry");
-/** Why a `/link` code was refused, as the reply says it. Never names the code. */
-const LINK_REFUSALS: Record<Exclude<RedeemLinkResult, { ok: true }>["reason"], string> = {
-  invalid: "the code is wrong",
-  expired: "the code has expired (codes work for 10 minutes)",
-  used: "the code was already used",
-  locked: "the code is locked after too many wrong codes",
-  already_linked: "this account is already linked to another factory user",
-};
 /** The decision answers of an approval note (`N: <answer>` lines, issue #526), as the shared approve gate reads them. */
 const NOTE_ANSWERS = { split: splitAnswers, detail: answersDetail };
 /** How the controller's refusals name a PR (core writes no change-ref form of its own). */
 const PR_NAME = (ref: string) => `PR #${ref}`;
-/** State change reasons of PR feedback that started an implement run (design §4). */
-const PR_REVISE = "pr_revise_requested";
-const PR_CHANGES = "pr_changes_requested";
-/** The feedback of a "Request changes" review: its body, then each line comment as `path:line` and its text. Untrusted text; the worker fences it. */
-function reviewFeedback(e: PrReviewEvent): string {
-  const parts = e.body.trim() ? [e.body.trim()] : [];
-  const lines = e.comments.filter((c) => c.body.trim()).map((c) => {
-    const where = c.line === null ? c.path : `${c.path}:${c.line}`;
-    return `- ${where}: ${c.body.trim().replace(/\r?\n/g, "\n  ")}`;
-  });
-  if (lines.length) parts.push(["Line comments:", ...lines].join("\n"));
-  return parts.join("\n\n");
-}
+/** What pr-feedback.ts needs from the legacy core: the item a factory branch names, and where `/revise` feedback is taken. */
+const PR_DEPS: PrFeedbackDeps = { branchItem: workItemIdFromBranch, phases: (local) => (local ? commandSpec("revise").local_phases : commandSpec("revise").pr_phases) ?? [] };
+/** The info replies' text (replies.ts handleInfo). */
+const INFO: InfoSay = { help: helpReply, unknown: unknownCommandReply };
 /**
  * `/resolve [notes]` (design §5 Merge conflict). Only on an item waiting on a merge conflict, on a local item waiting for
  * a merge whose branch conflicts (`localConflict`, 2026-11-12), or one whose resolve run asked for a human. Starts a resolve
@@ -88,7 +69,7 @@ function conflictPending(it: WorkItem): boolean {
 /**
  * The comment command event of an app gate command on `item`, keyed `key`: the note is the approve's or retry's
  * note, the resolve's notes, the reject's reason or the revise's feedback. Never on a PR: a revise here is the
- * issue's `/revise`, and no `+paths` is read.
+ * issue's `/revise`. Only a `/retry` or `/resolve` reads `+paths` (APP_PATHS, design 09-dashboard-item-commands).
  */
 function appGateEvent(kind: Exclude<CommandEvent["kind"], "budget_continue">, item: WorkItem, key: string, r: AppCommandRequest, note: string): CommandEvent {
   const who = { provider: "local" as const, subject: r.actor };
@@ -101,10 +82,10 @@ function appGateEvent(kind: Exclude<CommandEvent["kind"], "budget_continue">, it
     case "resolve_requested": return { kind, ...at, requester: who, notes: note, pr: null };
   }
 }
-
+const APP_PATHS: readonly CommandEvent["kind"][] = ["retry_requested", "resolve_requested"];
 /** Gate commands from any source (approve, reject, revise, retry, resolve, budget), help, plain comments, links and PR feedback. */
 export class CommandsUnit {
-  constructor(private readonly c: Ctx) {}
+  constructor(readonly c: Ctx) {}
 
   /**
    * The merge gate (core request-transition, design 04-gate-commands), the one copy the dashboard's request path and
@@ -123,6 +104,18 @@ export class CommandsUnit {
    */
   async mergeReturned(id: WorkItemId, refusal: string): Promise<void> {
     await this.c.unit("transitions").decide(id, (it) => mergeReturned(it, refusal, SYSTEM));
+  }
+
+  /**
+   * An agent write (a coordinator step, design 08-permissions) through the guards and the permission gate, as the
+   * service `agent` (`service:<agent>`): run, held once per key for the owner's `confirm <id>`, or refused; a held or
+   * refused write is logged with its mode or reason.
+   */
+  async gateAgentWrite(w: Omit<WriteRequest, "origin" | "actor"> & { agent: string }) {
+    const d = await authorizeWrite(writeGateDeps(this.c), { ...w, origin: "agent", actor: `service:${w.agent}` as UserId });
+    if (d.outcome === "held") this.c.k.d.log.info("agent write held", { command: w.command, held_write: d.id, mode: d.mode });
+    if (d.outcome === "refused") this.c.k.d.log.warn("agent write refused", { command: w.command, reason: d.reason });
+    return d;
   }
 
   /**
@@ -167,6 +160,7 @@ export class CommandsUnit {
       else if (e) await this.c.k.guard(`event:${e.kind}`, () => this.c.dispatch(e));
       return;
     }
+    if (typeof c.args.coordinator_limit === "string") return this.answerLimit(c, c.args.coordinator_limit);
     const id = c.args.item; if (typeof id !== "string" || id === "") return;
     // Any source's item (design 05-sources, CLI intake): identity provider `local`, judged by the local auth plugin; never waits on its source.
     const item = await this.c.k.reader.getWorkItem(id as WorkItemId); if (!item) return;
@@ -180,13 +174,35 @@ export class CommandsUnit {
   }
 
   /**
+   * A bare `approve <usd>` or `reject` stored for the coordinator limit question with key `question` (design 06-spend;
+   * the CLI's storeLimitAnswer): the owner check `/approve` uses, then coordinatorLimitAnswer on today's question, then
+   * one `coordinator_limit_answer` write (the setting through the settings path, the alert dismissed by the owner). A
+   * question no longer open (answered, or its UTC day ended) or a refusal changes nothing and is logged. Safe to run
+   * twice: a second run finds the question answered.
+   */
+  async answerLimit(c: CliCommand, question: string): Promise<void> {
+    const log = this.c.k.d.log, fields = { command_key: c.key, command: c.command, by: c.actor, question };
+    if (c.command !== "approve" && c.command !== "reject") return;
+    const principal = await this.c.unit("auth").allowed({ user_id: c.actor as UserId }, "approve_spec", question);
+    if ("refuse" in principal) return log.warn("coordinator limit answer refused", { ...fields, reason: principal.refuse });
+    const r = coordinatorLimitAnswer(await this.c.k.reader.listAlerts({ limit: LIMIT_ALERTS_SCAN }), this.c.k.nowMs(), c.command, typeof c.args.text === "string" ? c.args.text : null);
+    if (r === null || r.alert.pattern_key !== question) return log.info("coordinator limit answer not applied: the question is not open", fields);
+    if ("refused" in r) return log.warn("coordinator limit answer refused", { ...fields, reason: r.refused });
+    const setting = r.set_usd === null ? null : { key: COORDINATOR_LIMIT_KEY, value: r.set_usd };
+    await this.c.k.commit({ writes: [
+      { kind: "coordinator_limit_answer", alert_id: r.alert.id, setting, actor: principal.user_id },
+      { kind: "log", level: "info", msg: "coordinator limit question answered", fields: { ...fields, set_usd: r.set_usd } },
+    ] });
+  }
+
+  /**
    * A human command on a work item. Applied or not, the comment gets 👀; a refusal also gets one reply
    * saying why, keyed on the comment id. Commands on issues that are not work items are ignored entirely
    * (no reaction, no reply): they may be ordinary conversation on an unrelated issue.
    */
   async handleCommand(e: CommandEvent): Promise<void> {
     const onPr = (e.kind === "resolve_requested" || e.kind === "revise_requested") && e.pr ? e.pr : null;
-    const item = onPr ? await this.itemOfPr(onPr) : await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id);
+    const item = onPr ? await itemOfPr(this.c, PR_DEPS, onPr) : await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id);
     if (!item) return;
     // A `/revise` on the PR of a closed item is ordinary conversation now: no reaction, no reply (design §4).
     if (e.kind === "revise_requested" && onPr && item.stage === "CLOSED") return;
@@ -222,12 +238,12 @@ export class CommandsUnit {
   }
 
   /** A gate command from a comment (`app` null) or an app request (its user), design §4: `approve_spec`, the
-   * note (a comment's `+paths` too) through G5, the transition (`tag` on its change), an "already allowed" `+paths` reply, the standing follow-up, a reject's close, the pushback's capture. */
+   * note (with its `+paths`: a comment's, or an app request's `/retry` or `/resolve`, APP_PATHS) through G5, the transition (`tag` on its change), an "already allowed" `+paths` reply, the standing follow-up, a reject's close, the pushback's capture. */
   async gateCommand(item: WorkItem, e: CommandEvent, app: AppSender = null, tag: StateChangeDetail | null = null): Promise<string | null> {
     const who = e.kind === "spec_approved" || e.kind === "spec_rejected" || e.kind === "budget_continue" ? e.approver : e.requester;
     const principal = app ? await this.c.unit("auth").allowed({ user_id: app.user_id }, "approve_spec", item.id) : await this.c.unit("auth").authorize(who, "approve_spec", item.id);
     if ("refuse" in principal) return principal.refuse;
-    const input = await this.commandInput(item.id, e, app === null);
+    const input = await this.commandInput(item.id, e, app === null || APP_PATHS.includes(e.kind));
     if ("refuse" in input) return input.refuse;
     const refusal = await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, input.note, tag, input.paths);
     const said = refusal === null ? alreadyAllowed(item, e, input.paths) : null; if (said) await this.c.unit("outbox").post(item, said.target, said.body, said.marker); if (refusal === null) await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
@@ -239,88 +255,6 @@ export class CommandsUnit {
 
   /** applyQueued (queued-revise.ts) at a run end that would queue review (or a triage run's end); the run's key starts with the next loop's `runKey` (the triage key). */
   applyQueued = (it: WorkItem, d: NonNullable<Decision>) => applyQueued(this.c, it, d, it.stage === "NEW" ? runKey(it, "triage") : runKey({ ...it, loop_count: it.loop_count + 1 }, "implement"));
-
-  /**
-   * The work item of a PR: a factory PR's from its head branch, any other PR's adopted item by number; null
-   * unless that item's PR is this one.
-   */
-  async itemOfPr(pr: { change_ref: string; head_branch: string }): Promise<WorkItem | null> {
-    const id = workItemIdFromBranch(pr.head_branch, this.c.k.cfg.branch_prefix);
-    const it = id
-      ? await this.c.k.reader.getWorkItem(id as WorkItemId)
-      : await this.c.k.reader.getWorkItemByPr(this.c.k.project(), pr.change_ref).then((x) => (x?.origin === "adopted" ? x : null));
-    return it && it.change_ref === pr.change_ref ? it : null;
-  }
-
-  /**
-   * A "Request changes" review on a PR (design §4): its body and line comments are feedback for one implement
-   * run, as a `/revise` on the PR is. A PR with no open item, and a reviewer without write permission, get
-   * nothing: no change, no reply. A review already applied (a later poll, a restart) changes nothing. A writer's
-   * review in a state that cannot take it gets one reply on the PR, keyed on the review.
-   */
-  async handlePrReview(e: PrReviewEvent): Promise<void> {
-    const item = await this.itemOfPr(e);
-    if (!item || item.stage === "CLOSED") return;
-    const principal = await this.c.unit("auth").authorize(e.reviewer, "approve_spec", item.id);
-    if ("refuse" in principal) {
-      this.c.k.d.log.info("review ignored", { work_item_id: item.id, change_ref: e.change_ref, reason: principal.refuse });
-      return;
-    }
-    const actor: Actor = { kind: "user", id: principal.user_id };
-    const refusal = await this.c.unit("transitions").decide(item.id, (it) =>
-      this.prFeedback(it, { text: reviewFeedback(e), actor, reason: PR_CHANGES, change_ref: e.change_ref, key: { review_id: e.review_id } }));
-    if (refusal === null) return;
-    this.c.k.d.log.info("review refused", { work_item_id: item.id, change_ref: e.change_ref, reason: refusal });
-    await this.c.unit("outbox").post(item, e.source, `The review's requested changes were not applied: ${refusal}.`, `<!-- factory:refused:review-${e.review_id} -->`);
-  }
-
-  /**
-   * Feedback on a PR (design §4): a `/revise` on the PR or a "Request changes" review, or a local item's `/revise` (`change_ref` null, issue #563). Accepted while it
-   * waits for a human merge or its review run failed: the item goes to RUNNING with one implement run on its
-   * branch, keyed on the next loop (loop_count + 1), with the feedback as its input and on the state change.
-   * At the loop limit the item blocks on a human with `max_loops` and starts nothing. `key` (the comment or the
-   * review id) is recorded on the state change, so the same feedback delivered again changes nothing.
-   */
-  async prFeedback(
-    it: WorkItem,
-    f: { text: string; actor: Actor; reason: string; change_ref: string | null; key: { comment_id: string } | { review_id: string } },
-  ): Promise<Decision | Refusal> {
-    if (it.stage === "CLOSED" || it.change_ref !== f.change_ref) return null;
-    const [field, value] = Object.entries(f.key)[0] as [string, string];
-    const done = (await this.c.k.reader.listStateChanges(it.id)).some(
-      (c) => (c.reason === f.reason || c.reason === "max_loops") && c.detail?.[field] === value);
-    if (done) return null;
-    const [phase, local] = [commandPhase(it), f.change_ref === null];
-    const accepted = (local ? commandSpec("revise").local_phases : commandSpec("revise").pr_phases) ?? [];
-    if (!accepted.includes(phase)) {
-      const where = local ? "on a local item" : "on the PR";
-      return { refuse: `the item is ${phaseLabel(phase)}; feedback ${where} is taken only when it is ${accepted.map(phaseLabel).join(" or ")}` };
-    }
-    const feedback = f.text.trim();
-    if (!feedback) return { refuse: FEEDBACK_REQUIRED };
-    const blocked = await feedbackScan(this.c, it, feedback); if (blocked) return blocked;
-    const kept = feedback.slice(0, MAX_FEEDBACK_CHARS).trim();
-    // The detail names the PR by its string ref, like the item (design 02-work-item); a local item has none.
-    const detail = { ...f.key, ...(local ? {} : { change_ref: f.change_ref }) };
-    const limit = this.c.k.cfg.max_loops;
-    if (it.loop_count + 1 >= limit) {
-      const patch = { blocked_on: "human" as const, blocked_reason: "max_loops" };
-      await this.c.unit("outbox").comment(it, `max-loops:${field}-${value}`, [
-        `The ${local ? "" : "PR "}feedback would start loop ${it.loop_count + 1} (limit \`max_loops\` = ${limit}), so the factory started no implement run. A human needs to decide.`,
-        "",
-        footerAfter(it, patch),
-      ].join("\n"));
-      return { patch, actor: f.actor, reason: "max_loops", detail };
-    }
-    const next = { ...it, loop_count: it.loop_count + 1 };
-    return {
-      patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, loop_count: next.loop_count, failure_comment_url: null },
-      actor: f.actor,
-      reason: f.reason,
-      detail: { ...detail, feedback: kept },
-      enqueue: { kind: "implement", idempotency_key: runKey(next, "implement"), input: { notes: kept } },
-    };
-  }
 
   /**
    * `/budget` and `/reject` at a budget checkpoint answer it (design §6); every other command, and `/reject`
@@ -339,7 +273,7 @@ export class CommandsUnit {
       if (!it) return null;
       const atCheckpoint = it.stage !== "CLOSED" && it.blocked_reason === BUDGET_CHECKPOINT;
       if (atCheckpoint && (e.kind === "budget_continue" || e.kind === "spec_rejected")) {
-        const r = await this.answerCheckpoint(it, e, actor);
+        const r = await answerCheckpoint(this.c, it, e, actor, parseBudgetAmount);
         if (r === RETRY) continue;
         return r;
       }
@@ -366,57 +300,6 @@ export class CommandsUnit {
   }
 
   /**
-   * The answer to the item's pending checkpoint, with the checkpoint row and its state change in one store
-   * transaction. `/budget` grants the suggestion, or a whole number above the checkpoint's budget, and queues
-   * the held run with its kind, key and not_before, unchecked. `/reject` closes the item and leaves the
-   * branch and the PR as they are.
-   */
-  async answerCheckpoint(
-    it: WorkItem,
-    e: Extract<CommandEvent, { kind: "budget_continue" | "spec_rejected" }>,
-    actor: Extract<Actor, { kind: "user" }>,
-  ): Promise<string | null | typeof RETRY> {
-    const cp = (await this.c.k.reader.listBudgetCheckpoints(it.id)).filter((c) => c.answer === "pending").at(-1);
-    if (!cp) return "the budget checkpoint has no pending record";
-    const common = { id: it.id, expected_version: it.version, actor, checkpoint_id: cp.id };
-    let input: Parameters<FactoryStore["answerBudgetCheckpoint"]>[0];
-    if (e.kind === "spec_rejected") {
-      input = {
-        ...common,
-        // Like a spec reject, the comment and the issue close follow (finishReject), so the close says why.
-        patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "upstream", blocked_reason: SOURCE_CLOSE_PENDING },
-        reason: "budget_rejected",
-        answer: "rejected",
-        granted_budget: null,
-        detail: { checkpoint_id: cp.id, held_run_key: cp.held_run_key },
-      };
-    } else {
-      const amount = parseBudgetAmount(e.amount, cp.budget);
-      if (!amount.ok) return amount.refuse;
-      const granted = amount.value ?? cp.suggested_budget;
-      const answer = amount.value === null ? "continued_suggested" : "continued_custom";
-      input = {
-        ...common,
-        patch: { blocked_on: "none", blocked_reason: null },
-        reason: "budget_continued",
-        answer,
-        granted_budget: granted,
-        detail: { checkpoint_id: cp.id, answer, previous_budget: cp.budget, granted_budget: granted, held_run_key: cp.held_run_key },
-        enqueue: { kind: cp.held_run_kind, idempotency_key: cp.held_run_key, not_before: cp.held_run_not_before },
-      };
-    }
-    const r = await this.c.k.commitItem([], { kind: "budget_answer", input });
-    if (r.ok) {
-      this.c.k.d.log.info("transition", { work_item_id: it.id, reason: input.reason, version: r.item.version });
-      await this.c.unit("outbox").showStatus(r.item);
-      return null;
-    }
-    if (r.reason === "version_conflict" || r.reason === "checkpoint_not_pending") return RETRY;
-    this.c.k.d.log.warn("transition refused", { work_item_id: it.id, reason: r.reason });
-    return null;
-  }
-
-  /**
    * The approval note to store: trimmed, capped at MAX_NOTE_CHARS, null when empty. The whole note is
    * egress-scanned first; a finding refuses the approval, and neither the note nor the rule's match is kept.
    */
@@ -435,7 +318,7 @@ export class CommandsUnit {
   /**
    * The note and the `+paths` of an `/approve`, `/retry`, `/resolve` or `/paths` (design §4, issue #280); none for other
    * commands. The whole text is egress-scanned first (so a refusal never quotes a flagged path), then `+paths` is
-   * split off and checked (unless `paths` is false: an app request's), the note what is left, capped. A finding or a bad path refuses it.
+   * split off and checked (unless `paths` is false: an app request's other than APP_PATHS), the note what is left, capped. A finding or a bad path refuses it.
    */
   async commandInput(id: WorkItemId, e: CommandEvent, paths = true): Promise<{ note: string | null; paths: string[] } | Refusal> {
     const text = commandText(e); if (text === null) return { note: null, paths: [] }; if (typeof text === "object") return text; // paths.ts: `/paths +a` as `+paths a`
@@ -455,31 +338,13 @@ export class CommandsUnit {
   }
 
   /**
-   * `/help` or an unknown command on a work item: 👀, then one reply keyed on the comment id, listing the
-   * commands for the item's current state. Like other commands, ignored entirely on an issue that is not one.
-   */
-  async handleInfo(e: InfoEvent): Promise<void> {
-    const item = await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id);
-    if (!item) return;
-    await this.c.unit("outbox").markSeen(e.source, e.comment_id);
-    const state = await this.stateOf(item);
-    const help = e.kind === "help_requested";
-    await this.c.unit("outbox").post(
-      item,
-      item.source,
-      help ? helpReply(state) : unknownCommandReply(e.command, state),
-      `<!-- factory:${help ? "help" : "unknown"}:${e.comment_id} -->`,
-    );
-  }
-
-  /**
    * A plain-language comment on a work item (design §4, issues #583, #584): at most one reply, keyed on the comment id
    * (proposals.ts answerPlain). Changes no item state. In order: the item, the commenter's permission (no model call
    * and no reply without it), then the answer, whose fallback lists the commands for the item's state.
    */
   async handlePlainComment(e: PlainCommentEvent): Promise<void> {
     const code = parseLink(e.body);
-    if (code !== null) return this.handleLink(e, code);
+    if (code !== null) return handleLink(this.c, e, code);
     if (!this.c.k.reader.llm) return;
     const item = await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id);
     if (!item || item.stage === "CLOSED") return;
@@ -518,24 +383,6 @@ export class CommandsUnit {
   }
 
   /**
-   * `/link <code>` (design 2026-11-01): links the commenter's account to the code's factory user. On any issue,
-   * work item or not. One reply keyed on the comment id; the code is never logged or echoed. A wrong code is a
-   * failed attempt (the store counts it) and links nothing. A redelivery of a used code reports the same link.
-   */
-  async handleLink(e: PlainCommentEvent, code: string): Promise<void> {
-    const account = { provider: e.author.provider, subject: e.author.subject };
-    const r = code === "" ? ({ ok: false, reason: "invalid" } as const) : await this.c.k.redeemLinkCode(code, account);
-    await this.c.unit("outbox").markSeen(e.source, e.comment_id);
-    this.c.k.d.log.info("link attempt", { provider: account.provider, ok: r.ok, ...(r.ok ? { user_id: r.user_id } : { reason: r.reason }) });
-    const body = r.ok
-      ? `This account is now linked to factory user \`${r.user_id}\`. Commands from it act as that user.`
-      : `This account was not linked: ${LINK_REFUSALS[r.reason]}. Ask for a new code with \`factory link-code <user_id>\`.`;
-    const item = await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id);
-    if (item) await this.c.unit("outbox").post(item, e.source, body, `<!-- factory:link:${e.comment_id} -->`);
-    else await this.c.unit("outbox").postWithoutItem(e.source, body, `<!-- factory:link:${e.comment_id} -->`);
-  }
-
-  /**
    * The transition a command asks for, or why the item's current state cannot take it. Async only because
    * a `/revise` past the limit posts its comment before the transition (keyed, so a conflict re-run posts once).
    */
@@ -554,7 +401,7 @@ export class CommandsUnit {
     // On the PR, in a Slack thread with a PR, or on a local item with no PR at the merge wait (its local branch, issue #563).
     const asFeedback = e.kind === "revise_requested" && (it.source.type === "slack_thread" ? appliesOnPr : appliesLocally)(commandSpec("revise"), commandState(it));
     if (e.kind === "revise_requested" && (e.pr || asFeedback)) {
-      return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr?.change_ref ?? it.change_ref, key: { comment_id: e.comment_id } });
+      return prFeedback(this.c, PR_DEPS, it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr?.change_ref ?? it.change_ref, key: { comment_id: e.comment_id } });
     }
     // `/approve` (design §4): a goal split waiting for the owner (goal_question, goal_limit) is answered by the phases unit (design 04-split-specs); else the approve gate every source shares (core request-transition), a split's filing claimed here; a spec that changes no file in this repo is refused first (design 04-spec-gate-commands). Over the item's size caps (04-split-specs, 2026-11-24: at too_large `/retry`'s implement run, at its size checkpoint the spec's approval) it needs a note and stores the one-time cap with its record (overCapApproval).
     // A routine's run held at its daily cap (routines unit): `/approve` raises today's cap by the last run's cost and runs it, `/reject` skips it.
@@ -697,10 +544,10 @@ export class CommandsUnit {
     return it.blocked_reason === AGENT_NEEDS_HUMAN ? this.blockedBy(it) : undefined;
   }
 
-  /** The step a `/retry` restarts: implement at the loop limit, the run behind an agent block, else what the item's fields say. */
+  /** The step a `/retry` restarts: implement at the loop limit, the run behind an agent block or a recurring failure's hold (its last failed run, as at repeated_failure), else what the item's fields say. */
   async retryKind(it: WorkItem): Promise<RunKind | undefined> {
     if (it.blocked_on === "human" && it.blocked_reason === "max_loops") return "implement";
-    return (await this.blockedBy(it)) ?? failedRunKind(it);
+    return it.blocked_reason === RECURRING_FAILURE ? blockingRunKind(REPEATED_FAILURE, await this.c.k.reader.listRuns(it.id)) : (await this.blockedBy(it)) ?? failedRunKind(it);
   }
 
   /** The command state of `it`, with the kind of run that asked at agent_needs_human and whether a failed merge check stopped it at max_loops. */
@@ -725,9 +572,9 @@ export default controllerUnit({
     retry_requested: (u, e) => u.handleCommand(e),
     resolve_requested: (u, e) => u.handleCommand(e), paths_requested: (u, e) => u.handleCommand(e),
     budget_continue: (u, e) => u.handleCommand(e),
-    help_requested: (u, e) => u.handleInfo(e),
-    unknown_command: (u, e) => u.handleInfo(e),
+    help_requested: (u, e) => handleInfo(u.c, e, INFO),
+    unknown_command: (u, e) => handleInfo(u.c, e, INFO),
     plain_comment: (u, e) => u.handlePlainComment(e),
-    pr_changes_requested: (u, e) => u.handlePrReview(e),
+    pr_changes_requested: (u, e) => handlePrReview(u.c, PR_DEPS, e),
   },
 });

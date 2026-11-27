@@ -42,6 +42,8 @@ export default defineCommand({
       authoring,
       tryCase: (store: Parameters<SkillEvalTryFn>[0], r: Parameters<SkillEvalTryFn>[2]) => tryCase(store, loaded, r),
       // Run now (POST /api/v1/evals/<skill>/runs): `eval run` with the same checks, as the page's factory user.
+      // Draft starter cases (starter.draft and starter.accept): the Model plugin and SKILL.md reader buildUiParts built.
+      starter: parts.starter,
       ...(ctx.runSkillEval && { run: (store: Parameters<SkillEvalRunFn>[0], r: Parameters<SkillEvalRunFn>[2]) => ctx.runSkillEval!(store, loaded, r) }),
       source: {
         configured: loaded.plugins.eval_source, registered: Object.keys(loaded.registry.eval_source.plugins), settings: parts.tacit.settings,

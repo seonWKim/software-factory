@@ -272,10 +272,17 @@ const repoRelative = (v: unknown): v is string =>
 /**
  * `repo.test_selection` (design §4, test selection): absent → nothing (every check runs whole). Otherwise an object
  * with `hubs`, a list of repo-relative files, and `always`, a list of repo-relative files or prefixes ending in `/`,
- * and no other key; any other value fails startup naming the key.
+ * and no other key; any other value fails startup naming the key. The selection names vitest test files after
+ * `npm test --`, so with a `testCommand` whose first word is not npm (e.g. `./gradlew test`) startup fails too.
  */
-export function testSelectionConfig(value: unknown): { test_selection?: TestSelectionConfig } {
+export function testSelectionConfig(value: unknown, testCommand?: readonly string[]): { test_selection?: TestSelectionConfig } {
   if (value === undefined) return {};
+  if (testCommand !== undefined && testCommand[0] !== "npm") {
+    throw new Error(
+      `repo.test_selection needs an npm test command (e.g. repo.test_command ["npm", "test"]); repo.test_command is ${JSON.stringify(testCommand)}. ` +
+        "Remove repo.test_selection: a non-npm test command runs whole.",
+    );
+  }
   const example = '{ "hubs": ["src/compose.ts"], "always": ["tests/architecture/", "tests/boundaries.test.ts"] }';
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`repo.test_selection must be an object with hubs and always lists, e.g. ${example}`);
   const { hubs, always, ...rest } = value as { hubs?: unknown; always?: unknown };

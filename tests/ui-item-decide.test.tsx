@@ -107,6 +107,41 @@ describe("item page: DecisionCard", () => {
     expect(await screen.findByRole("dialog", { name: "Add a model credential" })).toBeTruthy();
   });
 
+  it("on a New item during the pause the card shows Add context and Attach, and no revise form opens", async () => {
+    const p = pause();
+    p.item = { ...p.item, stage: "NEW" };
+    body = p;
+    mount();
+    const decide = await screen.findByRole("region", { name: "What you need to decide" });
+    const ctx = await within(decide).findByRole("button", { name: "Add context" });
+    await vi.waitFor(() => expect((ctx as HTMLButtonElement).disabled).toBe(false));
+    expect(within(decide).getByRole("button", { name: "Attach" })).toBeTruthy();
+    expect(within(decide).queryByRole("button", { name: "Revise" })).toBeNull();
+    fireEvent.click(ctx);
+    const dialog = await screen.findByRole("dialog");
+    for (const f of ["In short", "Scope", "Allowed paths"]) expect(within(dialog).queryByText(f)).toBeNull();
+    expect(within(dialog).getAllByRole("textbox")).toHaveLength(1);
+    expect(dialog.textContent).not.toContain("current");
+  });
+
+  it("with a spec Revise opens the five-section form; without one (not New) it opens one Add context textarea", async () => {
+    mount();
+    const decide = await box();
+    fireEvent.click(within(decide).getByRole("button", { name: "Revise" }));
+    const form = await screen.findByRole("dialog", { name: "Revise Check the scope in CI" });
+    expect([...form.querySelectorAll("[data-revise-section]")].map((x) => x.getAttribute("data-revise-section"))).toEqual(["In short", "Problem", "Done when", "Scope", "Allowed paths"]);
+    expect(form.textContent).toContain("The factory writes a new plan from your comments.");
+    cleanup();
+    body = detail({ spec: null });
+    mount();
+    const again = await box();
+    expect(within(again).queryByRole("button", { name: "Attach" })).toBeNull();
+    fireEvent.click(within(again).getByRole("button", { name: "Revise" }));
+    const modal = await screen.findByRole("dialog", { name: "Add context Check the scope in CI" });
+    expect(within(modal).getAllByRole("textbox")).toHaveLength(1);
+    expect(modal.querySelector("[data-revise-section]")).toBeNull();
+  });
+
   it("during the pause a refusal as the newest factory message is not shown under Based on", async () => {
     body = pause([REFUSAL]);
     mount();
@@ -156,7 +191,7 @@ describe("item page: DecisionCard", () => {
     // First: after the title, before the facts, the thread, the runs and the timeline.
     const title = screen.getByRole("heading", { name: "Check the scope in CI" });
     expect(title.compareDocumentPosition(decide) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    for (const later of [screen.getByText("Tier"), screen.getByRole("region", { name: "Thread" }), screen.getByRole("region", { name: "Runs" }), screen.getByRole("region", { name: "Timeline" })]) {
+    for (const later of [screen.getByText("Risk level"), screen.getByRole("region", { name: "Thread" }), screen.getByRole("region", { name: "Runs" }), screen.getByRole("region", { name: "Timeline" })]) {
       expect(decide.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
     // The question, then the evidence, then the buttons.
@@ -215,6 +250,34 @@ describe("item page: DecisionCard", () => {
     await vi.waitFor(() => expect(allow.disabled).toBe(false));
     fireEvent.click(allow);
     await vi.waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_9f3c2a/commands", body: { command: "retry", note: "+paths web/src/x.tsx docs/y.md" } }]));
+  });
+
+  it("an out_of_scope resolve failure shows Allow and resolve, whose dialog lists the files; Cancel sends nothing, Confirm sends /resolve +paths with its notes", async () => {
+    const reply = { ...FACTORY_MSG, kind: "run_failed", body: "Reply `/resolve +paths a/b.ts` to allow them and resolve again. Changed files outside the conflicts and allowed_paths: a/b.ts" };
+    body = detail({
+      item: item({ stage: "RUNNING", blocked_reason: "merge_conflict", why: { code: "human", reason_code: "merge_conflict", params: {}, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null } }),
+      commands: [{ ...cmd("resolve"), paths: ["a/b.ts"], out_of_scope: true }, cmd("revise"), cmd("reject")], spec: null, thread: [reply],
+    });
+    mount();
+    const decide = await screen.findByRole("region", { name: "What you need to decide" });
+    const evidence = decide.querySelector<HTMLElement>("[data-decision-evidence]")!;
+    expect(evidence.textContent).toContain("/resolve +paths a/b.ts");
+    expect([...evidence.querySelectorAll("[data-asked-paths] code")].map((c) => c.textContent)).toContain("a/b.ts");
+    const allow = within(decide).getByRole("button", { name: "Allow and resolve" }) as HTMLButtonElement;
+    expect(allow.dataset.action).toBe("resolve");
+    expect(allow.getAttribute("aria-haspopup")).toBe("dialog");
+    await vi.waitFor(() => expect(allow.disabled).toBe(false));
+    fireEvent.click(allow);
+    const cancel = await screen.findByRole("dialog", { name: "Allow and resolve Check the scope in CI" });
+    expect([...cancel.querySelectorAll("[data-allow-resolve] code")].map((c) => c.textContent)).toContain("a/b.ts");
+    fireEvent.click(within(cancel).getByRole("button", { name: "Cancel" }));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(posts).toEqual([]);
+    fireEvent.click(allow);
+    const dialog = await screen.findByRole("dialog", { name: "Allow and resolve Check the scope in CI" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Notes for the resolve run (optional)" }), { target: { value: "Keep the moved file." } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Allow and resolve" }));
+    await vi.waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_9f3c2a/commands", body: { command: "resolve", note: "+paths a/b.ts\nKeep the moved file." } }]));
   });
 
   it("orders the page: the card, the current run, the thread (collapsed after its first message), the runs, the timeline", async () => {

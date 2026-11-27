@@ -2,7 +2,7 @@
 // Dashboard shell tests: item commands. Shared setup is in ui-shell-fixtures.tsx.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { ItemDecision } from "../web/src/views/decision-card.js";
 import { commandOutcome } from "../web/src/views/command-send.js";
 import { API } from "../web/src/api.js";
@@ -17,7 +17,7 @@ function mountCommands(commands = ["approve", "revise", "reject", "retry"].map(c
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   if (session) client.setQueryData(["/api/v1/session"], session);
   // The item the page already read: the DecisionCard shows only when its why names the owner as next actor.
-  client.setQueryData(["/api/v1/items/wi_1"], { ...detail, item: { ...detail.item, why: { ...detail.item.why, next_actor: nextActor } } });
+  client.setQueryData(["/api/v1/items/wi_1"], { ...detail, spec: { in_short: "AS-IS: a.\nTO-BE: b.", decisions: [] }, item: { ...detail.item, why: { ...detail.item.why, next_actor: nextActor } } });
   return render(
     <QueryClientProvider client={client}>
       <ItemDecision id="wi_1" commands={commands} replies={replies} />
@@ -124,6 +124,9 @@ describe("item commands", () => {
   });
 
   it("a send posts { command, note } with the session token; the note only when the box has text", async () => {
+    // A refetch after a send must still carry the spec, or Revise opens the Add context modal.
+    RESPONSES["/api/v1/items/wi_1"] = { ...detail, spec: { in_short: "AS-IS: a.\nTO-BE: b.", decisions: [] } };
+    onTestFinished(() => { RESPONSES["/api/v1/items/wi_1"] = detail; });
     mountCommands();
     fireEvent.click(button("approve"));
     await settle();

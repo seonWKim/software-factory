@@ -1,5 +1,6 @@
 import { isUnder, pathsOverlap } from "./policy.js";
-import type { DependencyKind, DependencyState, SharedPath, SourceRef, Timestamp, WorkItem } from "./types.js";
+import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { DependencyKind, DependencyState, SharedPath, SourceRef, Timestamp, WorkItem, WorkItemId } from "./types.js";
 
 /**
  * Coordination (design §5, decided 2026-11-03): when an implement run may start next to other work. Pure: no
@@ -449,3 +450,27 @@ export function isDependencySource(x: object): x is DependencySource {
   const d = x as Partial<DependencySource>;
   return typeof d.dependencyLinks === "function" && typeof d.dependencyState === "function";
 }
+
+/** A wi_ or tk_ id as `--depends-on`, `/hold` and a local `Depends on:` line take it. */
+export const LOCAL_ID = /^(?:wi|tk)_[\w-]+$/;
+
+/**
+ * The local work item a wi_ id names (the full ID, or a prefix of exactly one item's ID, as the dashboard's short ID
+ * `wi_bbd7d1c8`), or the one task tk_'s build made; null for none, several, or an item that is not local.
+ */
+export async function localItemOf(store: Pick<FactoryStore, "getTask" | "getWorkItem" | "findWorkItemIds">, id: string): Promise<WorkItem | null> {
+  if (!LOCAL_ID.test(id)) return null;
+  let item: WorkItem | null;
+  if (id.startsWith("tk_")) {
+    const wi = (await store.getTask(id))?.work_item_id ?? null;
+    item = wi ? await store.getWorkItem(wi) : null;
+  } else {
+    item = await store.getWorkItem(id as WorkItemId);
+    const ids = item || !/^wi_[0-9a-f]+$/.test(id) ? [] : await store.findWorkItemIds(id);
+    if (ids.length === 1) item = await store.getWorkItem(ids[0]!);
+  }
+  return item?.source.type === "local" ? item : null;
+}
+
+/** How a `Depends on:` line names `dep`, the item localItemOf found for `id`: a tk_ id as given, else the item's full wi_ ID. */
+export const dependsOnId = (id: string, dep: Pick<WorkItem, "id">): string => (id.startsWith("tk_") ? id : dep.id);

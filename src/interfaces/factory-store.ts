@@ -1,28 +1,20 @@
 import type { TierHistory } from "../core/budget.js";
-import type { ChildRestart } from "./updater.js";
-import type { CoordinationSettings, DependencyLink } from "../core/coordination.js";
+import type { ChildRestart } from "./updater.js"; import type { CoordinationSettings, DependencyLink } from "../core/coordination.js";
 import type {
   Actor, BlockedOn, BudgetAnswer, BudgetCheckpoint, BudgetCheckpointId, ClaimDecision, ClaimPauseName, DependencyEdge, DependencyState, Tier, Handoff,
   FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, Run, RunAttempt, RunId, RunInput, RunKind, RunOutcome, RunResume,
   RunStatus, SessionFinish, SourceRef, SourceType, StandingGate, StandingProposal, StandingRule, StateChange, StateChangeDetail, Stage, Timestamp,
-  UnreviewedMerge, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId, WorkItemPatch, WorkerId, WorkerPause } from "../core/types.js";
-import type { AuthAction, AuthResource, LinkedAccount } from "./auth-provider.js";
-import type { SourceEvent } from "./source-adapter.js";
-import type { StatsRecord } from "../core/stats.js";
-import type { MergeEvaluation, MergeWindow } from "../core/merge-evaluation.js";
-import type { LearnedSettingsStore } from "../core/learned-settings.js";
-import type { CommandProposalStore } from "../core/interpret.js";
-import type { TaskStore } from "../core/tasks.js";
-import type { NoticeStore } from "../core/notifications.js";
-import type { DesignLearningStore } from "../core/design-learnings.js";
-import type { PostedCommentReads } from "../core/reaction-verdict.js";
-import type { RunOutputStore } from "../core/stall.js";
-import type { SessionReservation, SessionReservationStore } from "../core/session.js";
-import type { ProposalStore } from "../core/proposals.js";
-import type { StandingChangeStore } from "../core/standing.js";
+  UnreviewedMerge, UnreviewedMergeId, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId, WorkItemPatch, WorkerId, WorkerPause } from "../core/types.js";
+import type { AuthAction, AuthResource, LinkedAccount } from "./auth-provider.js"; import type { SourceEvent } from "./source-adapter.js";
+import type { StatsRecord } from "../core/stats.js"; import type { MergeEvaluation, MergeWindow } from "../core/merge-evaluation.js";
+import type { LearnedSettingsStore } from "../core/learned-settings.js"; import type { CommandProposalStore } from "../core/interpret.js";
+import type { TaskStore } from "../core/tasks.js"; import type { NoticeStore } from "../core/notifications.js";
+import type { DesignLearningStore } from "../core/design-learnings.js"; import type { PostedCommentReads } from "../core/reaction-verdict.js";
+import type { RunOutputStore } from "../core/stall.js"; import type { SessionReservation, SessionReservationStore } from "../core/session.js";
+import type { ProposalStore } from "../core/proposals.js"; import type { StandingChangeStore } from "../core/standing.js";
 import type { ScheduleStore } from "../core/schedule.js"; import type { AttachmentStore } from "../core/attachments.js"; import type { RoutineStore } from "../core/check-page.js";
 import type { SkillEvalStore } from "./skill-eval-store.js"; import type { SkillDraftStore } from "./skill-draft-store.js";
-import type { AlertDismissalStore } from "../core/alarms.js";
+import type { AlertDismissalStore } from "../core/alarms.js"; import type { HeldWriteStore } from "../core/authorize.js"; import type { LLMMessage } from "./llm-provider.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -84,13 +76,7 @@ export type RecordPrHeadResult =
   | { ok: false; reason: "not_found" }
   /** last_head_sha is no longer `expected_head` (another poll or a factory push recorded first). Nothing written. */
   | { ok: false; reason: "head_moved"; current: WorkItem };
-export interface NewUnreviewedMerge {
-  project: string;
-  change_ref: string;
-  merge_sha: string;
-  merger_id: UserId | null;
-  title?: string | null;
-}
+export interface NewUnreviewedMerge { project: string; change_ref: string; merge_sha: string; merger_id: UserId | null; title?: string | null }
 
 export interface NewRun {
   work_item_id: WorkItemId;
@@ -105,7 +91,7 @@ export interface NewRun {
 /** The patterns the alarm step looks for across items (design 05-alarms); `spend_budget`: spend passed 80% or 100% of a budget (06-spend). */
 /** `auto_stopped`: a stop condition set auto mode back to manual; `red_main`: the base fails a check on its own, keyed on its sha (design 03-risk). The controller stores both. */
 /** `dead_letter`: the bus dead-lettered a message (RFC 0015 §5.4); the controller's dead-letter-alarm handler stores it. */
-export type AlertPattern = "repeated_error" | "zero_tokens" | "child_restarts" | "auto_stopped" | "dead_letter" | "spend_budget" | "red_main" | "skill_draft_limit"; // skill_draft_limit: a skill draft cap or token budget was reached (design 07)
+export type AlertPattern = "repeated_error" | "zero_tokens" | "child_restarts" | "auto_stopped" | "dead_letter" | "spend_budget" | "red_main" | "skill_draft_limit" | "skill_version_gate" | "ci_rerun_failed" | "coordinator_limit"; // coordinator_limit: the coordinator reached its daily spend limit, one owner question per UTC day (design 06-spend); skill_draft_limit: a skill draft cap or token budget was reached; skill_version_gate: a new skill version is held (design 07); ci_rerun_failed: an item's cancelled CI jobs could not be rerun, keyed on item and head (design 05-ci-gate)
 
 /** An alert as the alarm step builds it; the store adds `id` and `created_at`. */
 export interface NewAlert {
@@ -168,6 +154,7 @@ export interface TransitionInput {
    * attempt record closes as `cancelled`.
    */
   cancel_running_runs?: boolean;
+  /** An Activity row (design 08-schedules-actions) written in this transaction, as an auto-grant's; nothing on a refusal. */ activity?: NewActivity;
 }
 
 /** How a base push finished: `pushed` (the remote base contains the merge) or `conflict` (it moved and does not merge). */
@@ -354,8 +341,21 @@ export interface NoticeMessageStore {
   recordNoticeQuestion(q: Omit<NoticeQuestion, "created_at">): Promise<boolean>;
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
-
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore, SkillDraftStore, AttachmentStore, AlertDismissalStore, RoutineStore {
+/** A chat message to store (controller_chat_messages): `seq` orders a session's messages; the rest as on LLMMessage. A chat turn's row (controller_chat_turns, design 04-chat-agent): running at its start, then answered, refused or failed, `reason` null when answered. */
+export interface NewChatMessage extends LLMMessage { seq: number } export type ChatTurnStatus = "running" | "answered" | "refused" | "failed"; /** A spend row's kind (controller_chat_spend.kind): a chat turn, or a coordinator cycle (design 06-spend). */ export type ChatSpendKind = "chat" | "coordinator";
+export interface ChatMessageRecord extends NewChatMessage { session_id: string; created_at: Timestamp } export interface ChatTurnRecord { turn_id: string; session_id: string; status: ChatTurnStatus; reason: string | null; created_at: Timestamp; finished_at: Timestamp | null }
+/** A chat session's messages: an append writes the whole batch, or nothing (false) when one of its seqs is the session's already. Its turns' spend (design 04-chat-agent): one row per turn, keyed by the turn's own id (never a message seq, which a failed turn does not take), `cost_usd` null when unknown; a record of a counted turn writes nothing (false); a read takes UTC days, both inclusive, and one kind, `chat` unless named. Its turns' rows, each method one transaction: a start writes it running (false, nothing written, when the id is stored already); a finish ends only a running turn (false otherwise); a list reads the newest first, at most `limit`. */
+export interface ChatMessageStore {
+  appendChatMessages(session_id: string, messages: readonly NewChatMessage[]): Promise<boolean>; listChatMessages(session_id: string): Promise<ChatMessageRecord[]>;
+  recordChatSpend(s: { turn_id: string; session_id: string; day: string; cost_usd: number | null; tokens: number }): Promise<boolean>; listChatSpendBetween(from: string, to: string, kind?: ChatSpendKind): Promise<Parameters<ChatMessageStore["recordChatSpend"]>[0][]>;
+  startChatTurn(turn_id: string, session_id: string): Promise<boolean>; finishChatTurn(turn_id: string, status: Exclude<ChatTurnStatus, "running">, reason: string | null): Promise<boolean>; listChatTurns(limit: number): Promise<ChatTurnRecord[]>;
+}
+/** One autonomous action (design 08-schedules-actions): `kind` as src/controller/background-jobs.ts lists it; `ref` a run's transcript path or a `log:<component>:<message>` reference (null: none); `at` the store's time. */
+export interface Activity { seq: number; actor_id: string; kind: string; subject: string; outcome: string; reason: string; ref: string | null; at: Timestamp }
+export type NewActivity = Omit<Activity, "seq" | "at">;
+/** Most rows are written by the store in their change's transaction (expireLeases, the prunes, a schedule claim, a transition's `activity`, a migration); recordActivity is for a change outside the store (a cleanup pass). listActivity: newest first, at most `limit` (200). */
+export interface ActivityStore { recordActivity(a: NewActivity): Promise<Activity>; listActivity(opts?: { kind?: string; limit?: number }): Promise<Activity[]> }
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore, SkillDraftStore, AttachmentStore, AlertDismissalStore, RoutineStore, ChatMessageStore, ActivityStore, HeldWriteStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
@@ -669,10 +669,12 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
 
   /** Idempotent on (project, change_ref): a second call returns the first row with created false. */
   recordUnreviewedMerge(input: NewUnreviewedMerge): Promise<{ merge: UnreviewedMerge; created: boolean }>;
-  /** Newest first. Read-only. */
-  listUnreviewedMerges(limit: number): Promise<UnreviewedMerge[]>;
-  /** How many rows were recorded at or after `since`. Read-only. */
-  countUnreviewedMergesSince(since: Timestamp): Promise<number>;
+  listUnreviewedMerges(limit: number): Promise<UnreviewedMerge[]>; // newest first, read-only
+  countUnreviewedMergesSince(since: Timestamp): Promise<number>; // rows recorded at or after `since`, read-only
+  /** `project`'s rows with no title, newest first (the title backfill, design 09-dashboard-tasks-needs). Read-only. */
+  listUntitledUnreviewedMerges(project: string, limit: number): Promise<UnreviewedMerge[]>;
+  /** Sets a row's title only while it has none. */
+  setUnreviewedMergeTitle(id: UnreviewedMergeId, title: string): Promise<void>;
 
   // Handoffs
 
@@ -713,8 +715,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** Ends the lease now if `token` is still current, so another replica can take it at once. */
   releaseListenerLease(source_type: SourceType, token: number): Promise<void>;
 
-  // Sync leases (design 05-coordination, sync lease): one replica per `sync:<type>:<project>` polls a sync source's
-  // inbox and delivers its outbox. Same rules as the listener lease, keyed by name; `listener_leases` is its own table.
+  // Sync leases (design 05-coordination, sync lease): one replica per `sync:<type>:<project>` polls a sync source's inbox and delivers its outbox. Same rules as the listener lease, keyed by name; `listener_leases` is its own table.
 
   /**
    * Takes lease `name` for `owner` if nobody holds it, the holder's lease expired, or `owner` already holds it
@@ -732,8 +733,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   pruneDeliveredOutbox(older_than_ms: number, limit: number): Promise<Record<string, number>>;
   pruneHandledCommands(older_than_ms: number, limit: number): Promise<Record<string, number>>;
   pruneHistory(older_than_ms: number, limit: number): Promise<Record<string, number>>;
-  // Forge budget (design 05-sources, call budget): the forge's rate limit as its last response anywhere reported it,
-  // one row per (project, plugin), shared by every replica.
+  // Forge budget (design 05-sources, call budget): the forge's rate limit as its last response anywhere reported it, one row per (project, plugin), shared by every replica.
 
   /** The row of `project` and `plugin`, or null. Read-only. */
   getForgeBudget(project: string, plugin: string): Promise<ForgeBudget | null>;
@@ -792,8 +792,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** Audit rows, newest first, at most `limit`. Read-only. */
   listSettingChanges(limit: number): Promise<SettingChange[]>;
 
-  // Worker processes (design §5 Coordination, 2026-11-07). One row per running WorkerPool, keyed by its
-  // `process_id`, written once per tick, so a reader on any host sees every process's slots.
+  // Worker processes (design §5 Coordination, 2026-11-07). One row per running WorkerPool, keyed by its `process_id`, written once per tick, so a reader on any host sees every process's slots.
 
   /**
    * Writes the snapshot of one process, keyed by `process_id`: a repeat write replaces the row. `reported_at`
@@ -831,8 +830,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** The newest alerts first (created_at, then id, both descending), at most `limit`, with their pattern's `dismissed_at`. Read-only. */
   listAlerts(opts: { limit: number }): Promise<Alert[]>;
 
-  // Restart history (design 05-restarts): one row per unexpected child exit, so the restart alarm's count and
-  // window survive a restart of the factory and every replica on a shared store sees every host's restarts.
+  // Restart history (design 05-restarts): one row per unexpected child exit, so the restart alarm's count and window survive a restart of the factory and every replica on a shared store sees every host's restarts.
 
   /**
    * Stores one child restart unless the same restart (its time and reason) is stored already: one conditional
@@ -887,8 +885,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** The stored label states of the given source ids, in no set order. Read-only. */
   listLabelStates(source_ids: readonly string[]): Promise<LabelState[]>;
 
-  // The item thread and the command inbox (issues #198, #281, #282): every message the controller sends about an
-  // item, and the commands the CLI and the app send, which the controller reads by seq.
+  // The item thread and the command inbox (issues #198, #281, #282): every message the controller sends about an item, and the commands the CLI and the app send, which the controller reads by seq.
 
   /**
    * Stores one message for `work_item_id`. `marker` identifies it within the item: a marker already stored
@@ -921,8 +918,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    */
   markCliCommandMirrored(key: string): Promise<boolean>;
 
-  // The outbox (issue #282, design 05-sources "Thread first"): every factory message is a thread entry first; an
-  // entry written with `delivery` gets one outbox row, which the controller's outbox step delivers to its target
+  // The outbox (issue #282, design 05-sources "Thread first"): every factory message is a thread entry first; an entry written with `delivery` gets one outbox row, which the controller's outbox step delivers to its target
   // source once, retrying with backoff. Delivery never changes the item's stage, blocked fields or version.
 
   /**
@@ -1147,13 +1143,13 @@ export interface NewCliCommand {
   mirror?: boolean;
   /** The edge passport the command entered with (RFC 0015 §8, Identity); absent on rows from before M9. */
   passport_id?: string;
+  /** Who wrote it (design 08-permissions): a person's CLI, chat or comment command, or an agent; absent on older rows and app requests. */ write_origin?: "human_command" | "agent";
 }
 
 export interface CliCommand extends NewCliCommand {
   seq: number;
-  /** Its id (CommandReceived carries it) and origin (`cli`, `app`, or the provider of a comment poll), RFC 0015 D7. */
-  id: string;
-  origin: string;
+  /** Its id (CommandReceived carries it) and origin, the channel (`cli`, `app`, or the provider of a comment poll), RFC 0015 D7. */
+  id: string; origin: string;
   /** Store clock's now when the command was first appended. */
   created_at: Timestamp;
 }

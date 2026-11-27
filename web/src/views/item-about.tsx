@@ -25,7 +25,7 @@ function AboutText({ value, as: As = "p" }: { value: string; as?: "p" | "li" }) 
 /** A labelled part of the spec. */
 function Part({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="mt-3 min-w-0">
+    <div data-about-part className="mt-3 min-w-0">
       <h3 className={SUB_TITLE}>{label}</h3>
       {children}
     </div>

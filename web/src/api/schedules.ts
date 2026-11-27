@@ -1,18 +1,25 @@
 // The Schedules page: GET /api/v1/schedules (useSchedules), GET /api/v1/schedules/runs?schedule=<id> (useScheduleRuns),
-// GET /api/v1/schedules/suggestions?schedule=<id> (useScheduleSuggestions)
-// and the writes under /api/v1/schedules (postSchedule: add, edit, pause, resume, run and delete), as src/ui/schedules-api.ts
-// answers them (design 08-schedules, 09-dashboard-schedules).
+// GET /api/v1/schedules/suggestions?schedule=<id> (useScheduleSuggestions), the writes under /api/v1/schedules
+// (postSchedule: add, edit, pause, resume, run and delete) and the draft and improve proposals, each through its
+// generated typed call (generated.ts, the schedules.* capabilities; design 09-api-registry, 08-schedules,
+// 09-dashboard-schedules). Each read keeps its routes.ts key, so the page's reload of every key starting with
+// API.schedules reaches them all.
 
+import { useQuery } from "@tanstack/react-query";
 import { t } from "../i18n/index.js";
-import { postJson, useApi } from "./client.js";
-import { API, type ScheduleVerb } from "./routes.js";
+import { POLL_MS } from "./client.js";
+import {
+  schedulesAdd, schedulesDelete, schedulesDraft, schedulesEdit, schedulesImprove, schedulesList, schedulesPause, schedulesResume, schedulesRun,
+  schedulesRuns, schedulesSuggestions,
+} from "./generated.js";
+import { API } from "./routes.js";
 
 export const CADENCE_KINDS = ["interval", "daily", "weekly", "cron"] as const;
 export type CadenceKind = (typeof CADENCE_KINDS)[number];
 /** The kinds the New and Edit form offer: `schedule add` and `edit` write only these (design 08-schedules). */
 export const ACTION_KINDS = ["build", "agent", "feedback", "check_page"] as const;
-/** Every stored kind: setup adds an `improve` schedule (the daily improve run), which no form can pick. */
-export type ActionKind = (typeof ACTION_KINDS)[number] | "improve";
+/** Every stored kind: setup adds an `improve` schedule (the daily improve run) and `summary` ones (the owner's summary), which no form can pick. */
+export type ActionKind = (typeof ACTION_KINDS)[number] | "improve" | "summary";
 /** Whether the form can write a kind; the Edit form shows any other as a disabled choice and never sends it. */
 export const isWritableKind = (k: ActionKind): k is (typeof ACTION_KINDS)[number] => (ACTION_KINDS as readonly string[]).includes(k);
 
@@ -52,6 +59,8 @@ export interface ScheduleRunRow {
   occurrence_at: string;
   outcome: "fired" | "refused" | "skipped" | "checkpoint" | "rejected";
   recorded_at: string;
+  /** The dashboard href of the run's transcript when its claim started one, else null. */
+  transcript: string | null;
   output?: string;
   tokens?: number;
   cost_usd?: number;
@@ -76,14 +85,19 @@ export interface ScheduleFields {
   run_now?: boolean;
 }
 
+/** One generated read under its routes.ts key, polled every POLL_MS as useApi is; the generated answer typed as the page's row type. */
+const usePolled = <T>(key: string, read: () => Promise<unknown>) =>
+  useQuery({ queryKey: [key], queryFn: () => read() as Promise<T>, refetchInterval: POLL_MS, refetchIntervalInBackground: false });
+
 /** Every schedule, polled like the other reads. */
-export const useSchedules = () => useApi<{ schedules: ScheduleRow[] }>(API.schedules);
+export const useSchedules = () => usePolled<{ schedules: ScheduleRow[] }>(API.schedules, () => schedulesList({}));
 
 /** One schedule's runs, oldest first, polled. */
-export const useScheduleRuns = (id: string) => useApi<{ runs: ScheduleRunRow[] }>(API.scheduleRuns(id));
+export const useScheduleRuns = (id: string) => usePolled<{ runs: ScheduleRunRow[] }>(API.scheduleRuns(id), () => schedulesRuns({ schedule: id }));
 
 /** One schedule's suggestions, oldest first, polled. */
-export const useScheduleSuggestions = (id: string) => useApi<{ suggestions: ScheduleSuggestionRow[] }>(API.scheduleSuggestions(id));
+export const useScheduleSuggestions = (id: string) =>
+  usePolled<{ suggestions: ScheduleSuggestionRow[] }>(API.scheduleSuggestions(id), () => schedulesSuggestions({ schedule: id }));
 
 /** Whether a schedule is a Check a page one. */
 export const isCheckPage = (s: Pick<ScheduleRow, "action">): boolean => s.action?.kind === "check_page";
@@ -97,10 +111,19 @@ export const pageUrl = (s: Pick<ScheduleRow, "action">): string => String(s.acti
 /** Whether a schedule is paused: a Check a page one by its flag, any other by having no next run. */
 export const isPaused = (s: ScheduleRow): boolean => (isCheckPage(s) ? s.paused : s.next_due_at === null);
 
+/** The Schedules page's writes, each verb's generated call. */
+const WRITES = { add: schedulesAdd, edit: schedulesEdit, pause: schedulesPause, resume: schedulesResume, run: schedulesRun, delete: schedulesDelete };
+
+/** A Schedules page write: the capability's name, `schedules.<verb>`. */
+export type ScheduleVerb = keyof typeof WRITES;
+
+/** A write's or a proposal's refusal text: the server's error, else its HTTP status. */
+const refusal = (r: { status: number; value: { error?: string } }): string => r.value.error ?? t("api.http", { status: r.status });
+
 /** POST one schedule write; a refusal (not the owner, the core's reason) comes back as `{ ok: false, error }`. */
 export async function postSchedule(token: string, verb: ScheduleVerb, id: string, fields: ScheduleFields = {}): Promise<{ ok: true } | { ok: false; error: string }> {
-  const r = await postJson<{ error?: string }>(API.scheduleWrite(verb), token, { id, ...fields });
-  return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+  const r = await WRITES[verb](token, { id, ...fields });
+  return r.ok ? { ok: true } : { ok: false, error: refusal(r) };
 }
 
 /** A drafted schedule: the fields `schedule add` takes. Its `id` is not used: the form makes the ID from the title. */
@@ -116,14 +139,14 @@ export interface ScheduleImprovement {
   new: string;
 }
 
-// The draft and improve paths are literals here: POST /api/v1/schedules/draft ({ words }) and /improve ({ id }).
-async function postProposal<T>(path: string, token: string, body: Record<string, string>): Promise<{ ok: true; proposal: T } | { ok: false; error: string }> {
-  const r = await postJson<{ error?: string; proposal?: T }>(path, token, body);
-  return r.ok && r.value.proposal !== undefined ? { ok: true, proposal: r.value.proposal } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+/** A proposal call's answer: its proposal typed as the page's, or the refusal. */
+async function proposal<T>(call: Promise<{ ok: boolean; status: number; value: { error?: string; proposal?: unknown } }>): Promise<{ ok: true; proposal: T } | { ok: false; error: string }> {
+  const r = await call;
+  return r.ok && r.value.proposal !== undefined ? { ok: true, proposal: r.value.proposal as T } : { ok: false, error: refusal(r) };
 }
 
 /** Draft a schedule from the owner's words; stores nothing. */
-export const postScheduleDraft = (token: string, words: string) => postProposal<ScheduleProposal>("/api/v1/schedules/draft", token, { words });
+export const postScheduleDraft = (token: string, words: string) => proposal<ScheduleProposal>(schedulesDraft(token, { words }));
 
 /** Revise a stored schedule's text; stores nothing. */
-export const postScheduleImprove = (token: string, id: string) => postProposal<ScheduleImprovement>("/api/v1/schedules/improve", token, { id });
+export const postScheduleImprove = (token: string, id: string) => proposal<ScheduleImprovement>(schedulesImprove(token, { id }));

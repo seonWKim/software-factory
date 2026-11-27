@@ -140,7 +140,7 @@ export function Timeline({ data, windowMs, highlight }: { data: WindowRuns; wind
         {leftOut > 0 && <span data-left-out className="ml-3">{t("workers.timeline.leftOut", { count: leftOut })}</span>}
       </p>
       {/* Scrolls inside the card at phone width; the plot keeps a minimum width so short runs stay visible. */}
-      <div className="mt-3 overflow-x-auto">
+      <div data-timeline-scroll className="mt-3 overflow-x-auto">
         <div className="relative min-w-160">
           <ul aria-label={t("workers.timeline.label")} className="relative min-h-48" style={{ height: Math.max(1, lanes) * LANE_PX }}>
             {Array.from({ length: lanes }, (_, i) => (

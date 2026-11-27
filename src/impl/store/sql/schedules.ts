@@ -16,6 +16,8 @@
 // settings, and claims each with `claimCheckPage`, conditional on its marks (a trigger row has no `next_due_at`).
 // The routine store (src/impl/store/sql/routines.ts) writes the same rows; a trigger routine's row has a null
 // cadence and its trigger in `trigger_kind`.
+// Each claim also stores its `reason` and a log `ref` on its run row and writes its `schedule_run` Activity row, in
+// the claim's transaction (design 08-schedules-actions).
 
 import type { RoutineTrigger } from "../../../core/schedule.js";
 import type { Cadence, CadenceKind } from "../../../core/schedule-cadence.js";
@@ -23,8 +25,8 @@ import type {
   CheckPageClaim, ClaimOutcome, NewSchedule, Schedule, ScheduleActionKind, ScheduleClaim, ScheduleOutcome, SchedulePatch, ScheduleRun, ScheduleRunResult, ScheduleStore, TokenPeriod,
 } from "../../../core/schedule.js";
 import type { Timestamp, UserId } from "../../../core/types.js";
-import type { Row, SqlDriver, SqlValue } from "../../../state/index.js";
-import { SqlRunOutputStore } from "./run-output.js";
+import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
+import { SqlActivityStore, activityOf, insertActivity, scheduleRunsRef } from "./activity.js";
 
 const COLUMNS = "id, title, cadence_kind, cadence_spec, zone, created_by, created_at, next_due_at, running_since, missed_rule, action_kind, action_settings, token_cap, token_period, " +
   "trigger_kind, run_cap_usd, daily_cap_usd, cap_raise_usd, cap_raise_day, cap_hold_key, paused, last_run_at";
@@ -34,6 +36,21 @@ const CLAIM_STATE: Readonly<Record<ClaimOutcome, string>> = {
   fired: "running_since IS NULL", refused: "running_since IS NOT NULL", skipped: "running_since IS NULL", checkpoint: "running_since IS NULL",
 };
 const HELD = "outcome = 'checkpoint'";
+
+/** Why a claim came out as it did: the run row's `reason` and its Activity row's (design 08-schedules-actions). */
+function claimReason(outcome: ClaimOutcome, occurrence_at: Timestamp, queued?: number): string {
+  if (outcome === "fired") return `due at ${occurrence_at}`;
+  if (outcome === "refused") return `due at ${occurrence_at}, but the schedule's previous run is still running`;
+  if (outcome === "skipped") return `due at ${occurrence_at}, skipped: ${queued ?? 0} implement run${queued === 1 ? "" : "s"} queued`;
+  return `due at ${occurrence_at}, held at a checkpoint for the owner's approval`;
+}
+
+/** The run row's `reason` and `ref` (its schedule's runs, whose output the action records) and its Activity row, written on the claim's transaction. */
+async function recordClaim(tx: SqlExecutor, now: Timestamp, run: ScheduleRun, outcome: ClaimOutcome): Promise<void> {
+  const reason = claimReason(outcome, run.occurrence_at, run.queued_implement_runs), ref = scheduleRunsRef(run.schedule_id);
+  await tx.run("UPDATE controller_schedule_runs SET reason = ?, ref = ? WHERE schedule_id = ? AND occurrence_at = ?", [reason, ref, run.schedule_id, run.occurrence_at]);
+  await insertActivity(tx, now, activityOf("schedule_run", { subject: run.schedule_id, outcome, reason, ref }));
+}
 /** Leaves out Check a page rows: the routine API shows them, and the claim pass reads them on their own (listCheckPages). */
 const NOT_CHECK_PAGE = "COALESCE(action_kind, '') <> 'check_page'";
 const CHECK_PAGE = "action_kind = 'check_page'";
@@ -81,7 +98,7 @@ const rowToRun = (r: Row): ScheduleRun => ({
 });
 
 /** ScheduleStore over a SqlDriver; `scheduleStamp` is the store's injected Clock's time. */
-export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore {
+export class SqlScheduleStore extends SqlActivityStore implements ScheduleStore {
   constructor(db: SqlDriver, private readonly scheduleStamp: () => Timestamp) {
     super(db, scheduleStamp);
   }
@@ -126,6 +143,7 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
       if (moved !== 1) return null;
       const run: ScheduleRun = { schedule_id: c.schedule_id, occurrence_at: c.occurrence_at, outcome: c.outcome, recorded_at: now };
       await tx.run("INSERT INTO controller_schedule_runs (schedule_id, occurrence_at, outcome, recorded_at) VALUES (?, ?, ?, ?)", [run.schedule_id, run.occurrence_at, run.outcome, now]);
+      await recordClaim(tx, now, run, c.outcome);
       return run;
     });
   }
@@ -145,6 +163,7 @@ export class SqlScheduleStore extends SqlRunOutputStore implements ScheduleStore
       await tx.run("INSERT INTO controller_schedule_runs (schedule_id, occurrence_at, outcome, recorded_at, queued_implement_runs) VALUES (?, ?, ?, ?, ?)", [
         run.schedule_id, run.occurrence_at, run.outcome, run.recorded_at, run.queued_implement_runs ?? null,
       ]);
+      await recordClaim(tx, now, run, c.outcome);
       return run;
     });
   }

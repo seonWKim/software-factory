@@ -85,19 +85,39 @@ const PREPARE = {
  * Opens the Evals page of `skill` in place, as the dashboard's own links do: the server answers 404 to a full load of
  * /app/evals/<skill>, since a skill ref is a folder path and an /app path segment may not decode to hold "/". So the
  * entry loads `data` (the page the sidebar marks for an evals page) and moves to evals/<skill> with pushState and a
- * popstate. It waits for the Compare Button to be enabled (the versions loaded); with `compare` it presses it, waits for
- * dialog[open], then for the dialog's case table (the diff loaded).
+ * popstate. It waits for the SKILL.md diff (the versions and the diff loaded, so the Compare Card is drawn too).
  */
-const openEvals = (skill, compare) => `(async () => {
+const openEvals = (skill) => `(async () => {
   const wait = async (find) => { for (const end = Date.now() + 3000; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) { const el = find(); if (el) return el; } return null; };
   history.pushState(null, "", ${JSON.stringify(`/app/evals/${encodeURIComponent(skill)}`)});
   dispatchEvent(new PopStateEvent("popstate"));
-  const button = await wait(() => document.querySelector('[data-capture-open="evals-compare"]:not(:disabled)'));
-  if (${compare}) {
-    button?.click();
-    await wait(() => document.querySelector("dialog[open]"));
-    await wait(() => document.querySelector("dialog[open] table"));
-  }
+  await wait(() => document.querySelector("[data-skill-diff]"));
+  await new Promise((r) => setTimeout(r, 150));
+})()`;
+/**
+ * The Chat page with a conversation: one answer, then a send that fails with one long unbroken token in its error (a
+ * request id), as a model error reads. The chat's send route is answered in the page (no model in the fixture), so the
+ * error row and Try again are checked at every viewport (owner 2026-11-27: at 767px the column ran past the right edge).
+ */
+const CHAT_ERROR = `(async () => {
+  const wait = async (find) => { for (const end = Date.now() + 3000; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) { const el = find(); if (el) return el; } return null; };
+  const real = window.fetch;
+  let n = 0;
+  const answer = (body, status) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  window.fetch = (url, init) => !String(url).includes("/api/v1/chat/send") ? real(url, init) : Promise.resolve(++n === 1
+    ? answer({ turn_id: "ct_1", session_id: "cs_1", outcome: "answered", reply: "Two tasks need you: the calendar sync review and the failed typecheck." }, 200)
+    : answer({ error: "model_error: overloaded_error request_id=req_011CVXyZabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ" }, 500));
+  const field = await wait(() => document.querySelector("textarea"));
+  const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+  const say = async (text) => {
+    set.call(field, text);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    (await wait(() => { const b = document.querySelector("form button[type=submit]"); return b && !b.disabled ? b : null; }))?.click();
+  };
+  await say("What needs me right now, and which of the failed runs from last night should I look at first?");
+  await wait(() => document.querySelector('[data-from="chat"] p'));
+  await say("And the second one?");
+  await wait(() => document.querySelector("[role=alert]"));
   await new Promise((r) => setTimeout(r, 150));
 })()`;
 const OPEN_DETAILS =`document.querySelectorAll("details").forEach((d) => (d.open = true))`;
@@ -123,19 +143,21 @@ async function main() {
     // Health's Cost and Review tabs: Spend, Efficiency, the unreviewed merges and the improve report.
     { name: "health-cost", path: "health?tab=cost" },
     { name: "health-review", path: "health?tab=review" },
+    // Health's Activity tab: the actors, the selected actor's About card and its recent actions.
+    { name: "health-activity", path: "health?tab=activity" },
     { name: "transcript", path: `items/${enc(fixture.pages.item)}/runs/${enc(fixture.pages.run)}` },
     { name: "menu-top", path: "schedules" },
     { name: "menu-row", path: "schedules" },
     { name: "popover-week", path: "calendar" },
     { name: "popover-month", path: "calendar" },
     { name: "popover-more", path: "calendar" },
-    // The Evals page of the fixture skill (two versions, the newer one current) and its open Compare dialog, reached
-    // from Data in place (openEvals: a full load of evals/<skill> is a 404).
+    // The Evals page of the fixture skill (two versions, the newer one current) with its Compare and SKILL.md diff
+    // Cards, reached from Data in place (openEvals: a full load of evals/<skill> is a 404).
     { name: "evals", path: "data" },
-    { name: "evals-compare", path: "data" },
     { name: "dialog-new-event", path: "calendar" },
+    { name: "chat-error", path: "chat" },
   ].filter((p) => only === null || p.name === only);
-  const prepare = { ...PREPARE, evals: openEvals(fixture.pages.skill, false), "evals-compare": openEvals(fixture.pages.skill, true) };
+  const prepare = { ...PREPARE, evals: openEvals(fixture.pages.skill), "chat-error": CHAT_ERROR };
 
   await rm(SHOTS, { recursive: true, force: true });
   await mkdir(SHOTS, { recursive: true });

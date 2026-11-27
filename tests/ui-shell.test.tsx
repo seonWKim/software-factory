@@ -14,11 +14,11 @@ describe("app shell", () => {
   it("shows the sidebar pages, Needs you (N) from /api/v1/overview, and fetches only /api/v1/* URLs", async () => {
     mount();
     await waitBadge();
-    // No Needs you entry and no Factory group: Tasks leads, with the waiting count as its badge.
+    // No Needs you entry and no Factory group: Chat leads the first block, then Tasks with the waiting count as its badge.
     expect(screen.queryByRole("navigation", { name: "Factory" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Needs you" })).toBeNull();
     const tasks = screen.getByRole("navigation", { name: "Tasks" });
-    expect([...tasks.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Tasks4", "Calendar", "Schedules"]);
+    expect([...tasks.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Chat", "Tasks4", "Calendar", "Schedules"]);
     const nav = screen.getByRole("navigation", { name: "System" });
     expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Health", "Workers"]);
     fireEvent.click(within(nav).getByText("Health"));
@@ -226,7 +226,7 @@ describe("sidebar", () => {
       expect(nav.getAttribute("aria-label")).toBe(name);
     }
     const links = (name: string) => within(screen.getByRole("navigation", { name })).getAllByRole("link").map((a) => a.textContent);
-    expect(links("Tasks")).toEqual(["Tasks", "Calendar", "Schedules"]);
+    expect(links("Tasks")).toEqual(["Chat", "Tasks", "Calendar", "Schedules"]);
     expect(links("System")).toEqual(["Work", "Health", "Workers"]);
     expect(links("Setup")).toEqual(["Rules", "Plugins", "Settings"]);
     expect(document.querySelector("aside details, aside summary, aside [data-chevron]")).toBeNull();
@@ -368,7 +368,7 @@ describe("top bar", () => {
   });
 
   it("the mode chip tooltip says what auto does, on hover and on focus, and keeps an auto stop's reason above it", async () => {
-    const AUTO = "Auto approves specs below tier 4 and merges reviewed local changes up to the auto-merge tier. Tier 4 and the gate list wait for a person.";
+    const AUTO = "Auto approves specs below risk level 4 and merges reviewed local changes up to the auto-merge risk level. Risk level: high (4) and the gate list (changes to protected areas) wait for a person.";
     const row = { key: "mode", description: "", kind: "mode", value: "manual", source: "default", file_value: null, default_value: "manual", applies_at: "", project_settable: false, projects: [] };
     const view = { as_of: AT, csrf_token: "c", repo: "o/r", project: null, project_keys: [], keys: [row], pr_only: [], ignored: [], history: [] };
     (RESPONSES as Record<string, unknown>)["/api/v1/settings"] = view;
@@ -400,7 +400,7 @@ describe("top bar", () => {
       (RESPONSES as Record<string, unknown>)["/api/v1/settings"] = view("auto");
       mount();
       const chip = await screen.findByTestId("mode");
-      expect(chip.textContent).toBe("Auto · merges ≤ tier 2");
+      expect(chip.textContent).toBe("Auto · merges ≤ risk level 2");
       expect(chip.getAttribute("href")).toBe("/app/settings#mode");
       expect(within(document.querySelector("header")!).queryByRole("switch")).toBeNull();
       fireEvent.click(chip);

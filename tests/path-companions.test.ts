@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/load-config.js";
-import { type PathCompanion, applyCompanions, companionNote, pathCompanionProblems, pathCompanionsConfig, refusedCompanion } from "../src/core/companions.js";
+import { COMPANION_RULES, type PathCompanion, applyCompanions, companionNote, pathCompanionProblems, pathCompanionsConfig, refusedCompanion } from "../src/core/companions.js";
 import { GATE_PATHS } from "../src/core/improver.js";
 import type { Floor } from "../src/core/settings.js";
 import { PROTECTED_PATHS } from "../src/core/standing.js";
@@ -275,8 +275,11 @@ describe("built-in companion rules", () => {
     const { paths, added } = allowedAfter([migration]);
     expect(paths).not.toContain("src/controller/table-docs.ts");
     expect(added.filter((a) => a.path.includes("table-docs"))).toEqual([]);
-    // Only the covering-test rule's path is added for it.
-    expect(added.filter((a) => a.because === migration)).toEqual([{ path: "tests/20261120T1000-x.test.ts", because: migration }]);
+    // Only the covering-test rule's and the schema snapshot rule's paths are added for it.
+    expect(added.filter((a) => a.because === migration)).toEqual([
+      { path: "tests/20261120T1000-x.test.ts", because: migration },
+      { path: "schema/sqlite/controller.sql", because: migration },
+    ]);
   });
 
   it("the migrations folder itself, named for a new migration, adds its owner's table-docs file", () => {
@@ -295,6 +298,100 @@ describe("built-in companion rules", () => {
     const spec = parseTriage(out.answer);
     if (!spec.ok) throw new Error("parse");
     expect(renderSpec(spec.value, 2, { added: out.added })).toContain(`- \`src/worker/table-docs.ts\`: added because the spec names \`${migration}\``);
+  });
+
+  // Kind rules (wi_06303973): a kind of change named by its file brings fixed files along, noted with the reason.
+  const kindNote = (files: string[], reason: string) => {
+    const out = applyCompanions(answer({ allowed_paths: files, files_to_change: files }), [], []);
+    return ((out.answer as { applied_defaults?: string[] }).applied_defaults ?? []).filter((d) => d === companionNote(reason));
+  };
+
+  it.each([
+    "src/state/migrations/20261126T1000-state-x.migration.ts",
+    "src/controller/migrations/20261126T1000-x.migration.ts",
+    "src/worker/migrations/",
+  ])("a migration %s adds the schema snapshot, with the reason in the applied defaults", (migration) => {
+    const { paths, added } = allowedAfter([migration]);
+    expect(paths).toContain("schema/sqlite/controller.sql");
+    expect(added).toContainEqual({ path: "schema/sqlite/controller.sql", because: migration });
+    expect(kindNote([migration], "a new migration changes the schema snapshot (npm run schema:snapshot)")).toHaveLength(1);
+  });
+
+  it.each(["src/api/capabilities/items.ts", "src/api/capabilities/quotas.ts", "src/api/capabilities/"])(
+    "a capability %s adds the API registry files, with the reason in the applied defaults",
+    (capability) => {
+      const { paths, added } = allowedAfter([capability]);
+      for (const p of ["src/api/index.ts", "web/src/api/generated.ts", "docs/api/openapi.json"]) {
+        expect(paths).toContain(p);
+        expect(added).toContainEqual({ path: p, because: capability });
+      }
+      expect(paths).not.toContain("schema/sqlite/controller.sql");
+      expect(kindNote([capability], "a new or changed API capability changes its registry files (npm run gen:api)")).toHaveLength(1);
+    },
+  );
+
+  it("a capability with a migration also gets the schema snapshot", () => {
+    const { paths } = allowedAfter(["src/api/capabilities/quotas.ts", "src/state/migrations/20261126T1000-state-quotas.migration.ts"]);
+    expect(paths).toEqual(expect.arrayContaining(["src/api/index.ts", "web/src/api/generated.ts", "docs/api/openapi.json", "schema/sqlite/controller.sql"]));
+  });
+
+  it("a file that is neither a migration nor a capability adds no kind-rule file", () => {
+    const kind = ["schema/sqlite/controller.sql", "src/api/index.ts", "web/src/api/generated.ts", "docs/api/openapi.json"];
+    for (const file of ["src/api/registry.ts", "src/api/capabilities/sub/x.ts", "src/migrations/x.ts", "src/worker/migrations/x.sql", "docs/api/openapi.json"]) {
+      expect(allowedAfter([file]).added.filter((a) => kind.includes(a.path))).toEqual([]);
+    }
+  });
+
+  // A new settable key failed tests/ui-settings-page.test.tsx twice (wi_d3e7b74d, wi_3a47d6d4): its label, help and
+  // group live in two web files the spec did not allow, so the implement run stopped for a person.
+  it.each([
+    "src/core/settings.ts",
+    "src/controller/settings/coordinator.setting.ts",
+    "src/worker/settings/stall-ms.setting.ts",
+    "src/runtime/settings/",
+  ])("a settings change %s adds the Settings page's label and group files, with the reason", (file) => {
+    const { paths, added } = allowedAfter([file]);
+    for (const p of ["web/src/i18n/en/settings.ts", "web/src/views/settings/advanced-groups.ts"]) {
+      expect(paths).toContain(p);
+      expect(added).toContainEqual({ path: p, because: file });
+    }
+    expect(kindNote([file], "a new settable key needs its Settings-page label, help and group")).toHaveLength(1);
+  });
+
+  it("a file that is not a settings declaration adds no Settings page file", () => {
+    const web = ["web/src/i18n/en/settings.ts", "web/src/views/settings/advanced-groups.ts"];
+    for (const file of ["src/core/settings-base.ts", "src/runtime/settings/catalog.ts", "src/ui/settings-api.ts", "src/controller/settings/sub/x.setting.ts", "src/settings-cmd.ts"]) {
+      expect(allowedAfter([file]).added.filter((a) => web.includes(a.path))).toEqual([]);
+    }
+  });
+
+  // wi_b228bcc9 (permission_mode) stopped on scope_violation for docs/settings/controller.md: since the catalog split
+  // into one page per owner (86752000), a new setting also regenerates its owner's page.
+  it.each([
+    ["src/controller/settings/permission-mode.setting.ts", "docs/settings/controller.md"],
+    ["src/worker/settings/stall-ms.setting.ts", "docs/settings/worker.md"],
+    ["src/runtime/settings/", "docs/settings/runtime.md"],
+  ])("a setting declaration %s adds its owner's catalog page %s, and not the index or another page", (file, page) => {
+    const { paths, added } = allowedAfter([file]);
+    expect(paths).toContain(page);
+    expect(added).toContainEqual({ path: page, because: file });
+    expect(paths.filter((p) => p.startsWith("docs/settings"))).toEqual([page]);
+    expect(kindNote([file], "a setting change regenerates its owner's catalog page docs/settings/<owner>.md (npm run settings:catalog)")).toHaveLength(1);
+  });
+
+  it("every settings folder's catalog page exists, and a file that is not a declaration adds none", () => {
+    const owners = readdirSync(join(REPO_ROOT, "src")).filter((o) => existsSync(join(REPO_ROOT, "src", o, "settings")) && readdirSync(join(REPO_ROOT, "src", o, "settings")).some((f) => f.endsWith(".setting.ts")));
+    expect(owners.length).toBeGreaterThan(0);
+    expect(owners.filter((o) => !existsSync(join(REPO_ROOT, "docs", "settings", `${o}.md`)))).toEqual([]);
+    for (const file of ["src/core/settings.ts", "src/runtime/settings/catalog.ts", "src/controller/settings/sub/x.setting.ts", "docs/settings/worker.md"]) {
+      expect(allowedAfter([file]).added.filter((a) => a.path.startsWith("docs/settings/"))).toEqual([]);
+    }
+  });
+
+  it("every fixed path a rule names exists in the repository", () => {
+    const fixed = COMPANION_RULES.flatMap((r) => r.fixed ?? []);
+    expect(fixed).toEqual(expect.arrayContaining(["schema/sqlite/controller.sql", "src/api/index.ts", "web/src/api/generated.ts", "docs/api/openapi.json", "web/src/i18n/en/settings.ts", "web/src/views/settings/advanced-groups.ts"]));
+    expect(fixed.filter((p) => !existsSync(join(REPO_ROOT, p)))).toEqual([]);
   });
 
   it("a path already covered is not added again", () => {
@@ -434,17 +531,15 @@ describe("path_companions load check", () => {
       expect(await allowedFor("src/impl/store/sqlite/schema.ts")).toContain("schema/sqlite/");
     });
 
-    it.each([
-      "src/controller/settings/",
-      "src/guards/settings/",
-      "src/inbound/settings/",
-      "src/outbound/settings/",
-      "src/runtime/settings/",
-      "src/state/settings/",
-      "src/worker/settings/",
-    ])("naming a setting file under %s adds docs/settings.md", async (folder) => {
-      expect(await allowedFor(`${folder}example.setting.ts`)).toContain("docs/settings.md");
-    });
+    // Decided 2026-11-27 (wi_fa0efebd): each settings folder adds only its owner's catalog page, not the index.
+    it.each(["controller", "guards", "inbound", "outbound", "runtime", "state", "worker"])(
+      "naming a setting file under src/%s/settings/ adds docs/settings/<owner>.md and not docs/settings.md",
+      async (owner) => {
+        const paths = await allowedFor(`src/${owner}/settings/example.setting.ts`);
+        expect(paths).toContain(`docs/settings/${owner}.md`);
+        expect(paths).not.toContain("docs/settings.md");
+      },
+    );
 
     // Decided 2026-11-22 (wi_3f9ab60a): the pairs behind most agent_needs_human stops of 2026-11-20..22.
     it("naming a controller migration or the SQLite schema adds src/controller/table-docs.ts", async () => {
@@ -460,7 +555,7 @@ describe("path_companions load check", () => {
     const KIND_FILES = [
       "src/core/settings.ts",
       "src/worker/settings/worker-kinds.setting.ts",
-      "docs/settings.md",
+      "docs/settings/worker.md",
       "tests/settings-catalog.test.ts",
       "tests/worker-kinds.test.ts",
       "tests/architecture/rule-of-two.test.ts",
@@ -484,6 +579,7 @@ describe("path_companions load check", () => {
       const paths = await allowedFor("src/core/policy.ts");
       expect(paths).not.toContain("schema/sqlite/");
       expect(paths).not.toContain("docs/settings.md");
+      expect(paths.filter((p) => p.startsWith("docs/settings/"))).toEqual([]);
     });
   });
 });

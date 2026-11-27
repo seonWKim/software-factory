@@ -79,7 +79,7 @@ describe("config keys: unknown keys fail at load", () => {
   });
 
   const nested: [string, string, string[]][] = [
-    ["repo", "repo.zzzzzz", ["owner", "name", "path", "base_branch", "install_command", "test_command"]],
+    ["repo", "repo.zzzzzz", ["owner", "name", "path", "base_branch", "install_command", "install_commands", "test_command"]],
     ["dials", "dials.zzzzzz", ["spec_gate_min_tier", "auto_merge_max_tier"]],
     ["models", "models.zzzzzz", ["cheap", "standard", "strong"]],
     ["agent_git_identity", "agent_git_identity.zzzzzz", ["name", "email"]],
@@ -114,6 +114,19 @@ describe("config keys: unknown keys fail at load", () => {
       const err = await loadError({ ...REAL, repo: { ...repo, test_selection: bad } });
       expect(err.message, JSON.stringify(bad)).toContain("repo.test_selection");
     }
+  });
+
+  it("repo.test_selection needs an npm repo.test_command: a Gradle command with it fails startup, without it loads", async () => {
+    const { test_selection, ...repo } = REAL.repo as Record<string, unknown>;
+    const gradle = ["./gradlew", "test"];
+    const err = await loadError({ ...REAL, repo: { ...repo, test_command: gradle, test_selection } });
+    expect(err.message).toContain("repo.test_selection");
+    expect(err.message).toContain("needs an npm test command");
+    const plain = await loadConfig(root({ ...REAL, repo: { ...repo, test_command: gradle } }));
+    expect(plain.config.repo.test_command).toEqual(gradle);
+    expect(plain.config.repo.test_selection).toBeUndefined();
+    const npm = await loadConfig(root({ ...REAL, repo: { ...repo, test_command: ["npm", "test"], test_selection } }));
+    expect(npm.config.repo.test_selection).toEqual(test_selection);
   });
 
   it('a sqlite store with the key "host" fails', async () => {
@@ -220,6 +233,23 @@ describe("config keys: packs (design 11-packs.md)", () => {
     expect((await loadError({ ...SQLITE, packs: { order: ["base", "org", "learned"] } })).message).toContain('packs.order leaves out the layer "project"');
     expect((await loadError({ ...SQLITE, packs: { org: "" } })).message).toContain("packs.org must be a non-empty path");
     expect((await loadError({ ...SQLITE, packs: "org" })).message).toContain("packs must be an object");
+  });
+});
+
+describe("config keys: chat_eval (design 04-chat-agent)", () => {
+  it("is a top-level key: the checked-in config sets chat_eval.schedule to daily and loads", async () => {
+    expect(TOP_LEVEL_KEYS).toContain("chat_eval");
+    expect(REAL.chat_eval).toEqual({ schedule: "daily" });
+    await expect(loadConfig(root(SQLITE))).resolves.toBeTruthy();
+  });
+
+  it("an absent block loads; an unknown key or a schedule other than daily fails naming its path", async () => {
+    const without: Record<string, unknown> = { ...SQLITE };
+    delete without.chat_eval;
+    await expect(loadConfig(root(without))).resolves.toBeTruthy();
+    expect((await loadError({ ...SQLITE, chat_eval: { schedul: "daily" } })).message).toContain('unknown config key "schedul" at chat_eval.schedul; valid chat_eval keys: schedule; did you mean "schedule"?');
+    expect((await loadError({ ...SQLITE, chat_eval: { schedule: "hourly" } })).message).toContain("chat_eval.schedule must be one of daily");
+    expect((await loadError({ ...SQLITE, chat_eval: "daily" })).message).toContain("chat_eval must be an object");
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import type { LocalMergeResult, LocalMergeSpec } from "../src/core/local-merge.js";
+import type { BasePullResult, BaseSyncResult, LocalMergeResult, LocalMergeSpec } from "../src/core/local-merge.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AuthDecision, AuthProvider, Principal } from "../src/interfaces/auth-provider.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
@@ -41,13 +41,27 @@ class MergingSandbox extends FakeSandbox {
   }
 }
 
+/** A merging sandbox that also syncs and pulls the base, as one with a remote base does; each pull is recorded. */
+class PullingSandbox extends MergingSandbox {
+  pulls: string[] = [];
+  async syncBase(): Promise<BaseSyncResult> {
+    throw new Error("no base push in these tests");
+  }
+  async pullBase(spec: { repo: string; base_ref: string }): Promise<BasePullResult> {
+    this.pulls.push(spec.base_ref);
+    return { pulled: true, from: "old", to: "merge-42", not_updated: [] };
+  }
+}
+
 const localRef = (n: number): SourceRef => ({ type: "local", id: `local-${n}`, link: `local:local-${n}` });
 
-async function harness(opts: { forge?: boolean } = {}) {
+async function harness(opts: { forge?: boolean; remoteBase?: boolean } = {}) {
   const { store, clock } = await newStore();
   const source = new FakeSource();
   const forge = new FakeForge();
-  const sandbox = new MergingSandbox();
+  const sandbox = opts.remoteBase ? new PullingSandbox() : new MergingSandbox();
+  // A forge that pushes the base: the factory repo has a remote base the local one follows (design 05-github-sync, base pull).
+  if (opts.remoteBase) Object.assign(forge, { pushBase: async () => undefined });
   const roles = new LocalRoles();
   const controller = new ControllerRole({
     store, sources: [source], forge: opts.forge === false ? null : forge, sandbox, auth: roles,
@@ -96,6 +110,17 @@ describe("Merge on a GitHub item (the forge's mergePr)", () => {
     expect(r).toMatchObject({ refusal: null });
     expect(h.roles.asked).toEqual(["approve_merge"]);
     expect(h.sandboxCalls()).toBe(0);
+  });
+
+  it("with a remote base, the merged PR fast-forwards the local base to origin's once (design 05-github-sync, base pull)", async () => {
+    const h = await harness({ remoteBase: true });
+    const it1 = await h.githubReady();
+    await h.merge(it1);
+    expect(await h.store.getWorkItem(it1.id)).toMatchObject({ stage: "CLOSED", merge_sha: "merge-42" });
+    // The poll then reports the same merge: still one pull.
+    await h.controller.handleEvent({ kind: "change_merged", change_ref: "42", head_branch: `factory/${it1.id}`, merge_sha: "merge-42", merger: null });
+    await h.controller.tickOutbox();
+    expect((h.sandbox as PullingSandbox).pulls).toEqual(["main"]);
   });
 
   it("a PR whose head moved is refused with one reply, and the item stays merge_pending", async () => {

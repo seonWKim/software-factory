@@ -118,7 +118,7 @@ function ReadingOrder({ entry, d, cited, applied }: { entry: DetailEntry; d: Rul
           d.change !== undefined && <p key="change" data-detail-change className={line}>{d.change}</p>,
           rule !== undefined && <p key="rule" className={line}>{t("rules.whatRule", { rule })}</p>,
           exception !== undefined && <p key="except" className={line}>{t("rules.whatExcept", { exceptions: exception })}</p>,
-          kind !== undefined && <p key="kind" className={line}>{t("rules.whatKind", { kind: proposalLine(kind, target) })}</p>,
+          kind !== undefined && <p key="kind" className={line}>{proposalLine(kind, target)}</p>,
           target !== undefined && <p key="target" className={`${line} font-mono`}>{t("rules.whatTarget", { target })}</p>,
         ]}
       </DetailPart>

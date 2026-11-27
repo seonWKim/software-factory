@@ -14,6 +14,7 @@ import { ShortcutsLink, SideLinks, pageLabel } from "./shell/sidebar.js";
 import { ModeChip } from "./shell/mode-chip.js";
 import { MoreMenu } from "./shell/more-menu.js";
 import { startTheme } from "./theme.js";
+import { ChatPage } from "./views/chat-page.js";
 import { DataPage } from "./views/data.js";
 import { EvalsPage, skillName } from "./views/evals.js";
 import { HealthPage, ItemPage, ItemsPage } from "./views/pages.js";
@@ -33,6 +34,7 @@ const VIEWS: Record<string, () => JSX.Element> = {
   tasks: TasksPage,
   calendar: CalendarPage,
   schedules: SchedulesPage,
+  chat: ChatPage,
   workers: WorkersPage,
   health: HealthPage,
   rules: RulesPage,
@@ -125,7 +127,8 @@ export function App() {
           <RevisionBanner server={overview.data?.server_rev} web={WEB_REV} />
           <UnpushedMerges count={overview.data?.unpushed_merges} />
           <UpdateNote factory={overview.data?.factory} />
-          <main className="w-full min-w-0 p-4 max-w-page-wide has-[[data-page-width=read]]:max-w-page-read">
+          {/* A page marked data-page-fill (Chat) fills the column's height, so its composer can sit at the bottom. */}
+          <main className="w-full min-w-0 p-4 max-w-page-wide has-[[data-page-width=read]]:max-w-page-read has-[[data-page-fill]]:flex has-[[data-page-fill]]:flex-1 has-[[data-page-fill]]:flex-col">
             {transcript ? (
               <TranscriptView key={`${transcript.itemId}/${transcript.runId}`} itemId={transcript.itemId} runId={transcript.runId} />
             ) : evalsSkill ? (

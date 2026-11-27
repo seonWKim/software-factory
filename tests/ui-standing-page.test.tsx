@@ -88,11 +88,13 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
   it("shows a switch per rule with its plain sentence; gate, tier, threshold, who set it in words, the local created date and last used are behind Details", async () => {
     const list = await show();
     const li = ruleItem(list, "spec-t1");
-    expect(within(li).getByRole("switch", { name: "Approves tier 1 plans for you" }).getAttribute("aria-checked")).toBe("false");
+    expect(within(li).getByRole("switch", { name: "Approves risk level 1 plans for you" }).getAttribute("aria-checked")).toBe("false");
     // The row reads one plain sentence; the ID, gate, tier, threshold, who set it and the dates sit behind Details.
-    expect(li.querySelector("[data-rule-sentence]")!.textContent).toBe("Approves tier 1 plans for you");
+    expect(li.querySelector("[data-rule-sentence]")!.textContent).toBe("Approves risk level 1 plans for you");
+    // The sentence wraps whole: a one-line cut read "Approves risk level 1 pl…" at 390px (2026-11-27).
+    expect(li.querySelector("[data-rule-sentence]")!.className).not.toMatch(/\btruncate\b/);
     const raw = li.querySelector<HTMLElement>("[data-raw]")!;
-    for (const text of ["Rule ID: spec-t1", "gate spec", "tier 1", "threshold 10", `created ${localDateTime(AT)}`, "set by a person"]) expect(raw.textContent).toContain(text);
+    for (const text of ["Rule ID: spec-t1", "gate spec", "risk level 1", "threshold 10", `created ${localDateTime(AT)}`, "set by a person"]) expect(raw.textContent).toContain(text);
     // The row says when it last fired and how many items it approved in the last 7 days.
     expect(li.querySelector("[data-fired]")!.textContent).toBe("never fired");
     expect(li.querySelector("[data-recent]")!.textContent).toBe("0 items in the last 7 days");
@@ -150,12 +152,12 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
   it("the switch opens the Turn on dialog, not an inline form; its confirm posts the rule and its new state with the CSRF token", async () => {
     const list = await show();
     const li = ruleItem(list, "spec-t1");
-    fireEvent.click(within(li).getByRole("switch", { name: "Approves tier 1 plans for you" }));
+    fireEvent.click(within(li).getByRole("switch", { name: "Approves risk level 1 plans for you" }));
     const dialog = await screen.findByRole("dialog");
     // The dialog sits outside the row, so the row's height does not change; nothing is posted before the confirm.
     expect(li.contains(dialog)).toBe(false);
     expect(posts).toEqual([]);
-    expect(within(dialog).getByRole("switch", { name: "Approves tier 1 plans for you" }).getAttribute("aria-checked")).toBe("true");
+    expect(within(dialog).getByRole("switch", { name: "Approves risk level 1 plans for you" }).getAttribute("aria-checked")).toBe("true");
     // Cancel (secondary) comes before the confirm (primary, last).
     const buttons = within(dialog).getAllByRole("button").filter((b) => b.getAttribute("role") !== "switch");
     expect(buttons.map((b) => b.textContent)).toEqual(["Cancel", "Turn on"]);
@@ -170,7 +172,7 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
   it("the Turn on dialog lists the waiting items the rule would approve now, and says none when there are none", async () => {
     view = { ...view, waiting: [{ id: "wi_1", title: "Fix the login" }, { id: "wi_2", title: "Ship docs" }] };
     const list = await show();
-    fireEvent.click(within(ruleItem(list, "spec-t1")).getByRole("switch", { name: "Approves tier 1 plans for you" }));
+    fireEvent.click(within(ruleItem(list, "spec-t1")).getByRole("switch", { name: "Approves risk level 1 plans for you" }));
     const preview = (await screen.findByRole("dialog")).querySelector<HTMLElement>("[data-preview]")!;
     expect(preview.textContent).toContain("Waiting items this rule covers");
     expect([...preview.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["Fix the login", "Ship docs"]);
@@ -184,7 +186,7 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
     cleanup();
     view = { ...standing(), waiting: [] };
     const again = await show();
-    fireEvent.click(within(ruleItem(again, "spec-t1")).getByRole("switch", { name: "Approves tier 1 plans for you" }));
+    fireEvent.click(within(ruleItem(again, "spec-t1")).getByRole("switch", { name: "Approves risk level 1 plans for you" }));
     expect((await screen.findByRole("dialog")).querySelector("[data-preview-none]")!.textContent).toBe("none");
   });
 
@@ -243,7 +245,7 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
   it("a refused change keeps its dialog open and says which permission is missing", async () => {
     answer = { status: 403, body: { error: "Changing a standing rule needs the approve_spec permission: no_role." } };
     const list = await show();
-    fireEvent.click(within(ruleItem(list, "spec-t1")).getByRole("switch", { name: "Approves tier 1 plans for you" }));
+    fireEvent.click(within(ruleItem(list, "spec-t1")).getByRole("switch", { name: "Approves risk level 1 plans for you" }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Turn on" }));
     expect((await within(dialog).findByRole("alert")).textContent).toContain("approve_spec permission");
@@ -346,7 +348,7 @@ describe("Standing approvals section against a server that keeps the rule", () =
       }
       return json(200, current());
     }));
-    const switchOf = (list: HTMLElement) => within(ruleItem(list, "spec-t1")).getByRole("switch", { name: "Approves tier 1 plans for you" });
+    const switchOf = (list: HTMLElement) => within(ruleItem(list, "spec-t1")).getByRole("switch", { name: "Approves risk level 1 plans for you" });
 
     /** The row's switch opens the dialog; its confirm (`label`) sends the change. */
     const toggle = async (list: HTMLElement, label: string) => {

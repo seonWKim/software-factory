@@ -9,6 +9,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "build:tokens": "node scripts/build-tokens.mjs",
+    "gen:api": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/gen-api.mjs",
     "i18n:catalog": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/i18n-catalog.ts",
     "build:icons": "node scripts/build-icons.mjs",
     "build:desktop:macos": "node scripts/build-desktop-macos.mjs",
@@ -20,6 +21,7 @@
     "migrate": "npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js migrate",
     "setup": "npm install --silent && npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js setup",
     "schema:snapshot": "SF_SNAPSHOT_UPDATE=1 vitest run --configLoader runner tests/architecture/schema-snapshot.test.ts",
+    "eval:chat": "node --disable-warning=ExperimentalWarning scripts/chat-eval.mjs",
     "settings:catalog": "SF_SNAPSHOT_UPDATE=1 vitest run --configLoader runner tests/architecture/settings-monotonic.test.ts"
   },
   "devDependencies": {

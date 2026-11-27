@@ -3,10 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   CREATE_NEXT_STEP, type CliAction, cliCommandListMarkdown, CLI_TOP_WORDS, parseLocalCliArgs, resolveItem, runLocalCli, shortItemId,
 } from "../src/core/local-cli.js";
+import { parseLocalCliArgs as parseArgs } from "../src/core/local-cli-parse.js";
 import type { WorkItemId } from "../src/core/types.js";
 import { COMMAND_TABLE, SENTENCE_FORM, cliUsageOf } from "../src/core/command-table.js";
 import { VERDICT_USAGE } from "../src/core/verdict.js";
-import { PROJECT_KEY, issue, system } from "./helpers/store.js";
+import { PROJECT_KEY, issue, system, w1 } from "./helpers/store.js";
 import { USER, at, setup, snapshot } from "./helpers/local-cli.js";
 
 // The writer side of local intake (issue #200): CLI commands that create local items, append item commands to
@@ -36,7 +37,7 @@ describe("parseLocalCliArgs", () => {
     for (const [w, a] of [
       ["task", []], ["task", ["create", "--title", "T"]], ["task", ["create", "--body-file", "b"]], ["task", ["create", "--title"]],
       ["task", ["create", "--title", "T", "--body-file", "b", "--label", "x"]], ["task", ["show"]], ["task", ["list", "x"]],
-      ["task", ["frob"]], ["approve", []], ["retry", []], ["resolve", []], ["verdict", []], ["users", ["list"]],
+      ["task", ["frob"]], ["revise", []], ["retry", []], ["resolve", []], ["verdict", []], ["users", ["list"]],
     ] as [string, string[]][]) {
       const r = parseLocalCliArgs(w, a);
       expect({ w, a, r }).toMatchObject({ r: { error: expect.stringContaining("usage:") } });
@@ -57,6 +58,55 @@ describe("parseLocalCliArgs", () => {
     expect([...new Set(local.map((c) => c.name.split(" ")[0]))]).toEqual([...CLI_TOP_WORDS]);
     expect(CLI_TOP_WORDS).toContain("confirm");
     expect(CLI_TOP_WORDS).not.toContain(SENTENCE_FORM);
+  });
+});
+
+describe("a bare approve or reject: the newest held skill version (design 07-self-improvement)", () => {
+  const held = async (store: Awaited<ReturnType<typeof setup>>["store"], ref_id: string, hash: string) => {
+    const v = (await store.recordSkillVersion({ ref_id, folder_hash: hash, text: hash, source: "claude" }))!;
+    await store.db.run("UPDATE controller_skill_version_gates SET state = 'held' WHERE ref_id = ? AND version = ?", [ref_id, v.version]);
+    return v.version;
+  };
+
+  it("parses as a settle; with a work item ID it is the item command as before", () => {
+    expect(parseLocalCliArgs("approve", [])).toEqual({ action: "settle", command: "approve" });
+    expect(parseLocalCliArgs("reject", [])).toEqual({ action: "settle", command: "reject" });
+    expect(parseLocalCliArgs("approve", ["wi_1"])).toEqual({ action: "command", command: "approve", id: "wi_1", text: "" });
+  });
+
+  it("with no held version it fails with the parser's refusal and usage, word for word, and writes nothing", async () => {
+    const { store, run } = await setup();
+    const before = await snapshot(store);
+    for (const command of ["approve", "reject"] as const) {
+      const parsed = parseArgs(command, []);
+      expect(await run({ action: "settle", command })).toEqual({ code: 1, lines: ("error" in parsed ? parsed.error : "").split("\n") });
+    }
+    expect(await snapshot(store)).toEqual(before);
+    expect(await store.getOwner()).toBeNull();
+  });
+
+  it("approve passes the newest held version, so it is current; a second bare approve settles the next held one", async () => {
+    const { store, run } = await setup();
+    await held(store, "sr_a", "a1");
+    await held(store, "sr_a", "a2");
+    const r = await run({ action: "settle", command: "approve" });
+    expect(r).toMatchObject({ code: 0, lines: [expect.stringContaining("version 2 of skill sr_a")] });
+    expect(await store.getSkillVersionGate("sr_a", 2)).toMatchObject({ state: "passed", detail: expect.objectContaining({ settled_by: USER }) });
+    expect(await store.getSkillVersionGate("sr_a", 1)).toMatchObject({ state: "held" });
+    expect((await store.currentSkillVersion("sr_a"))?.version).toBe(2);
+    expect(await store.getOwner()).toBe(USER);
+    await run({ action: "settle", command: "approve" });
+    expect(await store.getSkillVersionGate("sr_a", 1)).toMatchObject({ state: "passed" });
+  });
+
+  it("reject rejects the newest held version: the version current before it stays current", async () => {
+    const { store, run } = await setup();
+    await store.recordSkillVersion({ ref_id: "sr_b", folder_hash: "b1", text: "b1", source: "claude" });
+    await store.db.run("UPDATE controller_skill_version_gates SET state = 'passed' WHERE ref_id = 'sr_b' AND version = 1");
+    await held(store, "sr_b", "b2");
+    expect(await run({ action: "settle", command: "reject" })).toMatchObject({ code: 0, lines: [expect.stringContaining("version 2 of skill sr_b")] });
+    expect(await store.getSkillVersionGate("sr_b", 2)).toMatchObject({ state: "rejected" });
+    expect((await store.currentSkillVersion("sr_b"))?.version).toBe(1);
   });
 });
 
@@ -120,18 +170,83 @@ describe("task create --depends-on (design 05-dependencies, 2026-11-20)", () => 
     expect(item.issue_text).toBe(item.problem);
   });
 
+  it("takes a work item's short ID (the 11-char `wi_` prefix) and writes the item's full ID", async () => {
+    const { store, run } = await setup();
+    const first = (await run({ action: "create", title: "First", bodyFile: "a.md" })).lines[0] as WorkItemId;
+    const r = await run({ action: "create", title: "Second", bodyFile: "b.md", depends_on: first.slice(0, 11) });
+    expect(r.code).toBe(0);
+    expect((await store.getWorkItem(r.lines[0] as WorkItemId))!.problem).toBe(`Second\n\nthe body\n\nDepends on: ${first}`);
+  });
+
   it("refuses an ID that names no local item, with a message and nothing written", async () => {
     const { store, run } = await setup();
     await store.createWorkItem(issue(9), system);
     const gh = (await store.listWorkItems(10))[0]!.id;
     const before = await snapshot(store);
-    for (const id of ["wi_nosuch", "tk_nosuch", gh]) {
+    for (const id of ["wi_nosuch", "tk_nosuch", gh, "wi_"]) {
       const r = await run({ action: "create", title: "Second", bodyFile: "b.md", depends_on: id });
       expect(r, id).toEqual({ code: 1, lines: [`--depends-on ${id} names no local work item or built task, so nothing was created`] });
     }
     expect(await snapshot(store)).toEqual(before);
   });
+
+  // Found 2026-11-27: the edge was written only by the coordination pass, so an implement run queued by the spec's
+  // approval was claimed before that pass and ran before its dependency merged.
+  it("records the edge to the named item's source key at once, so a queued implement run is held before any coordination pass", async () => {
+    const { store, run } = await setup();
+    const first = (await run({ action: "create", title: "First", bodyFile: "a.md" })).lines[0] as WorkItemId;
+    const firstSource = (await store.getWorkItem(first))!.source.id;
+    for (const given of [first.slice(0, 11), first.slice(3, 11)]) {
+      const id = (await run({ action: "create", title: "Second", bodyFile: "b.md", depends_on: parseDependsOn(given) })).lines[0] as WorkItemId;
+      expect(await store.listDependencyEdges({ work_item_id: id }), given).toMatchObject([{ depends_on: firstSource, kind: "depends_on", state: "open" }]);
+    }
+    const second = (await run({ action: "create", title: "Third", bodyFile: "b.md", depends_on: first.slice(0, 11) })).lines[0] as WorkItemId;
+    await at(store, second, { stage: "RUNNING", tier: 2, allowed_paths: ["lib/"], files_to_change: ["lib/a.ts"] });
+    await store.enqueueRun({ work_item_id: second, kind: "implement", idempotency_key: `${second}:implement` });
+    expect(await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: 60_000 })).toBeNull();
+  });
+
+  it("a --project task's edge names the dependency's task source key; a tk_ ID still writes its line as given", async () => {
+    const { store, run } = await setup();
+    await store.createProject({ id: "pj_home", name: "Home", created_by: USER });
+    const a = await run({ action: "create", title: "First", bodyFile: "a.md", project: "home" });
+    const tk = a.lines[2]!.split(" ")[1]!;
+    const firstSource = (await store.getWorkItem(a.lines[0] as WorkItemId))!.source.id;
+    expect(firstSource).toBe(`local-task-${tk}`);
+    for (const depends_on of [tk, (a.lines[0] as string).slice(0, 11)]) {
+      const r = await run({ action: "create", title: "Second", bodyFile: "b.md", project: "home", depends_on });
+      expect(r.code, depends_on).toBe(0);
+      const id = r.lines[0] as WorkItemId;
+      expect((await store.getWorkItem(id))!.problem, depends_on).toBe(`Second\n\nthe body\n\nDepends on: ${depends_on.startsWith("tk_") ? tk : a.lines[0]}`);
+      expect(await store.listDependencyEdges({ work_item_id: id }), depends_on).toMatchObject([{ depends_on: firstSource, kind: "depends_on" }]);
+    }
+  });
+
+  it("refuses a prefix of several items' IDs, naming how many, and an unknown bare short ID, with nothing written", async () => {
+    const { store, run } = await setup();
+    const ids: string[] = [];
+    for (let i = 0; i < 17; i++) ids.push((await run({ action: "create", title: `Item ${i}`, bodyFile: "a.md" })).lines[0]!);
+    // 17 IDs over 16 hex digits: at least two share their first one.
+    const shared = [...new Set(ids.map((id) => id.slice(0, 4)))].find((p) => ids.filter((id) => id.startsWith(p)).length > 1)!;
+    const count = ids.filter((id) => id.startsWith(shared)).length;
+    const before = await snapshot(store);
+    expect(await run({ action: "create", title: "Second", bodyFile: "b.md", depends_on: shared })).toEqual({
+      code: 1, lines: [`--depends-on ${shared} names ${count} work items; give more of its ID, so nothing was created`],
+    });
+    const unknown = parseDependsOn("0000000000");
+    expect(await run({ action: "create", title: "Second", bodyFile: "b.md", depends_on: unknown })).toEqual({
+      code: 1, lines: ["--depends-on wi_0000000000 names no local work item or built task, so nothing was created"],
+    });
+    expect(await snapshot(store)).toEqual(before);
+  });
 });
+
+/** The `--depends-on` value `task create` parses `given` to. */
+function parseDependsOn(given: string): string {
+  const a = parseLocalCliArgs("task", ["create", "--title", "T", "--body-file", "b.md", "--depends-on", given]);
+  if ("error" in a || a.action !== "create" || a.depends_on === undefined) throw new Error(`--depends-on ${given} did not parse`);
+  return a.depends_on;
+}
 
 describe("task list and task show", () => {
   it("list prints each local item's ID, short ID, title, stage and blocked reason; GitHub items are left out", async () => {

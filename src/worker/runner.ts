@@ -8,11 +8,11 @@ import type { HookDescriptor } from "../shared/hook.js";
 import { type RoleCatalog, SqlHookAudit, loadHooks, loadRoles, runHooks } from "../runtime/index.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { PACK_TOOL_REFUSED, type PackRefusal as PackGrantRefusal, checkPackGrants, packRefusalMessage } from "../packs/pack-grants.js";
-import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor, readOnlyOverlaps, readOnlyRunFields } from "../core/config.js";
+import { type FactoryConfig, type GateEntry, type Prompts, STALL_DEFAULTS, grantsFor, readOnlyOverlaps, readOnlyRunFields } from "../core/config.js";
 import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
 import { errorText, type LogFields } from "../core/log.js";
-import { type CheckRound, checkCommands, commandText, failingTestFiles, mergeMiss, runChecks, withTestFiles } from "../core/checks.js";
+import { type CheckRound, checkCommands, commandText, failingTestFiles, installStep, mergeMiss, ranEntry, runChecks, withTestFiles } from "../core/checks.js";
 import { FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, wipBranchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, failureClass, SETUP_MISSING } from "../core/policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
 import type { MergeIO } from "../core/mechanical.js";
@@ -37,8 +37,8 @@ export class Worker {
 
   readonly live: LiveSettings;
 
-  /** The check helpers the merge-check run uses, injected so the run imports no legacy core module. */
-  readonly checkTools: MergeCheckTools = { checkCommands, failingTestFiles, withTestFiles, mergeMiss };
+  /** The check helpers the merge-check and screenshot runs use, injected so those runs import no legacy core module. */
+  readonly checkTools: MergeCheckTools = { checkCommands, commandText, failingTestFiles, installStep, withTestFiles, ranEntry, mergeMiss };
 
   /** The settings of the run being executed, read once at its claim. Scratch for one run, like `meters`. */
   cfg: FactoryConfig;
@@ -182,7 +182,7 @@ export class Worker {
     this.holding = run.kind;
     await this.d.awake.hold().catch((err: unknown) => this.awakeFailed("hold", err));
     try {
-      if (this.d.cpus !== undefined) this.testWorkers = testWorkerShare(this.d.cpus, this.d.hostRuns ? await this.d.hostRuns() : 1);
+      if (this.d.cpus !== undefined) this.testWorkers = testWorkerShare(this.d.cpus, this.d.hostRuns ? await this.d.hostRuns() : 1, run.kind);
       await this.execute(run, run.lease.token);
     } finally {
       this.holding = this.testWorkers = null;
@@ -642,7 +642,7 @@ export class Worker {
    * The check list in the run folder (or `o.cwd` inside it) with the check env: the tool env and the slot env
    * (worker index, test workers), plus `o.env`. That env never reaches an agent. Stops at the first failure. `o.commands`: the list to run; absent, the configured checks.
    */
-  async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal, o: { commands?: string[][]; cwd?: string; env?: Record<string, string> } = {}): Promise<CheckRound> {
+  async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal, o: { commands?: readonly GateEntry[]; cwd?: string; env?: Record<string, string> } = {}): Promise<CheckRound> {
     const round = await runChecks({
       sandbox: this.d.sandbox, handle, commands: o.commands ?? checkCommands(this.cfg.repo), ...(o.cwd === undefined ? {} : { cwd: o.cwd }),
       env: { ...this.d.toolEnv, ...this.slotEnv(), ...o.env }, timeout_ms: this.cfg.run_timeout_ms, signal, redact: [],

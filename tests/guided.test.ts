@@ -1,9 +1,10 @@
 // The setup step that adds the Daily improve run schedule (design 07-self-improvement, 08-schedules): with
 // `improver.daily_trigger` off it adds `improve-daily` once, warns when `plugins.schedule_action` is not routed, and
-// adds nothing when the ID is stored or the flag is on. A fake store; no model and no remote service.
+// adds nothing when the ID is stored or the flag is on. The summary step adds `summary-morning` and `summary-evening`
+// (design 08-schedules-actions) through the same helper. A fake store; no model and no remote service.
 
 import { describe, expect, it } from "vitest";
-import { addImproveSchedule, type ImproveScheduleDeps } from "../src/cli/handlers/setup/guided.js";
+import { addImproveSchedule, addSummarySchedules, type ImproveScheduleDeps } from "../src/cli/handlers/setup/guided.js";
 import { improverConfig } from "../src/core/proposals.js";
 import type { NewSchedule, Schedule } from "../src/core/schedule.js";
 import type { UserId } from "../src/core/types.js";
@@ -78,5 +79,43 @@ describe("setup: the Daily improve run schedule", () => {
     const routedRun = deps({ store: fakeStore().store, daily_trigger: false, schedule_action: "routed" });
     await addImproveSchedule(routedRun.d);
     expect(routedRun.lines).toEqual([]);
+  });
+});
+
+describe("setup: the summary schedules", () => {
+  it("adds summary-morning and summary-evening once each: action summary, every 15 minutes, the machine's zone, by the owner", async () => {
+    const { store, rows } = fakeStore();
+    const { d, lines } = deps({ store, schedule_action: "routed" });
+    expect((await addSummarySchedules(d)).ok).toBe(true);
+    const added = rows.filter((r) => r.id.startsWith("summary-"));
+    expect(added.map((r) => r.id)).toEqual(["summary-morning", "summary-evening"]);
+    for (const r of added) {
+      expect(r).toMatchObject({ action: { kind: "summary", settings: {} }, cadence: { kind: "interval", spec: "15" }, zone: "Asia/Seoul", created_by: ME });
+    }
+    expect(lines).toEqual([]);
+    // Run again: both IDs are stored, nothing more is added.
+    const again = await addSummarySchedules(d);
+    expect(again.ok).toBe(true);
+    expect(again.line).toMatch(/already stored/);
+    expect(rows.filter((r) => r.id.startsWith("summary-")).map((r) => r.id)).toEqual(["summary-morning", "summary-evening"]);
+  });
+
+  it("adds only the one that is missing, whatever improver.daily_trigger says", async () => {
+    for (const daily_trigger of [true, false, undefined]) {
+      const { store, rows } = fakeStore({ stored: ["summary-morning"] });
+      expect((await addSummarySchedules(deps({ store, daily_trigger, schedule_action: "routed" }).d)).ok).toBe(true);
+      expect(rows.map((r) => r.id), String(daily_trigger)).toEqual(["summary-morning", "summary-evening"]);
+    }
+  });
+
+  it("with no owner adds nothing, and with plugins.schedule_action not routed warns and still adds", async () => {
+    const none = fakeStore({ owner: null });
+    expect((await addSummarySchedules(deps({ store: none.store, schedule_action: "routed" }).d)).ok).toBe(false);
+    expect(none.rows).toEqual([]);
+    const { store, rows } = fakeStore();
+    const { d, lines } = deps({ store });
+    expect((await addSummarySchedules(d)).ok).toBe(true);
+    expect(lines.join("\n")).toMatch(/plugins\.schedule_action/);
+    expect(rows.map((r) => r.id)).toEqual(["summary-morning", "summary-evening"]);
   });
 });

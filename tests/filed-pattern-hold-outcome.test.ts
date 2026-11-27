@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { FILED_INTAKE_MS } from "../src/core/alarms.js";
 import { OUTCOME_WAIT_MS, enqueueImprove, manualWindow, patternKey, settleOutcomes } from "../src/core/improver.js";
 import { type ControllerDeps } from "../src/core/controller-deps.js";
-import { RECURRING_FAILURE, type CloseReason, type RunOutcome, type WorkerId, type WorkItemId } from "../src/core/types.js";
+import { RECURRING_FAILURE, type CloseReason, type RunOutcome, type WipRef, type WorkerId, type WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
@@ -166,6 +166,37 @@ describe("filed pattern: a filed item that is no longer open, and /retry", () =>
     expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "none" });
     expect(await holds(store, r.work_item_id)).toHaveLength(1);
     expect((await claim())?.work_item_id).toBe(r.work_item_id);
+  });
+  it("/retry +paths on a recurring_failure hold widens the allowed paths and queues a fresh implement run from the kept wip branch; the held retry is cancelled and not retried", async () => {
+    const { store, clock } = await newStore();
+    const c = controller(store, clock);
+    await file(store);
+    clock.advance(MIN);
+    const { item } = await store.createWorkItem(issue(next++), system);
+    const running = await store.transition({ id: item.id, expected_version: item.version, actor: system, reason: "approved", patch: { stage: "RUNNING", allowed_paths: ["src/x.ts"] } });
+    if (!running.ok) throw new Error("transition failed");
+    await store.enqueueRun({ work_item_id: item.id, kind: "implement", idempotency_key: `${item.id}:implement:0` });
+    const run = (await store.claimRun({ worker_id: "w" as WorkerId, kinds: ["implement"], lease_ms: 60_000 }))!;
+    const wip: WipRef = { branch: `factory/wip/${item.id}/${run.id}`, head: "abc1234", commits: 2, summary: "", next_steps: "", conflicts: [] };
+    await store.completeRun(run.id, run.lease!.token, { status: "failed", error_code: "checks_failed", detail: "npm test exited 1: boom", infra: false, wip });
+    // The controller acked the failure with its retry queued (behind a backoff), then the alarm step held the item.
+    const held = (await store.getWorkItem(item.id))!;
+    await store.transition({ id: item.id, expected_version: held.version, actor: system, reason: "run_retry_scheduled", patch: {}, ack_run: run.id, enqueue: { kind: "implement", idempotency_key: `${run.idempotency_key}:retry`, input: { wip } } });
+    await c.tickAlarms();
+    expect(await store.getWorkItem(item.id)).toMatchObject({ blocked_on: "human", blocked_reason: RECURRING_FAILURE });
+
+    clock.advance(MIN);
+    await c.handleEvent({ kind: "retry_requested", source: item.source, comment_id: `retry-${item.id}`, requester: alice, note: "+paths a/b.ts" });
+    const after = (await store.getWorkItem(item.id))!;
+    expect(after).toMatchObject({ blocked_on: "none", blocked_reason: null });
+    expect(after.allowed_paths).toContain("a/b.ts");
+    const queued = (await store.listRuns(item.id)).filter((r) => r.status === "queued");
+    expect(queued).toEqual([expect.objectContaining({ kind: "implement", input: { wip } })]);
+    expect(queued[0]!.idempotency_key).not.toBe(`${run.idempotency_key}:retry`);
+
+    // The cancelled retry is acknowledged as ignored: no second run is queued for it.
+    await c.tickRuns();
+    expect((await store.listRuns(item.id)).filter((r) => r.status === "queued").map((r) => r.id)).toEqual([queued[0]!.id]);
   });
 });
 

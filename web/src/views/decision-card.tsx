@@ -14,12 +14,13 @@ import { PAGE_COMMANDS_PATH } from "../pages.js";
 import { OutcomeText, PendingProposals, SENTENCE } from "./command-box.js";
 import { PersonName } from "./common.js";
 import {
-  CommandDialog, DIALOGS, type FormName, ItemCommands, MENU, menuEntry, type OneTapChoice, QueuedFeedbackList, oneTapNote, pathsOf,
-  pendingFeedback, primaryLabel, primaryOf, withPaths,
+  AllowResolveDialog, CommandDialog, DIALOGS, type FormName, ItemCommands, MENU, allowsResolve, menuEntry, type OneTapChoice, QueuedFeedbackList,
+  oneTapNote, pathsOf, pendingFeedback, primaryLabel, primaryOf, withPaths,
 } from "./item-commands.js";
 import { commandOutcome, notAllowed, useCommandSend } from "./command-send.js";
 import { MergeButton } from "./merge-button.js";
 import { ApproveDialog, type DecisionChoice, DecisionsPanel, InShort, approvePhase, chosenAnswers, commandLabel, initialChoices } from "./item-decisions.js";
+import { AddContextActions, ContextDialog } from "./item-attachments.js";
 import { ModelCredentialDialog } from "./model-credential-dialog.js";
 import { summaryOf, threadOrder } from "./thread.js";
 
@@ -31,7 +32,8 @@ import { summaryOf, threadOrder } from "./thread.js";
 // buttons built from the item API's `commands`. The primary comes first (Merge, else the command that allows a
 // permission ask's paths, else Approve, Answer or Retry: primaryOf), then the verdict's Good and Bad (one tap each,
 // oneTapNote) and Feedback (the note box's text), the other commands (Revise, …) in the API's order, and the "…" menu
-// with Reject and Verdict (their dialogs). Every button and menu item carries `data-action`, its CLI command's name,
+// with Reject and Verdict (their dialogs). Revise opens the five-section form only for an item with a spec; without one
+// it opens the Add context modal, and on a New item Add context and Attach take its place. Every button and menu item carries `data-action`, its CLI command's name,
 // and `data-item`, the item's ID (Good, Bad and Feedback are `verdict` with `data-choice`), and sends that command
 // through the item commands route; one the API marks not allowed is disabled with the controller's
 // reason under the row (in the menu, in its label). The command help (every command, how to type it) is behind ? and
@@ -99,7 +101,7 @@ export interface DecisionCardProps {
 export function DecisionCard({ id, commands, replies, question = null }: DecisionCardProps) {
   const { session, on: enabled, busy, local, send: post } = useCommandSend(id);
   const [note, setNote] = useState("");
-  const [open, setOpen] = useState<FormName | "approve" | null>(null);
+  const [open, setOpen] = useState<FormName | "approve" | "resolve" | null>(null);
   const [credentialOpen, setCredentialOpen] = useState(false);
   const opener = useRef<HTMLElement | null>(null);
   const [picked, setPicked] = useState<DecisionChoice[] | null>(null);
@@ -130,13 +132,17 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
     setPicked(null);
   };
   const verdict = commands.find((c) => c.name === "verdict");
+  const resolve = commands.find(allowsResolve);
   const verdictOff = !enabled || busy || !verdict?.allowed;
   const tap = (choice: OneTapChoice) => {
     const text = oneTapNote(choice, note);
     if (text !== null && !verdictOff) void post("verdict", text).then((ok) => ok && setNote(""));
   };
   const feedback = oneTapNote("feedback", note);
-  const rest = commands.filter((c) => c !== primary && !MENU.includes(c.name));
+  // A New item has no spec to comment on: Add context and Attach (AddContextActions) take Revise's place.
+  const revise = commands.find((c) => c.name === "revise");
+  const addContext = detail?.stage === "NEW" ? revise : undefined;
+  const rest = commands.filter((c) => c !== primary && c !== addContext && !MENU.includes(c.name));
   // Verdict and Reject: in the "…" menu, one the viewer may not send disabled with its reason.
   const menuItems = commands.filter((c) => MENU.includes(c.name)).map((c) => menuEntry(id, c, !enabled || busy, () => setOpen(c.name as FormName)));
   const actions = useRef<HTMLDivElement>(null);
@@ -148,7 +154,8 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
   ].filter((o) => o.outcome !== null);
 
   const button = (c: ItemCommand) => {
-    const opensDialog = DIALOGS.includes(c.name) || (c.name === "approve" && phase !== null);
+    // Allow and resolve (an out_of_scope resolve failure's reply files) lists the files in AllowResolveDialog first.
+    const opensDialog = DIALOGS.includes(c.name) || (c.name === "approve" && phase !== null) || allowsResolve(c);
     // Applied at once (its label shows): not sent again before the item's new state arrives.
     const sent = local[c.name];
     const outcome = c.allowed ? commandOutcome(replies, c.name, sent) : notAllowed(c);
@@ -165,7 +172,7 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
           onClick={(e) => {
             opener.current = e.currentTarget;
             if (!opensDialog) void send(c.name, withPaths(c, note), true);
-            else setOpen(c.name as FormName | "approve");
+            else setOpen(c.name as FormName | "approve" | "resolve");
           }}
         >
           {pathsOf(c).length > 0 ? primaryLabel(c) : commandLabel(c.name)}
@@ -252,6 +259,10 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
             </Button>
           )}
           {rest.map(button)}
+          {addContext && (
+            <AddContextActions id={id} title={itemTitle} token={session.data?.csrf_token} off={!enabled || busy || !addContext.allowed}
+              error={local.revise && "error" in local.revise ? local.revise.error : null} send={(text) => post("revise", text)} />
+          )}
           {menuItems.length > 0 && <OverflowMenu label={t("commands.more")} items={menuItems} />}
         </div>
         <div className="mt-2 flex flex-col items-start gap-1">
@@ -272,7 +283,29 @@ export function DecisionCard({ id, commands, replies, question = null }: Decisio
             onClose={() => setOpen(null)}
           />
         )}
-        {open !== null && open !== "approve" && (
+        {open === "revise" && !data?.spec && (
+          <ContextDialog
+            title={`${t("attach.addContext")} ${itemTitle}`}
+            busy={busy || !enabled}
+            error={local.revise && "error" in local.revise ? local.revise.error : null}
+            returnFocusTo={opener}
+            onSend={(text) => void send("revise", text, false)}
+            onClose={() => setOpen(null)}
+          />
+        )}
+        {open === "resolve" && resolve && (
+          <AllowResolveDialog
+            title={`${t("needs.actAllowResolve")} ${itemTitle}`}
+            paths={pathsOf(resolve)}
+            note={note}
+            busy={busy || !enabled}
+            error={local.resolve && "error" in local.resolve ? local.resolve.error : null}
+            returnFocusTo={opener}
+            onSend={(text) => void send("resolve", withPaths(resolve, text), false)}
+            onClose={() => setOpen(null)}
+          />
+        )}
+        {open !== null && open !== "approve" && open !== "resolve" && !(open === "revise" && !data?.spec) && (
           <CommandDialog
             command={open}
             title={itemTitle}

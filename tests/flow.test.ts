@@ -2102,6 +2102,36 @@ describe("/resolve on a merge conflict", () => {
     expect(refusals(f)).toEqual([]);
   });
 
+  it("out_of_scope names the exact `/resolve +paths` reply for its files, and that reply then widens allowed_paths and resolves with the notes below (2026-11-26)", async () => {
+    const f = await conflicted(83);
+    f.sandbox.resolveChanged = ["src/gate.ts", "tests/a-split.test.ts"];
+    f.source.queue.push(resolveEvent(f, "8301"));
+    await f.step();
+    const run = (await f.store.listRuns(f.item.id)).find(byPerson)!;
+    const note = f.source.comments.find((c) => c.marker === `<!-- factory:run-failed:${run.id} -->`)!;
+    expect(note.body).toContain("Reply `/resolve +paths tests/a-split.test.ts` to allow them and resolve again.");
+
+    // The reply as given, notes on the line below: the path is allowed and the run that follows passes the scope gate.
+    f.source.queue.push(resolveEvent(f, "8302", "+paths tests/a-split.test.ts\nkeep the branch's edit in the split file"));
+    await f.step();
+    expect((await f.store.getWorkItem(f.item.id))!.allowed_paths).toEqual([...f.item.allowed_paths, "tests/a-split.test.ts"]);
+    const resolves = (await f.store.listRuns(f.item.id)).filter(byPerson);
+    expect(resolves.map((r) => [r.status, r.input])).toEqual([
+      ["failed", { notes: "" }], ["succeeded", { notes: "keep the branch's edit in the split file" }],
+    ]);
+    expect(refusals(f)).toEqual([]);
+  });
+
+  it("/retry at merge_conflict_pending after a failed resolve run is refused with the `/resolve +paths` reply that applies there (2026-11-26)", async () => {
+    const f = await conflicted(84);
+    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "8401", requester: alice, note: "+paths tests/a-split.test.ts" });
+    await f.controller.tickIntake();
+    const said = refusals(f);
+    expect(said).toHaveLength(1);
+    expect(said[0]!.body).toContain("`/resolve +paths <path>...`");
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ blocked_reason: "merge_conflict_pending", allowed_paths: f.item.allowed_paths });
+  });
+
   it("test gate: a failing test command fails tests_failed, pushes nothing and re-blocks on merge_conflict_pending", async () => {
     const f = await conflicted(75);
     f.sandbox.exits["npm test"] = 1;

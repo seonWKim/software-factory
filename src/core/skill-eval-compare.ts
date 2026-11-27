@@ -1,10 +1,11 @@
 // Grid and compare over stored skill-eval runs (design 06-measurement), pure: `factory eval results <skill> --by
 // version,model`, `factory eval compare` and GET /api/v1/evals/<skill>/grid and /compare all use these, so the
 // grouping and the paired compare live once. The per-version read and the version diff (GET /api/v1/evals/<skill>/versions
-// and /diff) link runs to skill versions by folder hash here too. Nothing here reads or writes the store. Main.ts passes them to the CLI
+// and /diff) link runs to skill versions by folder hash here too, and the diff read tallies the two versions' cases
+// (caseResults, through caseTally) by the same verdict rule as compare (pairedVerdict). Nothing here reads or writes the store. Main.ts passes them to the CLI
 // through the command call (CommandCall.skillEvalReads); the routes import them.
 
-import type { SkillEvalRun } from "../interfaces/skill-eval-store.js";
+import type { SkillEvalRun, SkillVersionGateState } from "../interfaces/skill-eval-store.js";
 import { caseRates, pairedInterval, signTestP, type StatVerdict } from "./skill-eval-stats.js";
 
 /** One run as the grid and compare show it: which run, on what, and its figures (null where none was recorded). */
@@ -125,6 +126,8 @@ export interface VersionOf {
   version: number;
   folder_hash: string;
   created_at: string;
+  /** Its gate's state (design 07-self-improvement); absent or null: recorded before the gate, with no gate row. */
+  gate?: SkillVersionGateState | null;
 }
 
 /** A run as the per-version read links it: by its stored folder hash. */
@@ -132,7 +135,9 @@ type LinkedRun = Pick<SkillEvalRun, "id" | "started_at" | "skill_version" | "pas
 
 /** One version with its latest linked run's pass rate, the change since the previous version and the current mark. */
 export interface SkillVersionRow extends VersionOf {
-  /** The newest version is the current one. */
+  /** Its gate's state; null: no gate row. */
+  gate: SkillVersionGateState | null;
+  /** The gate's current version: the newest whose gate passed or that has no gate (as currentSkillVersion reads it). */
   current: boolean;
   /** The newest run with a pass rate whose skill_version is this version's folder hash; null when none. */
   run_id: string | null;
@@ -152,9 +157,13 @@ export function latestLinkedRun<R extends LinkedRun>(runs: readonly R[], folder_
  */
 export function skillVersionRows(versions: readonly VersionOf[], runs: readonly LinkedRun[]): SkillVersionRow[] {
   const ordered = [...versions].sort((a, b) => a.version - b.version);
-  const rows = ordered.map((v, i): SkillVersionRow => {
+  const current = ordered.findLast((v) => v.gate == null || v.gate === "passed")?.version;
+  const rows = ordered.map((v): SkillVersionRow => {
     const run = latestLinkedRun(runs, v.folder_hash);
-    return { version: v.version, folder_hash: v.folder_hash, created_at: v.created_at, current: i === ordered.length - 1, run_id: run?.id ?? null, pass_rate: run?.pass_rate ?? null, change: null };
+    return {
+      version: v.version, folder_hash: v.folder_hash, created_at: v.created_at, gate: v.gate ?? null, current: v.version === current,
+      run_id: run?.id ?? null, pass_rate: run?.pass_rate ?? null, change: null,
+    };
   });
   rows.forEach((r, i) => {
     const prev = rows[i - 1];
@@ -201,9 +210,33 @@ export interface CaseResult {
   b: string | null;
 }
 
-/** The per-case results of two runs' replays, by case id. */
-export function caseResults(a: readonly { case_id: string; verdict: string }[], b: readonly { case_id: string; verdict: string }[]): CaseResult[] {
+
+/** The second version against the first over their case results: wins, losses, ties and the paired verdict. */
+export interface CaseTally {
+  wins: number;
+  losses: number;
+  ties: number;
+  /** pairedVerdict of the counted cases; null when no case is counted. */
+  verdict: SkillEvalVerdict | null;
+}
+
+const passOrFail = (v: string | null): boolean => v === "pass" || v === "fail";
+
+/**
+ * Tallies `cases` (caseResults of the first version a and the second b): a case counts only when both have a pass or
+ * a fail. A win when b passed and a did not, a loss in the reverse case, a tie when both gave the same result. The
+ * verdict is pairedVerdict over the sign test of wins and losses and the paired interval of the differences (1, 0 or −1).
+ */
+export function caseTally(cases: readonly CaseResult[]): CaseTally {
+  const diffs = cases.filter((c) => passOrFail(c.a) && passOrFail(c.b)).map((c) => Number(c.b === "pass") - Number(c.a === "pass"));
+  const wins = diffs.filter((d) => d > 0).length, losses = diffs.filter((d) => d < 0).length;
+  return { wins, losses, ties: diffs.length - wins - losses, verdict: diffs.length === 0 ? null : pairedVerdict(signTestP(wins, losses), pairedInterval(diffs).interval) };
+}
+
+/** The per-case results of two runs' replays, by case id, with their tally (caseTally). */
+export function caseResults(a: readonly { case_id: string; verdict: string }[], b: readonly { case_id: string; verdict: string }[]): CaseTally & { cases: CaseResult[] } {
   const ids = [...new Set([...a, ...b].map((r) => r.case_id))].sort();
   const of = (list: typeof a, id: string) => list.find((r) => r.case_id === id)?.verdict ?? null;
-  return ids.map((case_id) => ({ case_id, a: of(a, case_id), b: of(b, case_id) }));
+  const cases = ids.map((case_id) => ({ case_id, a: of(a, case_id), b: of(b, case_id) }));
+  return { cases, ...caseTally(cases) };
 }

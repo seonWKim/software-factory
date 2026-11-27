@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { lineDiff, skillVersionRows } from "../src/core/skill-eval-compare.js";
+import { caseTally, lineDiff, skillVersionRows } from "../src/core/skill-eval-compare.js";
 import type { Timestamp, UserId } from "../src/core/types.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -62,6 +62,8 @@ async function setup() {
   await writeFile(join(folder, "SKILL.md"), V2);
   const h2 = await skillVersion(folder);
   await store.recordSkillVersion({ ref_id: "sr_review", folder_hash: h2, text: V2, source: "claude" });
+  // Both gates passed (design 07-self-improvement): v2 is the gate's current version.
+  await store.db.run("UPDATE controller_skill_version_gates SET state = 'passed' WHERE ref_id = 'sr_review'");
   const runner = new FakeRunner({ implement: (spec) => ({ output: `${spec.system_prompt}\n${spec.prompt}` }) });
   let n = 0;
   const d: SkillEvalWiring = {
@@ -118,6 +120,51 @@ describe("GET /api/v1/evals/<skill>/versions", () => {
     expect(versions.find((v) => v.version === 1)).toMatchObject({ folder_hash: h1, current: false, run_id: r1.id, pass_rate: 0.5 });
   });
 
+  it("gives each version's 95% band, its cost per run and each case's verdict, from its newest linked run", async () => {
+    const { store, skill, run, h1, h2 } = await setup();
+    await run(h1);
+    const r2 = await run();
+    await store.db.run("UPDATE controller_skill_eval_replays SET cost_usd = 0.25 WHERE run_id = ?", [r2.id]);
+    const { versions } = (await get(store, versionsPath(skill))).value as { versions: { version: number; band: { low: number; high: number } | null; cost_usd: number | null; cases: { case_id: string; verdict: string }[] }[] };
+    const v1 = versions.find((v) => v.version === 1)!, v2 = versions.find((v) => v.version === 2)!;
+    expect(v2.cost_usd).toBe(0.5);
+    expect(v2.cases).toEqual([{ case_id: "c1", verdict: "pass" }, { case_id: "c2", verdict: "pass" }]);
+    expect(v1.cases).toEqual([{ case_id: "c1", verdict: "pass" }, { case_id: "c2", verdict: "fail" }]);
+    // A run with no recorded cost has none; the band brackets the pass rate (1 of 2 replays passed for v1).
+    expect(v1.cost_usd).toBeNull();
+    expect(v1.band!.low).toBeLessThan(0.5);
+    expect(v1.band!.high).toBeGreaterThan(0.5);
+    expect(v2.band!.high).toBe(1);
+  });
+
+  it("gives a version with no linked run no band, no cost and no cases, and sends the case IDs through the Withholder", async () => {
+    const { store, skill, run } = await setup();
+    await run();
+    const { versions } = (await get(store, versionsPath(skill))).value as { versions: { version: number; band: unknown; cost_usd: unknown; cases: unknown[] }[] };
+    expect(versions.find((v) => v.version === 1)).toMatchObject({ band: null, cost_usd: null, cases: [] });
+    await store.db.run("UPDATE controller_skill_eval_replays SET case_id = 'LEAK-case' WHERE case_id = 'c1'");
+    const leaked = await get(store, versionsPath(skill), FLAGGING);
+    expect(JSON.stringify(leaked.value)).not.toContain("LEAK");
+  });
+
+  it("marks the version the gate makes current: a pending, held or rejected newest version is not; an approved one is", async () => {
+    const { store, skill, run, h1 } = await setup();
+    await run(h1);
+    await run();
+    const marks = async () => ((await get(store, versionsPath(skill))).value as { versions: { version: number; gate: string | null; current: boolean }[] }).versions.map((v) => [v.version, v.gate, v.current]);
+    for (const state of ["pending", "held", "rejected"]) {
+      await store.db.run("UPDATE controller_skill_version_gates SET state = ? WHERE ref_id = 'sr_review' AND version = 2", [state]);
+      expect(await marks(), state).toEqual([[2, state, false], [1, "passed", true]]);
+    }
+    await store.db.run("UPDATE controller_skill_version_gates SET state = 'held' WHERE ref_id = 'sr_review' AND version = 2");
+    expect(await store.settleSkillVersionGate("sr_review", 2, "passed", OWNER)).toBe(true);
+    expect(await marks()).toEqual([[2, "passed", true], [1, "passed", false]]);
+    // A version recorded before the gate has no gate row and is current when nothing newer passed.
+    await store.db.run("DELETE FROM controller_skill_version_gates WHERE ref_id = 'sr_review' AND version = 1");
+    await store.db.run("UPDATE controller_skill_version_gates SET state = 'rejected' WHERE ref_id = 'sr_review' AND version = 2");
+    expect(await marks()).toEqual([[2, "rejected", false], [1, null, true]]);
+  });
+
   it("gives each version's latest pass rate and its change since the previous version, newest version first", async () => {
     const { store, skill, run, h1 } = await setup();
     await run(h1);
@@ -171,6 +218,15 @@ describe("GET /api/v1/evals/<skill>/diff", () => {
     expect(value.cases).toEqual([{ case_id: "c1", a: "pass", b: "pass" }, { case_id: "c2", a: "fail", b: "pass" }]);
   });
 
+  it("tallies the second version's wins, losses and ties over the first on their paired cases, with the paired verdict", async () => {
+    const { store, skill, run, h1, h2 } = await setup();
+    await run(h1);
+    await run();
+    // c2 failed on v1 and passed on v2 (a win), c1 passed on both (a tie): one win is within noise.
+    expect((await get(store, diffPath(skill, h1, h2))).value).toMatchObject({ wins: 1, losses: 0, ties: 1, verdict: "within noise" });
+    expect((await get(store, diffPath(skill, h2, h1))).value).toMatchObject({ wins: 0, losses: 1, ties: 1, verdict: "within noise" });
+  });
+
   it("answers 404 for a hash that is no version of the skill and 400 without both hashes", async () => {
     const { store, skill, run, h1 } = await setup();
     await run();
@@ -188,6 +244,15 @@ describe("GET /api/v1/evals/<skill>/diff", () => {
 });
 
 describe("the pure reads", () => {
+  it("caseTally counts only cases with a pass or fail in both versions and gives pairedVerdict's verdict", () => {
+    const n = (k: number, a: string | null, b: string | null) => Array.from({ length: k }, (_, i) => ({ case_id: `${a}-${b}-${i}`, a, b }));
+    expect(caseTally([...n(1, "fail", "pass"), ...n(1, "pass", "fail"), ...n(2, "pass", "pass"), ...n(1, "fail", "fail"), ...n(1, null, "pass"), ...n(1, "errored", "fail")]))
+      .toEqual({ wins: 1, losses: 1, ties: 3, verdict: "within noise" });
+    expect(caseTally(n(8, "fail", "pass"))).toEqual({ wins: 8, losses: 0, ties: 0, verdict: "better" });
+    expect(caseTally(n(8, "pass", "fail"))).toEqual({ wins: 0, losses: 8, ties: 0, verdict: "worse" });
+    expect(caseTally([...n(2, null, "pass"), ...n(1, "pass", null)])).toEqual({ wins: 0, losses: 0, ties: 0, verdict: null });
+  });
+
   it("lineDiff keeps unchanged lines and marks removed lines before added ones", () => {
     expect(lineDiff("a\nb\nc", "a\nx\nc")).toEqual([
       { op: "same", text: "a" }, { op: "removed", text: "b" }, { op: "added", text: "x" }, { op: "same", text: "c" },
@@ -199,6 +264,15 @@ describe("the pure reads", () => {
     const run = (id: string, skill_version: string | null, pass_rate: number | null) => ({ id, started_at: "2026-11-25T00:00:00.000Z" as Timestamp, skill_version, pass_rate });
     const rows = skillVersionRows([v(1, "h1"), v(2, "h2")], [run("r2", "h2", 0.5)]);
     expect(rows.map((r) => [r.version, r.current, r.pass_rate, r.change])).toEqual([[2, true, 0.5, null], [1, false, null, null]]);
+  });
+
+  it("skillVersionRows marks the newest version whose gate passed or that has no gate, and no version when none is", () => {
+    const v = (version: number, gate: "pending" | "held" | "passed" | "rejected" | null) => ({ version, folder_hash: `h${version}`, created_at: "2026-11-25T00:00:00.000Z", gate });
+    const current = (vs: ReturnType<typeof v>[]) => skillVersionRows(vs, []).filter((r) => r.current).map((r) => r.version);
+    expect(current([v(1, null), v(2, "passed"), v(3, "held")])).toEqual([2]);
+    expect(current([v(1, "passed"), v(2, "rejected"), v(3, "pending")])).toEqual([1]);
+    expect(current([v(1, null), v(2, "held")])).toEqual([1]);
+    expect(current([v(1, "held"), v(2, "pending")])).toEqual([]);
   });
 });
 

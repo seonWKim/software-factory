@@ -411,7 +411,7 @@ function TabList<Row extends { name: string; description: string | null }>(
   const empty = rows.length === 0;
   return (
     <Card>
-      <div className={empty ? cn(EMPTY_BOX, "gap-3") : "mb-4"}>
+      <div data-tab-head className={empty ? cn(EMPTY_BOX, "gap-3") : "mb-4"}>
         {empty && <p className="text-sm text-pretty text-text-2">{t(how)}</p>}
         <Actions view={view} tab={tab} report={report} />
       </div>

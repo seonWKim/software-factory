@@ -71,6 +71,25 @@ describe("GET /api/v1/rules: excerpts", () => {
   });
 });
 
+describe("GET /api/v1/rules: a waiting proposal's gist", () => {
+  it("is the first line it adds, else its prose change, description or root reason, marks dropped, through the Withholder; null with none or for a class", async () => {
+    const v = (await readRules(await deps([P("P-1"), P("P-2"), P("P-3"), P("P-4"), P("P-5"), { id: "C-1", title: "c", state: "pending" }], async (id) => {
+      if (id === "P-1") return { id, current: "keep\nold", proposed: "keep\n- add a line\nmore" };
+      if (id === "P-5") return { id, proposed: `use ${SECRET} here` };
+      if (id === "P-2") return { id, change: "\n## Split the prompt in two\nthen more", root_reason: "too long" };
+      if (id === "P-3") return { id, root_reason: "x".repeat(300) };
+      return { id };
+    }))).value as { entries: { id: string; gist: string | null }[] };
+    const gist = Object.fromEntries(v.entries.map((e) => [e.id, e.gist]));
+    expect(gist["P-1"]).toBe("add a line");
+    expect(gist["P-5"]).toMatch(/^\[withheld: /);
+    expect(gist["P-2"]).toBe("Split the prompt in two");
+    expect(gist["P-3"]).toHaveLength(160);
+    expect(gist["P-4"]).toBeNull();
+    expect(gist["C-1"]).toBeNull();
+  });
+});
+
 describe("GET /api/v1/rules/entry: a prose change", () => {
   it("passes a proposal's change through the Withholder, beside its Why and its evidence rows", async () => {
     const d = await deps([], async (id) => ({ id, target: "skills/review/SKILL.md", change: `paste ${SECRET} first`, root_reason: "tests skipped", incidents: 1, evidence: [{ ref: "T-20261017-de7e" }] }));
@@ -114,7 +133,7 @@ describe("skill drafts: the proposals list and the Rules page's verdict", () => 
     const wiring: SkillImproveWiring = {
       config: SKILL_IMPROVE_DEFAULTS, skill_folders: ["/repo/skills"], folderOf: (ref) => `/repo/${ref}`, prompt: async () => null,
       readSkill: async (f) => files.get(f) ?? null, writeSkill: async (f, t) => void files.set(f, t), version: async () => "v1", newId: () => "n1",
-      scratch: async () => null, rerun: async (r) => (reruns.push(r.skill_ref), null),
+      scratch: async (r) => ({ id: r.run_id, pass_rate: 1 }) as never, rerun: async (r) => (reruns.push(r.skill_ref), null),
     };
     return { wiring, files, reruns };
   }
@@ -126,6 +145,9 @@ describe("skill drafts: the proposals list and the Rules page's verdict", () => 
     const pauses: UiPauses = { ...d.pauses!, principal: async () => as };
     const sd: PauseDeps = { ...d, pauses, settings: { ...d.settings!, resolveProject: async () => PROJECT }, skillImprove: { hold: holdSkillDraft, reject: rejectSkillDraft, promote: promoteSkillDraft, wiring: o.wired === false ? undefined : f.wiring } };
     const store = sd.store as FactoryStore;
+    // skills/a has a held-out case, so a promotion runs its held-out check (each scratch run scores 1).
+    await store.createSkillEvalSuite({ id: "suite:a", skill_ref: "skills/a", title: "a", created_by: OWNER });
+    await store.addSkillEvalCase({ id: "h1", suite_id: "suite:a", input: "held", expected: ["x"], split: "held-out" });
     const add = (id: string, state: SkillDraftState, skill_ref = "skills/a", project_key = PROJECT.key) => store.addSkillDraft({
       id, project_key, skill_ref, state, tokens: 10,
       detail: { draft: "NEW A", model_class: "standard", failed_checks: ["cites the source", `names ${SECRET}`], baseline_run: { id: "r0", pass_rate: 0.5 }, scratch_run: { id: "r1", pass_rate: 0.9 }, ...(state === "tried" ? { reason: "no_gain" } : {}) },

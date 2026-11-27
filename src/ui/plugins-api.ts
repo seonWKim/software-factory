@@ -21,10 +21,12 @@
 // factory user); a worker starts the server and stores the names. This process never starts a server.
 // Skill versions under the evals path (design 06-measurement, 2026-11-25): GET /api/v1/evals/<skill>/versions and
 // /diff read the imported skill's `ext_skill_versions` rows, linked to the skill's eval runs by folder hash
-// (skillVersionsOf); src/skill-evals.ts re-runs a version through the same lookup.
+// (skillVersionsOf); src/skill-evals.ts re-runs a version through the same lookup. The diff read adds the second
+// version's wins, losses and ties over the first and the paired verdict (caseResults, design 09-dashboard-evals).
 
 import type { SettingsBase } from "../core/settings.js";
 import type * as Compare from "../core/skill-eval-compare.js";
+import type * as Stats from "../core/skill-eval-stats.js";
 import type { SkillEvalStore, SkillVersion } from "../interfaces/skill-eval-store.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { storeSql, storeSqlOrNull } from "../impl/store/sql/store-sql.js";
@@ -263,15 +265,16 @@ export async function skillVersionsOf(store: Pick<SkillEvalStore, "listSkillVers
 }
 
 /** src/core/skill-eval-compare.ts's version reads and evals-api.ts skillOf, passed in by the route table (read-routes.ts). */
-export type SkillVersionReads = Pick<typeof Compare, "skillVersionRows" | "unlinkedRuns" | "latestLinkedRun" | "lineDiff" | "caseResults"> & { skillOf: typeof skillOf };
+export type SkillVersionReads = Pick<typeof Compare, "skillVersionRows" | "unlinkedRuns" | "latestLinkedRun" | "lineDiff" | "caseResults"> & Pick<typeof Stats, "wilsonInterval"> & { skillOf: typeof skillOf };
 
-type VersionsDeps = { store: Pick<FactoryStore, "listSkillEvalRuns" | "listSkillEvalReplays" | "listSkillVersions">; scanner: ApiDeps["scanner"] };
+type VersionsDeps = { store: Pick<FactoryStore, "listSkillEvalRuns" | "listSkillEvalReplays" | "listSkillVersions" | "getSkillVersionGate">; scanner: ApiDeps["scanner"] };
 
 /**
  * GET /api/v1/evals/<skill>/versions: { versions, unlinked }, one row per version of the skill (skillVersionRows:
- * latest pass rate, change since the previous version, current mark), newest first, and the ids of the skill's runs
+ * latest pass rate, change since the previous version, gate state and the gate's current version marked), newest first, and the ids of the skill's runs
  * linked to no version. GET /api/v1/evals/<skill>/diff?a=<hash>&b=<hash>: each version's row, the unified line diff
- * of their SKILL.md texts and the per-case results of each one's latest linked run; 404 when a hash is no version of
+ * of their SKILL.md texts, the per-case results of each one's latest linked run, and b's wins, losses and ties over a
+ * with the paired verdict (caseResults); 404 when a hash is no version of
  * the skill. Every string leaves through the Withholder; the reads write nothing.
  */
 export async function readSkillVersions(d: VersionsDeps, f: SkillVersionReads, url: URL): Promise<ApiResult> {
@@ -282,8 +285,26 @@ export async function readSkillVersions(d: VersionsDeps, f: SkillVersionReads, u
   const text = async (v: string) => (await w.plain(v)).text;
   const runs = await d.store.listSkillEvalRuns(skill);
   const versions = await skillVersionsOf(d.store, runs.map((r) => r.skill_version));
-  const rows = await Promise.all(f.skillVersionRows(versions, runs).map(async (r) => ({ ...r, folder_hash: await text(r.folder_hash), run_id: r.run_id === null ? null : await text(r.run_id) })));
-  if (read === "versions") return { status: 200, value: { versions: rows, unlinked: await Promise.all(f.unlinkedRuns(versions, runs).map((r) => text(r.id))) } };
+  const gated = await Promise.all(versions.map(async (v) => ({ ...v, gate: (await d.store.getSkillVersionGate(v.ref_id, v.version))?.state ?? null })));
+  const rows = await Promise.all(f.skillVersionRows(gated, runs).map(async (r) => ({ ...r, folder_hash: await text(r.folder_hash), run_id: r.run_id === null ? null : await text(r.run_id) })));
+  if (read === "versions") {
+    // Per version, from its newest linked run's replays: the 95% interval of the pass rate, the cost, and each case's verdict.
+    const detail = async (hash: string) => {
+      const run = f.latestLinkedRun(runs, hash);
+      const replays = run ? await d.store.listSkillEvalReplays(run.id) : [];
+      const passes = replays.filter((r) => r.verdict === "pass").length;
+      const interval = f.wilsonInterval(passes, replays.length);
+      const costs = replays.map((r) => r.cost_usd).filter((c): c is number => typeof c === "number");
+      const cases = new Map<string, string>();
+      for (const r of replays) if (!cases.has(r.case_id)) cases.set(r.case_id, r.verdict);
+      return { interval, cost_usd: costs.length > 0 ? costs.reduce((a, b) => a + b, 0) : null, cases: [...cases].sort(([x], [y]) => x.localeCompare(y)) };
+    };
+    const full = await Promise.all(rows.map(async (r) => {
+      const x = await detail(versions.find((v) => v.version === r.version)!.folder_hash);
+      return { ...r, band: x.interval === null ? null : { low: x.interval.low, high: x.interval.high }, cost_usd: x.cost_usd, cases: await Promise.all(x.cases.map(async ([case_id, verdict]) => ({ case_id: await text(case_id), verdict: await text(verdict) }))) };
+    }));
+    return { status: 200, value: { versions: full, unlinked: await Promise.all(f.unlinkedRuns(versions, runs).map((r) => text(r.id))) } };
+  }
   const a = url.searchParams.get("a"), b = url.searchParams.get("b");
   if (!a || !b) return apiError(400, "Name both versions: ?a=<hash>&b=<hash>.");
   const va = versions.find((v) => v.folder_hash === a), vb = versions.find((v) => v.folder_hash === b);
@@ -293,7 +314,8 @@ export async function readSkillVersions(d: VersionsDeps, f: SkillVersionReads, u
     return run ? d.store.listSkillEvalReplays(run.id) : [];
   };
   const lines = await Promise.all(f.lineDiff(va.text, vb.text).map(async (l) => ({ op: l.op, text: await text(l.text) })));
-  const cases = await Promise.all(f.caseResults(await replays(a), await replays(b)).map(async (c) => ({ ...c, case_id: await text(c.case_id) })));
+  const { cases: results, ...tally } = f.caseResults(await replays(a), await replays(b));
+  const cases = await Promise.all(results.map(async (c) => ({ ...c, case_id: await text(c.case_id) })));
   const row = (v: SkillVersion) => rows.find((r) => r.version === v.version)!;
-  return { status: 200, value: { a: row(va), b: row(vb), lines, cases } };
+  return { status: 200, value: { a: row(va), b: row(vb), lines, cases, ...tally } };
 }

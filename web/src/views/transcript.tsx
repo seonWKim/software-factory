@@ -141,8 +141,7 @@ function Outcome({ run, now }: { run: TranscriptPage["run"]; now: number }) {
     <div
       role="status"
       aria-label={t("transcript.outcome")}
-      className={cn(
-        "mt-3 rounded-control px-3 py-2 text-sm break-words [overflow-wrap:anywhere]",
+      data-run-outcome className={cn("mt-3 rounded-control px-3 py-2 text-sm break-words [overflow-wrap:anywhere]",
         failed ? "bg-pill-bad-bg text-pill-bad-fg" : o ? "bg-pill-ok-bg text-pill-ok-fg" : "bg-surface-2",
       )}
     >
@@ -256,7 +255,7 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
           </ol>
         )}
         {hasNextPage && (
-          <Button disabled={isFetchingNextPage} onClick={() => void fetchNextPage()} className="mt-3">
+          <Button disabled={isFetchingNextPage} onClick={() => void fetchNextPage()} data-load-more className="mt-3">
             {isFetchingNextPage ? t("transcript.loading") : t("transcript.loadMore")}
           </Button>
         )}

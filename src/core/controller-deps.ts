@@ -2,13 +2,14 @@
 // interfaces it is given, and the forge budget it reports. It goes with FactoryStore and the other legacy
 // interfaces (M11).
 
+import type { CoordinatorLimitAlert } from "./alarms.js";
 import type { FactoryConfig } from "./config.js";
 import type { TickLease } from "./lease.js";
 import { type Logger, errorText } from "./log.js";
 import { type CheckPageStore, type RoutineRunStore, queueRoutineRun, runDueCheckPages } from "./check-page.js";
 import { type CheckpointStore, type Schedule, type ScheduleRun, checkpointAnswer, runDueSchedules } from "./schedule.js";
 import type { LearnedSettingsSource, LiveSettings } from "./settings.js";
-import type { Timestamp } from "./types.js";
+import type { Timestamp, WorkItem, WorkItemId } from "./types.js";
 import type { AuthAction, AuthDecision, AuthProvider } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
@@ -161,6 +162,26 @@ export interface ControllerDeps {
    * until an action is selected.
    */
   schedule_action?: ScheduledAction;
+  /** The coordinator cycle (design 05-coordinator), bound by the coordinator unit to its ports. Absent: no cycle runs. */
+  coordinator?: (ports: CoordinatorPorts) => { tick(): Promise<unknown> };
+}
+
+/**
+ * What the controller unit binds for the coordinator cycle: the live settings, the waiting items, the existing local
+ * merge and the daily limit's owner question.
+ */
+export interface CoordinatorPorts {
+  /** Read at each tick: the `coordinator` switch, `auto_merge_max_tier` and `spend.coordinator_daily_usd`. */
+  settings(): Promise<{ on: boolean; max_tier: number; daily_usd: number }>;
+  /**
+   * Stores the UTC day's one owner question at the daily limit (coordinatorLimitAlert, design 06-spend): the unit scans
+   * its text as UI text and commits it through the kernel's `alert` write, deduped for `dedupe_ms`.
+   */
+  limitReached(q: CoordinatorLimitAlert): Promise<void>;
+  /** The items waiting for a merge, of any source. */
+  waiting(): Promise<readonly WorkItem[]>;
+  /** The existing local merge as auto mode runs it, keyed on `key`: the refusal, or null when the change is queued. */
+  merge(id: WorkItemId, key: string): Promise<string | null>;
 }
 
 /** A ScheduleAction bound to the store's claim pass: what the schedule unit calls with each tick's time. */

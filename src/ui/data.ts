@@ -50,6 +50,7 @@ export const HIDDEN_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   inbound_listener_leases: ["token"],
   worker_run_attempts: ["lease_token"],
   identity_link_codes: ["code_hash"],
+  controller_skill_version_gates: ["lease_token"],
 };
 
 /** What a hidden cell shows. */

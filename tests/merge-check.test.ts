@@ -28,6 +28,7 @@ import type { Sandbox } from "../src/interfaces/sandbox.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { autoResolveKey } from "../src/core/policy.js";
 import { NODE_PROBE, offNode, onNode } from "../src/worker/runs/merge-check/node-version.js";
+import { JDK_PROBE } from "../src/worker/runs/merge-check/jdk-version.js";
 import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./helpers/fakes/runner.js";
 import { FakeForge } from "./helpers/fakes/forge.js";
 import { FakeSource } from "./helpers/fakes/source.js";
@@ -796,15 +797,19 @@ describe("merge check run: one rerun of the failing test files (fake sandbox)", 
 // worker's own Node. The runtime lookup is the fake sandbox's reply to the probe command: no Node is installed and no
 // network is used. A Node that is not there fails the run with checks_env naming it; it never passes on another one.
 describe("merge check run: the project's Node version (fake sandbox, fake runtime)", () => {
-  type Files = { ".nvmrc"?: string; "package.json"?: string };
+  type Files = { ".nvmrc"?: string; "package.json"?: string; ".java-version"?: string; "build.gradle"?: string; "build.gradle.kts"?: string };
 
-  /** `files`: the merged commit's files; `probe`: what the runtime lookup prints; `exits`: replies by command. */
-  async function nodeRun(files: Files, probe: string, exits: Record<string, { exit: number; out?: string }[]> = {}) {
+  /**
+   * `files`: the merged commit's files; `probe`: what the runtime lookup prints; `exits`: replies by command;
+   * `jdk`: what the JDK probe prints on stderr (java writes its version there).
+   */
+  async function nodeRun(files: Files, probe: string, exits: Record<string, { exit: number; out?: string }[]> = {}, jdk = "") {
     const repo = { ...config.repo, check_commands: [["npm", "run", "typecheck"], ["npm", "test"]] };
     const f = await pipeline({ config: { repo } });
     const exec = f.sandbox.exec.bind(f.sandbox);
     const argvs: string[][] = [];
     const probes: string[][] = [];
+    const jdkProbes: string[][] = [];
     f.sandbox.exec = async (h, cmd, eo) => {
       const r = await exec(h, cmd, eo);
       const read = cmd[0] === "git" && cmd[1] === "cat-file" ? /:(.+)$/.exec(cmd.at(-1)!)?.[1] : undefined;
@@ -815,6 +820,10 @@ describe("merge check run: the project's Node version (fake sandbox, fake runtim
       if (cmd[0] === "sh" && cmd[2] === NODE_PROBE) {
         probes.push([...cmd]);
         return { ...r, stdout: probe };
+      }
+      if (cmd[0] === "sh" && cmd[2] === JDK_PROBE) {
+        jdkProbes.push([...cmd]);
+        return { ...r, stderr: jdk };
       }
       if (cmd[0] === "git") return r;
       argvs.push([...cmd]);
@@ -829,7 +838,7 @@ describe("merge check run: the project's Node version (fake sandbox, fake runtim
     if (!moved.ok) throw new Error("setup");
     expect(await f.w1.tick()).toBe(true);
     const outcome = (await f.runs(moved.item, "merge-check"))[0]!.outcome;
-    return { argvs, probes, outcome };
+    return { argvs, probes, jdkProbes, outcome };
   }
 
   const project = ["npm ci", "npm run typecheck", "npm test"];
@@ -901,6 +910,58 @@ describe("merge check run: the project's Node version (fake sandbox, fake runtim
     expect(r.argvs.map((c) => offNode(c).join(" "))).toEqual([...project, "npm test -- tests/a.test.ts"]);
     expect(r.argvs.every((c) => c.includes(NODE22))).toBe(true);
     expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", command: "npm test", node: "Node v22 (.nvmrc)" } });
+  });
+
+  // The JDK pin: the wanted major from .java-version, else the root Gradle toolchain; the found one from the worker's
+  // java. Another major, or none, is checks_env naming both, before install runs; a project naming no JDK reads none.
+  const JDK17 = 'current=openjdk version "17.0.2" 2022-01-18';
+  const JDK21 = 'current=openjdk version "21.0.1" 2023-10-17';
+
+  it("with .java-version 17 and a JDK 21 worker, the run fails with checks_env naming both majors", async () => {
+    const r = await nodeRun({ ".java-version": "17\n" }, "", {}, `${JDK21}\n`);
+    expect(r.argvs).toEqual([]);
+    expect(r.outcome).toMatchObject({ status: "failed", error_code: "checks_env" });
+    const detail = r.outcome?.status === "failed" ? r.outcome.detail : "";
+    expect(detail).toContain("JDK 17 (from .java-version)");
+    expect(detail).toContain("found JDK 21");
+  });
+
+  it("with the worker's JDK on the wanted major, install and checks run as before", async () => {
+    const r = await nodeRun({ ".java-version": "temurin-17.0.2\n" }, "", {}, `${JDK17}\n`);
+    expect(r.jdkProbes.length).toBeGreaterThan(0);
+    expect(r.argvs.map((c) => c.join(" "))).toEqual(project);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "green" } });
+  });
+
+  it("a project with no .java-version and no Gradle toolchain reads no JDK", async () => {
+    const r = await nodeRun({ "build.gradle": "plugins { id 'java' }\n" }, "", {}, "current=\n");
+    expect(r.jdkProbes).toEqual([]);
+    expect(r.argvs.map((c) => c.join(" "))).toEqual(project);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "green" } });
+  });
+
+  it("a failing test on the right JDK is still a red check, not checks_env", async () => {
+    const r = await nodeRun({ ".java-version": "17" }, "", { "npm test": [{ exit: 1, out: "BUILD FAILED\n" }] }, `${JDK17}\n`);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", command: "npm test" } });
+  });
+
+  it("with no .java-version, the major comes from the root Gradle toolchain (build.gradle, then build.gradle.kts)", async () => {
+    const groovy = await nodeRun({ "build.gradle": "java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }" }, "", {}, `${JDK21}\n`);
+    expect(groovy.outcome).toMatchObject({ status: "failed", error_code: "checks_env" });
+    expect(groovy.outcome?.status === "failed" ? groovy.outcome.detail : "").toContain("JDK 17 (from build.gradle)");
+    const kts = await nodeRun({ "build.gradle.kts": "java { toolchain { languageVersion.set(JavaLanguageVersion.of(21)) } }" }, "", {}, `${JDK17}\n`);
+    expect(kts.outcome?.status === "failed" ? kts.outcome.detail : "").toContain("JDK 21 (from build.gradle.kts)");
+    const first = await nodeRun({ ".java-version": "21", "build.gradle": "JavaLanguageVersion.of(17)" }, "", {}, `${JDK21}\n`);
+    expect(first.outcome).toMatchObject({ status: "succeeded", data: { result: "green" } });
+  });
+
+  it("a wanted JDK on a worker with no JDK fails with checks_env saying no JDK was found", async () => {
+    const r = await nodeRun({ ".java-version": "17" }, "", {}, "current=sh: java: not found\n");
+    expect(r.argvs).toEqual([]);
+    expect(r.outcome).toMatchObject({ status: "failed", error_code: "checks_env" });
+    const detail = r.outcome?.status === "failed" ? r.outcome.detail : "";
+    expect(detail).toContain("JDK 17 (from .java-version)");
+    expect(detail).toContain("found no JDK");
   });
 });
 

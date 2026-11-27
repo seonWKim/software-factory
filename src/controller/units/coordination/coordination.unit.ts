@@ -1,7 +1,7 @@
 // Dependencies between items: edges, holds, cycles and releases.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { DEPENDENCY_CLOSED, LOCAL_ID, applies, commandSpec, dependsOnIds, localItemOf, phaseLabel, refusalText, wantedDependsOn, withDependsOn } from "../../../core/commands.js";
+import { DEPENDENCY_CLOSED, LOCAL_ID, applies, commandSpec, dependsOnId, dependsOnIds, localItemOf, phaseLabel, refusalText, wantedDependsOn, withDependsOn } from "../../../core/commands.js";
 import { type DependencyLink, type DependencyVerdict, dependencyReason, dependencyRef, dependencyVerdict, holdReason, isDependencySource } from "../../../core/coordination.js";
 import { AGENT_NEEDS_HUMAN, runKey } from "../../../core/policy.js";
 import { type Actor, type DependencyState, type SourceType, type Timestamp, type UserId, type WorkItem, type WorkItemId, type WorkItemPatch } from "../../../core/types.js";
@@ -21,6 +21,8 @@ const DEPENDENCY_CYCLE = "dependency_cycle";
 const DEPENDS_ON_WRITTEN = "depends_on_written";
 /** State change reason of a `/hold <id>`; its detail's `comment_id` is the command's key. */
 const HOLD_REQUESTED = "hold_requested";
+/** Why `/hold` is refused while the item's implement run runs: a running run is never stopped for a hold. */
+const HOLD_RUNNING = "the item's implement run is running, and a running run is never stopped for a hold; `/hold <id>` applies once the run ends";
 
 /** Dependencies between items: edges, holds, cycles and releases. */
 export class CoordinationUnit {
@@ -97,9 +99,9 @@ export class CoordinationUnit {
   /**
    * `/hold <id>` from the command inbox (`who`) or an app request (`app`, its user), which the commands unit hands
    * over, as it has no comment event (design 05-dependencies, 2026-11-20): the owner check; nothing when this key was
-   * applied already (a row read again); the phase, a local item whose implement run asked for a human; one ID; then
-   * holdUntil. A refusal from the inbox is posted once in the item's thread, keyed on the row; an app request's is
-   * returned, and its caller posts it.
+   * applied already (a row read again); the phase, a local item whose implement run asked for a human or is queued
+   * (not running: a running run is refused, never stopped); one ID; then holdUntil. A refusal from the inbox is
+   * posted once in the item's thread, keyed on the row; an app request's is returned, and its caller posts it.
    */
   async holdCommand(
     item: WorkItem, from: { who: Parameters<UnitOperations["auth"]["authorize"]>[0] } | { app: UserId }, key: string, text: string,
@@ -108,9 +110,12 @@ export class CoordinationUnit {
     const principal = "who" in from ? await auth.authorize(from.who, "approve_spec", item.id) : await auth.allowed({ user_id: from.app }, "approve_spec", item.id);
     if (!("refuse" in principal) && (await this.c.k.d.store.listStateChanges(item.id)).some((c) => c.reason === HOLD_REQUESTED && c.detail?.comment_id === key)) return null;
     const state = await this.c.unit("commands").stateOf(item);
+    const queued = await this.implementQueued(item);
     const [id = "", ...more] = text.trim().split(/\s+/).filter((w) => w !== "");
     const refusal = "refuse" in principal ? principal.refuse
-      : !applies(commandSpec("hold"), state) ? `the item is ${phaseLabel(state.phase)}; \`/hold <id>\` applies only to a local item whose implement run asked for a human`
+      : queued === "running" ? HOLD_RUNNING
+      : !applies(commandSpec("hold"), state) && queued !== "queued"
+        ? `the item is ${phaseLabel(state.phase)}; \`/hold <id>\` applies only to a local item whose implement run is queued or asked for a human`
       : !LOCAL_ID.test(id) || more.length > 0 ? "`/hold` takes one ID, of the local item to wait for: `/hold wi_…` or `/hold tk_…`"
       : await this.holdUntil(item, { kind: "user", id: principal.user_id }, id, key);
     if (refusal !== null && "who" in from) {
@@ -126,10 +131,13 @@ export class CoordinationUnit {
    * without a merge, which would never release it). Else one transition with the human as actor: the
    * `Depends on: <id>` line appended to the problem, `blocked_on: dependency` ("waiting for wi_X to merge") and a new
    * implement run queued (restart_count + 1), which the claim holds until releaseDependents lifts the hold when
-   * wi_X merges. Its links are then read again, so the edge exists, and a cycle is refused as on any pass.
+   * wi_X merges. On an item whose implement run is queued, not started (2026-11-26): the line alone, and the same
+   * read holds that run. Its links are then read again, so the edge exists, and a cycle is refused as on any pass.
+   * A short wi_ ID resolves to the item's full ID, which the line names.
    */
-  async holdUntil(it: WorkItem, actor: Extract<Actor, { kind: "user" }>, id: string, key: string): Promise<string | null> {
-    const dep = await localItemOf(this.c.k.d.store, id);
+  async holdUntil(it: WorkItem, actor: Extract<Actor, { kind: "user" }>, given: string, key: string): Promise<string | null> {
+    const dep = await localItemOf(this.c.k.d.store, given);
+    const id = dep ? dependsOnId(given, dep) : given;
     if (!dep) return `\`${id}\` names no local work item or built task`;
     if (dep.id === it.id) return `\`${id}\` is this item itself, and an item cannot wait for itself`;
     if (dep.stage === "CLOSED") {
@@ -139,7 +147,15 @@ export class CoordinationUnit {
     }
     const reason = dependencyReason([dep.source.id], it.source.id, new Map([[dep.source.id, dep.id]]));
     const refusal = await this.c.unit("transitions").decide(it.id, async (cur) => {
-      if (cur.stage !== "RUNNING" || cur.change_ref !== null || cur.blocked_on !== "human" || cur.blocked_reason !== AGENT_NEEDS_HUMAN) return null;
+      if (cur.stage !== "RUNNING" || cur.change_ref !== null) return null;
+      // A queued implement run (design 05-dependencies, 2026-11-26): the line alone; the links read below hold that run.
+      if (cur.blocked_on === "none") {
+        const q = await this.implementQueued(cur);
+        if (q === "running") return { refuse: HOLD_RUNNING };
+        if (q !== "queued") return null;
+        return { patch: { problem: withDependsOn(cur.problem, [id]) }, actor, reason: HOLD_REQUESTED, detail: { depends_on: dep.id, comment_id: key } };
+      }
+      if (cur.blocked_on !== "human" || cur.blocked_reason !== AGENT_NEEDS_HUMAN) return null;
       const next = { ...cur, restart_count: cur.restart_count + 1 };
       const patch = {
         problem: withDependsOn(cur.problem, [id]), blocked_on: "dependency" as const, blocked_reason: reason, restart_count: next.restart_count, failure_comment_url: null,
@@ -155,6 +171,17 @@ export class CoordinationUnit {
     const now = await this.c.k.d.store.getWorkItem(it.id);
     if (now) await this.applyDependencies(now.id, await this.readDependencies(now, "now"));
     return null;
+  }
+
+  /**
+   * Whether local item `it`, implementing with no PR and nothing blocking it, has an implement run `running`, or
+   * only `queued`; null for any other item, or one with no implement run queued or running.
+   */
+  private async implementQueued(it: WorkItem): Promise<"queued" | "running" | null> {
+    if (it.source.type !== "local" || it.stage !== "RUNNING" || it.change_ref !== null || it.blocked_on !== "none") return null;
+    const runs = (await this.c.k.d.store.listRuns(it.id)).filter((r) => r.kind === "implement");
+    if (runs.some((r) => r.status === "running")) return "running";
+    return runs.some((r) => r.status === "queued") ? "queued" : null;
   }
 
   /**
