@@ -44,7 +44,7 @@ import { Disclosure } from "../components/ui/disclosure.js";
 import { Card, SUB_TITLE } from "../components/ui/card.js";
 import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { Tooltip } from "../components/ui/menu.js";
-import { ChatCard } from "./chat-panel.js";
+import { ChatCard } from "./chat-card.js";
 import { HostSleeps, sleptMinutes } from "./host-sleeps.js";
 import { ActivityActorsPage } from "./activity/page.js";
 import { CoordinatorCard } from "./coordinator-card.js";
