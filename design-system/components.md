@@ -231,3 +231,7 @@ The mark and the wordmark at the top of the sidebar; below `sm` only the mark.
 ## BrandMark
 
 The Gongbang mark alone, decorative; size comes from `className`.
+
+## TypingDots
+
+The mark in a reply's place while an answer is on its way (`typing-dots.tsx`), as chat apps show one: three 8px `text-2` dots, 6px apart, in a 24px row, that each rise 3px and brighten (opacity 0.35 to 1) and settle again, one after the other (150ms apart, a 1.2s loop on the `typing` keyframes in `index.css`, each delay inside the animation shorthand). Motion-safe only: with reduced motion the three dots stand still. A live region (`role="status"`, `aria-live="polite"`) that reads `label` ("Thinking…" on the Chat page). One size, no variants. States: shown (moving, or still with reduced motion).

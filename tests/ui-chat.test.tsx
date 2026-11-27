@@ -159,12 +159,12 @@ describe("the composer", () => {
     await waitFor(() => expect(sendButton().disabled).toBe(false), SLOW);
     fireEvent.click(sendButton());
     // While it waits: the answering mark in the reply's place, and the button stays off even with new text typed.
-    expect((await screen.findByRole("status")).textContent).toContain("Answering…");
+    expect((await screen.findByRole("status")).textContent).toContain("Thinking…");
     fireEvent.change(box, { target: { value: "Next" } });
     expect(sendButton().disabled).toBe(true);
     answer(json(200, sendBody));
     await screen.findByText("This is a build task.", {}, SLOW);
-    expect(screen.queryByText("Answering…")).toBeNull();
+    expect(screen.queryByText("Thinking…")).toBeNull();
     expect(sendButton().disabled).toBe(false);
   });
 });

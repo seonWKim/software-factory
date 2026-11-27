@@ -23,6 +23,7 @@ import { Radio } from "../web/src/components/ui/radio.js";
 import { Select } from "../web/src/components/ui/select.js";
 import { Textarea } from "../web/src/components/ui/textarea.js";
 import { TOAST_MS, Toast } from "../web/src/components/ui/toast.js";
+import { TypingDots } from "../web/src/components/ui/typing-dots.js";
 import { act } from "@testing-library/react";
 
 // Every variant, size and state that design-system/components.md lists for the new components renders.
@@ -541,6 +542,33 @@ describe("ListRow", () => {
     const row = screen.getByTestId("row");
     expect(row.querySelector("[data-details]")).toBeNull();
     expect(row.querySelector("[data-row-menu]")).toBeNull();
+  });
+});
+
+describe("TypingDots", () => {
+  it("is a live status read as its label, with three dots bouncing in turn", () => {
+    render(<TypingDots label="Thinking…" />);
+    const status = screen.getByRole("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.textContent).toBe("Thinking…");
+    const dots = [...status.querySelectorAll("[data-dot]")];
+    expect(dots).toHaveLength(3);
+    for (const d of dots) expect(d.getAttribute("aria-hidden")).toBe("true");
+    // Staggered: each dot's 1.2s loop starts at its own delay, inside the shorthand (a separate delay class is reset by it).
+    const delays = dots.map((d) => d.className.match(/animate-\[typing_1\.2s_ease-in-out_(\d+)ms_infinite\]/)?.[1]);
+    expect(delays).toEqual(["0", "150", "300"]);
+    expect(dots.some((d) => /animation-delay/.test(d.className))).toBe(false);
+    // The keyframes the classes name exist at the top level of index.css, or the dots would stand still everywhere.
+    expect(readFileSync("web/src/index.css", "utf8")).toMatch(/^@keyframes typing \{/m);
+  });
+
+  it("moves only when motion is allowed: with reduced motion the dots stand still", () => {
+    render(<TypingDots label="Thinking…" />);
+    for (const d of screen.getByRole("status").querySelectorAll("[data-dot]")) {
+      const classes = d.className.split(" ");
+      expect(classes.filter((c) => c.includes("animate-")).every((c) => c.startsWith("motion-safe:"))).toBe(true);
+      expect(classes.some((c) => c.startsWith("motion-safe:animate-"))).toBe(true);
+    }
   });
 });
 
