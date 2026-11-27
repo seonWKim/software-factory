@@ -19,7 +19,7 @@ import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkIte
 import { itemAlarms, openAlarms } from "./alarms.js";
 import { actorGrant, itemCommands, itemProposals, itemReplies, mergeReadiness, needsYouCommands, projectCaps, readSession, waitingSpec } from "./commands.js";
 import { type DataCtx, type DataResult, dataAutonomy, dataTable, dataTables } from "./data.js";
-import { applyFilters, facetCounts, parseFilters } from "./filters.js";
+import { applyFilters, facetCounts, parseBlockedOn, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, itemCounts, itemState, latestDecision, holderTitles, listRows, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
 import { runTokens } from "./deps.js";
 import { heldFailureOf, needCtx, needOf } from "./need.js";
@@ -297,10 +297,13 @@ export async function listItems(d: ApiDeps, params: URLSearchParams): Promise<Ap
 async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const parsed = parseFilters(params);
   if (!parsed.ok) return apiError(400, parsed.error);
+  const blocked = parseBlockedOn(params.get("blocked_on"));
+  if (!blocked.ok) return apiError(400, blocked.error);
   const f = parsed.filters;
   const ctx = { store: c.d.store, w: c.w, now: c.now, lease_ms: c.d.lease_ms };
   const rows = await listRows(ctx, f);
-  const shown = await inProject(c.d.store, params.get("project"), applyFilters(rows, f));
+  const filtered = applyFilters(rows, f).filter((r) => blocked.value === undefined || r.item.blocked_on === blocked.value);
+  const shown = await inProject(c.d.store, params.get("project"), filtered);
   const checks = new Map<string, MergeCheck>();
   for (const m of await c.d.store.listMergeChecks(shown.filter((r) => phaseOf(r.item) === "merge_pending").map((r) => r.item.id))) checks.set(m.work_item_id, m);
   const overlaps = await overlapsOf(rows.map((r) => r.item), (v) => c.text(v)); // among every ready item, whatever the filter

@@ -3,7 +3,11 @@ import { join } from "node:path";
 import { expect } from "vitest";
 import type { FactoryConfig } from "../../src/core/config.js";
 import { LiveSettings, baseFromConfig } from "../../src/core/settings.js";
-import type { UserId, WorkerId } from "../../src/core/types.js";
+import type { Logger } from "../../src/core/log.js";
+import type { SourceRef, UserId, WorkerId } from "../../src/core/types.js";
+import type { ExternalIdentity } from "../../src/interfaces/auth-provider.js";
+import type { ForgeEvent } from "../../src/interfaces/forge.js";
+import type { SourceEvent } from "../../src/interfaces/source-adapter.js";
 import type { EgressScanner } from "../../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../src/interfaces/factory-store.js";
 import { skillVersion } from "../../src/runtime/capabilities/capabilities.js";
@@ -16,8 +20,9 @@ import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import { ControllerRole } from "../../src/runtime/roles/controller-role.js";
 import { Worker } from "../../src/worker/index.js";
 import { FakeBroker } from "./fakes/broker.js";
-import { alice, cleanScanner, config, issueRef, prompts, silent } from "./fakes/config.js";
+import { alice, cleanScanner, config, issueRef, prompts, silent, triageSpec } from "./fakes/config.js";
 import { FakeAuth, FakeRunner, FakeSandbox, MemoryStorage } from "./fakes/runner.js";
+import { FakeForge } from "./fakes/forge.js";
 import { FakeSource } from "./fakes/source.js";
 import { newStore } from "./store.js";
 import { CLASSIFY_SYSTEM } from "../../src/core/classify-message.js";
@@ -109,3 +114,59 @@ export const get = (store: FactoryStore, path: string, scanner: EgressScanner = 
   readApi({ store, scanner } as unknown as ServerDeps, new URL(`http://127.0.0.1${path}`), REQ);
 export const versionsPath = (skill: string) => `/api/v1/evals/${encodeURIComponent(skill)}/versions`;
 export const diffPath = (skill: string, a: string, b: string) => `/api/v1/evals/${encodeURIComponent(skill)}/diff?a=${a}&b=${b}`;
+
+export const bob: ExternalIdentity = { provider: "github", subject: "2", login: "bob" };
+
+export function prRef(n: number): SourceRef {
+  return { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/pull/${n}` };
+}
+
+export function prOpen(n: number, o: Partial<Extract<ForgeEvent, { kind: "change_open" }>> = {}): ForgeEvent {
+  return {
+    kind: "change_open",
+    source: prRef(n),
+    change_ref: String(n),
+    head_branch: "feature/x",
+    head_sha: "h1",
+    title: "Speed up the poll",
+    body: "It reads fewer pages now.",
+    author: bob,
+    labels: [],
+    ...o,
+  };
+}
+
+/** The factory wired to fakes for the tests on pull requests it did not open (design 2026-11-01). */
+export async function factory(script: ConstructorParameters<typeof FakeRunner>[0] = {}, log: Logger = silent) {
+  const clock = new FakeClock();
+  const { store } = await newStore(clock);
+  const source = new FakeSource();
+  const forge = new FakeForge(source);
+  const sandbox = new FakeSandbox();
+  const broker = new FakeBroker();
+  const runner = new FakeRunner({
+    triage: () => ({ output: triageSpec }),
+    implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+    review: () => ({ output: { verdict: "pass", tier: 1, findings: [], summary: "fine" } }),
+    ...script,
+  });
+  const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
+  const worker = new Worker({
+    id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config, prompts, log: silent,
+    scanner: cleanScanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(), prRef: (pr) => forge.prRef(pr),
+  });
+  /** One poll tick: PR events come from the forge, the rest from the source. */
+  const poll = async (...events: (SourceEvent | ForgeEvent)[]) => {
+    for (const e of events) {
+      if (e.kind.startsWith("change_") || e.kind === "pr_changes_requested") forge.queue.push(e as ForgeEvent);
+      else source.queue.push(e as SourceEvent);
+    }
+    await controller.tickIntake();
+  };
+  const work = async () => {
+    while (await worker.tick()) await controller.tickRuns();
+    await controller.tickRuns();
+  };
+  const item = async (n: number) => store.getWorkItemBySource("github_issue", `o/r#${n}`);
+  return { clock, store, source, forge, sandbox, broker, runner, controller, worker, poll, work, item };
+}

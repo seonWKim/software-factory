@@ -22,7 +22,7 @@ import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { Clock } from "../src/interfaces/clock.js";
 import { SUPERVISOR_REQUEST_FILE, SUPERVISOR_STATUS_FILE } from "../src/interfaces/updater.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { MIGRATE_PATH, SUPERVISOR_PATH, type UiMigrate } from "../src/ui/migrate-api.js";
+import { MIGRATE_PATH, SUPERVISOR_PATH, supervisorOffers, type UiMigrate } from "../src/ui/migrate-api.js";
 import type { UiPauses } from "../src/ui/pause-api.js";
 import { type ServerDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
@@ -168,6 +168,42 @@ describe("Migrate now (POST /api/v1/migrate)", { timeout: 30_000 }, () => {
     expect(r.status).toBe(409);
     expect(parse(r).error).toMatch(/migration is under way/);
     expect(s.request()).toBeNull();
+  });
+});
+
+describe("a factory running in place (none updater: a live child, no supervisor_pid)", () => {
+  const CHECKOUT = "Running from your checkout. To update, stop `factory dev`, pull, and start it again.";
+  const inPlace = () => setup({ status: { supervisor_pid: undefined }, alive: [CHILD] });
+
+  it("gives the checkout reason for all three offers, not the start message", async () => {
+    const s = await inPlace();
+    const o = await supervisorOffers(s.migrate);
+    expect(o).toMatchObject({ live: false, migrate: { offered: false, reason: CHECKOUT }, start: { offered: false, reason: CHECKOUT }, restart: { offered: false, reason: CHECKOUT } });
+    expect(JSON.stringify(o)).not.toContain("No factory supervisor is running");
+    expect(JSON.stringify(o)).not.toContain("Start the factory from a terminal");
+    const view = parse(await respond(s.d, { method: "GET", url: SUPERVISOR_PATH, host: HOST }));
+    expect(view.migrate.reason).toBe(CHECKOUT);
+  });
+
+  it("refuses the POSTs with the same reason and files nothing", async () => {
+    const s = await inPlace();
+    const calls = [
+      post(s.pauses, MIGRATE_PATH, { confirm: true }),
+      post(s.pauses, SUPERVISOR_PATH, { action: "start", confirm: true }),
+      post(s.pauses, SUPERVISOR_PATH, { action: "restart", confirm: true }),
+    ];
+    for (const c of calls) {
+      const r = await respond(s.d, c);
+      expect(r.status).toBe(409);
+      expect(parse(r).error).toBe(CHECKOUT);
+    }
+    expect(s.request()).toBeNull();
+  });
+
+  it("keeps the start message when no process runs", async () => {
+    const s = await setup({ status: { supervisor_pid: undefined }, alive: [] });
+    const o = await supervisorOffers(s.migrate);
+    expect(o.start.reason).toMatch(/^No factory supervisor is running, so this page cannot reach it\. Start the factory from a terminal with factory dev\.$/);
   });
 });
 
