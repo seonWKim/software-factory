@@ -14,6 +14,7 @@ export const standing = {
   "standing.recent": "{count} items in the last 7 days",
   "standing.recentOne": "1 item in the last 7 days",
   "standing.recentMore": "+{count} more",
+  "standing.recentShow": "Show them",
   "standing.proposal": "{count} approvals in a row with the spec unchanged (threshold {threshold}), proposed {when}.",
   "standing.proposalTitle": "Turn on “{rule}”?",
   "standing.actions": "More: {rule}",

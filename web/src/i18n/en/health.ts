@@ -195,6 +195,7 @@ export const health = {
   "health.tabRuns": "Runs",
   "health.tabCost": "Cost",
   "health.tabReview": "Review",
+  "health.tabActivity": "Activity",
   "health.checkSince": "started {time}",
   "health.checkNext": "next probe {time}",
   "health.failMark": "⚠ failing",

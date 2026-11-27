@@ -42,7 +42,6 @@ Produce:
   write a line starting with "Depends on" in `problem` yourself. A `Depends on:` line already in the request is
   kept by the factory: do not ask about it.
 - Check the design against the principles in the repository's agent instructions (AGENTS.md or CLAUDE.md) before writing decisions. A design that breaks a principle goes under decisions, with the principle named. A point AGENTS.md or CLAUDE.md already decides is not a decision: follow it and don't ask about it.
-- Headless first: a feature is declared as an API capability first, and the dashboard, chat and CLI call that API. Page-only or CLI-only behaviour and hand-written routes count as gaps.
 - Owner defaults: the owner's standing answers are listed at the end of this prompt, under "Owner defaults".
   When one answers a question you would ask, apply it instead of asking.
 - applied_defaults: each owner default you applied, one per entry, written as the rule you followed (for

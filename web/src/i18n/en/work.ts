@@ -156,7 +156,6 @@ export const work = {
   "coordinator.title": "Coordinator",
   "coordinator.label": "Coordinator",
   "coordinator.switch": "Coordinator on",
-  "coordinator.setting": "Changes with factory settings set coordinator.",
   "coordinator.every": "Checks every 15 minutes.",
   "coordinator.next": "Next check {time}",
   "coordinator.activityOff": "Off: it starts no check.",

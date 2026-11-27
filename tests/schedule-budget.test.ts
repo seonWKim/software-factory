@@ -213,10 +213,21 @@ describe("the schedule token cap", () => {
     await store.close();
   });
 
-  it("a schedule with no stored period (stored before the period existed) counts all its runs", async () => {
+  it("a daily schedule with no stored period (stored before the period existed) counts per day, so yesterday's runs do not hold today's", async () => {
     const { store, model, pass } = await setup(AGENT, 1000, null);
     await store.db.run("UPDATE controller_schedules SET token_period = NULL");
     expect((await store.listSchedules())[0]!.token_period).toBeNull();
+    await pass.fireDue(at(D1));
+    await pass.fireDue(at(D2)); // 1500 tokens on D1's date, over the 1000-token cap; D2's date has none
+    expect(model.calls).toEqual([D1, D2]);
+    expect((await store.listScheduleRuns("sch_c")).map((r) => r.outcome)).toEqual(["fired", "fired"]);
+    await store.close();
+  });
+
+  it("a non-daily schedule with no stored period counts all its runs", async () => {
+    const { store, model, pass } = await setup(AGENT, 1000, null);
+    await store.db.run("UPDATE controller_schedules SET cadence_kind = 'interval', cadence_spec = '60', token_period = NULL");
+    expect((await store.listSchedules())[0]).toMatchObject({ cadence: { kind: "interval" }, token_period: null });
     await pass.fireDue(at(D1));
     await pass.fireDue(at(D2));
     expect(model.calls).toEqual([D1]);

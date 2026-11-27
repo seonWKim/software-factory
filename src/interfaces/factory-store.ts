@@ -14,7 +14,7 @@ import type { RunOutputStore } from "../core/stall.js"; import type { SessionRes
 import type { ProposalStore } from "../core/proposals.js"; import type { StandingChangeStore } from "../core/standing.js";
 import type { ScheduleStore } from "../core/schedule.js"; import type { AttachmentStore } from "../core/attachments.js"; import type { RoutineStore } from "../core/check-page.js";
 import type { SkillEvalStore } from "./skill-eval-store.js"; import type { SkillDraftStore } from "./skill-draft-store.js";
-import type { AlertDismissalStore } from "../core/alarms.js"; import type { LLMMessage } from "./llm-provider.js";
+import type { AlertDismissalStore } from "../core/alarms.js"; import type { HeldWriteStore } from "../core/authorize.js"; import type { LLMMessage } from "./llm-provider.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -342,12 +342,12 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 /** A chat message to store (controller_chat_messages): `seq` orders a session's messages; the rest as on LLMMessage. A chat turn's row (controller_chat_turns, design 04-chat-agent): running at its start, then answered, refused or failed, `reason` null when answered. */
-export interface NewChatMessage extends LLMMessage { seq: number } export type ChatTurnStatus = "running" | "answered" | "refused" | "failed";
+export interface NewChatMessage extends LLMMessage { seq: number } export type ChatTurnStatus = "running" | "answered" | "refused" | "failed"; /** A spend row's kind (controller_chat_spend.kind): a chat turn, or a coordinator cycle (design 06-spend). */ export type ChatSpendKind = "chat" | "coordinator";
 export interface ChatMessageRecord extends NewChatMessage { session_id: string; created_at: Timestamp } export interface ChatTurnRecord { turn_id: string; session_id: string; status: ChatTurnStatus; reason: string | null; created_at: Timestamp; finished_at: Timestamp | null }
-/** A chat session's messages: an append writes the whole batch, or nothing (false) when one of its seqs is the session's already. Its turns' spend (design 04-chat-agent): one row per turn, keyed by the turn's own id (never a message seq, which a failed turn does not take), `cost_usd` null when unknown; a record of a counted turn writes nothing (false); a read takes UTC days, both inclusive. Its turns' rows, each method one transaction: a start writes it running (false, nothing written, when the id is stored already); a finish ends only a running turn (false otherwise); a list reads the newest first, at most `limit`. */
+/** A chat session's messages: an append writes the whole batch, or nothing (false) when one of its seqs is the session's already. Its turns' spend (design 04-chat-agent): one row per turn, keyed by the turn's own id (never a message seq, which a failed turn does not take), `cost_usd` null when unknown; a record of a counted turn writes nothing (false); a read takes UTC days, both inclusive, and one kind, `chat` unless named. Its turns' rows, each method one transaction: a start writes it running (false, nothing written, when the id is stored already); a finish ends only a running turn (false otherwise); a list reads the newest first, at most `limit`. */
 export interface ChatMessageStore {
   appendChatMessages(session_id: string, messages: readonly NewChatMessage[]): Promise<boolean>; listChatMessages(session_id: string): Promise<ChatMessageRecord[]>;
-  recordChatSpend(s: { turn_id: string; session_id: string; day: string; cost_usd: number | null; tokens: number }): Promise<boolean>; listChatSpendBetween(from: string, to: string): Promise<Parameters<ChatMessageStore["recordChatSpend"]>[0][]>;
+  recordChatSpend(s: { turn_id: string; session_id: string; day: string; cost_usd: number | null; tokens: number }): Promise<boolean>; listChatSpendBetween(from: string, to: string, kind?: ChatSpendKind): Promise<Parameters<ChatMessageStore["recordChatSpend"]>[0][]>;
   startChatTurn(turn_id: string, session_id: string): Promise<boolean>; finishChatTurn(turn_id: string, status: Exclude<ChatTurnStatus, "running">, reason: string | null): Promise<boolean>; listChatTurns(limit: number): Promise<ChatTurnRecord[]>;
 }
 /** One autonomous action (design 08-schedules-actions): `kind` as src/controller/background-jobs.ts lists it; `ref` a run's transcript path or a `log:<component>:<message>` reference (null: none); `at` the store's time. */
@@ -355,7 +355,7 @@ export interface Activity { seq: number; actor_id: string; kind: string; subject
 export type NewActivity = Omit<Activity, "seq" | "at">;
 /** Most rows are written by the store in their change's transaction (expireLeases, the prunes, a schedule claim, a transition's `activity`, a migration); recordActivity is for a change outside the store (a cleanup pass). listActivity: newest first, at most `limit` (200). */
 export interface ActivityStore { recordActivity(a: NewActivity): Promise<Activity>; listActivity(opts?: { kind?: string; limit?: number }): Promise<Activity[]> }
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore, SkillDraftStore, AttachmentStore, AlertDismissalStore, RoutineStore, ChatMessageStore, ActivityStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore, GoldenFingerprintStore, RunOutputStore, SessionReservationStore, ProposalStore, DesignLearningStore, StandingChangeStore, ScheduleStore, SkillEvalStore, SkillDraftStore, AttachmentStore, AlertDismissalStore, RoutineStore, ChatMessageStore, ActivityStore, HeldWriteStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes

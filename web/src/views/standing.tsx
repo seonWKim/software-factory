@@ -3,7 +3,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Fragment, type ReactNode, useId, useRef, useState } from "react";
 import { API, type StandingProposalRow, type StandingRuleRow, type StandingView, type StandingWriteBody, postStanding, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
-import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
@@ -14,19 +13,19 @@ import { t } from "../i18n/index.js";
 import { Card, CardSection } from "../components/ui/card.js";
 import { localDateTime, relativeTime } from "../lib/format.js";
 import { RawDetails, useNow, useViewer } from "./common.js";
-import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
+import { ListRow } from "../components/ui/list-row.js";
 import { OverflowMenu } from "../components/ui/menu.js";
 import { BLOCK_LINK_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { ROW_PAD } from "./rules-shared.js";
+import { ROW_PAD, WRAP_TITLE } from "./rules-shared.js";
 
 // Standing approvals on the Rules page (design 05-standing-approvals and §9, issue #300; two sections since 2026-11-22):
 // each rule that is on is a row of In effect, its Switch, its plain sentence, when it last fired and the items it
 // approved in the last 7 days (linked by title); behind Details its ID, gate, tier, threshold, who set it ("you" for the
 // viewer, else "a person"; never the user ID) and when it was created. A rule that is off is a row under the page's
-// Details. Each pending proposal is a row of Waiting for you: Accept visible, Decline in its ⋯ menu. With the ledger
+// Details. Each pending proposal is a row of Waiting for you: Accept visible beside its ⋯ menu, Decline in that menu. With the ledger
 // off the same rows sit in one card (ApprovalsSection). A rule is turned on (add), paused, edited (the threshold) or
 // removed in a Dialog, from its Switch or its ⋯ menu, never in the row; each dialog lists the waiting items the change
 // would approve now, or "none". Every write is POST /api/v1/standing with the CSRF token; the server runs the owner
@@ -121,7 +120,7 @@ export function StandingRule({ rule, token }: { rule: StandingRuleRow; token: st
       data-rule={rule.rule}
       className={ROW_PAD}
       leading={<Switch aria-label={sentence} checked={rule.enabled} disabled={off} onCheckedChange={(next) => setAction(next ? "add" : "pause")} />}
-      title={<p data-rule-sentence className={`${ROW_TITLE} font-medium`} title={sentence}>{sentence}</p>}
+      title={<p data-rule-sentence className={WRAP_TITLE}>{sentence}</p>}
       details={
         <>
           <span data-fired>{firedText(firedAt, now)}</span>
@@ -130,18 +129,22 @@ export function StandingRule({ rule, token }: { rule: StandingRuleRow; token: st
           <span data-recent className="flex min-w-0 flex-wrap items-center gap-x-1">
             <span className="break-keep">
               {recent.length === 1 ? t("standing.recentOne") : t("standing.recent", { count: recent.length })}
-              {recent.length > 0 && ": "}
+              {recent.length > 0 && <span className="max-sm:hidden">: </span>}
             </span>
+            {/* Below `sm` the titles would stack as cut underlines: the count stays, and Show opens Details, which lists them. */}
             {shown.map((item, i) => (
-              <span key={item.id} data-recent-item className="flex max-w-full min-w-0 items-center sm:max-w-[40ch]">
+              <span key={item.id} data-recent-item className="flex max-w-full min-w-0 items-center max-sm:hidden sm:max-w-[40ch]">
                 <Link href={itemPath(item.id)} data-raw title={item.title} className={cn(BLOCK_LINK_CLASS, "min-w-0 truncate leading-6")}>{item.title}</Link>
                 {(i < shown.length - 1 || hidden > 0) && <span className="shrink-0">, </span>}
               </span>
             ))}
             {hidden > 0 && (
-              <Button variant="ghost" size="sm" data-recent-more className={`min-h-0 px-1 ${LINK_CLASS}`} onClick={openDetails}>{t("standing.recentMore", { count: hidden })}</Button>
+              <Button variant="ghost" size="sm" data-recent-more className={`min-h-0 px-1 max-sm:hidden ${LINK_CLASS}`} onClick={openDetails}>{t("standing.recentMore", { count: hidden })}</Button>
             )}
           </span>
+          {recent.length > 0 && (
+            <Button variant="ghost" size="sm" data-recent-show className={`min-h-0 px-1 sm:hidden ${LINK_CLASS}`} onClick={openDetails}>{t("standing.recentShow")}</Button>
+          )}
         </>
       }
       menu={
@@ -160,7 +163,7 @@ export function StandingRule({ rule, token }: { rule: StandingRuleRow; token: st
       }
     >
       <RawDetails>
-        {hidden > 0 && (
+        {recent.length > 0 && (
           <ul data-recent-all className={`mb-1 ${muted}`}>
             {recent.map((item) => <li key={item.id}><Link href={itemPath(item.id)} className={LINK_CLASS}>{item.title}</Link></li>)}
           </ul>
@@ -250,7 +253,7 @@ function RuleDialog({ rule, action, token, onClose }: { rule: StandingRuleRow; a
   );
 }
 
-/** A proposal to turn a rule on, as a ListRow: Accept is its one visible action; Decline sits in its ⋯ menu. */
+/** A proposal to turn a rule on, as a ListRow: Accept is its one visible action, at the right of its title; Decline sits in its ⋯ menu. */
 export function StandingProposal({ proposal, token }: { proposal: StandingProposalRow; token: string | null }) {
   const { busy, error, write } = useStandingWrite(token);
   const answer = (enabled: boolean) => void write({ rule: proposal.rule, enabled, proposal: proposal.id });
@@ -259,15 +262,15 @@ export function StandingProposal({ proposal, token }: { proposal: StandingPropos
     <ListRow
       data-proposal={proposal.id}
       className={ROW_PAD}
-      title={<p className={`${ROW_TITLE} font-medium`} title={sentence}>{withNodes("standing.proposalTitle", { rule: <span data-rule-sentence>{sentence}</span> })}</p>}
+      title={<p className={WRAP_TITLE}>{withNodes("standing.proposalTitle", { rule: <span data-rule-sentence>{sentence}</span> })}</p>}
       details={<span className="break-keep">{t("standing.proposal", { count: proposal.run_length, threshold: proposal.threshold, when: localDateTime(proposal.created_at) })}</span>}
-      menu={<OverflowMenu label={t("standing.actions", { rule: sentence })} items={[{ label: t("standing.decline"), action: "decline", disabled: busy, onSelect: () => answer(false) }]} />}
-    >
-      <ButtonRow>
+      action={
         <Button variant="secondary" size="sm" disabled={busy} onClick={() => answer(true)}>
           {t("standing.accept")}
         </Button>
-      </ButtonRow>
+      }
+      menu={<OverflowMenu label={t("standing.actions", { rule: sentence })} items={[{ label: t("standing.decline"), action: "decline", disabled: busy, onSelect: () => answer(false) }]} />}
+    >
       <Refusal error={error} />
     </ListRow>
   );

@@ -260,7 +260,7 @@
     "/api/v1/chat/send": {
       "post": {
         "operationId": "chat.send",
-        "summary": "Send the owner's message to the chat and run one turn with the Ask model; no session_id starts a new session. A withheld turn answers no reply.",
+        "summary": "Send the owner's message to the chat and run one turn with the Ask model; no session_id starts a new session. A withheld turn answers no reply; a failed model call answers the provider's own words in detail.",
         "tags": [
           "chat"
         ],
@@ -310,6 +310,9 @@
                       ]
                     },
                     "reason": {
+                      "type": "string"
+                    },
+                    "detail": {
                       "type": "string"
                     },
                     "reply": {

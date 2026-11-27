@@ -64,6 +64,11 @@ export interface RuleRow {
   /** A proposal's kind (`promote-learning`, `edit-asset`, `new-asset`) and the asset it changes, when the ledger lists them. */
   kind?: string;
   target?: string;
+  /**
+   * A waiting proposal's one-line gist: the first line it adds, else its prose change, description or root reason;
+   * null when the ledger gave none, or for any other entry (absent from an older server).
+   */
+  gist?: string | null;
   /** The task a promote of this proposal created to build it (`tk_` + its ID in lower case); null before (absent from an older server). */
   task?: string | null;
 }
@@ -153,6 +158,8 @@ export interface AgentsHomeView {
 export interface RulesView {
   enabled: boolean;
   entries: RuleRow[];
+  /** Each waiting proposal's first changed lines, by ID; a side the ledger did not give is absent (absent from an older server). */
+  excerpts?: Record<string, { before?: string; after?: string }>;
   /** The rules file's blocks and encoded-elsewhere lines; null with the ledger off. */
   applied: { rules: AppliedRule[]; elsewhere: string[] } | null;
   /** The retired classes, newest first; null with the ledger off (absent from an older server). */
