@@ -7,7 +7,7 @@
 
 import type { Timestamp } from "../../../core/types.js";
 import type { ChatSpend } from "../../../core/spend.js";
-import type { ChatMessageRecord, ChatTurnRecord, ChatTurnStatus, NewChatMessage } from "../../../interfaces/factory-store.js";
+import type { ChatMessageRecord, ChatSpendKind, ChatTurnRecord, ChatTurnStatus, NewChatMessage } from "../../../interfaces/factory-store.js";
 import type { LLMToolCall } from "../../../interfaces/llm-provider.js";
 import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
 import { insertOnce } from "./store-steps.js";
@@ -56,9 +56,9 @@ export async function recordChatSpend(db: SqlDriver, s: ChatSpend, at: Timestamp
   return insertOnce(db, db, INSERT_SPEND, [s.turn_id, s.session_id, s.day, s.cost_usd, s.tokens, at]);
 }
 
-/** The chat turns (kind `chat`: never a coordinator row) of the UTC days `from` to `to`, both inclusive, by day, session and turn id. Read-only. */
-export async function listChatSpendBetween(db: SqlExecutor, from: string, to: string): Promise<ChatSpend[]> {
-  const rows = await db.all("SELECT * FROM controller_chat_spend WHERE kind = 'chat' AND day >= ? AND day <= ? ORDER BY day, session_id, turn_id", [from, to]);
+/** The spend rows of one kind (`chat` by default: never a coordinator row) of the UTC days `from` to `to`, both inclusive, by day, session and turn id. Read-only. */
+export async function listChatSpendBetween(db: SqlExecutor, from: string, to: string, kind: ChatSpendKind = "chat"): Promise<ChatSpend[]> {
+  const rows = await db.all("SELECT * FROM controller_chat_spend WHERE kind = ? AND day >= ? AND day <= ? ORDER BY day, session_id, turn_id", [kind, from, to]);
   return rows.map((r) => ({
     turn_id: String(r.turn_id), session_id: String(r.session_id), day: String(r.day), cost_usd: r.cost_usd == null ? null : Number(r.cost_usd), tokens: Number(r.tokens),
   }));

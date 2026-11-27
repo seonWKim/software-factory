@@ -6,7 +6,7 @@ Call shape: `LLMRequest.tools` (optional) lists the tools the model may call, ea
 
 Plugins:
 
-- `claude-cli`: `ClaudeCliLLMProvider`, one turn through the Claude Code CLI on the subscription login (D2). No tools: a request with tools (or holding tool messages or tool calls) answers `stop_reason` `error` with no output and runs no CLI, so a fallback chain passes it to the next member.
+- `claude-cli`: `ClaudeCliLLMProvider`, one turn through the Claude Code CLI on the subscription login (D2). Tools are carried in the reply's shape (decision changed 2026-11-27; replaces "No tools", see History). The CLI still runs with no tools of its own (`--tools ""`). When a request offers tools, the system prompt gets a `## Tools` part listing each tool's name, description and arguments' schema and saying the caller runs them, and `--json-schema` makes the reply `{ answer, tool_calls: [{ name, arguments }] }`, with `name` limited to the offered tools. A reply with tool calls is returned as `tool_calls`, each with a new id `call_<uuid>` and its arguments as JSON text; otherwise `answer` is the text. Earlier assistant tool calls are sent in the prompt as `ASSISTANT (tool calls):` with their JSON, and tool results as `TOOL RESULT (<id>):`. A structured output of another shape is `error`. Tools and an `output_schema` in one call are refused (`error`, no CLI run). A CLI answer with `is_error` (for example an expired login) is `error` with the CLI's text.
   - Enable: `"plugins": { "llm": "claude-cli", ... }`.
   - Secrets: `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`). Settings: `models` (`cheap`, `standard`, `strong`); the `claude` CLI on `PATH`.
 - `openai-compatible`: `OpenAICompatibleLLMProvider`, one request to any OpenAI-style chat completions endpoint (`POST <base_url>/chat/completions`) through the shared client in `src/impl/openai/`. Not a default: it is picked only by its name in `plugins.llm`.
@@ -34,6 +34,7 @@ Switch back / disable: `"llm": "claude-cli"`.
 
 ## History
 
+- **claude-cli carries tools** (2026-11-27). Before: `claude-cli` answered any request with tools, tool messages or tool calls `stop_reason` `error` with no output and ran no CLI. The chat always offers its feature-map tools, so with `plugins.llm` `claude-cli` (this repo's setting) every chat turn and every daily chat eval question failed as `model_error` in milliseconds, with no model call; the eval read 0/12.
 - **Tools on the call** (2026-11-26, wi_f4e41831). Before: single model calls without tools; `LLMRequest` had no tools, `LLMResponse` no tool calls, and messages only the user and assistant roles.
 - **UI process caller** (2026-11-14). Before: only the worker (improve runs, scorer) and the controller (model probe) built the provider; the UI process made no model call.
 - **Capabilities entries** (2026-11-13, issue #572). Before: the selected providers were visible only in `plugins.llm` of factory.config.json, with no page showing which are on or when one was last used.

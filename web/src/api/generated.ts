@@ -17,8 +17,8 @@ export type ActivityActorsOutput = { "as_of": string; "retention_days": number; 
 export const activityActors = (input: ActivityActorsInput): Promise<ActivityActorsOutput> => getJson<ActivityActorsOutput>("/api/v1/activity" + query(input));
 
 export type ChatSendInput = { "session_id"?: string; "text": string };
-export type ChatSendOutput = { "turn_id": string; "session_id": string; "outcome": "answered" | "refused" | "failed"; "reason"?: string; "reply"?: string };
-/** Send the owner's message to the chat and run one turn with the Ask model; no session_id starts a new session. A withheld turn answers no reply. (POST /api/v1/chat/send, permission owner) */
+export type ChatSendOutput = { "turn_id": string; "session_id": string; "outcome": "answered" | "refused" | "failed"; "reason"?: string; "detail"?: string; "reply"?: string };
+/** Send the owner's message to the chat and run one turn with the Ask model; no session_id starts a new session. A withheld turn answers no reply; a failed model call answers the provider's own words in detail. (POST /api/v1/chat/send, permission owner) */
 export const chatSend = (token: string, input: ChatSendInput) => postJson<ChatSendOutput & { error?: string }>("/api/v1/chat/send", token, input);
 
 export type ChatTranscriptInput = { "session_id": string };
