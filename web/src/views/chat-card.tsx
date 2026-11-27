@@ -97,7 +97,7 @@ export function ReplyTable({ rows }: { rows: string[][] }) {
 }
 
 /** The context line a sent message may start with (chat-page.tsx), taken off again where a stored message is shown. */
-const withoutContext = (text: string): string => text.replace(/^(?:Open page|About item): [^\n]*\n\n/, "");
+export const withoutContext = (text: string): string => text.replace(/^(?:Open page|About item): [^\n]*\n\n/, "");
 
 /** A failed turn's reason in plain words; `detail` (chat.send's, the provider's own words) is shown with it when given. */
 export function reasonWords(reason: string | null | undefined, detail?: string): string {
@@ -115,16 +115,16 @@ export function reasonWords(reason: string | null | undefined, detail?: string):
   return word === undefined ? t("chat.reason.other") : word();
 }
 
-const OUTCOME_WORDS: Record<"running" | "answered" | "refused" | "failed", () => string> = {
+export const OUTCOME_WORDS: Record<"running" | "answered" | "refused" | "failed", () => string> = {
   running: () => t("chat.outcome.running"),
   answered: () => t("chat.outcome.answered"),
   refused: () => t("chat.outcome.refused"),
   failed: () => t("chat.outcome.failed"),
 };
 
-interface Turn { turn_id: string; session_id: string; status: "running" | "answered" | "refused" | "failed"; reason: string | null; created_at: string }
+export interface Turn { turn_id: string; session_id: string; status: "running" | "answered" | "refused" | "failed"; reason: string | null; created_at: string }
 
-const OUTCOME_TONE: Record<Turn["status"], string> = { running: "running", answered: "done", refused: "needs_approval", failed: "failed" };
+export const OUTCOME_TONE: Record<Turn["status"], string> = { running: "running", answered: "done", refused: "needs_approval", failed: "failed" };
 
 /** A stored user message's images, as chat.transcript names them (none on any other message). */
 const imagesOf = (m: Record<string, unknown>): { id: string; name: string; media_type: string }[] =>

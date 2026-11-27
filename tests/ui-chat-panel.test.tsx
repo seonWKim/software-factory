@@ -70,3 +70,104 @@ describe("Copy in the chat panel", () => {
     }
   });
 });
+
+// New chat and Recent: earlier sessions come from chat.turns (grouped by session_id) and Open loads chat.transcript.
+describe("New chat and Recent", () => {
+  let sends: { session_id?: string; text: string }[];
+  let calls: string[];
+  let turns: Record<string, unknown>[];
+  let turnsStatus: number;
+  const turn = (n: number, session: string, status: string, reason: string | null) => ({ turn_id: `ct_${n}`, session_id: session, status, reason, created_at: AT, finished_at: AT });
+
+  beforeEach(() => {
+    sends = [];
+    calls = [];
+    turnsStatus = 200;
+    turns = [turn(3, "cs_a", "answered", null), turn(2, "cs_b", "refused", "withheld"), turn(1, "cs_a", "failed", "model_error")];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const u = new URL(url, "http://127.0.0.1");
+      calls.push(`${u.pathname}${u.search}`);
+      if (u.pathname === "/api/v1/session") return json(200, { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:owner", actor_source: "environment" });
+      if (u.pathname === "/api/v1/chat/turns") return turnsStatus === 200 ? json(200, { turns }) : json(500, { error: "boom" });
+      if (u.pathname === "/api/v1/chat/transcript") {
+        return json(200, { messages: [
+          { seq: 0, role: "user", content: "About item: “X”, state Running, stage implement.\n\nWhat is this?" },
+          { seq: 1, role: "tool", content: "{}" },
+          { seq: 2, role: "assistant", content: "A build task." },
+        ] });
+      }
+      if (u.pathname === "/api/v1/chat/send" && init?.method === "POST") {
+        sends.push(JSON.parse(String(init.body)));
+        return json(200, { turn_id: "ct_n", session_id: "cs_new", outcome: "answered", reply: "Fine." });
+      }
+      return json(404, { error: "Not found." });
+    }));
+  });
+
+  const mount = () => render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(ChatPage)));
+  const openFirst = async () => {
+    fireEvent.click((await screen.findAllByRole("button", { name: /^Actions for the chat/ }, SLOW))[0] as HTMLElement);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Open" }));
+    await screen.findByText("A build task.", {}, SLOW);
+  };
+
+  it("lists each session once with its latest outcome, one chatTurns read of 50, and no ID", async () => {
+    mount();
+    expect(await screen.findByRole("heading", { name: "Recent" }, SLOW)).toBeTruthy();
+    await waitFor(() => expect(document.querySelectorAll("[data-list-row]")).toHaveLength(2), SLOW);
+    const list = [...document.querySelectorAll("[data-list-row]")];
+    expect(list[0]?.textContent).toContain("Answered");
+    expect(list[1]?.textContent).toContain("Held back");
+    expect(list[1]?.textContent).toContain("private");
+    expect(document.body.textContent).not.toMatch(/cs_|ct_/);
+    expect(calls.filter((c) => c.startsWith("/api/v1/chat/turns"))).toEqual(["/api/v1/chat/turns?limit=50"]);
+  });
+
+  it("Open loads the stored messages in order without the context line, and the next send carries its session_id", async () => {
+    mount();
+    await openFirst();
+    const items = screen.getAllByRole("listitem").filter((li) => li.hasAttribute("data-from"));
+    expect(items.map((li) => li.getAttribute("data-from"))).toEqual(["you", "chat"]);
+    expect(items[0]?.textContent).toContain("What is this?");
+    expect(items[0]?.textContent).not.toContain("About item");
+    fireEvent.change(screen.getByLabelText("Your message"), { target: { value: "More" } });
+    fireEvent.keyDown(screen.getByLabelText("Your message"), { key: "Enter" });
+    await waitFor(() => expect(sends).toHaveLength(1), SLOW);
+    expect(sends[0]?.session_id).toBe("cs_a");
+  });
+
+  it("New chat clears the messages, the typed text and the session", async () => {
+    mount();
+    await openFirst();
+    fireEvent.change(screen.getByLabelText("Your message"), { target: { value: "draft" } });
+    // The page draws no title (only an sr-only h1): New chat sits in its own action row at the top.
+    const actions = document.querySelector("[data-chat-actions]") as HTMLElement;
+    const newChat = within(actions).getByRole("button", { name: "New chat" });
+    expect(newChat.className).toContain("border-border-strong"); // the secondary variant
+    expect(screen.getByRole("heading", { level: 1 }).className).toContain("sr-only");
+    fireEvent.click(newChat);
+    await screen.findByRole("heading", { name: "Recent" }, SLOW);
+    expect((screen.getByLabelText("Your message") as HTMLTextAreaElement).value).toBe("");
+    expect(screen.queryByText("A build task.")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Your message"), { target: { value: "Hi" } });
+    fireEvent.keyDown(screen.getByLabelText("Your message"), { key: "Enter" });
+    await waitFor(() => expect(sends).toHaveLength(1), SLOW);
+    expect(sends[0]).toEqual({ text: "Hi" });
+  });
+
+  it("says so with no sessions and in plain words when the read fails", async () => {
+    turns = [];
+    mount();
+    expect(await screen.findByText("No earlier chats yet", {}, SLOW)).toBeTruthy();
+    cleanup();
+    turnsStatus = 500;
+    mount();
+    expect(await screen.findByText(/recent chats/i, {}, SLOW)).toBeTruthy();
+    expect(document.body.textContent).not.toContain("boom");
+  });
+
+  it("uses its own query key and leaves the Chat Card's key and limit alone", () => {
+    expect(readFileSync("web/src/views/chat-page.tsx", "utf8")).toContain('queryKey: ["chat", "recent"]');
+    expect(readFileSync("web/src/views/chat-card.tsx", "utf8")).toContain('queryKey: ["chat", "turns"], queryFn: () => chatTurns({ limit: 10 })');
+  });
+});
