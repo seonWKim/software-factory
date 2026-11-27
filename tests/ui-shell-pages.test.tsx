@@ -240,13 +240,13 @@ describe("app pages", () => {
     expect(state.fetched).toContain("/api/v1/items?state=needs");
   });
 
-  it("Health tabs: Overview by default, four tabs, counts only for what waits on the owner, a failing check marks Overview, an unknown tab selects Overview, a click keeps the history length", async () => {
+  it("Health tabs: Overview by default, five tabs, counts only for what waits on the owner, a failing check marks Overview, an unknown tab selects Overview, a click keeps the history length", async () => {
     history.replaceState(null, "", "/app/health?tab=nonsense");
     mount();
     await screen.findByText("push access denied");
     const tabs = screen.getAllByRole("tab");
     // One failing check (the ok one is not counted) and two unreviewed merges; Runs and Cost carry no count.
-    expect(tabs.map((x) => x.textContent)).toEqual(["Overview (1) ⚠ failing", "Runs", "Cost", "Review (2)"]);
+    expect(tabs.map((x) => x.textContent)).toEqual(["Overview (1) ⚠ failing", "Runs", "Cost", "Review (2)", "Activity"]);
     expect(tabs[0]!.getAttribute("aria-selected")).toBe("true");
     const length = history.length;
     fireEvent.click(tabs[1]!);

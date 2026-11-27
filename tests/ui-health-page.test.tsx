@@ -97,8 +97,8 @@ describe("Health page: GitHub budget tab", () => {
   it("with overview.github_budget present the Cost tab's GitHub budget section shows remaining of limit, reset, counted calls and github_token_days", async () => {
     current = overview({ github_budget: budget(), github_token_days: 12 });
     const list = await show();
-    // Four tabs (design 09-health, 2026-11-24); the budget is a section of Cost, after Spend and Efficiency.
-    expect(tabNames(list)).toEqual(["Overview", "Runs", "Cost", "Review"]);
+    // Five tabs (design 09-health, 2026-11-24; Activity since 2026-11-27); the budget is a section of Cost, after Spend and Efficiency.
+    expect(tabNames(list)).toEqual(["Overview", "Runs", "Cost", "Review", "Activity"]);
     fireEvent.click(within(list).getByRole("tab", { name: "Cost" }));
     const panel = await screen.findByRole("region", { name: "GitHub budget" }, SLOW);
     expect([...document.querySelectorAll("[data-health-section]")].map((e) => e.getAttribute("data-health-section"))).toEqual(["spend", "efficiency", "github"]);

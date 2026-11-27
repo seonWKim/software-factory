@@ -161,7 +161,7 @@ export function SchedulesPage() {
         description={t("schedules.description")}
         actions={(
           <div className="flex items-center gap-4">
-            <Link href={`${BASE}activity?actor=${SCHEDULE_ACTOR}`} className={LINK_CLASS}>{t("schedules.activityLink")}</Link>
+            <Link href={`${BASE}health?tab=activity&actor=${SCHEDULE_ACTOR}`} className={LINK_CLASS}>{t("schedules.activityLink")}</Link>
             <Button ref={addButton} variant="primary" data-capture-open="new-schedule" disabled={!w.ready} onClick={() => open({ kind: "edit", schedule: null }, addButton.current)}>{t("schedules.new")}</Button>
           </div>
         )}

@@ -14,7 +14,6 @@ export const shell = {
   "page.chat": "Chat",
   "page.needs": "Needs you",
   "page.work": "Work",
-  "page.activity": "Activity",
   "page.health": "Health",
   "page.workers": "Workers",
   "page.failures": "Failures",
