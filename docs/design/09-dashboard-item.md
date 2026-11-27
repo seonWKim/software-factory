@@ -1,5 +1,7 @@
 # 9. Status page: dashboard item page
 
+- **The Source fact is hidden without a web link (decision changed 2026-11-28, the daily design review "Duplicate ID: item facts Source shows the short item id that the breadcrumb already shows"; current; replaces the short ID fallback, see History).** `ItemFacts` shows Source only when the source link is http(s), as the linked `SourceLink`. A local source has no Source fact; the breadcrumb shows the short ID and the IDs disclosure keeps the item ID and the source ID.
+
 - **Empty facts are hidden on every item (decision changed 2026-11-27, the daily design review "Item facts grid shows empty facts at full weight on open items"; current; replaces the closed-only rule, see History).** `ItemFacts` shows a fact only when it has a value: no "–" for a tier, PR or plan, no review loops, restarts or tokens at 0, on open and closed items alike. When the visible count leaves one cell on the last row of four (5 or 9 facts), that cell has `sm:col-span-4`. Same dl, dt and dd markup; no new text key.
 
 - **The item's facts are in a Card (decision changed 2026-11-24, the owner's platform alignment audit "the facts grid sits outside any card, left edge at 192 vs 217px"; current; replaces the facts grid and IDs Disclosure on the page under the decision card, see History).** The Overview tab's facts (`ItemFacts`, `web/src/views/item-facts.tsx`) and the IDs Disclosure sit in one `Card` named "Facts" (no title), so they start on the 24px content edge of every other block of the page.

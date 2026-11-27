@@ -5,7 +5,7 @@ import { StatusBadge } from "../components/ui/badge.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { type MessageKey, en } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { isHttpUrl, isWorkerId, shortItemId, termLabel, tokens, workerName } from "../lib/format.js";
+import { isHttpUrl, isWorkerId, termLabel, tokens, workerName } from "../lib/format.js";
 import { stateLabel } from "../../../src/shared/states.js";
 import { SourceLink, When } from "./common.js";
 
@@ -70,7 +70,7 @@ function UrlOrText({ url, text }: { url: string | null | undefined; text: string
 
 /**
  * The item's facts: state, source, tier, PR, plan, review loops, restarts, tokens, updated. Every item, open or closed,
- * shows only the facts with a value: no "–" for a tier, PR or plan it never had, no review loops, restarts or tokens
+ * shows only the facts with a value (Source only with a web link: the breadcrumb has the short ID): no "–" for a tier, PR or plan it never had, no review loops, restarts or tokens
  * it never took. When the count leaves one cell on the last row of four, that cell spans the row.
  * The IDs stay in the IDs disclosure below.
  */
@@ -78,7 +78,7 @@ export function ItemFacts({ item, now }: { item: Item; now: number }) {
   const level = item.item_phase;
   const facts: [string, ReactNode, boolean][] = [
     [t("col.state"), <StatusBadge state={level}>{stateLabel(level)}{level === "closed" && item.close_reason ? ` (${termLabel(item.close_reason)})` : ""}</StatusBadge>, true],
-    [t("item.source"), isHttpUrl(item.source.link) ? <SourceLink source={item.source} className="inline-block align-bottom" /> : shortItemId(item.id), true],
+    [t("item.source"), <SourceLink source={item.source} className="inline-block align-bottom" />, isHttpUrl(item.source.link)],
     [t("item.tier"), item.tier ?? "–", item.tier !== null],
     [t("col.pr"), item.change_ref === null ? "–" : <UrlOrText url={item.change_url} text={`#${item.change_ref}`} />, item.change_ref !== null],
     [t("item.specComment"), item.spec_comment_url ? <UrlOrText url={item.spec_comment_url} text={t("item.specCommentLink")} /> : "–", !!item.spec_comment_url],
