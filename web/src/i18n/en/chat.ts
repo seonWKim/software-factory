@@ -17,7 +17,7 @@ export const chat = {
   "chat.placeholder": "Ask about your factory",
   "chat.send": "Send",
   "chat.hint": "Enter sends, Shift+Enter starts a new line.",
-  "chat.answering": "Answering…",
+  "chat.answering": "Thinking…",
   "chat.noReply": "No answer came back. {reason}",
   "chat.sendFailed": "The message did not send. {reason}",
   "chat.off": "Chat is off: no model is set up yet. Add one in Plugins, then try again.",
