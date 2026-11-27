@@ -15,7 +15,7 @@ export const standing = {
   "standing.recentOne": "1 item in the last 7 days",
   "standing.recentMore": "+{count} more",
   "standing.recentShow": "Show them",
-  "standing.proposal": "{count} approvals in a row with the spec unchanged (threshold {threshold}), proposed {when}.",
+  "standing.proposal": "{count} approvals in a row with the plan unchanged (threshold {threshold}), proposed {when}.",
   "standing.proposalTitle": "Turn on “{rule}”?",
   "standing.actions": "More: {rule}",
   "standing.accept": "Accept",
@@ -40,6 +40,6 @@ export const standing = {
   "standing.pending": "Pending proposals",
   "standing.title": "Standing approvals",
   "standing.rules": "Standing rules",
-  "standing.intro": "A rule that is on approves the specs of its risk level that wait at its gate without a reply. Changing one needs the permission to approve specs.",
+  "standing.intro": "A rule that is on approves the plans of its risk level that wait at its gate without a reply. Changing one needs the permission to approve plans.",
   "standing.noWrite": " This server has no write route; use /standing on a work item.",
 } as const;

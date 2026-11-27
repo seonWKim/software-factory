@@ -904,7 +904,7 @@ describe("Settings page: Mode lines, grouped Advanced keys and plain timing (des
     afterEachReset = () => view.keys.pop();
     await show("general");
     const lines = [...document.querySelectorAll("li")].map((l) => l.textContent);
-    expect(lines).toEqual(expect.arrayContaining(["Manual: you approve specs and merge.", "Back to manual on a red main, a crash loop or a budget checkpoint."]));
+    expect(lines).toEqual(expect.arrayContaining(["Manual: you approve plans and merge.", "Back to manual on a red main, a crash loop or a budget checkpoint."]));
     expect(lines.filter((l) => /^(Manual|Auto|Back to manual)/.test(l ?? ""))).toHaveLength(3);
     expect(document.body.textContent).toContain("Merge on its own up to risk level…");
     expect(screen.getByRole("spinbutton", { name: /risk level/i })).toBeTruthy();

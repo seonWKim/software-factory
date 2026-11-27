@@ -368,7 +368,7 @@ describe("top bar", () => {
   });
 
   it("the mode chip tooltip says what auto does, on hover and on focus, and keeps an auto stop's reason above it", async () => {
-    const AUTO = "Auto approves specs below risk level 4 and merges reviewed local changes up to the auto-merge risk level. Risk level: high (4) and the gate list (changes to protected areas) wait for a person.";
+    const AUTO = "Auto approves plans below risk level 4 and merges reviewed local changes up to the auto-merge risk level. Risk level: high (4) and the gate list (changes to protected areas) wait for a person.";
     const row = { key: "mode", description: "", kind: "mode", value: "manual", source: "default", file_value: null, default_value: "manual", applies_at: "", project_settable: false, projects: [] };
     const view = { as_of: AT, csrf_token: "c", repo: "o/r", project: null, project_keys: [], keys: [row], pr_only: [], ignored: [], history: [] };
     (RESPONSES as Record<string, unknown>)["/api/v1/settings"] = view;

@@ -82,15 +82,18 @@ const YES: Offer = { offered: true, reason: null };
 const no = (reason: string): Offer => ({ offered: false, reason });
 
 const NOT_LIVE = "No factory supervisor is running, so this page cannot reach it. Start the factory from a terminal with factory dev.";
+const IN_PLACE = "Running from your checkout. To update, stop `factory dev`, pull, and start it again.";
 const UNDER_WAY = "A migration is under way: no process claims work until it ends. Wait for it to finish.";
 const WAITS = "An update waits for its migration: use Migrate now first.";
 const RUNS = "A factory process already runs and claims work: use Restart now for a fresh one.";
 const NONE_RUNS = "No factory process runs: use Start.";
 
-/** Which of Migrate now, Start and Restart now the page may offer, from supervisor.json. File reads only. */
+/** Which of Migrate now, Start and Restart now the page may offer, from supervisor.json. File reads only. A factory running in place (the none updater: a live child, no supervisor_pid) gets the checkout reason. */
 export async function supervisorOffers(m: UiMigrate): Promise<{ live: boolean; state: SupervisorStatus["state"] | null; migrate: Offer; start: Offer; restart: Offer }> {
   const alive = m.pidAlive ?? processAlive;
   const s = await readSupervisorStatus(m.stateDir);
+  const inPlace = s !== null && s.state !== "stopped" && s.supervisor_pid === undefined && s.child_pid !== null && alive(s.child_pid);
+  if (s !== null && inPlace) return { live: false, state: s.state, migrate: no(IN_PLACE), start: no(IN_PLACE), restart: no(IN_PLACE) };
   if (s === null || !isLiveSupervisor(s, alive)) return { live: false, state: s?.state ?? null, migrate: no(NOT_LIVE), start: no(NOT_LIVE), restart: no(NOT_LIVE) };
   const underWay = m.running !== null || s.state === "migration_draining" || s.state === "migration_ready";
   const claims = s.child_pid !== null && alive(s.child_pid);

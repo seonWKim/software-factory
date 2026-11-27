@@ -82,12 +82,12 @@ describe("Rules page", () => {
     expect(h1s()).toEqual(["Rules"]);
   });
 
-  it("with the rules home off, the Turn on empty state comes before Auto-approve specs", async () => {
+  it("with the rules home off, the Turn on empty state comes before Auto-approve plans", async () => {
     s.current = off();
     s.standing = { as_of: AT, csrf_token: TOKEN, rules: [], proposals: [{ id: "sp_1", rule: "spec-t1", run_length: 3, threshold: 3, created_at: AT }] };
     await show();
     const turnOn = await screen.findByRole("button", { name: "Turn on" }, SLOW);
-    const approvals = await screen.findByRole("region", { name: "Auto-approve specs" }, SLOW);
+    const approvals = await screen.findByRole("region", { name: "Auto-approve plans" }, SLOW);
     expect(turnOn.compareDocumentPosition(approvals) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByText("Improve report")).toBeNull();
   });
