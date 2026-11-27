@@ -1,5 +1,5 @@
 import { type ReactNode, useState } from "react";
-import { API, type SpendDay, type SpendItem, type SpendTotals, type SpendView, useApi } from "../api.js";
+import { API, type SpendDay, type SpendItem, type SpendTotals, type SpendTurnTotals, type SpendView, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { BANNER_LINK_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
@@ -35,6 +35,16 @@ function Total({ label, total, budget }: { label: string; total: SpendTotals; bu
     <StatTile data-total={label} label={label} value={usd(total.cost_usd)}>
       <dd className={STAT_NOTE}>{t("spend.tokens", { tokens: tokens(total.tokens) })}</dd>
       {budget && <dd data-budget className={STAT_NOTE}>{budget.usd === null ? t("spend.noBudget") : budget.text(usd(total.cost_usd), budgetUsd(budget.usd))}</dd>}
+    </StatTile>
+  );
+}
+
+/** Chat's or the coordinator's cost, tokens and turns over the range: its own tile, never part of the run totals. */
+function TurnTotal({ label, total }: { label: string; total: SpendTurnTotals }) {
+  return (
+    <StatTile data-total={label} label={label} value={usd(total.cost_usd)}>
+      <dd className={STAT_NOTE}>{t("spend.tokens", { tokens: tokens(total.tokens) })}</dd>
+      <dd className={STAT_NOTE}>{total.turns === 1 ? t("spend.turnsOne") : t("spend.turns", { count: total.turns })}</dd>
     </StatTile>
   );
 }
@@ -175,6 +185,8 @@ export function SpendSection() {
           <Total label={t("spend.today")} total={sum(v.days.filter((d) => d.day === v.today))} budget={{ usd: v.budgets?.daily_usd ?? null, text: (spent, budget) => t("spend.budgetToday", { spent, budget }) }} />
           <Total label={t("spend.week")} total={sum(v.days.filter((d) => d.day >= v.week_start))} budget={{ usd: v.budgets?.weekly_usd ?? null, text: (spent, budget) => t("spend.budgetWeek", { spent, budget }) }} />
           <Total label={t("spend.last30")} total={v.total} />
+          <TurnTotal label={t("spend.chat")} total={v.chat} />
+          <TurnTotal label={t("spend.coordinator")} total={v.coordinator} />
         </dl>
         {/* The notes under the tiles: one block 12px under them (the tiles' own gap), its lines 4px apart. */}
         <div data-spend-notes className="mt-3 space-y-1 text-xs text-pretty text-text-2">
@@ -185,6 +197,16 @@ export function SpendSection() {
           {unknown > 0 && (
             <p data-testid="spend-unknown" className="text-text-1">
               {t(unknown === 1 ? "spend.unknownOne" : "spend.unknownMany", { count: unknown })}
+            </p>
+          )}
+          {v.chat.unknown > 0 && (
+            <p data-testid="spend-unknown-chat" className="text-text-1">
+              {t(v.chat.unknown === 1 ? "spend.unknownChatOne" : "spend.unknownChat", { count: v.chat.unknown })}
+            </p>
+          )}
+          {v.coordinator.unknown > 0 && (
+            <p data-testid="spend-unknown-coordinator" className="text-text-1">
+              {t(v.coordinator.unknown === 1 ? "spend.unknownCoordinatorOne" : "spend.unknownCoordinator", { count: v.coordinator.unknown })}
             </p>
           )}
         </div>

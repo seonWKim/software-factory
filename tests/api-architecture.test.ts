@@ -213,10 +213,18 @@ describe("the schedules and items pages", () => {
 });
 
 describe("the headless-first rule", () => {
-  const RULE = "Headless first: a feature is declared as an API capability first, and the dashboard, chat and CLI call that API. Page-only or CLI-only behaviour and hand-written routes count as gaps.";
+  const RULE_START = "Headless first: a feature is declared as an API capability first";
+  const RULE_GAPS = "and the dashboard, chat and CLI call that API. Page-only or CLI-only behaviour and hand-written routes count as gaps.";
 
-  it("is stated in prompts/triage.md, worded as the design topic file words it", () => {
-    expect(read("prompts/triage.md")).toContain(RULE);
-    expect(read("docs/design/09-api-registry.md")).toContain(RULE);
+  it("is stated in AGENTS.md, which flags a page-only feature as a gap", () => {
+    const rule = read("AGENTS.md").split("\n").find((line) => line.includes(RULE_START));
+    expect(rule).toBeDefined();
+    expect(rule).toContain(RULE_GAPS);
+  });
+
+  it("is not stated in the generic prompts/triage.md, which sends triage to the repository's agent instructions instead", () => {
+    const prompt = read("prompts/triage.md");
+    expect(prompt).not.toContain("Headless first:");
+    expect(prompt).toContain("Check the design against the principles in the repository's agent instructions (AGENTS.md or CLAUDE.md)");
   });
 });
