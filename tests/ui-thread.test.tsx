@@ -177,8 +177,8 @@ describe("item page: command reply in the thread", () => {
     fireEvent.click(button);
     // The approve dialog comes first: it names what is approved and what happens next, and nothing is sent yet.
     const confirm = await screen.findByRole("dialog");
-    expect(confirm.textContent).toContain("You approve the spec waiting for approval.");
-    expect(confirm.textContent).toContain("Next: The factory starts the implement run on this spec.");
+    expect(confirm.textContent).toContain("You approve the plan waiting for approval.");
+    expect(confirm.textContent).toContain("Next: The factory starts the implement run on this plan.");
     expect(posts).toEqual([]);
     fireEvent.click(within(confirm).getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_1/commands", body: { command: "approve" } }]));
