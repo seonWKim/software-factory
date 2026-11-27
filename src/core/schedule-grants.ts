@@ -29,8 +29,22 @@ export type ScheduleGrant =
   | { kind: "repo"; path: string; base_ref: string }
   | { kind: "shell"; command: typeof SCHEDULE_SHELL_COMMAND; db: string };
 
-/** The schedule's notes folder, relative to the factory repo: `.factory/notes/<schedule id>/`. */
-export const notesFolder = (schedule_id: string): string => `${STATE_DIR}/notes/${schedule_id}/`;
+/**
+ * A schedule ID: lowercase letters, digits and `-`, 1 to 64 characters, starting with a letter or digit, so it is one plain
+ * folder name. `_` is allowed too: `schedule draft` names its schedules `sch_<id>`, and stored IDs use it.
+ */
+const SCHEDULE_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+/** Why `id` is no schedule ID, or null. */
+export const scheduleIdProblem = (id: string): string | null =>
+  SCHEDULE_ID.test(id) ? null : `the schedule ID ${JSON.stringify(id)} is not allowed: use lowercase letters, digits, '-' and '_' (1 to 64 characters, starting with a letter or digit)`;
+
+/** The schedule's notes folder, relative to the factory repo: `.factory/notes/<schedule id>/`. Throws on an ID that is no schedule ID. */
+export function notesFolder(schedule_id: string): string {
+  const problem = scheduleIdProblem(schedule_id);
+  if (problem) throw new Error(problem);
+  return `${STATE_DIR}/notes/${schedule_id}/`;
+}
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
@@ -218,6 +232,8 @@ export class ScheduleGrantBroker implements ToolBroker {
       if (g.kind === "browser") run.tools.push(browseOnly(g.url));
       else if (g.kind === "notes") {
         const folder = resolvePath(base.repo, notesFolder(this.schedule_id));
+        const root = resolvePath(base.repo, `${STATE_DIR}/notes`);
+        if (folder === root || !isUnder(folder, root)) throw new Error(`schedule ${this.schedule_id}: the notes folder ${folder} is outside ${STATE_DIR}/notes/`);
         await this.deps.mkdir(folder);
         run.writable_paths.push(folder);
         run.tools.push(insideOnly(Write, folder), insideOnly(Edit, folder));

@@ -13,7 +13,7 @@
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { overBudget } from "./budget.js";
 import { type Cadence, type CadenceKind, cadenceProblem, nextDue } from "./schedule-cadence.js";
-import { grantsLine, withGrantWords } from "./schedule-grants.js";
+import { grantsLine, scheduleIdProblem, withGrantWords } from "./schedule-grants.js";
 import type { Actor, Timestamp, UserId, WorkItem } from "./types.js";
 
 /** The triggers a routine may run on: `merge`, a change merged into the base branch since the routine's last run. */
@@ -407,7 +407,7 @@ export async function createSchedule(store: ScheduleAdminStore, id: string, f: S
   const merge = f.cadence?.trim() === ON_MERGE;
   const needs = merge ? (["title", "action"] as const) : (["title", "cadence", "spec", "zone", "action"] as const);
   const missing = [...(id.trim() ? [] : ["id"]), ...needs.filter((k) => !f[k]?.trim())];
-  if (missing.length > 0) return refused(`missing ${missing.join(", ")}`);
+  if (missing.length > 0 || scheduleIdProblem(id)) return refused(missing.length > 0 ? `missing ${missing.join(", ")}` : scheduleIdProblem(id)!);
   const action = scheduleActionOf(f.action!.trim(), f.body, f);
   if ("problem" in action) return refused(action.problem);
   if (merge && action.kind !== "check_page") return refused(ON_MERGE_ONLY);
@@ -496,6 +496,7 @@ export async function editSchedule(store: ScheduleAdminStore, id: string, f: Sch
     if ([f.action, f.body, f.instruction, f.url, f.grants].some((v) => v !== undefined)) {
       const kind = page ? "check-page" : (f.action ?? s.action?.kind);
       if (kind === undefined) return "the schedule has no action: give --action too";
+    if (f.grants?.includes("notes") && scheduleIdProblem(id)) return `a notes grant needs a plain schedule ID: ${scheduleIdProblem(id)}`;
       if (page && f.instruction !== undefined && f.body !== undefined) return "give the instruction as --instruction or --body, not both";
       const old = page || s.action?.kind === kind ? s.action!.settings : {};
       const action = page
@@ -523,7 +524,6 @@ export function writeSchedule(store: ScheduleAdminStore, w: ScheduleWrite, id: s
 }
 
 // `factory schedule …` (src/core/local-cli-parse.ts hands the word here, as it stays within its size budget).
-
 export type ScheduleCommand = { verb: "list" } | { verb: "runs"; id: string } | { verb: ScheduleWrite; id: string; fields: ScheduleFields };
 
 const FLAGS: Readonly<Record<string, keyof ScheduleFields>> = {
@@ -566,7 +566,7 @@ export function parseScheduleArgs(args: readonly string[]): ScheduleCommand | st
       fields[key] = v === "none" ? null : Number(v);
     } else Object.assign(fields, { [key!]: key === "grants" ? [...(fields.grants ?? []), v] : v }); // --grant repeats: one grant each
   }
-  if (id === undefined) return "schedule add needs --id <id>";
+  if (id === undefined || (verb === "add" && scheduleIdProblem(id))) return id === undefined ? "schedule add needs --id <id>" : `schedule add: ${scheduleIdProblem(id)}`;
   return { verb, id, fields };
 }
 

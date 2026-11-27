@@ -1,9 +1,15 @@
 // Feedback schedule grants (design 08-schedules): browser, notes, repo and shell, each checked and handed out by the
-// ScheduleGrantBroker (a ToolBroker). No test reaches the network, a real repo or a real sqlite3: the deps are fakes.
+// ScheduleGrantBroker (a ToolBroker). No test reaches the network or a real repo; the deps are fakes, except one test
+// that runs the real sqlite3 binary (skipped when sqlite3 is not on PATH).
 
+import { execFile, execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
-  type GrantBrokerDeps, SCHEDULE_SHELL_COMMAND, SQLITE_TOOL, ScheduleGrantBroker, grantWords, grantsOfWords, notesFolder, scheduleGrantTools, storedGrants, storedScheduleGrants,
+  type GrantBrokerDeps, SCHEDULE_SHELL_COMMAND, SQLITE_TOOL, ScheduleGrantBroker, grantWords, grantsOfWords, notesFolder, scheduleGrantTools, scheduleIdProblem, storedGrants, storedScheduleGrants,
   SCHEDULE_PASSPORT_KIND, withSchedulePassports,
 } from "../src/core/schedule-grants.js";
 import type { ToolBroker } from "../src/interfaces/tool-broker.js";
@@ -96,6 +102,17 @@ describe("ScheduleGrantBroker.handOut", () => {
     for (const tool of [write, edit]) {
       expect(await tool.run({ file_path: "/run/src/x.ts", content: "x", old_string: "a", new_string: "b" }, toolCtx())).toMatchObject({ ok: false, error: expect.stringContaining("only inside the notes folder") });
       expect(await tool.run({ file_path: "/factory/.factory/notes/s2/x.md", content: "x", old_string: "a", new_string: "b" }, toolCtx())).toMatchObject({ ok: false, error: expect.stringContaining("only inside the notes folder") });
+    }
+  });
+
+  it("a notes grant on an ID that is no plain folder name is refused before any folder is made", async () => {
+    expect(notesFolder("daily-review")).toBe(".factory/notes/daily-review/");
+    for (const id of ["../..", "..", ".", "a/b", "a b", "", ".hidden", "-x", "A1", "x".repeat(65)]) {
+      expect(scheduleIdProblem(id)).not.toBeNull();
+      expect(() => notesFolder(id)).toThrow(/schedule ID/);
+      const { d, made } = deps();
+      await expect(new ScheduleGrantBroker(id, [{ kind: "notes" }], d).handOut(base)).rejects.toThrow(/schedule ID/);
+      expect(made).toEqual([]);
     }
   });
 
@@ -227,3 +244,32 @@ describe("the shell grant's tool inside the G2 guard", () => {
     expect(begun).toEqual([]);
   });
 });
+
+describe.skipIf(!sqlite3OnPath())("the shell grant on the real sqlite3 binary", () => {
+  it("runs -safe -readonly: a SELECT answers; fsdir('/etc/hosts') and VACUUM INTO are refused and no file is made", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "grant-sqlite-"));
+    try {
+      const db = join(dir, "app.db");
+      execFileSync("sqlite3", [db, "create table t (a); insert into t values (7);"]);
+      const exec: GrantBrokerDeps["exec"] = async (file, args) => (await promisify(execFile)(file, [...args])).stdout;
+      const broker = new ScheduleGrantBroker("s1", [{ kind: "shell", command: SCHEDULE_SHELL_COMMAND, db }], { exists: existsSync, mkdir: async () => {}, exec });
+      expect(await broker.call(ctxCall, SQLITE_TOOL, { sql: "select a from t" })).toEqual({ ok: true, content: "7\n" });
+      const out = join(dir, "out.db");
+      expect(await broker.call(ctxCall, SQLITE_TOOL, { sql: "select name, data from fsdir('/etc/hosts')" })).toMatchObject({ ok: false });
+      expect(await broker.call(ctxCall, SQLITE_TOOL, { sql: `vacuum into '${out}'` })).toMatchObject({ ok: false });
+      expect(existsSync(out)).toBe(false);
+      expect(readdirSync(dir)).toEqual(["app.db"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+function sqlite3OnPath(): boolean {
+  try {
+    execFileSync("sqlite3", ["-version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}

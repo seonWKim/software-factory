@@ -2,7 +2,7 @@
 // change or refusing it with the reason and storing nothing. Pause clears the next due time, so no slot fires; resume
 // sets the first slot after now; run sets now, so the next tick fires once. Writes are the owner's only.
 
-import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -630,6 +630,22 @@ describe("feedback schedule grants", () => {
     expect((await cli(["edit", "sch_fb", "--grant", "none"])).code).toBe(0);
     expect((await stored(store))!.action!.settings).toEqual({ prompt: "Review the pages", grants: [] });
     expect((await cli(["list"])).lines.find((l) => l.startsWith("sch_fb\t"))).not.toContain("grants:");
+  });
+
+  it("refuses add --id ../.. with a notes grant and makes no folder; a plain ID still gets .factory/notes/<id>/", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "grants-"));
+    const { store, cli } = await setup({ makeNotesFolder: async (folder) => void (await mkdir(join(repo, folder), { recursive: true })) });
+    const bad = ["add", "--id", "../..", "--title", "Feedback", "--cadence", "daily", "--spec", "09:00", "--zone", "Asia/Seoul", "--action", "feedback", "--body", "x", "--grant", "notes"];
+    const tryCli = async (args: string[]) => { try { return await cli(args); } catch (e) { return { code: 1, lines: [(e as Error).message] }; } };
+    const refused = await tryCli(bad);
+    expect(refused.code).not.toBe(0);
+    expect(refused.lines.join("\n")).toContain("schedule ID");
+    for (const id of ["a/b", "a.b", "a b"]) expect((await tryCli(bad.map((w) => (w === "../.." ? id : w)))).code).not.toBe(0);
+    expect(await store.listSchedules()).toEqual([]);
+    expect(await readdir(repo)).toEqual([]);
+    expect((await cli(bad.map((w) => (w === "../.." ? "daily-review" : w)))).code).toBe(0);
+    expect((await stat(join(repo, ".factory", "notes", "daily-review"))).isDirectory()).toBe(true);
+    await rm(repo, { recursive: true, force: true });
   });
 
   it("refuses a grant on any other action, a URL off the sandbox and a repo in the state folder, storing nothing", async () => {
