@@ -2,7 +2,7 @@
 // and the revert of a bad automatic merge. Kept out of local-merge.unit.ts, which may not grow (file budget); its I/O
 // (the sandbox, the green bases table) is inline, as the unit's.
 
-import { ALERT_DEDUPE_MS, LOCAL_SOURCE, canRevertLocal, checkCommands, runChecks, runKey, toolchainMissing } from "../../../core/local-merge.js";
+import { LOCAL_SOURCE, canRevertLocal, checkCommands, runChecks, runKey, toolchainMissing } from "../../../core/local-merge.js";
 import { failingTestNames } from "../../../worker/index.js";
 import { AUTO, SYSTEM } from "../support.js";
 import type { Ctx } from "../context.js";
@@ -23,6 +23,11 @@ const REVERT_WINDOW_MS = 3_600_000;
 const MERGE_CHECK_FAILED = "merge_check_failed";
 /** The error code of the red_main alert for a check the host could not run (design 03-risk): the run failure class's word. */
 const CHECKS_ENV = "checks_env";
+/**
+ * One environment alert per tip in this window, the alarms' 6 hours (core/alarms.ts, ALERT_DEDUPE_MS): re-exporting it
+ * through core/local-merge.js makes an import cycle, and importing core/alarms.js here adds a legacy import.
+ */
+const ENV_ALERT_DEDUPE_MS = 6 * 3_600_000;
 
 /** One round of checks on the base tip: the tip checked, and what failed (null: all passed). */
 interface Round {
@@ -102,7 +107,7 @@ async function environment(c: Ctx, tip: string | null, r: Round): Promise<void> 
   // G5: the alert reaches the status page, so its text is scanned as UI text first.
   const clean = (await c.k.reader.scan("ui", text)).clean;
   await c.k.commit({ writes: [{
-    kind: "alert", dedupe_ms: ALERT_DEDUPE_MS,
+    kind: "alert", dedupe_ms: ENV_ALERT_DEDUPE_MS,
     alert: { pattern: "red_main", pattern_key: `red_main:${tip}:${CHECKS_ENV}`, error_code: CHECKS_ENV, count: 1, detail: clean ? text : null },
   }] });
 }

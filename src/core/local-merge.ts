@@ -12,10 +12,9 @@ import type { Sandbox } from "../interfaces/sandbox.js";
 export * from "./restart.js";
 // The auto merge step's tier rule and drop-back (design 03-risk), re-exported so the unit reads them through this module.
 export { droppedBack, tierRule } from "./stats.js";
-// The red-main check's runner, its missing-toolchain match, its alert window and the revert's loop key (design
-// 03-risk), read by the unit through this module too.
+// The red-main check's runner, its missing-toolchain match and the revert's loop key (design 03-risk), read by the
+// unit through this module too.
 export { checkCommands, runChecks, toolchainMissing } from "./checks.js";
-export { ALERT_DEDUPE_MS } from "./alarms.js";
 export { runKey } from "./policy.js";
 
 /**
