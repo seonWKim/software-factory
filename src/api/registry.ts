@@ -192,7 +192,7 @@ export function clientText(r: Registry): string {
     lines.push(`export type ${In} = ${c.input.ts()};`, `export type ${Out} = ${c.output.ts()};`, `/** ${c.description} (${c.method} ${c.path}, permission ${c.permission}) */`);
     lines.push(c.method === "GET"
       ? `export const ${camel(c.id)} = (input: ${In}): Promise<${Out}> => getJson<${Out}>(${JSON.stringify(c.path)} + query(input));`
-      : `export const ${camel(c.id)} = (token: string, input: ${In}) => postJson<${Out} & { error?: string }>(${JSON.stringify(c.path)}, token, input);`);
+      : `export const ${camel(c.id)} = (token: string, input: ${In}, signal?: AbortSignal) => postJson<${Out} & { error?: string }>(${JSON.stringify(c.path)}, token, input, signal);`);
     lines.push("");
   }
   return lines.join("\n");

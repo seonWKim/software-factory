@@ -92,7 +92,7 @@ describe("a capability declared in a fixture", () => {
     const client = clientText(FIXTURE);
     expect(client).toContain("export type FixtureEchoInput = ");
     expect(client).toContain("export const fixtureEcho = (input: FixtureEchoInput)");
-    expect(client).toContain("export const fixtureSave = (token: string, input: FixtureSaveInput)");
+    expect(client).toContain("export const fixtureSave = (token: string, input: FixtureSaveInput, signal?: AbortSignal)");
     const { get } = await setup();
     expect((await get("/api/v1/feature-map/capabilities")).value.capabilities.map((c: { id: string }) => c.id)).toEqual(expect.arrayContaining(["fixture.echo", "fixture.save"]));
   });
@@ -166,7 +166,7 @@ function typeErrors(client: string): string[] {
     "/virtual/generated.ts": client,
     "/virtual/client.ts": [
       "export declare function getJson<T>(url: string): Promise<T>;",
-      "export declare function postJson<T extends { error?: string }>(url: string, token: string, body: unknown): Promise<{ ok: boolean; status: number; value: T }>;",
+      "export declare function postJson<T extends { error?: string }>(url: string, token: string, body: unknown, signal?: AbortSignal): Promise<{ ok: boolean; status: number; value: T }>;",
     ].join("\n"),
   };
   const options: ts.CompilerOptions = {

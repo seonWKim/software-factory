@@ -36,10 +36,10 @@ const STALE_CSRF = "stale_csrf";
  * A JSON POST with the CSRF token: the status and the parsed body ({} when the body is not JSON). A 403 with code
  * "stale_csrf" (the UI process restarted since the page read its token; refused before any store write) fetches GET
  * /api/v1/session once, puts its token in the cached session query and retries the same write once with it; the
- * retry's result is returned, whatever it is. Any other answer, or a session read that fails, is returned as is.
+ * retry's result is returned, whatever it is. `signal` aborts the write: fetch then rejects with an AbortError. Any other answer, or a session read that fails, is returned as is.
  */
-export async function postJson<T extends { error?: string }>(url: string, token: string, body: unknown): Promise<{ ok: boolean; status: number; value: T }> {
-  const first = await postOnce<T>(url, token, body);
+export async function postJson<T extends { error?: string }>(url: string, token: string, body: unknown, signal?: AbortSignal): Promise<{ ok: boolean; status: number; value: T }> {
+  const first = await postOnce<T>(url, token, body, signal);
   if (first.status !== 403 || (first.value as { code?: unknown }).code !== STALE_CSRF) return first;
   let fresh: Session;
   try {
@@ -48,14 +48,15 @@ export async function postJson<T extends { error?: string }>(url: string, token:
     return first;
   }
   appClient?.setQueryData([API.session], fresh);
-  return postOnce<T>(url, fresh.csrf_token, body);
+  return postOnce<T>(url, fresh.csrf_token, body, signal);
 }
 
-async function postOnce<T>(url: string, token: string, body: unknown): Promise<{ ok: boolean; status: number; value: T }> {
+async function postOnce<T>(url: string, token: string, body: unknown, signal?: AbortSignal): Promise<{ ok: boolean; status: number; value: T }> {
   const res = await fetch(url, {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json", "x-csrf-token": token },
     body: JSON.stringify(body),
+    signal: signal ?? null,
   });
   let value = {} as T;
   try {
