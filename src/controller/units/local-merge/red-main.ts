@@ -2,7 +2,7 @@
 // and the revert of a bad automatic merge. Kept out of local-merge.unit.ts, which may not grow (file budget); its I/O
 // (the sandbox, the green bases table) is inline, as the unit's.
 
-import { LOCAL_SOURCE, canRevertLocal, checkCommands, runChecks, runKey } from "../../../core/local-merge.js";
+import { LOCAL_SOURCE, canRevertLocal, checkCommands, runChecks, runKey, toolchainMissing } from "../../../core/local-merge.js";
 import { failingTestNames } from "../../../worker/index.js";
 import { AUTO, SYSTEM } from "../support.js";
 import type { Ctx } from "../context.js";
@@ -21,6 +21,13 @@ export interface RedMainOutput {
 const REVERT_WINDOW_MS = 3_600_000;
 /** The loop reason of a reopen after a revert: the merge check's, so it counts and is shown as that loop is. */
 const MERGE_CHECK_FAILED = "merge_check_failed";
+/** The error code of the red_main alert for a check the host could not run (design 03-risk): the run failure class's word. */
+const CHECKS_ENV = "checks_env";
+/**
+ * One environment alert per tip in this window, the alarms' 6 hours (core/alarms.ts, ALERT_DEDUPE_MS): re-exporting it
+ * through core/local-merge.js makes an import cycle, and importing core/alarms.js here adds a legacy import.
+ */
+const ENV_ALERT_DEDUPE_MS = 6 * 3_600_000;
 
 /** One round of checks on the base tip: the tip checked, and what failed (null: all passed). */
 interface Round {
@@ -30,6 +37,11 @@ interface Round {
   command: string | null;
   how: string | null;
   output?: RedMainOutput;
+  /**
+   * Why the failure is the host's, not the merge's (design 03-risk): the output line that shows a missing toolchain
+   * (`toolchainMissing`), or the command's "could not run: …"; absent for a plain failure.
+   */
+  env?: { tool: string | null; line: string };
 }
 
 function greenBases(c: Ctx): GreenBaseStore | null {
@@ -58,9 +70,11 @@ async function checkTip(c: Ctx, where: string): Promise<Round> {
       // Named as core/checks.ts commandText names a folder entry; this unit reaches core only through core/local-merge.js.
       const { dir } = round.failed;
       const command = `${round.failed.command.join(" ")}${dir === undefined ? "" : ` (in ${dir}/)`}`;
+      const missing = toolchainMissing(round.failed.tail);
+      const env = round.failed.how.startsWith("could not run") ? { tool: null, line: round.failed.how } : missing !== null ? { tool: toolOf(missing), line: missing } : undefined;
       return {
         tip, command, how: round.failed.how, failed: `\`${command}\` ${round.failed.how} on ${where} of \`${repo.base_branch}\``,
-        output: { failing_tests: failingTestNames(round.failed.tail), output_tail: round.failed.tail },
+        output: { failing_tests: failingTestNames(round.failed.tail), output_tail: round.failed.tail }, ...(env ? { env } : {}),
       };
     } finally {
       await sandbox.destroy(handle);
@@ -71,9 +85,36 @@ async function checkTip(c: Ctx, where: string): Promise<Round> {
   }
 }
 
+/** The tool a `toolchainMissing` line shows missing, in the alert's words; null when the line names none of them. */
+function toolOf(line: string): string | null {
+  if (line.includes("JAVA_HOME") || line.includes("java")) return "the JDK";
+  if (line.includes("gradle")) return "Gradle";
+  if (line.includes("node_modules") || ["tsc", "vitest", "npx", "node"].some((t) => line.includes(t))) return "the Node tools";
+  return null;
+}
+
+/**
+ * A check on the base tip that failed because of the host (design 03-risk): its tools are missing, or its command
+ * could not run. Not the merge's fault and not a red main: nothing is reverted or reopened, no fix item is filed and
+ * auto mode goes on; one `red_main` alert with error code `checks_env` on the tip names the missing tool or the
+ * command. Safe to run twice: the alert's conditional insert stores it once.
+ */
+async function environment(c: Ctx, tip: string | null, r: Round): Promise<void> {
+  const what = r.env!.tool === null ? `\`${r.command}\` ${r.how}` : `\`${r.command}\` could not start its tools: ${r.env!.tool} is missing (\`${r.env!.line}\`)`;
+  const text = `${what} on the new tip of \`${c.k.cfg.repo.base_branch}\`. This is a problem with the host, not a red main: the merge is kept, nothing is reverted or reopened.`;
+  c.k.d.log.warn("red main: the checks could not run on the host; merge kept", { base_sha: tip, command: r.command });
+  if (tip === null) return;
+  // G5: the alert reaches the status page, so its text is scanned as UI text first.
+  const clean = (await c.k.reader.scan("ui", text)).clean;
+  await c.k.commit({ writes: [{
+    kind: "alert", dedupe_ms: ENV_ALERT_DEDUPE_MS,
+    alert: { pattern: "red_main", pattern_key: `red_main:${tip}:${CHECKS_ENV}`, error_code: CHECKS_ENV, count: 1, detail: clean ? text : null },
+  }] });
+}
+
 /**
  * Red main (design 03-risk): after an automatic merge, the checks run again on the new base tip. A pass stores that
- * tip as the project's green base. A failure of a check reverts the merge when it may (`revert`), and the checks run
+ * tip as the project's green base. A check the host could not run (`environment`) is not red main. A failure of a check reverts the merge when it may (`revert`), and the checks run
  * again on the reverted tip: green raises the `red_main` alert with a note that the merge was reverted, files no fix
  * item and keeps auto mode; still red, or no revert, is today's red main (`redMain`: its alert, its fix item, auto
  * mode set back to manual). The revert is never undone. Safe to run twice: a repeat finds the merge reverted or the
@@ -87,6 +128,7 @@ export async function redMainCheck(c: Ctx, it: WorkItem): Promise<void> {
     if (first.tip !== null) await greenBases(c)?.set(it.project, first.tip);
     return;
   }
+  if (first.env) return environment(c, first.tip ?? (await lm.baseTip()), first);
   const merge = first.command !== null ? await revertable(c, it, first.tip) : null;
   const done = merge ? await revert(c, merge.item, merge.parent) : null;
   if (!merge || !done) return lm.redMain(it.project, first.tip ?? (await lm.baseTip()), first.failed, first.output);
