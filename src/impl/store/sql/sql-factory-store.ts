@@ -88,7 +88,7 @@ import { insertActivity, leaseExpiryActivity, migrateWithActivity, prunedWithAct
 import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
-import * as tasks from "./tasks.js"; import * as chat from "./chat.js";
+import * as tasks from "./tasks.js"; import * as chat from "./chat.js"; import * as held from "./held-writes.js";
 import { SqlRoutineStore } from "./routines.js";
 import { claimLock, endReservations, liveReservations, reservationOf } from "./reservations.js";
 import { type CoordContext, claimDecisionsOf, claimOrder, claimOrderSql, implementTimes, releaseHolder, writeClaimDecision } from "./claim-coordination.js";
@@ -380,7 +380,7 @@ export class SqlFactoryStore extends SqlRoutineStore implements FactoryStore {
   recordCommandProposals(rows: Parameters<FactoryStore["recordCommandProposals"]>[0]) { return proposals.recordCommandProposals(this.db, rows, this.now()); }
   listCommandProposals(proposal_id: string) { return proposals.listCommandProposals(this.db, proposal_id); }
   answerCommandProposal(a: Parameters<FactoryStore["answerCommandProposal"]>[0]) { return proposals.answerCommandProposal(this.db, a, this.now()); }
-  appendChatMessages(id: string, m: Parameters<FactoryStore["appendChatMessages"]>[1]) { return chat.appendChatMessages(this.db, id, m, this.now()); } listChatMessages(id: string) { return chat.listChatMessages(this.db, id); } recordChatSpend(s: Parameters<FactoryStore["recordChatSpend"]>[0]) { return chat.recordChatSpend(this.db, s, this.now()); } listChatSpendBetween(...[from, to, kind]: Parameters<FactoryStore["listChatSpendBetween"]>) { return chat.listChatSpendBetween(this.db, from, to, kind); } startChatTurn(id: string, session: string) { return chat.startChatTurn(this.db, id, session, this.now()); } finishChatTurn(...a: Parameters<FactoryStore["finishChatTurn"]>) { return chat.finishChatTurn(this.db, ...a, this.now()); } listChatTurns(limit: number) { return chat.listChatTurns(this.db, limit); } // chat.ts
+  appendChatMessages(id: string, m: Parameters<FactoryStore["appendChatMessages"]>[1]) { return chat.appendChatMessages(this.db, id, m, this.now()); } listChatMessages(id: string) { return chat.listChatMessages(this.db, id); } recordChatSpend(s: Parameters<FactoryStore["recordChatSpend"]>[0]) { return chat.recordChatSpend(this.db, s, this.now()); } listChatSpendBetween(...[from, to, kind]: Parameters<FactoryStore["listChatSpendBetween"]>) { return chat.listChatSpendBetween(this.db, from, to, kind); } startChatTurn(id: string, session: string) { return chat.startChatTurn(this.db, id, session, this.now()); } finishChatTurn(...a: Parameters<FactoryStore["finishChatTurn"]>) { return chat.finishChatTurn(this.db, ...a, this.now()); } listChatTurns(limit: number) { return chat.listChatTurns(this.db, limit); } holdWrite(w: Parameters<FactoryStore["holdWrite"]>[0]) { return held.holdWrite(this.db, w, this.now()); } listHeldWrites(limit: number) { return held.listHeldWrites(this.db, limit); } // chat.ts, held-writes.ts
   // Plain tasks (design 02-tasks, issue #606): tasks.ts
   addTask(t: Parameters<FactoryStore["addTask"]>[0]) { return tasks.addTask(this.db, t, this.clock.now()); }
   listTasks(limit: number) { return tasks.listTasks(this.db, limit); } listDoneTasks(w: Parameters<FactoryStore["listDoneTasks"]>[0]) { return tasks.listDoneTasks(this.db, w); }
