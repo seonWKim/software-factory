@@ -53,7 +53,7 @@ describe("check:responsive: the Evals entries", () => {
   it("load a page the server serves and move to evals/<skill> in place, since a full load of a folder-path skill is a 404", () => {
     const check = readFileSync(join(ROOT, "scripts", "responsive-check.mjs"), "utf8");
     expect(check).toContain('{ name: "evals", path: "data" }');
-    expect(check).toContain("evals: openEvals(fixture.pages.skill) }");
+    expect(check).toContain("evals: openEvals(fixture.pages.skill),");
     expect(check).toMatch(/history\.pushState\(null, "", \$\{JSON\.stringify\(`\/app\/evals\//);
     expect(check).toContain('document.querySelector("[data-skill-diff]")');
   });
