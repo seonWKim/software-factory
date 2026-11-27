@@ -82,6 +82,13 @@ export interface SpendTotals {
   runs: number;
   unknown: number;
 }
+/** The chat turns' or coordinator cycles' totals of the range, apart from the runs; `turns` counts cycles for the coordinator. `unknown`: rows with no stored cost, never added as 0. */
+export interface SpendTurnTotals {
+  cost_usd: number;
+  tokens: number;
+  turns: number;
+  unknown: number;
+}
 export interface SpendDay extends SpendTotals {
   day: string;
   /** The day's items with the most known cost, at most 3, most first. */
@@ -102,6 +109,9 @@ export interface SpendView {
   from: string;
   to: string;
   total: SpendTotals;
+  /** Chat turns and coordinator cycles, each apart from `total`, the days, the items and the budgets. */
+  chat: SpendTurnTotals;
+  coordinator: SpendTurnTotals;
   days: SpendDay[];
   /** By cost, highest first; at most a cap of them, `items_total` in all. */
   items: SpendItem[];
