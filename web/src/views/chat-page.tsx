@@ -28,10 +28,11 @@ type Said = { id: number; who: "you"; text: string; images?: SentImage[]; error?
 interface Conversation {
   said: Said[];
   sessionId?: string;
-  busy: boolean;
+  /** The send on its way: its AbortController (Stop) and when it started (the elapsed line). */
+  pending?: { controller: AbortController; startedAt: number } | undefined;
 }
 
-const EMPTY: Conversation = { said: [], busy: false };
+const EMPTY: Conversation = { said: [] };
 // Kept in the query cache, not in the page: going to another page and back keeps the conversation and its session, and a
 // send that finishes while the page is away still lands. A reload starts a new conversation.
 const KEY = ["chat", "conversation"] as const;
@@ -71,6 +72,20 @@ function ChatReply({ text, note }: { text: string; note?: string | undefined }) 
 const withheldNote = (names: readonly string[] | undefined): string | undefined =>
   names?.length ? t("chat.imagesWithheld", { names: names.map((n) => `“${n}”`).join(", ") }) : undefined;
 
+/** Seconds of waiting before the elapsed count shows. */
+const ELAPSED_AFTER_S = 5;
+
+/** Beside Stop: "Answering…", and from 5 s on "Answering… N s", counted once a second. Plain text, no live role. */
+function Elapsed({ startedAt }: { startedAt: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+  return <p className="text-sm text-text-2">{seconds < ELAPSED_AFTER_S ? t("chat.sending") : t("chat.sendingFor", { seconds })}</p>;
+}
+
 /** The item a message is about (`/app/chat?item=<id>`), or null. */
 const itemOf = (): string | null => new URLSearchParams(location.search).get("item");
 
@@ -107,7 +122,7 @@ export function ChatPage() {
     const root = document.querySelector("[data-scroll-root]");
     // To the very end: the newest message then sits just above the composer, not under it.
     if (root && follow.current) root.scrollTop = root.scrollHeight;
-  }, [chat.said.length, chat.busy]);
+  }, [chat.said.length, chat.pending]);
 
   // One line, growing with the text up to MAX_LINES, then it scrolls.
   useLayoutEffect(() => {
@@ -123,28 +138,40 @@ export function ChatPage() {
 
   /** Sends `message` and its `images` (a new one, or the failed message `retry` again) and adds the reply or the error under it. */
   const send = async (message: string, images: SentImage[], retry?: number) => {
-    if ((message === "" && images.length === 0) || token === undefined || client.getQueryData<Conversation>(KEY)?.busy) return;
+    if ((message === "" && images.length === 0) || token === undefined || client.getQueryData<Conversation>(KEY)?.pending) return;
     const id = retry ?? Date.now();
     follow.current = true;
+    const controller = new AbortController();
+    const { signal } = controller;
+    // Stop ended this send: nothing of it lands any more, and a newer send owns the conversation.
+    const settle = (f: (c: Conversation) => Conversation) => {
+      if (!signal.aborted) update((c) => ({ ...f(c), pending: undefined }));
+    };
     update((c) => ({
       ...c,
-      busy: true,
+      pending: { controller, startedAt: Date.now() },
       said: retry === undefined
         ? [...c.said, { id, who: "you", text: message, ...(images.length > 0 && { images }) }]
         : c.said.map((m) => (m.id === retry && m.who === "you" ? { id, who: "you", text: m.text, ...(m.images && { images: m.images }) } : m)),
     }));
-    const fail = (error: string) => update((c) => ({ ...c, busy: false, said: c.said.map((m) => (m.id === id && m.who === "you" ? { ...m, error } : m)) }));
+    const fail = (error: string) => settle((c) => ({ ...c, said: c.said.map((m) => (m.id === id && m.who === "you" ? { ...m, error } : m)) }));
     try {
       // The item's title, state and stage come from the stored items list, so the chat can answer "What is this?".
       const list = itemId === null ? null : await client.fetchQuery({ queryKey: ["chat", "items"], queryFn: () => itemsList({}), staleTime: 10_000 });
       const item = list?.items.find((i) => i.id === itemId);
       const context = item === undefined ? "" : `${t("chat.contextItem", { title: item.title ?? t("chat.untitled"), state: item.state_label, stage: item.stage })}\n\n`;
+      if (signal.aborted) return;
       const sessionId = client.getQueryData<Conversation>(KEY)?.sessionId;
-      const res = await chatSend(token, {
-        ...(sessionId === undefined ? {} : { session_id: sessionId }),
-        text: message === "" ? message : `${context}${message}`,
-        ...(images.length > 0 && { images: images.map(({ name, data }) => ({ name, data })) }),
-      });
+      const res = await chatSend(
+        token,
+        {
+          ...(sessionId === undefined ? {} : { session_id: sessionId }),
+          text: message === "" ? message : `${context}${message}`,
+          ...(images.length > 0 && { images: images.map(({ name, data }) => ({ name, data })) }),
+        },
+        signal,
+      );
+      if (signal.aborted) return;
       if (res.status === 503) fail(t("chat.off"));
       else if (!res.ok) fail(t("chat.sendFailed", { reason: res.value.error ?? "" }).trim());
       else if (res.value.outcome !== "answered" || res.value.reply === undefined) {
@@ -154,15 +181,23 @@ export function ChatPage() {
       } else {
         const reply = res.value.reply;
         const note = withheldNote(res.value.images_withheld);
-        update((c) => ({ ...c, busy: false, sessionId: res.value.session_id, said: [...c.said, { id: id + 0.5, who: "chat", text: reply, ...(note !== undefined && { note }) }] }));
+        settle((c) => ({ ...c, sessionId: res.value.session_id, said: [...c.said, { id: id + 0.5, who: "chat", text: reply, ...(note !== undefined && { note }) }] }));
       }
     } catch {
       fail(t("chat.failedRead"));
     }
   };
 
+  /** Stop: abort the request and end the wait at once. The server's turn runs on; its reply is not shown. */
+  const stop = () => {
+    const pending = client.getQueryData<Conversation>(KEY)?.pending;
+    if (!pending) return;
+    pending.controller.abort();
+    update((c) => ({ ...c, pending: undefined, said: [...c.said, { id: Date.now() + 0.25, who: "chat", text: t("chat.stopped") }] }));
+  };
+
   /** Send is on with text or at least one read image, once every image is read. */
-  const canSend = (text.trim() !== "" || composer.ready > 0) && !composer.reading && !chat.busy && token !== undefined;
+  const canSend = (text.trim() !== "" || composer.ready > 0) && !composer.reading && chat.pending === undefined && token !== undefined;
   const submit = () => {
     if (!canSend) return;
     const message = text.trim();
@@ -233,7 +268,7 @@ export function ChatPage() {
                   <li data-from="chat" data-send-error className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
                     <span className="sr-only">{t("chat.reply")}</span>
                     <p role="alert" data-raw className="max-w-full min-w-0 text-sm text-pretty text-failed wrap-anywhere">{m.error}</p>
-                    <Button variant="secondary" size="sm" disabled={chat.busy} onClick={() => void send(m.text, m.images ?? [], m.id)}>
+                    <Button variant="secondary" size="sm" disabled={chat.pending !== undefined} onClick={() => void send(m.text, m.images ?? [], m.id)}>
                       {t("chat.retry")}
                     </Button>
                   </li>
@@ -246,7 +281,7 @@ export function ChatPage() {
               </li>
             ),
           )}
-          {chat.busy && (
+          {chat.pending && (
             <li data-from="chat">
               <TypingDots label={t("chat.answering")} />
             </li>
@@ -267,7 +302,7 @@ export function ChatPage() {
       >
         <ComposerTray images={composer.images} remove={composer.remove} />
         <div data-dropping={drop.dragging || undefined} className={cn("relative rounded-card", drop.dragging && "ring-2 ring-focus")}>
-          <AttachImages add={composer.add} disabled={chat.busy} className="absolute bottom-1.5 left-2 rounded-pill!" />
+          <AttachImages add={composer.add} disabled={chat.pending !== undefined} className="absolute bottom-1.5 left-2 rounded-pill!" />
           <Textarea
             ref={field}
             aria-label={t("chat.field")}
@@ -280,17 +315,27 @@ export function ChatPage() {
             onKeyDown={onKeyDown}
             onPaste={onPaste}
           />
-          <Button
-            type="submit"
-            variant="primary"
-            size="icon"
-            aria-label={t("chat.send")}
-            disabled={!canSend}
-            className="absolute right-2 bottom-1.5 rounded-pill!"
-          >
-            <ArrowUp aria-hidden className="size-4" />
-          </Button>
+          {chat.pending === undefined && (
+            <Button
+              type="submit"
+              variant="primary"
+              size="icon"
+              aria-label={t("chat.send")}
+              disabled={!canSend}
+              className="absolute right-2 bottom-1.5 rounded-pill!"
+            >
+              <ArrowUp aria-hidden className="size-4" />
+            </Button>
+          )}
         </div>
+        {chat.pending !== undefined && (
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <Elapsed startedAt={chat.pending.startedAt} />
+            <Button type="button" variant="secondary" size="md" onClick={stop}>
+              {t("chat.stop")}
+            </Button>
+          </div>
+        )}
         <p id={hint} className="py-2 text-center text-xs text-text-3">{t("chat.hint")}</p>
       </form>
     </div>

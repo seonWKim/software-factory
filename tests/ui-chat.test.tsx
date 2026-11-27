@@ -161,11 +161,82 @@ describe("the composer", () => {
     // While it waits: the answering mark in the reply's place, and the button stays off even with new text typed.
     expect((await screen.findByRole("status")).textContent).toContain("Thinking…");
     fireEvent.change(box, { target: { value: "Next" } });
-    expect(sendButton().disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
     answer(json(200, sendBody));
     await screen.findByText("This is a build task.", {}, SLOW);
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
     expect(screen.queryByText("Thinking…")).toBeNull();
     expect(sendButton().disabled).toBe(false);
+  });
+});
+
+describe("Stop and the elapsed line", () => {
+  /** A chat.send that never answers on its own; `signals` holds the AbortSignal of each. */
+  const hang = () => {
+    const signals: (AbortSignal | null | undefined)[] = [];
+    const base = fetch;
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if (!String(url).includes("/api/v1/chat/send")) return base(url, init);
+      signals.push(init?.signal);
+      return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    }));
+    return signals;
+  };
+
+  it("Stop aborts the request, ends the wait, says so in the conversation and brings Send back", async () => {
+    const signals = hang();
+    page();
+    const box = await field();
+    fireEvent.change(box, { target: { value: "Hi" } });
+    await waitFor(() => expect(sendButton().disabled).toBe(false), SLOW);
+    fireEvent.click(sendButton());
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    await screen.findByText("Stopped. The chat may still finish its answer; it is not shown here.", {}, SLOW);
+    expect(signals[0]?.aborted).toBe(true);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+    expect(sendButton()).toBeTruthy();
+    expect(screen.queryByText("Chat may not show")).toBeNull();
+  });
+
+  it("Stop before the request starts sends nothing", async () => {
+    history.replaceState(null, "", `/app/chat?item=${ITEM}`);
+    let release: (r: Response) => void = () => {};
+    const base = fetch;
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) =>
+      new URL(url, "http://127.0.0.1").pathname === "/api/v1/items" ? new Promise<Response>((r) => { release = r; }) : base(url, init)));
+    render(wrap(createElement(ChatPage)));
+    const box = await field();
+    fireEvent.change(box, { target: { value: "Hi" } });
+    await waitFor(() => expect(sendButton().disabled).toBe(false), SLOW);
+    fireEvent.click(sendButton());
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    release(json(200, { as_of: AT, total: 1, items: [item], facets: {}, counts: {} }));
+    await screen.findByText(/^Stopped\./, {}, SLOW);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(sends).toEqual([]);
+  });
+
+  it("counts the seconds beside Stop from 5 s on, without a live role", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      hang();
+      page();
+      const box = await field();
+      fireEvent.change(box, { target: { value: "Hi" } });
+      fireEvent.click(sendButton());
+      const stopBtn = screen.getByRole("button", { name: "Stop" });
+      const line = stopBtn.parentElement!.querySelector("p")!;
+      expect(line.textContent).toBe("Answering…");
+      expect(line.closest("[role]")).toBeNull();
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(line.textContent).toBe("Answering…");
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(line.textContent).toBe("Answering… 12 s");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
