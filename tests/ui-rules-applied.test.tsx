@@ -32,7 +32,8 @@ describe("Rules page", () => {
     // The row is two lines: the name, then one muted line "<scope> · Seen N times (date)"; the Details stay collapsed under it.
     expect(row.querySelector("[data-rule-meta]")!.textContent).toBe("모든 문서 · Seen 2 times (Oct 19)");
     expect(row.querySelector("details")!.getAttribute("open")).toBeNull();
-    expect(row.querySelector("[data-switch-blank]")).not.toBeNull();
+    // No blank switch column: the row's text starts at its left edge (2026-11-27).
+    expect(row.querySelector("[data-row-leading]")).toBeNull();
     for (const part of ["summary first", "모든 문서", "2026-11-13", "Open with a summary.", "not given"]) expect(c).toContain(part);
     // Details are a label/value list; the incident IDs are not one of its parts (they sit in the seen line's tooltip).
     expect([...applied.querySelectorAll('[data-applied="C-001"] dt')].map((d) => d.textContent)).toEqual(["Default", "Exception", "Judged"]);

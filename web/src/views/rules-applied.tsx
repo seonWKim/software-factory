@@ -22,7 +22,7 @@ import type { ReactNode } from "react";
 
 // The Rules page's applied rules, inside its In effect section (since 2026-11-22): the promoted rules file in the file's
 // order, one two-line ListRow per rule (its plain sentence, the rule name else its default, with its ID in a tooltip, then one
-// muted line "<scope> · Seen N times (Mon D)" with the incident IDs in its tooltip, a blank switch column keeping its title level with the standing rows'; the "Suggested to retire" badge; a ⋯ menu with
+// muted line "<scope> · Seen N times (Mon D)" with the incident IDs in its tooltip, starting at the row's left edge (no blank switch column, 2026-11-27); the "Suggested to retire" badge; a ⋯ menu with
 // Edit, Open evidence and Retire) whose Details hold a label/value list (stacked below `sm`; each default and exception
 // line on its own line) with the default, exception and judged date. A search over ID, name, default and scope sits above the
 // rows; Suggest sits at the right of the In effect card's title (rules.tsx). An unparsable block's raw text is behind Details too. Scope and the
@@ -63,7 +63,7 @@ function seenLabel(incidents: string[] | null): ReactNode {
       ? t(count === 1 ? "rules.seenOne" : "rules.seen", { count })
       : t(count === 1 ? "rules.seenOneOn" : "rules.seenOn", { count, date: localShortDate(last) });
   return (
-    <span data-seen className="[&_button]:text-xs">
+    <span data-seen className={`[&_button]:text-xs`}>
       <IdDetails label={label} id={ids.join(", ")} what="incident IDs" />
     </span>
   );
@@ -127,7 +127,6 @@ function AppliedClass({ rule, id, token, round, applied }: { rule: AppliedRule; 
           <IdDetails label={name} id={id} what="rule ID" />
         </p>
       }
-      leading={<span aria-hidden data-switch-blank className="w-9 shrink-0" />}
       details={
         <>
           {meta !== null && <span data-rule-meta className="min-w-0 break-keep">{meta}</span>}

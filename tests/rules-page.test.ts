@@ -159,11 +159,11 @@ const promote = (id: string, over: Record<string, unknown> = {}) =>
 
 /**
  * An entry as GET lists it: not judged, a class with its stub draft (its title as the default), a proposal with none
- * and with its kind and target.
+ * and with its kind, target and gist (the stub's first proposed line).
  */
 const listed = (e: Entry) => ({
   id: e.id, title: e.title, state: e.state, ...(e.kind !== undefined ? { kind: e.kind } : {}), ...(e.target !== undefined ? { target: e.target } : {}),
-  judged: null, draft_error: null,
+  judged: null, draft_error: null, gist: e.id.startsWith("P-") ? "Review twice." : null,
   draft: e.id.startsWith("C-") ? { default: e.title, exception: "없음", incidents: ["T-1", "T-2"], scope: "software" } : null, task: null,
 });
 
@@ -279,7 +279,7 @@ describe("Rules page: GET /api/v1/rules", SPAWNS, () => {
     utimesSync(join(dir, "rule-candidates.md"), built, built);
     writeFileSync(join(dir, "ledger.jsonl"), `${JSON.stringify({ type: "verdict", class: "C-012", ts: "2026-11-13T10:00:00Z", decision: "promote", reason: "r", by: "owner", rule: "x", encoded_to: "private/tacit/rules.md" })}\n`);
     const v = await (await page(s.ledger)).get();
-    expect(v.entries.find((e: { id: string }) => e.id === "C-012")).toEqual({ id: "C-012", title: "keep existing CLI flags", state: "pending", judged: "promote", draft: null, draft_error: null, task: null });
+    expect(v.entries.find((e: { id: string }) => e.id === "C-012")).toEqual({ id: "C-012", title: "keep existing CLI flags", state: "pending", judged: "promote", gist: null, draft: null, draft_error: null, task: null });
     expect(v.entries.find((e: { id: string }) => e.id === "C-013")).toEqual(listed(PENDING[2]!));
   });
 
@@ -287,7 +287,7 @@ describe("Rules page: GET /api/v1/rules", SPAWNS, () => {
     const s = stubHome(PENDING);
     writeFileSync(join(s.home, "bin", "evolve"), `#!/bin/sh\n[ "$1" = pending ] && { printf '## tacit Pending 1\\n- C-012 keep flags\\n'; exit 0; }\necho 'ledger locked' >&2\nexit 3\n`);
     const v = await (await page(s.ledger)).get();
-    expect(v.entries).toEqual([{ id: "C-012", title: "keep flags", state: "pending", judged: null, draft: null, draft_error: expect.stringContaining("evolve show exited 3: ledger locked"), task: null }]);
+    expect(v.entries).toEqual([{ id: "C-012", title: "keep flags", state: "pending", judged: null, gist: null, draft: null, draft_error: expect.stringContaining("evolve show exited 3: ledger locked"), task: null }]);
   });
 
   it("names why a user who is not the owner cannot judge", async () => {

@@ -1,4 +1,4 @@
-import { ScrollText } from "lucide-react";
+import { Copy, ScrollText } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useRef, useState } from "react";
 import { PROPOSALS_API, type ProposalsView } from "../api/proposals.js";
@@ -6,9 +6,8 @@ import { API, type AppliedRule, type RetiredRule, type RuleRow, type RuleVerdict
 import { Badge, StatusBadge } from "../components/ui/badge.js";
 import { Button } from "../components/ui/button.js";
 import { Card, CardSection, SUB_TITLE } from "../components/ui/card.js";
-import { IdDetails } from "../components/ui/copy.js";
+import { IdDetails, copyToClipboard } from "../components/ui/copy.js";
 import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
-import { ButtonRow } from "../components/ui/button-row.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
@@ -23,7 +22,7 @@ import { AgentsHomePicker } from "./agents-home-picker.js";
 import { Applied, AppliedSearch, hasAppliedTools } from "./rules-applied.js";
 import { Pushbacks } from "./rules-pushbacks.js";
 import { EntryDetail } from "./rules-detail.js";
-import { GROUPS, LIST, PROSE, ROW_PAD, RULE_STATE, VERDICTS, isClass, muted, proposalLine } from "./rules-shared.js";
+import { GIST, GROUPS, LIST, PROSE, ROW_PAD, VERDICTS, WRAP_TITLE, isClass, muted, proposalLine, waitPill } from "./rules-shared.js";
 import { SkillDrafts, waitingSkills } from "./rules-skills.js";
 import { VerdictDialog } from "./rules-verdict.js";
 import { ApprovalsSection, StandingProposal, StandingRule } from "./standing.js";
@@ -33,11 +32,14 @@ import { ApprovalsSection, StandingProposal, StandingRule } from "./standing.js"
 // read-width column (PageHeader `width="read"`) exactly two sections, "Waiting for you" then "In effect" (since 2026-11-24), and one "Details" disclosure at the end.
 // In effect: each standing rule that is on (standing.tsx), then the ledger's applied rules (rules-applied.tsx), with a
 // search, and Suggest at the right of the card's title. Waiting for you: the pending standing proposals (Accept visible, Decline in ⋯), then the entries
-// the ledger has not judged (judged null), candidates (`C-…`) before structure proposals (`P-…`); each is a ListRow
-// whose title is an IdDetails (the ID in its tooltip), whose details line has its Badge and, for a proposal, its plain
-// kind and file count, with Promote visible (off, with its reason in the row, when a class's draft could not be read or
-// a proposal names no target file); its
-// ⋯ menu lists every verdict, Promote, Hold and Reject (danger, last), so all three are in one place; each opens a dialog (rules-verdict.tsx). Its before and after lines,
+// the ledger has not judged (judged null), candidates (`C-…`) before structure proposals (`P-…`); the header's badge is
+// the one count (no count beside the card or group titles). Each is a ListRow whose title is its whole text, wrapped
+// (its ID is the ⋯ menu's Copy ID), with Promote and ⋯ at its right (Promote on a line of its own below `sm`) (ListRow `action` and `menu`; Promote off, with its reason in the row, when a
+// class's draft could not be read or a proposal names no target file; Hold and Reject, danger and last, in ⋯; each opens
+// a dialog, rules-verdict.tsx), and whose details line has a pill only when held (2026-11-27: nothing "runs" while it
+// waits) and up to two lines of gist: a proposal's change with its file name and what it adds (`gist` of the read), a
+// candidate's draft rule when it says more than its title. What
+// promoting does sits in a closed "How promoting works" at the card's end. Its before and after lines,
 // why and where sit behind "Why and where" (rules-detail.tsx); a promoted prose proposal links its task to build it
 // (`task`, 2026-11-20). With none waiting an EmptyState gives the next step.
 // Details: the improve report link (Health's Improve tab), standing rules that are off, decided entries, the pushbacks
@@ -47,7 +49,7 @@ import { ApprovalsSection, StandingProposal, StandingRule } from "./standing.js"
 // known homes (AGENTS_HOME when set, ~/.agents) shows the chosen one's check: both CLIs executable, else the missing file.
 
 /** A waiting proposal's first changed lines, by ID, from `GET /api/v1/rules`; a side the ledger did not give is absent. */
-type Excerpt = { before?: string; after?: string };
+type Excerpt = NonNullable<RulesView["excerpts"]>[string];
 
 /** A proposal's before and after lines, read without opening anything. */
 function ExcerptBlock({ excerpt }: { excerpt: Excerpt }) {
@@ -67,6 +69,22 @@ function ExcerptBlock({ excerpt }: { excerpt: Excerpt }) {
 /** The line in a row that says why its Promote is off. */
 const OFF_LINE = "text-xs text-pretty break-words break-keep text-pill-bad-fg";
 
+/** Text compared loosely: lower case, inner spaces collapsed, a trailing full stop dropped. */
+const loose = (v: string): string => v.trim().toLowerCase().replace(/\s+/g, " ").replace(/\.$/, "");
+
+/**
+ * A row's gist: for a proposal its change line with its file name and, after a colon, what it adds (`gist` of the
+ * read); for a candidate "Rule: " and its draft's first line, unless that only repeats the title. Null when there is none.
+ */
+function gistLine(entry: RuleRow): string | null {
+  if (isClass(entry.id)) {
+    const rule = entry.draft?.default.split("\n").map((l) => l.trim()).find((l) => l !== "");
+    return rule === undefined || loose(rule) === loose(entry.title) ? null : t("rules.whatRule", { rule });
+  }
+  const what = proposalLine(entry.kind, entry.target);
+  return entry.gist ? `${what}: ${entry.gist}` : what;
+}
+
 function RuleCard({ entry, excerpt, applied, token }: { entry: RuleRow; excerpt?: Excerpt | undefined; applied: AppliedRule[]; token: string | null }) {
   const [open, setOpen] = useState<RuleVerdict | null>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -78,53 +96,62 @@ function RuleCard({ entry, excerpt, applied, token }: { entry: RuleRow; excerpt?
   // A proposal is promoted to its target file: with none named, Promote is off and the row says why.
   const noTarget = !isClass(entry.id) && (entry.target ?? "").trim() === "";
   const promoteOff = noDraft || noTarget;
-  const badge = entry.judged !== null ? (
-    <span data-judged>
-      <Badge level="ready_to_merge">{t("rules.judged", { decision: entry.judged })}</Badge>
-    </span>
-  ) : (
-    <StatusBadge state={RULE_STATE[entry.state] ?? entry.state} />
-  );
+  const decides = token !== null && entry.judged === null;
+  const pill = waitPill(entry.state);
+  const gist = entry.judged === null ? gistLine(entry) : null;
   return (
     <ListRow
       data-rule={entry.id}
       className={ROW_PAD}
       title={
-        // The title is the ledger's text as written, so it may quote a snake_case name (`data-raw`).
-        <p data-rule-title data-raw className={`${ROW_TITLE} font-medium`} title={entry.title}>
-          <IdDetails label={entry.title} id={entry.id} what="rule ID" />
+        // The ledger's text as written, whole and wrapped, so it may quote a snake_case name (`data-raw`); the ID is
+        // the ⋯ menu's Copy ID.
+        <p data-rule-title data-raw className={WRAP_TITLE}>
+          {entry.title}
         </p>
       }
       details={
-        <>
-          {badge}
-          {!isClass(entry.id) && (
-            <span data-rule-what className="min-w-0 break-keep">
-              {proposalLine(entry.kind, entry.target)}
+        (entry.judged !== null || pill !== null || gist !== null) && <>
+          {entry.judged !== null ? (
+            <span data-judged>
+              <Badge level="ready_to_merge">{t("rules.judged", { decision: entry.judged })}</Badge>
+            </span>
+          ) : (
+            pill !== null && <StatusBadge state={pill} />
+          )}
+          {gist !== null && (
+            <span data-rule-gist data-raw className={GIST} title={entry.target ? `${entry.target}\n${gist}` : gist}>
+              {gist}
             </span>
           )}
         </>
       }
-      menu={
-        token !== null && entry.judged === null && (
-          <div ref={menu}>
-            <OverflowMenu
-              label={t("rules.actions", { title: entry.title })}
-              items={VERDICTS.map((v) => ({
-                label: t(v.label), action: v.verdict, danger: v.variant === "danger", disabled: v.verdict === "promote" && promoteOff, onSelect: () => { setFrom("menu"); setOpen(v.verdict); },
-              }))}
-            />
-          </div>
-        )
-      }
-    >
-      {token !== null && entry.judged === null && (
-        <ButtonRow>
+      action={
+        decides && (
           <Button ref={promote} size="sm" disabled={promoteOff} onClick={() => { setFrom("button"); setOpen("promote"); }}>
             {t("rules.promote")}
           </Button>
-        </ButtonRow>
-      )}
+        )
+      }
+      menu={
+        <div ref={menu}>
+          <OverflowMenu
+            label={t(decides ? "rules.actions" : "rules.appliedActions", { title: entry.title, name: entry.title })}
+            items={[
+              ...(decides
+                ? [
+                    ...VERDICTS.filter((v) => v.verdict !== "promote").map((v) => ({
+                      label: t(v.label), action: v.verdict, danger: v.variant === "danger", onSelect: () => { setFrom("menu"); setOpen(v.verdict); },
+                    })),
+                    { separator: true as const },
+                  ]
+                : []),
+              { label: t("copy.id"), icon: Copy, action: "copy-id", onSelect: () => void copyToClipboard(entry.id).then((ok) => ok && announceStatus(t("copy.done"))) },
+            ]}
+          />
+        </div>
+      }
+    >
       {entry.task != null && (
         <p data-rule-task className={muted}>
           {t("rules.task")}{" "}
@@ -213,6 +240,24 @@ function Retired({ retired }: { retired: RetiredRule[] }) {
   );
 }
 
+/**
+ * "How promoting works", closed, at the end of Waiting for you: what promoting does, one line for each kind of entry
+ * that waits (skill changes, rule candidates, structure proposals). Nothing when none of them waits.
+ */
+function HowPromoting({ skills, classes, proposals }: { skills: boolean; classes: boolean; proposals: boolean }) {
+  const lines = ([[skills, "rules.groupSkillsLine"], [classes, "rules.groupClassesLine"], [proposals, "rules.groupProposalsLine"]] as const).filter(([on]) => on);
+  if (lines.length === 0) return null;
+  return (
+    <Disclosure data-how-promoting className="mt-4" summary={t("rules.howPromoting")}>
+      <div className="space-y-1">
+        {lines.map(([, key]) => (
+          <p key={key} data-group-line className={`${PROSE} ${muted}`}>{t(key)}</p>
+        ))}
+      </div>
+    </Disclosure>
+  );
+}
+
 /** A titled part of the page's Details disclosure: an h3 and its content, not a section of its own. */
 function DetailsPart({ title, children, ...rest }: { title: string; children: ReactNode; [data: `data-${string}`]: string | boolean }) {
   return (
@@ -247,6 +292,7 @@ export function RulesPage() {
           {skills.length > 0 && (
             <Card title={t("rules.waitingForYou")} count={skills.length}>
               <SkillDrafts rows={skills} token={token} />
+              <HowPromoting skills classes={false} proposals={false} />
             </Card>
           )}
           <ApprovalsSection />
@@ -265,7 +311,7 @@ export function RulesPage() {
   const standingToken = sv?.csrf_token ?? null;
   const waitCount = waiting.length + proposals.length + skills.length;
   const inEffect = on.length + applied.length;
-  const excerpts = (v as RulesView & { excerpts?: Record<string, Excerpt> }).excerpts;
+  const excerpts = v.excerpts;
   const onRows = on.map((r) => <StandingRule key={r.rule} rule={r} token={standingToken} />);
   return (
     <div className="space-y-4">
@@ -283,7 +329,7 @@ export function RulesPage() {
       <div className="flex flex-col gap-6 *:mt-0">
       {v.judge !== null && <Notice tone="warn">{t("rules.readOnly")}{v.judge}</Notice>}
       {v.error !== null && <Notice tone="bad">{v.error}</Notice>}
-      <Card title={t("rules.waitingForYou")} count={waitCount}>
+      <Card title={t("rules.waitingForYou")}>
         {waitCount === 0 && v.error === null && <EmptyState icon={ScrollText} title={t("rules.emptyTitle")} description={t("rules.empty")} />}
         {proposals.length > 0 && (
           <CardSection title={t("rules.turnOnProposals")}>
@@ -299,10 +345,7 @@ export function RulesPage() {
           const entries = waiting.filter((e) => isClass(e.id) === g.classes);
           return (
             entries.length > 0 && (
-              <CardSection key={g.title} title={t(g.title)} count={entries.length}>
-                <p data-group-line className={`mb-2 ${PROSE} ${muted}`}>
-                  {t(g.line)}
-                </p>
+              <CardSection key={g.title} title={t(g.title)}>
                 <ul aria-label={t(g.title)} className={LIST}>
                   {entries.map((e) => (
                     <RuleCard key={e.id} entry={e} excerpt={excerpts?.[e.id]} applied={applied} token={token} />
@@ -312,6 +355,7 @@ export function RulesPage() {
             )
           );
         })}
+        <HowPromoting skills={skills.length > 0} classes={waiting.some((e) => isClass(e.id))} proposals={waiting.some((e) => !isClass(e.id))} />
       </Card>
       <Card title={t("rules.inEffect")} count={inEffect} action={hasAppliedTools(v.applied) && <Button onClick={() => setRound(round + 1)}>{t("rules.suggest")}</Button>}>
         {standing.isError && <ErrorNote error={standing.error} />}
