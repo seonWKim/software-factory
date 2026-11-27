@@ -184,12 +184,12 @@ describe("plain labels", () => {
   it("each internal term has its catalog label, and blocked_on reads Waiting on", () => {
     expect(termLabel("blocked_on")).toBe("Waiting on");
     expect(termLabel("agent_needs_human")).toBe("Agent needs a person");
-    expect(termLabel("approve_spec")).toBe("Approve specs");
+    expect(termLabel("approve_spec")).toBe("Approve plans");
     expect(termLabel("approve_merge")).toBe("Approve merges");
     expect(termLabel("token_cost")).toBe("Tokens");
     expect(termLabel("allowed_paths")).toBe("Allowed paths");
     expect(termLabel("checks_failed")).toBe("Project checks failed");
-    expect(termLabel("spec_conflict")).toBe("Spec conflicts with the rules");
+    expect(termLabel("spec_conflict")).toBe("Plan conflicts with the rules");
     expect(termLabel("rule_of_two")).toBe("Rule of Two");
     expect(termLabel("some_other_code")).toBe("some other code");
   });

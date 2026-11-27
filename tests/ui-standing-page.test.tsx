@@ -146,7 +146,7 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.getByRole("region", { name: "In effect" }).textContent).toContain("No rule is in effect yet.");
     expect(screen.getByRole("region", { name: "Waiting for you" }).textContent).toContain("Nothing waits for a verdict");
-    expect(screen.queryByText("Auto-approve specs")).toBeNull();
+    expect(screen.queryByText("Auto-approve plans")).toBeNull();
   });
 
   it("the switch opens the Turn on dialog, not an inline form; its confirm posts the rule and its new state with the CSRF token", async () => {
