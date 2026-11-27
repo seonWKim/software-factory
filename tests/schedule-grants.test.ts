@@ -3,15 +3,22 @@
 // that runs the real sqlite3 binary (skipped when sqlite3 is not on PATH).
 
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   type GrantBrokerDeps, SCHEDULE_SHELL_COMMAND, SQLITE_TOOL, ScheduleGrantBroker, grantWords, grantsOfWords, notesFolder, scheduleGrantTools, scheduleIdProblem, storedGrants, storedScheduleGrants,
-  SCHEDULE_PASSPORT_KIND, withSchedulePassports,
+  SCHEDULE_PASSPORT_KIND, feedbackGrants, grantList, withGrantWords, withSchedulePassports,
 } from "../src/core/schedule-grants.js";
+import { improveAction } from "../src/controller/units/schedule/plugins/improve/improve-action.js";
+import { dailyImproveKey, enqueueImprove } from "../src/core/improver.js";
+import { addSchedule, runScheduleCommand } from "../src/core/schedule.js";
+import type { Timestamp, UserId } from "../src/core/types.js";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
+import { readSchedules } from "../src/ui/schedules-api.js";
 import type { ToolBroker } from "../src/interfaces/tool-broker.js";
 import { type ToolContext, guardPolicy } from "../src/core/tools/index.js";
 import { READ_TOOLS } from "../src/worker/index.js";
@@ -262,6 +269,82 @@ describe.skipIf(!sqlite3OnPath())("the shell grant on the real sqlite3 binary", 
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("withGrantWords: the --grant words on a schedule add or edit", () => {
+  const feedback = { kind: "feedback" as const, settings: { prompt: "p" } };
+
+  it("stores the grants on a feedback action; no words leave the action as it is; a problem passes through", () => {
+    expect(withGrantWords(feedback, ["notes"], "s1")).toEqual({ kind: "feedback", settings: { prompt: "p", grants: [{ kind: "notes" }] } });
+    expect(withGrantWords(feedback, undefined, "s1")).toBe(feedback);
+    expect(withGrantWords({ problem: "bad" }, ["notes"], "s1")).toEqual({ problem: "bad" });
+  });
+
+  it("refuses grants on another kind, and a notes grant on an ID that is no plain folder name", () => {
+    expect(withGrantWords({ kind: "agent", settings: { prompt: "p" } }, ["notes"], "s1")).toEqual({ problem: "only a feedback schedule takes --grant" });
+    expect(withGrantWords(feedback, ["notes"], "../..")).toMatchObject({ problem: expect.stringContaining("plain schedule ID") });
+    expect(withGrantWords(feedback, ["browser=http://localhost:5173/"], "../..")).not.toHaveProperty("problem");
+  });
+});
+
+describe("feedbackGrants: compose's wiring of the grants", () => {
+  it("hands out nothing for no grants, wraps the runner's broker, and the runner holds a passport only for a granted run", async () => {
+    const { d } = deps();
+    const shell = { kind: "shell" as const, command: SCHEDULE_SHELL_COMMAND, db: "/d.db" };
+    const begun: string[] = [];
+    const store = { listSchedules: async () => [{ id: "s1", action: { kind: "feedback", settings: { grants: [shell] } } }] } as never;
+    const g = feedbackGrants({ store, deps: d, passports: { begin: async (r) => void begun.push(r.run), end: () => {} }, base });
+    expect(await g.handOut({ id: "s2", settings: {} })).toBeNull();
+    expect((await g.handOut({ id: "s1", settings: { grants: [shell] } }))!.tool_grants).toEqual([SQLITE_TOOL]);
+    const inner: ToolBroker = { listTools: () => [], allTools: () => [], call: async () => ({ ok: true, content: "" }) };
+    expect(g.broker(inner).allTools().map((t) => t.name)).toContain(SQLITE_TOOL);
+  });
+});
+
+describe("grants in plain words: schedule list and the schedules API", () => {
+  const ME = "local:owner" as UserId;
+  const grants = [{ kind: "browser", url: "http://localhost:5173/" }, { kind: "notes" }];
+
+  it("prints each grant on the schedule's line with the words GET /api/v1/schedules returns; a schedule with none shows none", async () => {
+    const clock = new FakeClock("2026-11-22T12:00:00.000Z");
+    const store = new SqlFactoryStore(new SqliteDriver(":memory:"), clock);
+    await store.migrate();
+    const cadence = { kind: "daily" as const, spec: "09:00" };
+    await addSchedule(store, { id: "fb", title: "Feedback", cadence, zone: "UTC", created_by: ME, action: { kind: "feedback", settings: { prompt: "p", grants } } }, clock.now());
+    await addSchedule(store, { id: "ag", title: "Agent", cadence, zone: "UTC", created_by: ME, action: { kind: "agent", settings: { prompt: "p" } } }, clock.now());
+    const lines = (await runScheduleCommand(store, { verb: "list" }, ME, async () => true)).lines;
+    const api = (await readSchedules({ store } as never)).value as { schedules: { id: string; grants: string[] }[] };
+    const words = api.schedules.find((s) => s.id === "fb")!.grants;
+    expect(words).toEqual(grantList({ kind: "feedback", settings: { grants } }, "fb"));
+    expect(words).toContain("browser: Browse may read only http://localhost:5173/");
+    expect(words).toContain("notes: may write only in .factory/notes/fb/");
+    expect(lines.find((l) => l.startsWith("fb\t"))).toContain(`grants: ${words.join("; ")}`);
+    expect(api.schedules.find((s) => s.id === "ag")!.grants).toEqual([]);
+    expect(lines.find((l) => l.startsWith("ag\t"))).not.toContain("grants:");
+    await store.close();
+  });
+
+  it("adds no grant card to the Schedules page", () => {
+    for (const f of ["detail.tsx", "form.tsx"]) expect(readFileSync(join(import.meta.dirname, "../web/src/views/schedules", f), "utf8")).not.toMatch(/grant/i);
+  });
+});
+
+describe("the improve daily run", () => {
+  it("is keyed by its slot's UTC day: a second occurrence that day queues none, the next day's slot another run", async () => {
+    const PROJECT = "local:here:repo";
+    const clock = new FakeClock("2026-11-22T12:00:00.000Z");
+    const store = new SqlFactoryStore(new SqliteDriver(":memory:"), clock);
+    await store.migrate();
+    const outputs: string[] = [];
+    const route = improveAction((slot) => enqueueImprove({ store, clock }, PROJECT, { slot }));
+    const ports = { record: async (r: { output: string }) => void outputs.push(r.output) } as never;
+    for (const at of ["2026-11-22T09:00:00.000Z", "2026-11-22T23:59:00.000Z", "2026-11-23T00:01:00.000Z"]) await route({} as never, at as Timestamp, ports);
+    const [first, second, next] = outputs;
+    expect(first).toMatch(new RegExp(`^queued improve run .* \\(${dailyImproveKey(PROJECT, "2026-11-22")}\\)$`));
+    expect(second).toBe(`already ${first}`);
+    expect(next).toMatch(new RegExp(`^queued improve run .* \\(${dailyImproveKey(PROJECT, "2026-11-23")}\\)$`));
+    await store.close();
   });
 });
 

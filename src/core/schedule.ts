@@ -13,7 +13,7 @@
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { overBudget } from "./budget.js";
 import { type Cadence, type CadenceKind, cadenceProblem, nextDue } from "./schedule-cadence.js";
-import { grantsLine, scheduleIdProblem, withGrantWords } from "./schedule-grants.js";
+import { type GrantFields, grantsLine, withGrantWords } from "./schedule-grants.js";
 import type { Actor, Timestamp, UserId, WorkItem } from "./types.js";
 
 /** The triggers a routine may run on: `merge`, a change merged into the base branch since the routine's last run. */
@@ -25,6 +25,7 @@ export type ScheduleOutcome = ClaimOutcome | "rejected";
 
 /** Queued implement runs at which a `skip` schedule skips its due occurrence (the owner's "under 15"). */
 export const SKIP_WHEN_BUSY_THRESHOLD = 15;
+
 /** What a schedule does with a due occurrence claimed late or while busy: `catch_up` fires it once, `skip` drops it. */
 export type MissedRule = "catch_up" | "skip";
 
@@ -344,7 +345,7 @@ export type ScheduleAdminStore = Pick<ScheduleStore, "listSchedules" | "listSche
 export const SCHEDULE_LOST = "changed by another worker, try again";
 
 /** A schedule's fields as the CLI's flags and an HTTP body give them; each absent when not given. */
-export interface ScheduleFields {
+export interface ScheduleFields extends GrantFields {
   title?: string;
   cadence?: string;
   spec?: string;
@@ -358,7 +359,7 @@ export interface ScheduleFields {
   missed?: MissedRule;
   /** Add only: first due now (`--run-now on`), not at the cadence's next slot. */
   run_now?: boolean;
-  token_cap?: number; grants?: string[]; // grants: feedback only, the `--grant` words (src/core/schedule-grants.ts)
+  token_cap?: number;
 }
 
 /** The writes, each the owner's only. */
@@ -372,7 +373,7 @@ const capProblem = (f: Pick<ScheduleFields, "run_cap_usd" | "daily_cap_usd">): s
   [f.run_cap_usd, f.daily_cap_usd].some((v) => v != null && !(Number.isFinite(v) && v > 0)) ? "a cap is a positive dollar amount, or none" : null;
 
 /** The action a word and its text make (CLI, HTTP): build `body`; agent, feedback `prompt` (needed); check-page an http(s) `url` and an `instruction` (or `body`), whose fields any other refuses. */
-export function scheduleActionOf(word: string, body: string | undefined, page: Pick<ScheduleFields, (typeof PAGE_FIELDS)[number] | "grants"> = {}): ScheduleActionSpec | { problem: string } {
+export function scheduleActionOf(word: string, body: string | undefined, page: Pick<ScheduleFields, (typeof PAGE_FIELDS)[number]> = {}): ScheduleActionSpec | { problem: string } {
   if (Object.hasOwn(SETUP_ONLY_KINDS, word)) return { problem: `the ${word} action is added by setup only (${SETUP_ONLY_KINDS[word]}), not by schedule add or edit: one of ${WRITE_WORDS}` };
   const kind = Object.hasOwn(SCHEDULE_WRITE_WORDS, word) ? SCHEDULE_WRITE_WORDS[word]! : undefined;
   if (kind === undefined) return { problem: `unknown action kind "${word}": one of ${WRITE_WORDS}` };
@@ -382,13 +383,13 @@ export function scheduleActionOf(word: string, body: string | undefined, page: P
     if (instruction === "") return { problem: "a check-page action needs an instruction (--instruction or --body)" };
     if (url === "") return { problem: "a check-page action needs --url: the page it checks" };
     if (!/^https?:\/\/\S+$/.test(url)) return { problem: "a check-page action's page is an http or https URL" };
-    return withGrantWords({ kind, settings: { instruction, url } }, page.grants);
+    return { kind, settings: { instruction, url } };
   }
   if (PAGE_FIELDS.some((k) => page[k] !== undefined)) return { problem: ONLY_PAGE };
   const text = body?.trim() ?? "";
-  if (kind === "build") return withGrantWords({ kind, settings: text === "" ? {} : { body: text } }, page.grants);
+  if (kind === "build") return { kind, settings: text === "" ? {} : { body: text } };
   if (text === "") return { problem: `a${kind === "agent" ? "n" : ""} ${kind} action needs a body (--body): its prompt` };
-  return withGrantWords({ kind, settings: { prompt: text } }, page.grants);
+  return { kind, settings: { prompt: text } };
 }
 
 const refused = (problem: string): ScheduleResult => ({ ok: false, problem });
@@ -407,8 +408,8 @@ export async function createSchedule(store: ScheduleAdminStore, id: string, f: S
   const merge = f.cadence?.trim() === ON_MERGE;
   const needs = merge ? (["title", "action"] as const) : (["title", "cadence", "spec", "zone", "action"] as const);
   const missing = [...(id.trim() ? [] : ["id"]), ...needs.filter((k) => !f[k]?.trim())];
-  if (missing.length > 0 || scheduleIdProblem(id)) return refused(missing.length > 0 ? `missing ${missing.join(", ")}` : scheduleIdProblem(id)!);
-  const action = scheduleActionOf(f.action!.trim(), f.body, f);
+  if (missing.length > 0) return refused(`missing ${missing.join(", ")}`);
+  const action = withGrantWords(scheduleActionOf(f.action!.trim(), f.body, f), f.grants, id);
   if ("problem" in action) return refused(action.problem);
   if (merge && action.kind !== "check_page") return refused(ON_MERGE_ONLY);
   if (merge && f.spec !== undefined) return refused(`${ON_MERGE} takes no --spec: it runs on each merge`);
@@ -496,12 +497,11 @@ export async function editSchedule(store: ScheduleAdminStore, id: string, f: Sch
     if ([f.action, f.body, f.instruction, f.url, f.grants].some((v) => v !== undefined)) {
       const kind = page ? "check-page" : (f.action ?? s.action?.kind);
       if (kind === undefined) return "the schedule has no action: give --action too";
-      if (f.grants?.includes("notes") && scheduleIdProblem(id)) return `a notes grant needs a plain schedule ID: ${scheduleIdProblem(id)}`;
       if (page && f.instruction !== undefined && f.body !== undefined) return "give the instruction as --instruction or --body, not both";
       const old = page || s.action?.kind === kind ? s.action!.settings : {};
-      const action = page
-        ? scheduleActionOf(kind, undefined, { instruction: f.instruction ?? f.body ?? String(old.instruction ?? ""), url: f.url ?? String(old.url ?? ""), ...(f.grants ? { grants: f.grants } : {}) })
-        : scheduleActionOf(kind, f.body ?? String(old.body ?? old.prompt ?? ""), f);
+      const action = withGrantWords(page
+        ? scheduleActionOf(kind, undefined, { instruction: f.instruction ?? f.body ?? String(old.instruction ?? ""), url: f.url ?? String(old.url ?? "") })
+        : scheduleActionOf(kind, f.body ?? String(old.body ?? old.prompt ?? ""), f), f.grants, id);
       if ("problem" in action) return action.problem;
       patch.action = page ? action : { kind: action.kind, settings: { ...old, ...action.settings } };
     }
@@ -524,6 +524,7 @@ export function writeSchedule(store: ScheduleAdminStore, w: ScheduleWrite, id: s
 }
 
 // `factory schedule …` (src/core/local-cli-parse.ts hands the word here, as it stays within its size budget).
+
 export type ScheduleCommand = { verb: "list" } | { verb: "runs"; id: string } | { verb: ScheduleWrite; id: string; fields: ScheduleFields };
 
 const FLAGS: Readonly<Record<string, keyof ScheduleFields>> = {
@@ -566,8 +567,7 @@ export function parseScheduleArgs(args: readonly string[]): ScheduleCommand | st
       fields[key] = v === "none" ? null : Number(v);
     } else Object.assign(fields, { [key!]: key === "grants" ? [...(fields.grants ?? []), v] : v }); // --grant repeats: one grant each
   }
-  if (id === undefined || (verb === "add" && scheduleIdProblem(id))) return id === undefined ? "schedule add needs --id <id>" : `schedule add: ${scheduleIdProblem(id)}`;
-  return { verb, id, fields };
+  return id === undefined ? "schedule add needs --id <id>" : { verb, id, fields };
 }
 
 /** One schedule as `schedule list` prints it: its next run is `paused`, `on each merge` (an on-merge one) or a time; a feedback schedule's grants last. */

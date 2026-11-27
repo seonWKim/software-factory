@@ -8,10 +8,12 @@ import { dirname, join, resolve } from "node:path";
 import { type FactoryConfig, cliUserConfig, toolGrantsConfig } from "./core/config.js";
 import type { ProjectRef } from "./core/project.js";
 import { routineQueue, scheduledAction } from "./core/controller-deps.js";
-import { agentAction } from "./controller/units/schedule/plugins/agent/agent-action.js"; import { buildAction } from "./controller/units/schedule/plugins/build/build-action.js";
+import { agentAction } from "./controller/units/schedule/plugins/agent/agent-action.js";
+import { buildAction } from "./controller/units/schedule/plugins/build/build-action.js";
 import { checkPageAction } from "./controller/units/schedule/plugins/check-page/check-page-action.js";
 import { summaryAction } from "./controller/units/schedule/plugins/summary/summary-action.js"; import { NO_OWNER_CHAT, summaryDeps } from "./core/summary.js";
-import { feedbackActionWith } from "./controller/units/schedule/plugins/feedback/feedback-action.js"; import { nodeGrantDeps } from "./impl/schedule-action/routed-action.js";
+import { feedbackActionWith } from "./controller/units/schedule/plugins/feedback/feedback-action.js";
+import { nodeGrantDeps } from "./impl/schedule-action/routed-action.js";
 import { improveAction } from "./controller/units/schedule/plugins/improve/improve-action.js";
 import { dailyTriggerOn, enqueueImprove } from "./core/improver.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
@@ -23,10 +25,11 @@ import type { UserId } from "./core/types.js";
 import { gitHost, hostId } from "./runtime/host-id.js";
 import { ControllerRole } from "./runtime/roles/controller-role.js";
 import { SqlHookAudit, loadHooks, validateCase } from "./runtime/index.js";
-import { skillFolderPath } from "./runtime/capabilities/capabilities.js"; import { type SkillStarter, STARTER_PROMPT, skillStarter } from "./core/skill-eval-starter.js";
+import { skillFolderPath } from "./runtime/capabilities/capabilities.js";
+import { type SkillStarter, STARTER_PROMPT, skillStarter } from "./core/skill-eval-starter.js";
 import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
-import { feedbackGrantHandOut, scheduleGrantTools, storedScheduleGrants, withSchedulePassports } from "./core/schedule-grants.js";
+import { feedbackGrants } from "./core/schedule-grants.js";
 import { type LearnedSettingsSource, LiveSettings, maxWorkers, workerCount } from "./core/settings.js";
 import { settingsBase } from "./core/settings-base.js";
 import { type LocalRoute, READ_TOOLS, WorkerPool } from "./worker/index.js";
@@ -81,11 +84,6 @@ export { resolveProject };
 export const PROJECT_RETRY_MS = 30_000;
 const PROJECT_RETRY_MAX_MS = 600_000;
 
-/** A Forge.projectIdentity error retrying cannot fix (bad credentials, no such repository). Startup stops on it. */
-function permanentLookupError(err: unknown): boolean {
-  return (err as { permanent?: unknown } | null)?.permanent === true;
-}
-
 /** What startupProject needs: the store holding the key, the forge's read of it, and where to log and wait. */
 export interface StartupProjectDeps {
   store: Pick<FactoryStore, "getCursor" | "advanceCursor" | "listSettingOverrides" | "listWorkItems">;
@@ -130,7 +128,7 @@ export async function startupProject(d: StartupProjectDeps): Promise<{ project: 
       await saveProject(d.store, d.repo, project);
       return { project, refreshed: Promise.resolve() };
     } catch (err) {
-      if (permanentLookupError(err)) throw err;
+      if ((err as { permanent?: unknown } | null)?.permanent === true) throw err; // retrying cannot fix it (bad credentials, no such repository)
       d.log.warn("the configured repo's project key is not stored yet and GitHub cannot resolve it; retrying", {
         repo: `${d.repo.owner}/${d.repo.name}`, retry_in_ms: wait, error: errorText(err),
       });
@@ -239,8 +237,8 @@ export async function build(
   const { guard, passports } = brokerGuard(loaded, { store, secrets, identity: identity.passports, tool_grants });
   const local = { ...unguardedLocal, broker: guard(unguardedLocal.broker) };
   const guarded = guard(broker);
-  // A feedback schedule's shell grant: its broker tool reaches the run through the runner's tool bridge, inside G2 (design 08-schedules).
-  const runner = await p.runner(sandbox, secrets, { broker: guard(scheduleGrantTools(broker, storedScheduleGrants(store), nodeGrantDeps)), scanner });
+  const grants = feedbackGrants({ store, deps: nodeGrantDeps, passports, base: { tools: READ_TOOLS, repo: resolve(loaded.config.repo.path), base_ref: loaded.config.repo.base_branch } });
+  const runner = await p.runner(sandbox, secrets, { broker: guard(grants.broker(broker)), scanner }); // a feedback schedule's shell grant reaches its run through the tool bridge, inside G2
   const granted = [...new Set(Object.values(tool_grants ?? {}).flat())];
   if (granted.length > 0 && !runner.exposes_tools) {
     throw new Error(`tool_grants grants ${granted.join(", ")}, but the ${selectedRunners(sel).join(", ")} agent runner cannot expose broker tools; remove tool_grants or pick a runner that can`);
@@ -266,7 +264,7 @@ export async function build(
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
   // What a fired schedule occurrence runs (design 08-schedules): none unless `plugins.schedule_action` names one; its routes are the schedule unit's action folders.
-  const routes = { build: buildAction, agent: agentAction, feedback: feedbackActionWith(feedbackGrantHandOut({ tools: READ_TOOLS, repo: resolve(loaded.config.repo.path), base_ref: loaded.config.repo.base_branch }, nodeGrantDeps)), improve: improveAction((slot) => enqueueImprove({ store, clock }, project.key, { slot })), check_page: checkPageAction(routineQueue(store, project.key)), summary: summaryAction(summaryDeps({ store, scanner, times: () => settings.values(), post: NO_OWNER_CHAT })) }, actionCtx = { ...base, store, runner: withSchedulePassports(runner, passports, project.key), sandbox, scanner, tools: READ_TOOLS, project: project.key, routes };
+  const routes = { build: buildAction, agent: agentAction, feedback: feedbackActionWith(grants.handOut), improve: improveAction((slot) => enqueueImprove({ store, clock }, project.key, { slot })), check_page: checkPageAction(routineQueue(store, project.key)), summary: summaryAction(summaryDeps({ store, scanner, times: () => settings.values(), post: NO_OWNER_CHAT })) }, actionCtx = { ...base, store, runner: grants.runner(runner, project.key), sandbox, scanner, tools: READ_TOOLS, project: project.key, routes };
   const schedule_action = sel.schedule_action === undefined ? undefined : scheduledAction(store, await createPlugin(registry, "schedule_action", sel.schedule_action, actionCtx), new ConsoleLogger(clock, "schedule"), project.key);
   // The pack checks `hooks` names (design §4, issue #494), refused here when bad; its other names are `*.hook.ts`.
   const checks = packChecks(loaded.packs, config.hooks ?? [], { toolHooks: runner.supports_tool_hooks === true });
