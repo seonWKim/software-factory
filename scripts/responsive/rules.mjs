@@ -47,6 +47,12 @@
 //   title-wrap      a row title ([data-row-title]: Work, Tasks and Health's Runners rows) wraps onto more than two
 //                   lines, so the ID, badge or time beside it squeezed it (design 09-dashboard-shell, 2026-11-22).
 //
+// The item page (docs/design/09-dashboard-item.md, 2026-11-28):
+//
+//   item-primary-top  on the item page ([data-item-main]) at a viewport 1280px wide or more (the widest the check runs;
+//                   the target is 1440x900), the first primary Button's top is `itemPrimaryTopPx` (600) or more from the
+//                   top of the page: the decision and its action must open the page, not sit under About.
+//
 // Alignment (design 09-dashboard-components, 2026-11-24, the owner's "vertical and horizontal alignments are all wrong"):
 //
 //   row-align       in a row (a table body's <tr>, [data-row], [data-list-row], [data-item-row], [role=row], a table
@@ -83,6 +89,7 @@ export const LIMITS = {
   proseMinLines: 2,
   minTarget: 24,
   rowAlignPx: 3,
+  itemPrimaryTopPx: 600,
   minPanelBodyPx: 60,
   // Rules that print but do not fail: a new rule lands here while the fix it waits on is in progress, named in a
   // comment. row-align was here until the table and row centring (9a4c1d07) reached main, 2026-11-24.
@@ -447,6 +454,16 @@ export function checkLayout(limits) {
     controls.forEach((el, i) => {
       if (heights[i] !== main) fail("toolbar-height", el, `${heights[i]}px tall in a toolbar of ${main}px controls`);
     });
+  }
+
+  // item-primary-top
+  const itemMain = document.body.querySelector("[data-item-main]");
+  if (itemMain && W >= 1280) {
+    const primary = [...itemMain.querySelectorAll("button.bg-accent")].find(painted);
+    if (primary) {
+      const top = Math.round(primary.getBoundingClientRect().top + window.scrollY);
+      if (top >= limits.itemPrimaryTopPx) fail("item-primary-top", primary, `primary button ${top}px from the top, limit ${limits.itemPrimaryTopPx}px`);
+    }
   }
 
   // disclosure-align

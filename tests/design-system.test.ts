@@ -557,6 +557,17 @@ describe("page blocks are stacked by the page's gap-6 column", () => {
   });
 });
 
+// design-system/patterns.md "Page layout": a status badge sits before the text it judges (design 09-dashboard-item-about).
+describe("a done-when row puts its badge before the criterion", () => {
+  it("data-check-badge comes before the line text in item-checks.tsx", () => {
+    const src = readFileSync(join(WEB_SRC, "views", "item-checks.tsx"), "utf8");
+    const badge = src.indexOf("data-check-badge");
+    const line = src.indexOf("{shown(row.line)}");
+    expect(badge).toBeGreaterThan(-1);
+    expect(line).toBeGreaterThan(badge);
+  });
+});
+
 // design-system/patterns.md "Autonomous work is visible": the page where each schedule action kind (a persona is a
 // feedback schedule, the daily improve run an improve one) shows what it does and its runs.
 const AUTONOMOUS_SURFACES: Record<ScheduleActionKind, string> = {

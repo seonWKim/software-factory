@@ -1,5 +1,7 @@
 ## History
 
+- **About came above the decision, and the facts were a full-width four-column Card** (decision changed 2026-11-28, the decision-above-About decision at the top of 09-dashboard-item.md). Before: `ItemAbout` rendered before `ItemDecision` on both tabs, so a long done-when list pushed the state sentence and the next action down; the Facts Card sat below the run and thread blocks as a four-column grid whose last orphan cell spanned the row (`sm:col-span-4`).
+
 - **Empty facts were hidden only on closed items** (decision changed 2026-11-27, the empty-facts decision at the top of 09-dashboard-item.md). Before: `ItemFacts` kept a fact when it had a value or the item was open, so an open item showed "–" for a tier, PR or plan and 0 for review loops, restarts and tokens; a closed item showed only facts with a value.
 
 - **The facts grid sat on the page** (decision changed 2026-11-24, the facts Card decision at the top of 09-dashboard-item.md). Before: `ItemFacts` and the IDs Disclosure sat under the decision card with no box, `mt-3`, their left edge on the cards' outer edge (192px at 1280) instead of their content edge (217px).

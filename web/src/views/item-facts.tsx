@@ -71,7 +71,7 @@ function UrlOrText({ url, text }: { url: string | null | undefined; text: string
 /**
  * The item's facts: state, source, tier, PR, plan, review loops, restarts, tokens, updated. Every item, open or closed,
  * shows only the facts with a value: no "–" for a tier, PR or plan it never had, no review loops, restarts or tokens
- * it never took. When the count leaves one cell on the last row of four, that cell spans the row.
+ * it never took. One column, in the page's right rail.
  * The IDs stay in the IDs disclosure below.
  */
 export function ItemFacts({ item, now }: { item: Item; now: number }) {
@@ -89,9 +89,9 @@ export function ItemFacts({ item, now }: { item: Item; now: number }) {
   ];
   const shown = facts.filter(([, , has]) => has);
   return (
-    <dl data-item-facts className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
-      {shown.map(([k, v], i) => (
-        <div key={k} className={i === shown.length - 1 && shown.length % 4 === 1 ? "min-w-0 sm:col-span-4" : "min-w-0"}>
+    <dl data-item-facts className="grid grid-cols-1 gap-y-1 text-sm">
+      {shown.map(([k, v]) => (
+        <div key={k} className="min-w-0">
           <dt className="text-xs text-text-2">{k}</dt>
           <dd className="truncate tabular-nums">{typeof v === "object" ? v : String(v)}</dd>
         </div>
