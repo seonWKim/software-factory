@@ -342,8 +342,7 @@ export interface NoticeMessageStore {
   getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
 }
 /** A chat message to store (controller_chat_messages): `seq` orders a session's messages; the rest as on LLMMessage. A chat turn's row (controller_chat_turns, design 04-chat-agent): running at its start, then answered, refused or failed, `reason` null when answered. */
-export interface NewChatMessage extends LLMMessage { seq: number } export type ChatTurnStatus = "running" | "answered" | "refused" | "failed";
-/** A spend row's kind (controller_chat_spend.kind): a chat turn, or a coordinator cycle (design 06-spend). */ export type ChatSpendKind = "chat" | "coordinator";
+export interface NewChatMessage extends LLMMessage { seq: number } export type ChatTurnStatus = "running" | "answered" | "refused" | "failed"; /** A spend row's kind (controller_chat_spend.kind): a chat turn, or a coordinator cycle (design 06-spend). */ export type ChatSpendKind = "chat" | "coordinator";
 export interface ChatMessageRecord extends NewChatMessage { session_id: string; created_at: Timestamp } export interface ChatTurnRecord { turn_id: string; session_id: string; status: ChatTurnStatus; reason: string | null; created_at: Timestamp; finished_at: Timestamp | null }
 /** A chat session's messages: an append writes the whole batch, or nothing (false) when one of its seqs is the session's already. Its turns' spend (design 04-chat-agent): one row per turn, keyed by the turn's own id (never a message seq, which a failed turn does not take), `cost_usd` null when unknown; a record of a counted turn writes nothing (false); a read takes UTC days, both inclusive, and one kind, `chat` unless named. Its turns' rows, each method one transaction: a start writes it running (false, nothing written, when the id is stored already); a finish ends only a running turn (false otherwise); a list reads the newest first, at most `limit`. */
 export interface ChatMessageStore {
