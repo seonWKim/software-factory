@@ -94,6 +94,32 @@ const openEvals = (skill) => `(async () => {
   await wait(() => document.querySelector("[data-skill-diff]"));
   await new Promise((r) => setTimeout(r, 150));
 })()`;
+/**
+ * The Chat page with a conversation: one answer, then a send that fails with one long unbroken token in its error (a
+ * request id), as a model error reads. The chat's send route is answered in the page (no model in the fixture), so the
+ * error row and Try again are checked at every viewport (owner 2026-11-27: at 767px the column ran past the right edge).
+ */
+const CHAT_ERROR = `(async () => {
+  const wait = async (find) => { for (const end = Date.now() + 3000; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) { const el = find(); if (el) return el; } return null; };
+  const real = window.fetch;
+  let n = 0;
+  const answer = (body, status) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  window.fetch = (url, init) => !String(url).includes("/api/v1/chat/send") ? real(url, init) : Promise.resolve(++n === 1
+    ? answer({ turn_id: "ct_1", session_id: "cs_1", outcome: "answered", reply: "Two tasks need you: the calendar sync review and the failed typecheck." }, 200)
+    : answer({ error: "model_error: overloaded_error request_id=req_011CVXyZabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ" }, 500));
+  const field = await wait(() => document.querySelector("textarea"));
+  const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+  const say = async (text) => {
+    set.call(field, text);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    (await wait(() => { const b = document.querySelector("form button[type=submit]"); return b && !b.disabled ? b : null; }))?.click();
+  };
+  await say("What needs me right now, and which of the failed runs from last night should I look at first?");
+  await wait(() => document.querySelector('[data-from="chat"] p'));
+  await say("And the second one?");
+  await wait(() => document.querySelector("[role=alert]"));
+  await new Promise((r) => setTimeout(r, 150));
+})()`;
 const OPEN_DETAILS =`document.querySelectorAll("details").forEach((d) => (d.open = true))`;
 
 async function main() {
@@ -129,8 +155,9 @@ async function main() {
     // Cards, reached from Data in place (openEvals: a full load of evals/<skill> is a 404).
     { name: "evals", path: "data" },
     { name: "dialog-new-event", path: "calendar" },
+    { name: "chat-error", path: "chat" },
   ].filter((p) => only === null || p.name === only);
-  const prepare = { ...PREPARE, evals: openEvals(fixture.pages.skill) };
+  const prepare = { ...PREPARE, evals: openEvals(fixture.pages.skill), "chat-error": CHAT_ERROR };
 
   await rm(SHOTS, { recursive: true, force: true });
   await mkdir(SHOTS, { recursive: true });

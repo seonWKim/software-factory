@@ -81,12 +81,12 @@ describe("app pages", () => {
     expect(within(running).getByText("Being built")).toBeTruthy();
   });
 
-  it("the sidebar links Workers after Health; Activity, Failures, Spend, Runners and Data are not among them", () => {
+  it("the sidebar leads with Chat (owner 2026-11-27: \"Chat should be the first menu\") and links Workers after Health; Activity, Failures, Spend, Runners and Data are not among them", () => {
     mount();
     const side = screen.getByRole("complementary", { name: "Sidebar" });
     const links = [...side.querySelectorAll("a")].filter((a) => a.getAttribute("href")?.startsWith("/app/") && a.getAttribute("href") !== "/app/");
     expect(links.map((a) => [a.textContent, a.getAttribute("href")])).toEqual([
-      ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Schedules", "/app/schedules"], ["Chat", "/app/chat"], ["Work", "/app/items"], ["Health", "/app/health"], ["Workers", "/app/workers"],
+      ["Chat", "/app/chat"], ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Schedules", "/app/schedules"], ["Work", "/app/items"], ["Health", "/app/health"], ["Workers", "/app/workers"],
       ["Rules", "/app/rules"], ["Plugins", "/app/plugins"], ["Settings", "/app/settings"],
     ]);
     for (const gone of ["Activity", "Failures", "Spend", "Runners", "Data"]) expect(within(side).queryByRole("link", { name: gone })).toBeNull();

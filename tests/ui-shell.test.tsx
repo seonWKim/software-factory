@@ -14,11 +14,11 @@ describe("app shell", () => {
   it("shows the sidebar pages, Needs you (N) from /api/v1/overview, and fetches only /api/v1/* URLs", async () => {
     mount();
     await waitBadge();
-    // No Needs you entry and no Factory group: Tasks leads, with the waiting count as its badge.
+    // No Needs you entry and no Factory group: Chat leads the first block, then Tasks with the waiting count as its badge.
     expect(screen.queryByRole("navigation", { name: "Factory" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Needs you" })).toBeNull();
     const tasks = screen.getByRole("navigation", { name: "Tasks" });
-    expect([...tasks.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Tasks4", "Calendar", "Schedules", "Chat"]);
+    expect([...tasks.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Chat", "Tasks4", "Calendar", "Schedules"]);
     const nav = screen.getByRole("navigation", { name: "System" });
     expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Health", "Workers"]);
     fireEvent.click(within(nav).getByText("Health"));
@@ -226,7 +226,7 @@ describe("sidebar", () => {
       expect(nav.getAttribute("aria-label")).toBe(name);
     }
     const links = (name: string) => within(screen.getByRole("navigation", { name })).getAllByRole("link").map((a) => a.textContent);
-    expect(links("Tasks")).toEqual(["Tasks", "Calendar", "Schedules", "Chat"]);
+    expect(links("Tasks")).toEqual(["Chat", "Tasks", "Calendar", "Schedules"]);
     expect(links("System")).toEqual(["Work", "Health", "Workers"]);
     expect(links("Setup")).toEqual(["Rules", "Plugins", "Settings"]);
     expect(document.querySelector("aside details, aside summary, aside [data-chevron]")).toBeNull();

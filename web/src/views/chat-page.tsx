@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUp } from "lucide-react";
-import { type KeyboardEvent, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, type KeyboardEvent, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { API, type Session, useApi } from "../api.js";
 import { chatSend, itemsList } from "../api/generated.js";
 import { Button } from "../components/ui/button.js";
@@ -78,7 +78,7 @@ const itemOf = (): string | null => new URLSearchParams(location.search).get("it
 
 /**
  * The Chat page (design 09-dashboard-chat): a greeting and example questions while empty; your messages as bubbles on
- * the right, replies as plain text on the left; the composer stays at the bottom while the conversation scrolls.
+ * the right, replies (and a failed send's error with Try again) as plain text on the left; the composer stays at the bottom while the conversation scrolls.
  */
 export function ChatPage() {
   const client = useQueryClient();
@@ -169,7 +169,7 @@ export function ChatPage() {
 
   const empty = chat.said.length === 0;
   return (
-    <div data-page-fill className="mx-auto flex w-full max-w-[48rem] flex-1 flex-col">
+    <div data-page-fill className="mx-auto flex w-full max-w-[48rem] min-w-0 flex-1 flex-col">
       <PageHeader title={t("page.chat")} />
       {empty ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-6 py-10 text-center">
@@ -194,25 +194,32 @@ export function ChatPage() {
           </ul>
         </div>
       ) : (
-        <ol aria-label={t("chat.conversation")} className="flex flex-1 flex-col gap-8 pb-8">
+        <ol aria-label={t("chat.conversation")} className="flex min-w-0 flex-1 flex-col gap-8 pb-8">
           {chat.said.map((m) =>
             m.who === "you" ? (
-              <li key={m.id} data-from="you" className="flex flex-col items-end gap-2">
-                <span className="sr-only">{t("chat.you")}</span>
-                <p data-raw className="max-w-[85%] rounded-card bg-surface-2 px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap wrap-anywhere">
-                  {m.text}
-                </p>
+              <Fragment key={m.id}>
+                <li data-from="you" className="flex min-w-0 flex-col items-end">
+                  <span className="sr-only">{t("chat.you")}</span>
+                  <p data-raw className="max-w-[85%] min-w-0 rounded-card bg-surface-2 px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap wrap-anywhere">
+                    {m.text}
+                  </p>
+                </li>
+                {/*
+                  A failed send reads as the chat's turn: where its answer would be, at the left. The text may hold one long
+                  unbroken token (a request id, a path), so it breaks anywhere and Try again wraps under it when it runs out of room.
+                */}
                 {m.error !== undefined && (
-                  <div className="flex max-w-[85%] flex-wrap items-center justify-end gap-x-3 gap-y-1">
-                    <p role="alert" className="text-right text-sm text-failed">{m.error}</p>
+                  <li data-from="chat" data-send-error className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+                    <span className="sr-only">{t("chat.reply")}</span>
+                    <p role="alert" data-raw className="max-w-full min-w-0 text-sm text-pretty text-failed wrap-anywhere">{m.error}</p>
                     <Button variant="secondary" size="sm" disabled={chat.busy} onClick={() => void send(m.text, m.id)}>
                       {t("chat.retry")}
                     </Button>
-                  </div>
+                  </li>
                 )}
-              </li>
+              </Fragment>
             ) : (
-              <li key={m.id} data-from="chat">
+              <li key={m.id} data-from="chat" className="min-w-0">
                 <span className="sr-only">{t("chat.reply")}</span>
                 <ChatReply text={m.text} />
               </li>
