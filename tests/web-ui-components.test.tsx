@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // @ts-nocheck -- tsconfig.test.json has no DOM or JSX; like the other ui tests this file typechecks under the web config.
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { readdirSync, readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DataTable } from "../web/src/components/ui/data-table.js";
@@ -24,6 +24,8 @@ import { Select } from "../web/src/components/ui/select.js";
 import { Textarea } from "../web/src/components/ui/textarea.js";
 import { TOAST_MS, Toast } from "../web/src/components/ui/toast.js";
 import { TypingDots } from "../web/src/components/ui/typing-dots.js";
+import { ImageThumb } from "../web/src/components/ui/image-thumb.js";
+import { FilePicker } from "../web/src/components/ui/file-picker.js";
 import { act } from "@testing-library/react";
 
 // Every variant, size and state that design-system/components.md lists for the new components renders.
@@ -569,6 +571,48 @@ describe("TypingDots", () => {
       expect(classes.filter((c) => c.includes("animate-")).every((c) => c.startsWith("motion-safe:"))).toBe(true);
       expect(classes.some((c) => c.startsWith("motion-safe:animate-"))).toBe(true);
     }
+  });
+});
+
+describe("ImageThumb", () => {
+  it("ready, reading and error; a button that opens it only with onOpen, and a remove Button only with onRemove", () => {
+    const open = vi.fn(), remove = vi.fn();
+    render(
+      <ul>
+        <li><ImageThumb src="blob:a" name="a.png" onOpen={open} openLabel="Open a.png" onRemove={remove} removeLabel="Remove a.png" /></li>
+        <li><ImageThumb name="b.png" state="reading" busyLabel="Reading b.png…" /></li>
+        <li><ImageThumb name="c.pdf" state="error" /></li>
+      </ul>,
+    );
+    const a = screen.getByRole("button", { name: "Open a.png" });
+    expect(a.hasAttribute("data-thumb")).toBe(true);
+    expect(within(a).getByRole("img", { name: "a.png" }).getAttribute("src")).toBe("blob:a");
+    fireEvent.click(a);
+    fireEvent.click(screen.getByRole("button", { name: "Remove a.png" }));
+    expect([open.mock.calls.length, remove.mock.calls.length]).toEqual([1, 1]);
+    expect(screen.getByRole("status").textContent).toBe("Reading b.png…");
+    expect(screen.queryByRole("img", { name: "b.png" })).toBeNull();
+    const c = document.querySelector("[data-thumb-state=error]")!;
+    expect(c.querySelector(".border-failed")).not.toBeNull();
+    // No onOpen, no onRemove: only the open one is a button.
+    expect(screen.getAllByRole("button")).toHaveLength(2);
+  });
+});
+
+describe("FilePicker", () => {
+  it("opens the hidden file input and hands each pick's files over once, then clears the input", () => {
+    const onFiles = vi.fn();
+    render(<FilePicker label="Add images" accept="image/png" multiple onFiles={onFiles}>+</FilePicker>);
+    const input = document.querySelector<HTMLInputElement>("[data-file-picker]")!;
+    expect([input.type, input.hidden, input.accept, input.multiple]).toEqual(["file", true, "image/png", true]);
+    const click = vi.spyOn(input, "click");
+    fireEvent.click(screen.getByRole("button", { name: "Add images" }));
+    expect(click).toHaveBeenCalledTimes(1);
+    const file = new File(["x"], "a.png", { type: "image/png" });
+    fireEvent.change(input, { target: { files: [file] } });
+    expect(onFiles).toHaveBeenCalledWith([file]);
+    fireEvent.change(input, { target: { files: [] } });
+    expect(onFiles).toHaveBeenCalledTimes(1);
   });
 });
 

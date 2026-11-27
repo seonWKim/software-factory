@@ -4,8 +4,10 @@
 // fake provider and a SQLite store in memory, as in tests/chat-agent.test.ts; no live model call.
 
 import { describe, expect, it } from "vitest";
-import { CHAT, CHAT_TURNS_LIMIT } from "../src/api/capabilities/chat.js";
-import { DECLARATIONS } from "../src/api/index.js";
+import { CHAT, CHAT_SEND_MAX_BODY, CHAT_TURNS_LIMIT } from "../src/api/capabilities/chat.js";
+import { DECLARATIONS, REGISTRY } from "../src/api/index.js";
+import { registryMaxBody } from "../src/api/registry.js";
+import { MAX_IMAGE_BYTES } from "../src/core/attachments.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -56,8 +58,8 @@ async function setup(llm: LLMProvider | null) {
 }
 
 describe("the chat declarations", () => {
-  it("declares chat.send, chat.transcript and chat.turns, owner-only with schemas and a description, listed in src/api/index.ts", () => {
-    const ids = ["chat.send", "chat.transcript", "chat.turns"];
+  it("declares chat.send, chat.transcript, chat.image and chat.turns, owner-only with schemas and a description, listed in src/api/index.ts", () => {
+    const ids = ["chat.send", "chat.transcript", "chat.image", "chat.turns"];
     expect(CHAT.map((c) => c.id)).toEqual(ids);
     for (const c of CHAT) {
       expect(c.permission).toBe("owner");
@@ -202,5 +204,102 @@ describe("the chat turn store", () => {
     expect(await store.finishChatTurn("ct_1", "failed", "error")).toBe(false);
     expect(await store.finishChatTurn("ct_none", "failed", "error")).toBe(false);
     expect(await store.listChatTurns(10)).toEqual([expect.objectContaining({ turn_id: "ct_1", session_id: "cs_1", status: "answered", reason: null })]);
+  });
+});
+
+// ---- Images (design 04-chat-agent) ----
+
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+/** A png's bytes as base64: its signature, then `body` (distinct per image, so the order can be checked). */
+const png = (body: string, size?: number): string => {
+  const b = Buffer.alloc(size ?? PNG_MAGIC.length + body.length);
+  Buffer.from(PNG_MAGIC).copy(b);
+  Buffer.from(body, "latin1").copy(b, PNG_MAGIC.length);
+  return b.toString("base64");
+};
+const GIF = Buffer.from("GIF89a....").toString("base64");
+const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2]).toString("base64");
+
+describe("chat.send with images", () => {
+  it("sends the images to the model after the text, in order; stores them with the message; chat.transcript names them and chat.image answers their bytes", async () => {
+    const llm = scripted([{ text: "Two screenshots: a login and an error." }]);
+    const { send, get } = await setup(llm);
+    const images = [{ name: "login.png", data: png("first") }, { name: "C:\\shots\\error.jpg", data: JPEG }];
+    const r = await send({ text: "What do these show?", images });
+    expect(r.status).toBe(200);
+    expect(r.value).toMatchObject({ outcome: "answered", reply: "Two screenshots: a login and an error." });
+    expect(r.value).not.toHaveProperty("images_withheld");
+    const user = llm.seen[0]!.messages.at(-1)!;
+    expect(user).toEqual({ role: "user", content: "What do these show?", images: [{ media_type: "image/png", data: images[0]!.data }, { media_type: "image/jpeg", data: JPEG }] });
+
+    const t = await get(`/api/v1/chat/transcript?session_id=${r.value.session_id}`);
+    const refs = t.value.messages[0].images;
+    expect(refs).toEqual([
+      { id: expect.stringMatching(/^at_/), name: "login.png", media_type: "image/png", size_bytes: 13 },
+      { id: expect.stringMatching(/^at_/), name: "error.jpg", media_type: "image/jpeg", size_bytes: 6 },
+    ]);
+    expect(JSON.stringify(t.value)).not.toContain(JPEG);
+    expect(t.value.messages[1]).not.toHaveProperty("images");
+    const one = await get(`/api/v1/chat/image?id=${refs[0].id}`);
+    expect(one).toEqual({ status: 200, value: { id: refs[0].id, name: "login.png", media_type: "image/png", size_bytes: 13, data: images[0]!.data } });
+    expect((await get("/api/v1/chat/image?id=at_none")).status).toBe(404);
+  });
+
+  it("takes a message of images only, and a later turn sends the earlier images again with their message", async () => {
+    const llm = scripted([{ text: "A chart." }, { text: "It rises." }]);
+    const { send } = await setup(llm);
+    const first = await send({ text: "", images: [{ name: "chart.gif", data: GIF }] });
+    expect(first.value).toMatchObject({ outcome: "answered", reply: "A chart." });
+    expect(llm.seen[0]!.messages).toEqual([{ role: "user", content: "", images: [{ media_type: "image/gif", data: GIF }] }]);
+    await send({ session_id: first.value.session_id, text: "Up or down?" });
+    expect(llm.seen[1]!.messages.map((m) => [m.content, m.images?.length ?? 0])).toEqual([["", 1], ["A chart.", 0], ["Up or down?", 0]]);
+  });
+
+  it("refuses a sixth image, another type or a file over 5 MB, naming the file; nothing is stored and the model is not called", async () => {
+    const llm = scripted([]);
+    const { send, turns } = await setup(llm);
+    const five = ["a", "b", "c", "d", "e"].map((n) => ({ name: `${n}.png`, data: png(n) }));
+    const cases: [unknown[], RegExp][] = [
+      [[...five, { name: "f.png", data: png("f") }], /“f\.png” is image 6, and a message takes at most 5/],
+      [[{ name: "notes.pdf", data: Buffer.from("%PDF-1.7").toString("base64") }], /“notes\.pdf” is not a png, jpeg, gif or webp image/],
+      [[{ name: "huge.png", data: png("x", MAX_IMAGE_BYTES + 1) }], /“huge\.png” is 5\.0 MB, and the largest taken is 5 MB/],
+    ];
+    for (const [images, error] of cases) {
+      const r = await send({ text: "Look", images });
+      expect(r.status).toBe(400);
+      expect(r.value.error).toMatch(error);
+    }
+    expect((await send({ text: "  " })).status).toBe(400);
+    expect(llm.seen).toEqual([]);
+    expect(await turns()).toEqual([]);
+    // Five are taken.
+    await expect((await setup(scripted([{ text: "ok" }]))).send({ text: "", images: five })).resolves.toMatchObject({ status: 200 });
+  });
+
+  it("an image whose text holds a secret never reaches the model and is not stored; the rest are sent and images_withheld names it", async () => {
+    const llm = scripted([{ text: "One image." }]);
+    const { send, get } = await setup(llm);
+    const leaky = png(`tEXtComment\0${SECRET}`);
+    const r = await send({ text: "Here", images: [{ name: "token.png", data: leaky }, { name: "ok.png", data: png("fine") }] });
+    expect(r.value).toMatchObject({ outcome: "answered", reply: "One image.", images_withheld: ["token.png"] });
+    expect(JSON.stringify(llm.seen)).not.toContain(leaky);
+    expect(llm.seen[0]!.messages.at(-1)!.images).toEqual([{ media_type: "image/png", data: png("fine") }]);
+    const t = await get(`/api/v1/chat/transcript?session_id=${r.value.session_id}`);
+    expect(t.value.messages[0].images.map((i: { name: string }) => i.name)).toEqual(["ok.png"]);
+  });
+
+  it("a message whose only image is withheld calls no model and answers refused, reason images_withheld, naming it", async () => {
+    const llm = scripted([]);
+    const { send, turns } = await setup(llm);
+    const r = await send({ text: "", images: [{ name: "key.png", data: png(SECRET) }] });
+    expect(r.value).toMatchObject({ outcome: "refused", reason: "images_withheld", images_withheld: ["key.png"] });
+    expect(llm.seen).toEqual([]);
+    expect(await turns()).toEqual([expect.objectContaining({ status: "refused", reason: "images_withheld" })]);
+  });
+
+  it("the server reads a chat.send body of five 5 MB images (base64) and the text, not more", () => {
+    expect(registryMaxBody(REGISTRY, "/api/v1/chat/send")).toBe(CHAT_SEND_MAX_BODY);
+    expect(CHAT_SEND_MAX_BODY).toBeGreaterThan(5 * Math.ceil((MAX_IMAGE_BYTES * 4) / 3));
+    expect(registryMaxBody(REGISTRY, "/api/v1/chat/transcript")).toBeUndefined();
   });
 });
