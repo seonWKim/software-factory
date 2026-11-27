@@ -123,26 +123,43 @@ export function grantWords(g: ScheduleGrant, schedule_id: string): string {
   return `shell: only ${g.command} ${g.db}`;
 }
 
-/** A feedback schedule's grants in plain words for `schedule list` (`grants: …; …`): none for no grants or another kind. */
-export function grantsLine(action: ScheduleActionSpec | null, schedule_id: string): string[] {
+/**
+ * A feedback schedule's grants, each in plain words (a stored grant that is refused: `refused (why)`), as `schedule list`
+ * and GET /api/v1/schedules show them; none for no grants or another kind.
+ */
+export function grantList(action: ScheduleActionSpec | null, schedule_id: string): string[] {
   if (action?.kind !== "feedback" || action.settings.grants === undefined) return [];
   try {
-    const grants = storedGrants(action.settings);
-    return grants.length === 0 ? [] : [`grants: ${grants.map((g) => grantWords(g, schedule_id)).join("; ")}`];
+    return storedGrants(action.settings).map((g) => grantWords(g, schedule_id));
   } catch (e) {
-    return [`grants: refused (${e instanceof Error ? e.message : String(e)})`];
+    return [`refused (${e instanceof Error ? e.message : String(e)})`];
   }
 }
 
+/** The grants column of `schedule list` (`grants: …; …`), or none when the schedule has no grants. */
+export function grantsLine(action: ScheduleActionSpec | null, schedule_id: string): string[] {
+  const list = grantList(action, schedule_id);
+  return list.length === 0 ? [] : [`grants: ${list.join("; ")}`];
+}
+
+/** The grant fields of a schedule add or edit (ScheduleFields): feedback only, the `--grant` words, one grant each. */
+export interface GrantFields {
+  grants?: string[];
+}
+
 /**
- * `action` with the `--grant` words as its grants (`none`: an empty list, which an edit stores over the old), or why
- * they cannot be: only a feedback schedule takes grants. No words: `action` as it is.
+ * `action` (or its problem, passed on) with the `--grant` words as its grants (`none`: an empty list, which an edit
+ * stores over the old), or why they cannot be: only a feedback schedule takes grants, and a notes grant needs a plain
+ * schedule ID (its folder's name). No words: `action` as it is.
  */
-export function withGrantWords(action: ScheduleActionSpec, words: readonly string[] | undefined): ScheduleActionSpec | { problem: string } {
-  if (words === undefined) return action;
+export function withGrantWords(action: ScheduleActionSpec | { problem: string }, words: readonly string[] | undefined, schedule_id: string): ScheduleActionSpec | { problem: string } {
+  if (words === undefined || "problem" in action) return action;
   if (action.kind !== "feedback") return { problem: "only a feedback schedule takes --grant" };
   const grants = grantsOfWords(words);
-  return "problem" in grants ? grants : { kind: action.kind, settings: { ...action.settings, grants } };
+  if ("problem" in grants) return grants;
+  const idProblem = grants.some((g) => g.kind === "notes") ? scheduleIdProblem(schedule_id) : null;
+  if (idProblem) return { problem: `a notes grant needs a plain schedule ID: ${idProblem}` };
+  return { kind: action.kind, settings: { ...action.settings, grants } };
 }
 
 /** What a feedback run gets once its grants are handed out. */
@@ -224,7 +241,7 @@ export class ScheduleGrantBroker implements ToolBroker {
    * before any agent starts, on a refused grant: a repo that is no git repo or lies in the state folder, a missing database.
    * Creates the notes folder when granted.
    */
-  async handOut(base: { tools: readonly ToolSpec[]; repo: string; base_ref: string }): Promise<GrantedRun> {
+  async handOut(base: GrantBase): Promise<GrantedRun> {
     const run: GrantedRun = { tools: [...base.tools], repo: base.repo, base_ref: base.base_ref, writable_paths: [], tool_grants: [] };
     for (const g of this.grants) {
       const problem = grantProblem(g);
@@ -309,11 +326,28 @@ export function withSchedulePassports(runner: AgentRunner, passports: SchedulePa
   };
 }
 
+/** The read-only tools, the factory repo and its base branch: what a feedback run gets before its grants. */
+type GrantBase = { tools: readonly ToolSpec[]; repo: string; base_ref: string };
+
 /**
- * The feedback route's hand-out (ports.ts GrantHandOut), bound by compose over `base`: null for a schedule with no
- * grants, else ScheduleGrantBroker's hand-out with each grant in plain words. A refused grant throws.
+ * Compose's wiring of feedback schedule grants (design 08-schedules), over this machine's I/O `deps` (nodeGrantDeps in
+ * src/impl/schedule-action/routed-action.ts): `broker` gives the runner's broker the shell grant's tool (compose wraps
+ * it in the G2 guard, so it reaches a run through the runner's tool bridge), `handOut` is the feedback route's
+ * hand-out over `base`, and `runner` holds a run passport for a schedule run granted broker tools in `project`.
  */
-export const feedbackGrantHandOut = (base: { tools: readonly ToolSpec[]; repo: string; base_ref: string }, deps: GrantBrokerDeps) =>
+export function feedbackGrants(d: { store: Pick<ScheduleStore, "listSchedules">; deps: GrantBrokerDeps; passports: SchedulePassports; base: GrantBase }) {
+  return {
+    broker: (inner: ToolBroker): ToolBroker => scheduleGrantTools(inner, storedScheduleGrants(d.store), d.deps),
+    handOut: feedbackGrantHandOut(d.base, d.deps),
+    runner: (runner: AgentRunner, project: string): AgentRunner => withSchedulePassports(runner, d.passports, project),
+  };
+}
+
+/**
+ * The feedback route's hand-out (ports.ts GrantHandOut) over `base`: null for a schedule with no grants, else
+ * ScheduleGrantBroker's hand-out with each grant in plain words. A refused grant throws.
+ */
+export const feedbackGrantHandOut = (base: GrantBase, deps: GrantBrokerDeps) =>
   async (s: { id: string; settings: Readonly<Record<string, unknown>> }): Promise<(GrantedRun & { granted: string[] }) | null> => {
     const grants = storedGrants(s.settings);
     if (grants.length === 0) return null;
