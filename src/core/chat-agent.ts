@@ -6,11 +6,16 @@
 // turn's messages are stored in one append keyed by (session, seq), so a turn written twice is stored once. Every
 // turn that called the model stores one spend row (`chat`, design 06-spend) under its own turn id, withheld and
 // failed turns too, since their cost was spent; a failed turn takes no seq, so the spend key is never a seq.
+// The owner's message may carry images (checked by chatImages): each one's text (imageText: its name and the
+// printable text in its bytes) passes the scanner (channel ui) before any model call; one with a finding is withheld,
+// never sent or stored, and the result names it. The rest go to the model after the text, in order, are stored with
+// the user message, and each later turn of the session sends them again with that message.
 
 import type { EgressChannel, EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore, NewChatMessage } from "../interfaces/factory-store.js";
 import type { LLMMessage, LLMProvider, LLMToolCall } from "../interfaces/llm-provider.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor } from "../interfaces/tool-broker.js";
+import { type ChatImage, imageText } from "./attachments.js";
 import { chatCallContext } from "./chat-agent-tools.js";
 import { utcDay } from "./spend.js";
 
@@ -35,7 +40,10 @@ export interface ChatDeps {
   newTurnId: () => string;
 }
 
-export type ChatTurnResult =
+/** The file names of the images a scan finding kept from the model, in the order sent; on every result. */
+type Withheld = { images_withheld?: string[] };
+
+export type ChatTurnResult = (
   | { ok: true; reply: string }
   /**
    * `withheld`: the scanner found something in the message, a tool result or a reply. `model_refused`: the provider
@@ -44,7 +52,8 @@ export type ChatTurnResult =
    * CHAT_DETAIL_MAX characters, absent when it gave none or the scan flagged it. `too_many_steps`: still asking for
    * tools after CHAT_MAX_STEPS calls. `seq_taken`: the session's next seq was written meanwhile. None stores a message.
    */
-  | { ok: false; reason: ChatFailure; detail?: string };
+  | { ok: false; reason: ChatFailure; detail?: string }
+) & Withheld;
 
 export type ChatFailure = "withheld" | "model_refused" | "model_cut_off" | "model_error" | "too_many_steps" | "seq_taken";
 
@@ -82,9 +91,23 @@ async function runTool(broker: ToolBroker, allowed: ReadonlySet<string>, ctx: To
   }
 }
 
-/** Runs one turn of `session_id` for the owner's `text`: stores its messages and returns the reply, or why not. */
-export async function chatTurn(d: ChatDeps, session_id: string, text: string): Promise<ChatTurnResult> {
+/** A stored message as the model gets it: its images as image input (type and bytes only). */
+const toLLM = ({ role, content, tool_calls, tool_call_id, images }: LLMMessage): LLMMessage => ({
+  role, content, ...(tool_calls && { tool_calls }), ...(tool_call_id !== undefined && { tool_call_id }),
+  ...(images?.length && { images: images.map(({ media_type, data }) => ({ media_type, data })) }),
+});
+
+/**
+ * Runs one turn of `session_id` for the owner's `text` and `images` (checked already): stores its messages and returns
+ * the reply, or why not. A message whose text is empty and whose every image is withheld sends nothing.
+ */
+export async function chatTurn(d: ChatDeps, session_id: string, text: string, images: readonly ChatImage[] = []): Promise<ChatTurnResult> {
   if (!(await clean(d.scanner, "ui", text))) return { ok: false, reason: "withheld" };
+  const sent: ChatImage[] = [];
+  const withheld: ChatImage[] = [];
+  for (const image of images) ((await clean(d.scanner, "ui", imageText(image))) ? sent : withheld).push(image);
+  const named = withheld.length > 0 ? { images_withheld: withheld.map((i) => i.name) } : {};
+  if (text.trim() === "" && sent.length === 0) return { ok: false, reason: "withheld", ...named };
   const history = await d.store.listChatMessages(session_id);
   const seq = (history.at(-1)?.seq ?? -1) + 1;
   const offered = chatTools(d.broker);
@@ -92,14 +115,12 @@ export async function chatTurn(d: ChatDeps, session_id: string, text: string): P
   const tools = offered.map((t) => ({ name: t.name, description: t.description, parameters: t.input_schema }));
   const ctx = chatCallContext(session_id);
 
-  const before: LLMMessage[] = history.map(({ role, content, tool_calls, tool_call_id }) => ({
-    role, content, ...(tool_calls && { tool_calls }), ...(tool_call_id !== undefined && { tool_call_id }),
-  }));
-  const turn: LLMMessage[] = [{ role: "user", content: text }];
+  const before = history.map(toLLM);
+  const turn: NewChatMessage[] = [{ seq, role: "user", content: text, ...(sent.length > 0 && { images: sent }) }];
   const usage = { tokens: 0, cost_usd: 0 as number | null };
   let result: ChatTurnResult = { ok: false, reason: "too_many_steps" };
   for (let step = 0; step < CHAT_MAX_STEPS; step++) {
-    const messages = [...before, ...turn];
+    const messages = [...before, ...turn.map(toLLM)];
     const r = await d.llm.complete({ model_class: "cheap", system: CHAT_SYSTEM, messages, tools, max_tokens: CHAT_MAX_TOKENS, data_env: "test" });
     usage.tokens += r.usage.input_tokens + r.usage.output_tokens;
     usage.cost_usd = usage.cost_usd === null || r.usage.cost_usd === null ? null : usage.cost_usd + r.usage.cost_usd;
@@ -113,11 +134,11 @@ export async function chatTurn(d: ChatDeps, session_id: string, text: string): P
     }
     const calls = r.tool_calls ?? [];
     if (calls.length === 0) {
-      turn.push({ role: "assistant", content: r.text });
+      turn.push({ seq: seq + turn.length, role: "assistant", content: r.text });
       result = { ok: true, reply: r.text };
       break;
     }
-    turn.push({ role: "assistant", content: r.text, tool_calls: calls });
+    turn.push({ seq: seq + turn.length, role: "assistant", content: r.text, tool_calls: calls });
     let withheld = false;
     for (const call of calls) {
       const content = await runTool(d.broker, allowed, ctx, call);
@@ -125,7 +146,7 @@ export async function chatTurn(d: ChatDeps, session_id: string, text: string): P
         withheld = true;
         break;
       }
-      turn.push({ role: "tool", content, tool_call_id: call.id });
+      turn.push({ seq: seq + turn.length, role: "tool", content, tool_call_id: call.id });
     }
     if (withheld) {
       result = { ok: false, reason: "withheld" };
@@ -135,7 +156,6 @@ export async function chatTurn(d: ChatDeps, session_id: string, text: string): P
 
   const turn_id = d.newTurnId();
   await d.store.recordChatSpend({ turn_id, session_id, day: utcDay(d.clock.now().getTime()), cost_usd: usage.cost_usd, tokens: usage.tokens });
-  if (!result.ok) return result;
-  const rows: NewChatMessage[] = turn.map((m, i) => ({ ...m, seq: seq + i }));
-  return (await d.store.appendChatMessages(session_id, rows)) ? result : { ok: false, reason: "seq_taken" };
+  if (!result.ok) return { ...result, ...named };
+  return (await d.store.appendChatMessages(session_id, turn)) ? { ...result, ...named } : { ok: false, reason: "seq_taken", ...named };
 }

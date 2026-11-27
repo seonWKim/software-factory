@@ -12,7 +12,7 @@ import { latestSpec, overCap, overCapApproval,
   specNotWaiting, unknownCommandReply, withTag, COORDINATOR_LIMIT_KEY, LIMIT_ALERTS_SCAN, coordinatorLimitAnswer, CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity, specKind, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, awaitingMerge, mergeCheckAgain, mergeCheckRetryRefusal, mergeCheckStopped, LOCAL_SOURCE, MERGE_COMMAND, RESTART_COMMAND, type WriteRequest, authorizeWrite,
 } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
-import { commandEvent, syncedCommand } from "../../../core/command-inbox.js";
+import { commandEvent, syncedCommand } from "../../../core/command-inbox.js"; import { HELD_CONFIRM_COMMAND } from "../../../core/local-cli-parse.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMessage, interpretReply, interpretTexts, openItems, proposalEvent } from "../../../core/interpret.js";
 import { type Actor, RECURRING_FAILURE, type RunKind, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { AppCommandRequest, CliCommand } from "../../../interfaces/factory-store.js";
@@ -21,7 +21,7 @@ import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, SYSTEM, retry, retryWip, footerAfter, alreadyAllowed } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
-import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js"; import { writeGateDeps } from "./held-writes.js"; import { RUN_NEXT_COMMAND, runNext } from "./run-next.js";
+import { answerPlain, appProposal, confirmHeldWrite, confirmProposal, storeProposals } from "./proposals.js"; import { inboxApplies, writeGateDeps } from "./held-writes.js"; import { RUN_NEXT_COMMAND, runNext } from "./run-next.js";
 import { FEEDBACK_REQUIRED, applyQueued, queueRevise, replyQueued } from "./queued-revise.js"; import { scanClean } from "./scan.js"; import { recheckRetry } from "./premise-recheck.js"; import { commandText, pathsCommand } from "./paths.js"; import { noteCommand, noteOnSource } from "./note.js";
 import { PR_REVISE, type PrFeedbackDeps, handlePrReview, itemOfPr, prFeedback } from "./pr-feedback.js"; import { RETRY, answerCheckpoint } from "./checkpoint.js"; import { type InfoSay, handleInfo, handleLink } from "./replies.js";
 
@@ -143,6 +143,8 @@ export class CommandsUnit {
   }
 
   async handleInboxCommand(c: CliCommand): Promise<void> {
+    // An agent's run write, or a typed command the guards refused (held-writes.ts), is not applied.
+    if (!(await inboxApplies(this.c, c, (args) => authorizeWrite(writeGateDeps(this.c), { command: c.command, args, actor: c.actor as UserId, origin: "human_command", in_chat_turn: false, key: c.key }), (cmd, why) => this.guardReply(cmd, why)))) return;
     if (c.origin === "app") {
       // An app request (RFC 0015 D7): its own row, or a row from before the merge that points at it by seq.
       const r = await this.c.k.reader.getAppCommandRequest(typeof c.args.app_request === "number" ? c.args.app_request : c.key);
@@ -161,6 +163,8 @@ export class CommandsUnit {
       return;
     }
     if (typeof c.args.coordinator_limit === "string") return this.answerLimit(c, c.args.coordinator_limit);
+    // A held write's `confirm <id>` (design 08-permissions, phase 3): claimed, then run as this row's typed command.
+    if (c.command === HELD_CONFIRM_COMMAND) return confirmHeldWrite(this.c, c, (held, item) => this.runHeld(c, held.command, held.args.slice(1), item));
     const id = c.args.item; if (typeof id !== "string" || id === "") return;
     // Any source's item (design 05-sources, CLI intake): identity provider `local`, judged by the local auth plugin; never waits on its source.
     const item = await this.c.k.reader.getWorkItem(id as WorkItemId); if (!item) return;
@@ -171,6 +175,21 @@ export class CommandsUnit {
     if (c.command === "hold") return void (await this.c.unit("coordination").holdCommand(item, { who: localIdentity(c.actor) }, c.key, String(c.args.text ?? "")));
     if (c.command === "note") return noteCommand(this.c, item, localIdentity(c.actor), c.key, String(c.args.text ?? ""), { say: refusalText, closed: CLOSED_REFUSAL });
     const e = commandEvent(c, item.source); if (e) await this.c.dispatch(e);
+  }
+
+  /** A guard-refused typed command's reply on its item, keyed on its comment as handleCommand's is; none for a row on no item. */
+  private async guardReply(c: CliCommand, why: string): Promise<void> { const synced = syncedCommand(c), id = c.args.item, r = this.c.k.reader; const item = synced ? await r.getWorkItemBySource(synced.source.type, synced.source.id) : typeof id === "string" && id !== "" ? await r.getWorkItem(id as WorkItemId) : null; const e = !item ? null : synced ? synced.event : commandEvent(c, item.source); if (item && e && e.kind in COMMAND && "comment_id" in e && "source" in e) await this.c.unit("outbox").post(item, e.source, refusalText(COMMAND[e.kind as CommandEvent["kind"]], why), `<!-- factory:refused:${e.comment_id} -->`); } // a guard-refused typed command's reply on its item, keyed on its comment as handleCommand's is
+  /**
+   * A confirmed held write as `c`'s actor's typed command on `item` (proposals.ts confirmHeldWrite): a merge as
+   * `factory merge <id>` is, any other command as its comment line through gateCommand. The refusal, else null; a
+   * local merge has posted its own refusal (`replied`), so the confirm adds none.
+   */
+  private async runHeld(c: CliCommand, command: string, rest: readonly string[], item: WorkItem): Promise<{ refusal: string | null; replied: boolean }> {
+    const who = localIdentity(c.actor);
+    if (command === MERGE_COMMAND && item.source.type === LOCAL_SOURCE) return { refusal: await this.c.unit("local-merge").mergeLocal(item.id, who, c.key), replied: true };
+    if (command === MERGE_COMMAND) return { refusal: await this.c.unit("pr-events").requestPrMerge(item.id, who, c.key, { command_key: c.key }), replied: false };
+    const e = commandEvent({ ...c, command, args: { item: item.id, text: rest.join(" ") } }, item.source);
+    return { refusal: e && e.kind in COMMAND ? await this.gateCommand(item, e as CommandEvent) : "it is not a command a held write can apply", replied: false };
   }
 
   /**

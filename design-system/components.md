@@ -188,6 +188,10 @@ A content chip that opens a `Popover` (`popover.tsx`), such as a calendar event:
 
 A small bordered `text-xs` button (`border-strong`, `text-2`, hover `surface-2`) that writes `value` to the clipboard; `what` names it in its accessible name and title ("Copy item ID"). States: default ("Copy"), done ("Copied" for 1.5 s), no clipboard (nothing happens; the text stays selectable).
 
+## CopyIcon
+
+A ghost icon `Button` (`size-8`, lucide Copy icon) that writes `value` to the clipboard; `what` names it in its accessible name and title ("Copy reply"). Beside it a `text-xs` `aria-live="polite"` element says "Copied" for 1.5 s. States: default, done, no clipboard (nothing shows; the text stays selectable). Used under each chat reply, own message and fenced code block, in a `ButtonRow`.
+
 ## CopyText
 
 A copy element: the shown text (`children`, else `value`) in `font-mono text-xs` that wraps, then a CopyButton that copies `value`.
@@ -227,3 +231,16 @@ The mark and the wordmark at the top of the sidebar; below `sm` only the mark.
 ## BrandMark
 
 The Gongbang mark alone, decorative; size comes from `className`.
+
+## TypingDots
+
+The mark in a reply's place while an answer is on its way (`typing-dots.tsx`), as chat apps show one: three 8px `text-2` dots, 6px apart, in a 24px row, that each rise 3px and brighten (opacity 0.35 to 1) and settle again, one after the other (150ms apart, a 1.2s loop on the `typing` keyframes in `index.css`, each delay inside the animation shorthand). Motion-safe only: with reduced motion the three dots stand still. A live region (`role="status"`, `aria-live="polite"`) that reads `label` ("Thinking…" on the Chat page). One size, no variants. States: shown (moving, or still with reduced motion).
+
+## ImageThumb
+
+A small square picture of an image (`image-thumb.tsx`): 64px, the image cropped to fill it (`object-cover`), `rounded-box`, a 1px `border` on `surface-2`, alt text the file name. States: ready; reading (a spinning 20px `text-3` mark over the square, `role=status` read as `busyLabel`, still with reduced motion); error (a `failed` border and mark; the caller says why in words). With `onOpen` it is a button (`data-thumb`, "Open <name>", the `FOCUS` ring, a zoom-in cursor) that the caller opens larger, in a `ModalPanel`; the button-height rule leaves `[data-thumb]` out, since its height is the picture's. With `onRemove`, a round 28px secondary Button with an X sits on its top right corner, half outside it (the row around it keeps 8px free above and right). For an image to send or a sent image (the Chat page), never for a document preview.
+
+## FilePicker
+
+The one file chooser (`file-picker.tsx`): a ghost icon Button (32px) named by `label` that opens the system's file picker through a hidden file input with `accept` and `multiple`; each pick calls `onFiles` once with the files, and picking the same file again works. Its content is an icon (the Chat composer's paperclip). States: default, disabled. No view draws a raw file input.
+

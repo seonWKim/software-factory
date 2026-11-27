@@ -4,8 +4,10 @@ import { POLL_MS } from "../api.js";
 import { chatTranscript, chatTurns } from "../api/generated.js";
 import { Badge } from "../components/ui/badge.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { Card } from "../components/ui/card.js";
 import { Clamp } from "../components/ui/clamp.js";
+import { CopyIcon } from "../components/ui/copy.js";
 import { DataTable } from "../components/ui/data-table.js";
 import { ModalPanel } from "../components/ui/dialog.js";
 import { EmptyState } from "../components/ui/notice.js";
@@ -13,6 +15,7 @@ import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
 import { localDateTime, relativeTime } from "../lib/format.js";
 import { useNow } from "./display.js";
+import { StoredImages } from "./chat-images.js";
 
 // The Runners tab's Chat Card and the reply parts the Chat page shares (design 09-dashboard-chat). It reads through the
 // generated typed client (web/src/api/generated.ts) only: no fetch of its own and no route of its own.
@@ -63,8 +66,8 @@ export function replyParts(reply: string): Part[] {
   return parts;
 }
 
-/** A reply in a transcript: plain words as Clamp paragraphs; a code block or a table inside its own Card. */
-function Reply({ text }: { text: string }) {
+/** A reply in a transcript (`copy`: ends with a Copy button for the whole reply): plain words as Clamp paragraphs; a code block or a table inside its own Card. */
+function Reply({ text, copy }: { text: string; copy?: boolean }) {
   return (
     <div className="space-y-3">
       {replyParts(text).map((p, i) =>
@@ -73,6 +76,7 @@ function Reply({ text }: { text: string }) {
         ) : p.kind === "code" ? (
           <Card key={i} label={t("chat.code")}>
             <pre className="overflow-x-auto font-mono text-xs whitespace-pre">{p.text}</pre>
+            <ButtonRow><CopyIcon value={p.text} what={t("chat.copyCode")} /></ButtonRow>
           </Card>
         ) : (
           <Card key={i} label={t("chat.table")}>
@@ -80,6 +84,7 @@ function Reply({ text }: { text: string }) {
           </Card>
         ),
       )}
+      {copy && <ButtonRow><CopyIcon value={text} what={t("chat.copyReply")} /></ButtonRow>}
     </div>
   );
 }
@@ -98,6 +103,7 @@ const withoutContext = (text: string): string => text.replace(/^(?:Open page|Abo
 export function reasonWords(reason: string | null | undefined, detail?: string): string {
   const words: Record<string, () => string> = {
     withheld: () => t("chat.reason.withheld"),
+    images_withheld: () => t("chat.reason.images_withheld"),
     model_error: () => (detail ? t("chat.reason.model_errorDetail", { detail }) : t("chat.reason.model_error")),
     model_refused: () => t("chat.reason.model_refused"),
     model_cut_off: () => t("chat.reason.model_cut_off"),
@@ -120,10 +126,14 @@ interface Turn { turn_id: string; session_id: string; status: "running" | "answe
 
 const OUTCOME_TONE: Record<Turn["status"], string> = { running: "running", answered: "done", refused: "needs_approval", failed: "failed" };
 
+/** A stored user message's images, as chat.transcript names them (none on any other message). */
+const imagesOf = (m: Record<string, unknown>): { id: string; name: string; media_type: string }[] =>
+  Array.isArray(m.images) ? (m.images as { id: string; name: string; media_type: string }[]) : [];
+
 /** One stored turn, opened in a dialog: the question and the reply in order; no ID shows. */
 function TranscriptDialog({ turn, onClose }: { turn: Turn; onClose: () => void }) {
   const q = useQuery({ queryKey: ["chat", "transcript", turn.session_id], queryFn: () => chatTranscript({ session_id: turn.session_id }) });
-  const shown = (q.data?.messages ?? []).filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content !== "");
+  const shown = (q.data?.messages ?? []).filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && (m.content !== "" || imagesOf(m).length > 0));
   return (
     <ModalPanel title={t("chat.transcriptTitle")} onClose={onClose}>
       <div className="space-y-3">
@@ -139,7 +149,8 @@ function TranscriptDialog({ turn, onClose }: { turn: Turn; onClose: () => void }
           {shown.map((m, i) => (
             <li key={i}>
               <span className="text-xs font-medium text-text-2">{m.role === "user" ? t("chat.you") : t("chat.reply")}</span>
-              <Reply text={m.role === "user" ? withoutContext(String(m.content)) : String(m.content)} />
+              {imagesOf(m).length > 0 && <StoredImages images={imagesOf(m)} />}
+              {m.content !== "" && <Reply text={m.role === "user" ? withoutContext(String(m.content)) : String(m.content)} copy={m.role !== "user"} />}
             </li>
           ))}
         </ul>

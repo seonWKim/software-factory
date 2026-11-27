@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
+import { t } from "../../i18n/index.js";
 import { isHttpUrl } from "../../lib/format.js";
 import { LINK_CLASS } from "./link-style.js";
+import { ButtonRow } from "./button-row.js";
+import { CopyIcon } from "./copy.js";
 import { Disclosure } from "./disclosure.js";
 
 // A small markdown renderer for spec text (design §9): headings, paragraphs, lists, fenced code, inline code,
@@ -128,7 +131,12 @@ function renderBlock(b: Block, n: number): ReactNode {
       );
     }
     case "code":
-      return <pre key={n} className="overflow-x-auto rounded-control bg-surface-2 p-3 font-mono text-xs leading-normal"><code>{b.text}</code></pre>;
+      return (
+        <div key={n} className="min-w-0">
+          <pre className="overflow-x-auto rounded-control bg-surface-2 p-3 font-mono text-xs leading-normal"><code>{b.text}</code></pre>
+          <ButtonRow><CopyIcon value={b.text} what={t("chat.copyCode")} /></ButtonRow>
+        </div>
+      );
     case "details":
       return (
         <Disclosure key={n} summary={inline(b.summary)}>

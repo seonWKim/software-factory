@@ -12,8 +12,9 @@ import type { Sandbox } from "../interfaces/sandbox.js";
 export * from "./restart.js";
 // The auto merge step's tier rule and drop-back (design 03-risk), re-exported so the unit reads them through this module.
 export { droppedBack, tierRule } from "./stats.js";
-// The red-main check's runner and the revert's loop key (design 03-risk), read by the unit through this module too.
-export { checkCommands, runChecks } from "./checks.js";
+// The red-main check's runner, its missing-toolchain match and the revert's loop key (design 03-risk), read by the
+// unit through this module too.
+export { checkCommands, runChecks, toolchainMissing } from "./checks.js";
 export { runKey } from "./policy.js";
 
 /**
@@ -165,6 +166,19 @@ export type LocalReadSandbox = Sandbox & {
 
 export function canReadLocal(sandbox: Sandbox | undefined): sandbox is LocalReadSandbox {
   return !!sandbox && typeof (sandbox as Partial<LocalReadSandbox>).localBranch === "function";
+}
+
+/**
+ * A sandbox that reads which files changed between two commits of the factory repo, from objects only (no fetch, no
+ * checkout): the red-main check runs the UI check only when the merge's own change touches its paths (design 03-risk).
+ */
+export type ChangedFilesSandbox = Sandbox & {
+  /** The paths changed from `from` (absent: `to`'s first parent) to `to`, sorted; null when either commit cannot be read. */
+  localChangedFiles(spec: { repo: string; to: string; from?: string }): Promise<string[] | null>;
+};
+
+export function canReadChangedFiles(sandbox: Sandbox | undefined): sandbox is ChangedFilesSandbox {
+  return !!sandbox && typeof (sandbox as Partial<ChangedFilesSandbox>).localChangedFiles === "function";
 }
 
 /** What the red-main revert asks the sandbox (design 03-risk): revert one automatic merge at the tip of the local base. */

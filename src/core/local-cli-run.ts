@@ -12,7 +12,7 @@ import { ProjectRefused, projectRefusal, taskLine } from "./tasks.js";
 import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask, dependsOnId, localItemOf, recordDependsOn, withDependsOn } from "./task-build.js";
 import { type DraftTerminal, runScheduleWords } from "./schedule-draft.js";
 import { ANONYMOUS_USER, CLI_KEY_PREFIX, type CliIdentity, DEFAULT_CLI_NAME } from "./local-cli-identity.js";
-import { type CliAction as ParsedAction, parseLocalCliArgs } from "./local-cli-parse.js";
+import { type CliAction as ParsedAction, HELD_CONFIRM_COMMAND, parseLocalCliArgs } from "./local-cli-parse.js";
 /**
  * Every action runLocalCli runs: the parser's, and a bare `approve` (`value`: a dollar amount) or `reject`, which answers
  * today's open coordinator limit question, else settles the newest held skill version (parseLocalCliArgs in local-cli.ts).
@@ -42,7 +42,7 @@ export interface LocalCliDeps extends DraftTerminal { // DraftTerminal: `schedul
     | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
     | "createProject" | "listProjects" | "renameProject" | "archiveProject" | "restoreProject" | "deleteProject" | "getProjectBySlug"
     | "addTaskToProject" | "removeTaskFromProject" | "moveTaskToProject" | "listTaskProjectSlugs" | "listSchedules" | "listScheduleRuns" | "addSchedule" | "updateSchedule" | "deleteSchedule" | "scheduleNow"
-    | "listHeldSkillVersionGates" | "settleSkillVersionGate" | "listAlerts"
+    | "listHeldSkillVersionGates" | "settleSkillVersionGate" | "listAlerts" | "getHeldWrite"
   >;
   /** Who every command acts as (`cliIdentity`). */
   identity: CliIdentity;
@@ -242,6 +242,17 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       const n = pending.length === 1 ? "its pending command" : `its ${pending.length} pending commands`;
       return { code: 0, lines: [`stored \`${cli} confirm ${a.proposal}\` as ${user} (command ${command.seq}); the controller applies ${n} on its next poll`] };
     }
+    case "confirm_held": {
+      // A write the permission gate held (design 08-permissions, phase 3): the controller's confirm path
+      // (src/controller/units/commands/proposals.ts confirmHeldWrite) claims it and runs it as this user's typed command.
+      const held = await d.store.getHeldWrite(a.held);
+      if (!held) return fail(`no held write ${a.held}`);
+      const line = [held.command, ...held.args].join(" ");
+      if (held.status !== "pending") return { code: 0, lines: [`nothing was applied: held write ${a.held} (\`${line}\`) was already ${held.status}`] };
+      await claim();
+      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: HELD_CONFIRM_COMMAND, args: { held: a.held }, write_origin: "human_command" });
+      return { code: 0, lines: [`stored \`${cli} confirm ${a.held}\` as ${user} (command ${command.seq}); the controller applies \`${line}\` on its next poll`] };
+    }
     case "settle": {
       // Today's open coordinator limit question (design 06-spend) takes `approve <usd>` and `reject`, stored for the
       // controller, which checks and applies it (the commands unit's answerLimit). A bare `approve` settles a held skill
@@ -284,7 +295,7 @@ async function storeLimitAnswer(
   if ("refused" in limit) return { code: 1, lines: [limit.refused] };
   if (!(await isOwner())) return { code: 1, lines: [`only the owner answers the coordinator limit question; you are ${user}`] };
   const args = { coordinator_limit: limit.alert.pattern_key, ...(value !== null ? { text: value } : {}) };
-  const { command: row } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command, args });
+  const { command: row } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command, args, write_origin: "human_command" });
   const next = limit.set_usd === null
     ? `leaves ${COORDINATOR_LIMIT_KEY} as it is, so coordinator cycles stay stopped until the UTC day ends`
     : `sets ${COORDINATOR_LIMIT_KEY} to ${usd(limit.set_usd)}, so coordinator cycles run again once today's coordinator spend is below it`;

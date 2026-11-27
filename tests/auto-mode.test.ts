@@ -53,6 +53,13 @@ const commitIn = (dir: string, files: Record<string, string>, msg: string) => {
 /** A check that passes everywhere except on a merge commit (the merge queue's merge-check run checks one). */
 const FAILS_ON_MERGE = ["sh", "-c", "git rev-parse -q --verify HEAD^2 >/dev/null && exit 1; exit 0"];
 const OK = ["sh", "-c", "exit 0"];
+/**
+ * A UI check that passes on the merge check's merged commit (its subject ends in "(merge check)") and runs `script`
+ * anywhere else, such as on the new base tip after an automatic merge: the change lands, and the red-main check fails.
+ */
+const uiAfterMerge = (script: string) => ["sh", "-c", `git log -1 --format=%s | grep -q '(merge check)$' && exit 0; ${script}`];
+/** A change to a `repo.ui_check` path ("web/"), so the merge check and the red-main check after its merge run the UI check. */
+const UI_CHANGE = { allowed_paths: ["web/"], files_to_change: ["web/app.css"] };
 
 interface Opts {
   /** The triage answer, over triageSpec. */
@@ -442,8 +449,9 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
   });
 
   it("red main from the UI check: after an auto merge it runs on the new base tip; a failure raises one red_main alert on that tip, files its fix item and stops auto mode", async () => {
-    // The change touches no UI path, so its merge check runs no UI check; the base tip's check after the merge does.
-    const f = await autoFactory({ ui_check: { command: ["sh", "-c", "echo 'FAIL  tests/layout.test.ts > fits'; echo layout broken; exit 1"], paths: ["web/"] } });
+    // The change touches a UI path; the UI check passes at its merge check and fails on the base tip after the merge.
+    const command = uiAfterMerge("echo 'FAIL  tests/layout.test.ts > fits'; echo layout broken; exit 1");
+    const f = await autoFactory({ spec: UI_CHANGE, ui_check: { command, paths: ["web/"] } });
     await f.setting("auto_merge_max_tier", 3);
     await f.mode("auto");
     const first = await f.create();
@@ -456,7 +464,7 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     expect(red.map((a) => a.pattern_key)).toEqual([`red_main:${tip}`]);
     // The alert's detail keeps the sentence, the failing tests by name and the output tail (no new column).
     expect(JSON.parse(red[0]!.detail!)).toEqual({
-      text: "`sh -c echo 'FAIL  tests/layout.test.ts > fits'; echo layout broken; exit 1` exited 1 on the new tip of `main`",
+      text: `\`${command.join(" ")}\` exited 1 on the new tip of \`main\``,
       failing_tests: ["tests/layout.test.ts > fits"],
       output_tail: "FAIL  tests/layout.test.ts > fits\nlayout broken\n",
     });
@@ -471,7 +479,7 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
   it("red main from the UI check with a tail the egress scan flags: the tail is stored as null and the test names are kept", async () => {
     // The key is put together by the shell, so only the output holds it, not the command in the sentence.
     const print = "printf 'FAIL  tests/layout.test.ts > fits\\nAKIA%s\\n' ABCDEFGHIJKLMNOP; exit 1";
-    const f = await autoFactory({ ui_check: { command: ["sh", "-c", print], paths: ["web/"] } });
+    const f = await autoFactory({ spec: UI_CHANGE, ui_check: { command: uiAfterMerge(print), paths: ["web/"] } });
     await f.setting("auto_merge_max_tier", 3);
     await f.mode("auto");
     const first = await f.create();
@@ -588,12 +596,13 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
 });
 
 describe("auto mode: red main reverts a bad automatic merge", { timeout: 60_000 }, () => {
-  // The UI check fails on a tree holding BROKEN. The change touches no UI path, so its merge check runs no UI check
-  // and it lands; the check on the new base tip after the merge then fails. The first item's change is clean, so its
+  // The UI check fails on a tree holding BROKEN, except on the merge check's merged commit. Each change touches a UI
+  // path (web/app.css), so the merge check runs the UI check and passes, the change lands, and the red-main check on
+  // the new base tip, whose change touches that path too, runs it and fails. The first item's change is clean, so its
   // check passes and stores the green base the second item's merge lands on.
   const FAILING = "FAIL  tests/broken.test.ts > is green";
   const uiCheck = (flag = "/nonexistent") => ({
-    command: ["sh", "-c", `if git grep -q BROKEN || test -f ${flag}; then echo '${FAILING}'; exit 1; fi`], paths: ["web/"],
+    command: uiAfterMerge(`if git grep -q BROKEN || test -f ${flag}; then echo '${FAILING}'; exit 1; fi`), paths: ["web/"],
   });
   const brokenSecond = (n: number) => (n === 2 ? "BROKEN\n" : `changed ${n}\n`);
   const alerts = async (f: Awaited<ReturnType<typeof autoFactory>>, pattern: string) =>
@@ -624,7 +633,7 @@ describe("auto mode: red main reverts a bad automatic merge", { timeout: 60_000 
   }
 
   async function reverted(opts: Opts = {}) {
-    const f = await autoFactory({ ui_check: uiCheck(), change: brokenSecond, ...opts });
+    const f = await autoFactory({ spec: UI_CHANGE, ui_check: uiCheck(), change: brokenSecond, ...opts });
     const green = await greenFirst(f);
     const { id, merge } = await second(f);
     return { f, green, id, merge, tip: git(f.repo, "rev-parse", "main") };
@@ -702,7 +711,7 @@ describe("auto mode: red main reverts a bad automatic merge", { timeout: 60_000 
   });
 
   it("a base that was already red before the automatic merge is not blamed on it: no revert, the item stays merged, auto mode stops", async () => {
-    const f = await autoFactory({ ui_check: uiCheck(), change: (n) => `changed ${n}\n` });
+    const f = await autoFactory({ spec: UI_CHANGE, ui_check: uiCheck(), change: (n) => `changed ${n}\n` });
     await greenFirst(f);
     // A person's commit on main breaks the check after the green base was stored.
     git(f.repo, "checkout", "--quiet", "main");
@@ -728,7 +737,7 @@ describe("auto mode: red main reverts a bad automatic merge", { timeout: 60_000 
         }
         : Reflect.get(t, k, t)),
     });
-    const f = await autoFactory({ ui_check: uiCheck(), change: brokenSecond, controllerSandbox: aging });
+    const f = await autoFactory({ spec: UI_CHANGE, ui_check: uiCheck(), change: brokenSecond, controllerSandbox: aging });
     await greenFirst(f);
     late = true;
     const { id, merge } = await second(f);
@@ -738,7 +747,7 @@ describe("auto mode: red main reverts a bad automatic merge", { timeout: 60_000 
   });
 
   it("a merge made by a person is not reverted and takes the stop", async () => {
-    const f = await autoFactory({ ui_check: uiCheck(), change: brokenSecond });
+    const f = await autoFactory({ spec: UI_CHANGE, ui_check: uiCheck(), change: brokenSecond });
     await greenFirst(f);
     // The tier no longer merges by itself: a person merges the second change.
     await f.setting("auto_merge_max_tier", 0);

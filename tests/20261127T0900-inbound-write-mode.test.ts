@@ -1,6 +1,7 @@
 // Permission modes, phase 1 (design 08-permissions, 2026-11-27): the migration adds `write_origin` and `permission_mode`
 // to `inbound_commands` as nullable TEXT columns, with no backfill; a rerun changes nothing. The store writes
-// `write_origin` on an append and reads it back; `permission_mode` stays NULL until the gate phase writes it.
+// `write_origin` on an append (`human_command` when the append passes none) and reads it back. Since phase 4 it also
+// writes `permission_mode`, the mode read from the store at the append (tests/permission-modes.test.ts).
 
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -48,13 +49,13 @@ describe("migration 20261127T0900-inbound-write-mode", () => {
 });
 
 describe("a command row's write_origin", () => {
-  it("is human_command or agent, stored on append and read back; absent when the append passes none", async () => {
+  it("is human_command or agent, stored on append and read back; human_command when the append passes none", async () => {
     const { store } = await newStore();
     for (const write_origin of ["human_command", "agent"] as const) {
       const { command } = await store.appendCliCommand({ key: `cli:${write_origin}`, actor: "local:owner", command: "approve", args: {}, write_origin });
       expect(command.write_origin).toBe(write_origin);
     }
     const { command } = await store.appendCliCommand({ key: "cli:none", actor: "local:owner", command: "approve", args: {} });
-    expect(command).not.toHaveProperty("write_origin");
+    expect(command).toMatchObject({ write_origin: "human_command", permission_mode: "ask_irreversible" });
   });
 });
