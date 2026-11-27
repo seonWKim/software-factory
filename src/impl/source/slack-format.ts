@@ -8,7 +8,7 @@ import type { RepoRef } from "../github/github-client.js";
 
 // How a control-plane comment (GitHub Markdown) becomes a Slack thread message (issue #109): mrkdwn text in
 // section blocks, then the buttons. The command buttons come from the comment's own command footer, which the
-// controller builds from the command table in src/core/commands.ts, so a button exists only for a command that
+// controller builds from the command table in src/core/command-specs.ts, so a button exists only for a command that
 // applies in the item's state when the comment was written. A press is checked again when it arrives. A stored
 // proposal's reply (its hidden marker, src/core/interpret.ts) gets one button per proposed command, Confirm all and
 // Cancel instead (issue #584); their values carry only the proposal ID and index, the args are read at press time.
