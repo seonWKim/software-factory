@@ -24,7 +24,7 @@ export const chatImage = (input: ChatImageInput): Promise<ChatImageOutput> => ge
 export type ChatSendInput = { "session_id"?: string; "text": string; "images"?: Array<{ "name": string; "data": string }> };
 export type ChatSendOutput = { "turn_id": string; "session_id": string; "outcome": "answered" | "refused" | "failed"; "reason"?: string; "detail"?: string; "reply"?: string; "images_withheld"?: Array<string> };
 /** Send the owner's message to the chat and run one turn with the Ask model; no session_id starts a new session. It may carry up to 5 images (name and base64 bytes; png, jpeg, gif or webp, 5 MB or less each), with or without text; the model reads them after the text, in order. A sixth image, another type or a larger file refuses the whole message (400) naming the file. An image the leak scanner flags is not sent: images_withheld names it. A withheld turn answers no reply; a failed model call answers the provider's own words in detail. (POST /api/v1/chat/send, permission owner) */
-export const chatSend = (token: string, input: ChatSendInput) => postJson<ChatSendOutput & { error?: string }>("/api/v1/chat/send", token, input);
+export const chatSend = (token: string, input: ChatSendInput, signal?: AbortSignal) => postJson<ChatSendOutput & { error?: string }>("/api/v1/chat/send", token, input, signal);
 
 export type ChatTranscriptInput = { "session_id": string };
 export type ChatTranscriptOutput = { "messages": Array<{ [key: string]: unknown }> };
@@ -49,27 +49,27 @@ export const itemsList = (input: ItemsListInput): Promise<ItemsListOutput> => ge
 export type SchedulesAddInput = { "id": string; "title"?: string; "cadence"?: string; "spec"?: string; "zone"?: string; "action"?: string; "body"?: string; "instruction"?: string; "url"?: string; "skip_when_busy"?: boolean; "token_cap"?: number; "run_cap_usd"?: number | null; "daily_cap_usd"?: number | null; "run_now"?: boolean };
 export type SchedulesAddOutput = { "schedule": { [key: string]: unknown } };
 /** Store a new schedule; run_now true stores it due now. (POST /api/v1/schedules/add, permission owner) */
-export const schedulesAdd = (token: string, input: SchedulesAddInput) => postJson<SchedulesAddOutput & { error?: string }>("/api/v1/schedules/add", token, input);
+export const schedulesAdd = (token: string, input: SchedulesAddInput, signal?: AbortSignal) => postJson<SchedulesAddOutput & { error?: string }>("/api/v1/schedules/add", token, input, signal);
 
 export type SchedulesDeleteInput = { "id": string };
 export type SchedulesDeleteOutput = { "schedule": { [key: string]: unknown } };
 /** Remove the schedule and its suggestions; answers it as it was. (POST /api/v1/schedules/delete, permission owner) */
-export const schedulesDelete = (token: string, input: SchedulesDeleteInput) => postJson<SchedulesDeleteOutput & { error?: string }>("/api/v1/schedules/delete", token, input);
+export const schedulesDelete = (token: string, input: SchedulesDeleteInput, signal?: AbortSignal) => postJson<SchedulesDeleteOutput & { error?: string }>("/api/v1/schedules/delete", token, input, signal);
 
 export type SchedulesDraftInput = { "words": string };
 export type SchedulesDraftOutput = { "proposal": { [key: string]: unknown } };
 /** Draft a schedule from words with the Ask model; stores nothing. (POST /api/v1/schedules/draft, permission owner) */
-export const schedulesDraft = (token: string, input: SchedulesDraftInput) => postJson<SchedulesDraftOutput & { error?: string }>("/api/v1/schedules/draft", token, input);
+export const schedulesDraft = (token: string, input: SchedulesDraftInput, signal?: AbortSignal) => postJson<SchedulesDraftOutput & { error?: string }>("/api/v1/schedules/draft", token, input, signal);
 
 export type SchedulesEditInput = { "id": string; "title"?: string; "cadence"?: string; "spec"?: string; "zone"?: string; "action"?: string; "body"?: string; "instruction"?: string; "url"?: string; "skip_when_busy"?: boolean; "token_cap"?: number; "run_cap_usd"?: number | null; "daily_cap_usd"?: number | null };
 export type SchedulesEditOutput = { "schedule": { [key: string]: unknown } };
 /** Change only the fields given; null clears a USD cap. (POST /api/v1/schedules/edit, permission owner) */
-export const schedulesEdit = (token: string, input: SchedulesEditInput) => postJson<SchedulesEditOutput & { error?: string }>("/api/v1/schedules/edit", token, input);
+export const schedulesEdit = (token: string, input: SchedulesEditInput, signal?: AbortSignal) => postJson<SchedulesEditOutput & { error?: string }>("/api/v1/schedules/edit", token, input, signal);
 
 export type SchedulesImproveInput = { "id": string };
 export type SchedulesImproveOutput = { "proposal": { [key: string]: unknown } };
 /** Propose a better text for a schedule with the Ask model; stores nothing. (POST /api/v1/schedules/improve, permission owner) */
-export const schedulesImprove = (token: string, input: SchedulesImproveInput) => postJson<SchedulesImproveOutput & { error?: string }>("/api/v1/schedules/improve", token, input);
+export const schedulesImprove = (token: string, input: SchedulesImproveInput, signal?: AbortSignal) => postJson<SchedulesImproveOutput & { error?: string }>("/api/v1/schedules/improve", token, input, signal);
 
 export type SchedulesListInput = { [key: string]: never };
 export type SchedulesListOutput = { "schedules": Array<{ [key: string]: unknown }> };
@@ -79,17 +79,17 @@ export const schedulesList = (input: SchedulesListInput): Promise<SchedulesListO
 export type SchedulesPauseInput = { "id": string };
 export type SchedulesPauseOutput = { "schedule": { [key: string]: unknown } };
 /** Pause a schedule: none of its slots fire. (POST /api/v1/schedules/pause, permission owner) */
-export const schedulesPause = (token: string, input: SchedulesPauseInput) => postJson<SchedulesPauseOutput & { error?: string }>("/api/v1/schedules/pause", token, input);
+export const schedulesPause = (token: string, input: SchedulesPauseInput, signal?: AbortSignal) => postJson<SchedulesPauseOutput & { error?: string }>("/api/v1/schedules/pause", token, input, signal);
 
 export type SchedulesResumeInput = { "id": string };
 export type SchedulesResumeOutput = { "schedule": { [key: string]: unknown } };
 /** Resume a paused schedule at its first slot after now. (POST /api/v1/schedules/resume, permission owner) */
-export const schedulesResume = (token: string, input: SchedulesResumeInput) => postJson<SchedulesResumeOutput & { error?: string }>("/api/v1/schedules/resume", token, input);
+export const schedulesResume = (token: string, input: SchedulesResumeInput, signal?: AbortSignal) => postJson<SchedulesResumeOutput & { error?: string }>("/api/v1/schedules/resume", token, input, signal);
 
 export type SchedulesRunInput = { "id": string };
 export type SchedulesRunOutput = { "schedule": { [key: string]: unknown } };
 /** Make the schedule due now, so the next tick fires it once. (POST /api/v1/schedules/run, permission owner) */
-export const schedulesRun = (token: string, input: SchedulesRunInput) => postJson<SchedulesRunOutput & { error?: string }>("/api/v1/schedules/run", token, input);
+export const schedulesRun = (token: string, input: SchedulesRunInput, signal?: AbortSignal) => postJson<SchedulesRunOutput & { error?: string }>("/api/v1/schedules/run", token, input, signal);
 
 export type SchedulesRunsInput = { "schedule"?: string };
 export type SchedulesRunsOutput = { "runs": Array<{ [key: string]: unknown }> };
