@@ -31,6 +31,7 @@ import { alarmCommand, alarmFullText, alarmText } from "../src/ui/alarms.js";
 // missing, or whose command could not run, is an environment problem, not the merge's fault. A local factory over a
 // real git repo in auto mode, as in auto-mode.test.ts: the first item merges green and stores the green base; the
 // second item's change makes the UI check on the new base tip fail, so without the environment rule it is reverted.
+// Each change touches a `repo.ui_check` path (web/app.css), so the red-main check after its merge runs the UI check.
 
 const ME = "local:me@example.com" as UserId;
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
@@ -45,8 +46,16 @@ const commitIn = (dir: string, files: Record<string, string>, msg: string) => {
   git(dir, ...ident, "commit", "--quiet", "-m", msg);
 };
 const OK = ["sh", "-c", "exit 0"];
-/** The UI check: it prints `out` and fails on a tree holding BROKEN, which only the second item's change writes. */
-const uiCheck = (out: string) => ({ command: ["sh", "-c", `if git grep -q BROKEN; then echo '${out}'; exit 1; fi`], paths: ["web/"] });
+/**
+ * The UI check: it prints `out` and fails on a tree holding BROKEN, which only the second item's change writes. It
+ * passes on the merge check's merged commit (its subject ends in "(merge check)"), so the change lands first.
+ */
+const uiCheck = (out: string) => ({
+  command: ["sh", "-c", `git log -1 --format=%s | grep -q '(merge check)$' && exit 0; if git grep -q BROKEN; then echo '${out}'; exit 1; fi`],
+  paths: ["web/"],
+});
+/** A change to a `repo.ui_check` path, so the red-main check after its merge runs the UI check. */
+const UI_CHANGE = { allowed_paths: ["web/"], files_to_change: ["web/app.css"] };
 
 async function factory(o: { ui_check: NonNullable<FactoryConfig["repo"]["ui_check"]>; controllerSandbox?: (s: NoOpSandbox) => Sandbox; beforeSecond?: () => void }) {
   const root = mkdtempSync(join(tmpdir(), "sf-redenv-"));
@@ -55,7 +64,7 @@ async function factory(o: { ui_check: NonNullable<FactoryConfig["repo"]["ui_chec
   commitIn(repo, { "README.md": "hi\n" }, "init");
   git(repo, "checkout", "--quiet", "-b", "work");
   const project = localProject({ owner: "o", name: "r" });
-  const file = String((triageSpec.files_to_change as string[])[0]);
+  const file = UI_CHANGE.files_to_change[0]!;
   const cfg: FactoryConfig = { ...config, project, local_only: true, repo: { ...config.repo, path: repo, install_command: OK, test_command: OK, ui_check: o.ui_check } };
   const clock = new FakeClock();
   const { store } = await newStore(clock);
@@ -70,7 +79,7 @@ async function factory(o: { ui_check: NonNullable<FactoryConfig["repo"]["ui_chec
   });
   let n = 0;
   const runner = new FakeRunner({
-    triage: () => ({ output: triageSpec }),
+    triage: () => ({ output: { ...triageSpec, ...UI_CHANGE } }),
     implement: (s) => {
       commitIn(s.sandbox.workdir, { [file]: ++n === 2 ? "BROKEN\n" : `changed ${n}\n` }, "the change");
       return { output: { summary: "done", next_steps: "none" } };
