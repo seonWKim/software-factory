@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { Markdown } from "../web/src/components/ui/markdown.js";
-import { installItemPageFixtures, mountItem as mount, src } from "./ui-shell-fixtures.js";
+import { installItemPageFixtures, mountItem as mount } from "./ui-shell-fixtures.js";
 
 // The item page About block and the Markdown renderer it uses.
 
