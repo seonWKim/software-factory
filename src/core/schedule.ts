@@ -496,7 +496,7 @@ export async function editSchedule(store: ScheduleAdminStore, id: string, f: Sch
     if ([f.action, f.body, f.instruction, f.url, f.grants].some((v) => v !== undefined)) {
       const kind = page ? "check-page" : (f.action ?? s.action?.kind);
       if (kind === undefined) return "the schedule has no action: give --action too";
-    if (f.grants?.includes("notes") && scheduleIdProblem(id)) return `a notes grant needs a plain schedule ID: ${scheduleIdProblem(id)}`;
+      if (f.grants?.includes("notes") && scheduleIdProblem(id)) return `a notes grant needs a plain schedule ID: ${scheduleIdProblem(id)}`;
       if (page && f.instruction !== undefined && f.body !== undefined) return "give the instruction as --instruction or --body, not both";
       const old = page || s.action?.kind === kind ? s.action!.settings : {};
       const action = page
