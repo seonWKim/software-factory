@@ -111,13 +111,13 @@ describe("item page: In short, decisions and the approve confirm (issue #526)", 
     fireEvent.change(screen.getByRole("textbox", { name: "Answer 3" }), { target: { value: "the platform team" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Note" }), { target: { value: "keep it small" } });
     const confirm = await approve();
-    expect(confirm.textContent).toContain("You approve the spec waiting for approval.");
+    expect(confirm.textContent).toContain("You approve the plan waiting for approval.");
     expect([...confirm.querySelectorAll("li")].map((l) => l.textContent)).toEqual([
       "1. Fail the job, or only warn? → Only warn (your answer)",
       "2. Name the step? → scope (default taken)",
       "3. Who owns the gate? → the platform team (your answer)",
     ]);
-    expect(confirm.textContent).toContain("Next: The factory starts the implement run on this spec.");
+    expect(confirm.textContent).toContain("Next: The factory starts the implement run on this plan.");
     await send({ command: "approve", note: "1: Only warn\n2: scope\n3: the platform team\nkeep it small" });
   });
 
@@ -125,9 +125,9 @@ describe("item page: In short, decisions and the approve confirm (issue #526)", 
     serve("max_revisions");
     mount("/app/items/wi_d");
     const confirm = await approve();
-    expect(confirm.textContent).toContain("You approve the spec at the revision limit, as it is (no new revision).");
+    expect(confirm.textContent).toContain("You approve the plan at the revision limit, as it is (no new revision).");
     expect(confirm.textContent).toContain("3. Who owns the gate? → no answer (no default)");
-    expect(confirm.textContent).toContain("Next: The factory starts the implement run on this spec.");
+    expect(confirm.textContent).toContain("Next: The factory starts the implement run on this plan.");
     await send({ command: "approve", note: "1: Fail the job\n2: scope" });
   });
 

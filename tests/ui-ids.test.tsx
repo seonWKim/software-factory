@@ -28,7 +28,7 @@ const row = (id: string, source: object, level: string, title: string, extra: ob
 });
 const ITEMS = [
   row("wi_spec1", gh(1), "needs_approval", "Spec waiting", {
-    stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", need: { reason: "spec ready", anchor: null }, why: why("human", "Waiting for a person to approve the spec"),
+    stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", need: { reason: "spec ready", anchor: null }, why: why("human", "Waiting for a person to approve the plan"),
     commands: ["approve", "reject", "revise"].map((name) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null })),
   }),
   row("wi_run2", gh(2), "running", "Being built", {

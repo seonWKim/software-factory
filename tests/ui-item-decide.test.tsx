@@ -198,7 +198,7 @@ describe("item page: DecisionCard", () => {
     const question = decide.querySelector("[data-decision-question]")!;
     const evidence = decide.querySelector("[data-decision-evidence]")!;
     const actions = decide.querySelector("[data-decision-actions]")!;
-    expect(within(question as HTMLElement).getByTestId("why").textContent).toBe("Waiting for a person to approve the spec");
+    expect(within(question as HTMLElement).getByTestId("why").textContent).toBe("Waiting for a person to approve the plan");
     expect(question.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(evidence.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(evidence as HTMLElement).getByRole("region", { name: "In short" }).textContent).toContain("TO-BE: CI checks the scope.");

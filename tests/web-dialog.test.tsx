@@ -329,7 +329,7 @@ describe("the approve dialog", () => {
     ];
     for (let i = 1; i < order.length; i++) expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING, `${i}`).toBeTruthy();
     expect(dialog.querySelector("[data-confirm-answers]")!.textContent).toBe("1. Fail the job, or only warn? → Only warn (your answer)");
-    expect(dialog.querySelector("[data-confirm-next]")!.textContent).toBe("Next: The factory starts the implement run on this spec.");
+    expect(dialog.querySelector("[data-confirm-next]")!.textContent).toBe("Next: The factory starts the implement run on this plan.");
   });
 
   it("an answer whose option needs a path outside the allowed paths shows the path and its done-when change, warns in a Notice and sends nothing (design 09-dashboard-item-commands, 2026-11-21)", () => {

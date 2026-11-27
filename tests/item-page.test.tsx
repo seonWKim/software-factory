@@ -27,7 +27,7 @@ describe("item page: phases and parent", () => {
 });
 
 describe("item page: timeline spec", () => {
-  it("shows the spec collapsed behind 'spec written (show)' and renders it as markdown when opened, never escaped JSON", async () => {
+  it("shows the spec collapsed behind 'Plan written (show)' and renders it as markdown when opened, never escaped JSON", async () => {
     mount("/app/items/wi_parent");
     const timeline = await screen.findByRole("region", { name: "Timeline" });
     // Short changes read as words, not JSON text, and only behind Details.
@@ -38,11 +38,11 @@ describe("item page: timeline spec", () => {
     visible.querySelectorAll("[data-raw]").forEach((n) => n.remove());
     expect(visible.textContent).not.toContain("NEW → READY");
     expect(visible.textContent).toContain("Created by the factory");
-    const toggle = within(timeline).getByRole("button", { name: "spec written (show)" });
+    const toggle = within(timeline).getByRole("button", { name: "Plan written (show)" });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(timeline.textContent).not.toContain("The page prints");
     fireEvent.click(toggle);
-    expect(toggle.textContent).toBe("spec written (hide)");
+    expect(toggle.textContent).toBe("Plan written (hide)");
     const spec = timeline.querySelector<HTMLElement>("[data-spec]")!;
     for (const label of ["Problem", "Done criteria", "Files to change", "Scope"]) expect(within(spec).getAllByText(label).length).toBeGreaterThan(0);
     // The heading and the blank line render as a heading and paragraphs.
