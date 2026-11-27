@@ -1,5 +1,6 @@
 // The chat capabilities (design 04-chat-agent, 09-api-registry): chat.send runs one chat turn (src/core/chat-agent.ts)
-// with the Ask model (settings.ask.llm, as schedules.draft uses) and the chat's read-only broker over the feature map;
+// with the Ask model (settings.ask.llm, as schedules.draft uses) and the chat's read-only broker: the feature map and
+// call_feature, bound to callCapability over the same registry, so the chat reads every GET capability's live data;
 // chat.transcript reads a session's stored messages; chat.turns lists recent turns. Only chat.send writes: one
 // controller_chat_turns row per turn, running at its start, then answered, refused or failed. With no Ask model
 // chat.send refuses (503) and stores nothing. chat.send takes up to 5 images with the text (design 04-chat-agent),
@@ -8,7 +9,7 @@
 // scripts/gen-api.mjs never loads it.
 
 import type { ChatTurnResult } from "../../core/chat-agent.js";
-import { type Declared, declare, refuse } from "../registry.js";
+import { type Declared, callCapability, declare, refuse } from "../registry.js";
 import { array, bytes, integer, jsonObject, number, object, oneOf, optional, string } from "../schema.js";
 
 const OUTCOMES = ["answered", "refused", "failed"] as const;
@@ -46,9 +47,9 @@ export const CHAT: readonly Declared[] = [
     run: async (c, i) => {
       const llm = c.d.settings?.ask?.llm ?? null;
       if (llm === null) return refuse(503, "Chat is off: no model is configured (plugins.llm).");
-      const [{ randomUUID }, { chatTurn, CHAT_DETAIL_MAX }, { ChatToolBroker, featureMapTools }, { readFeatureMap }, { registryOf }, { chatImages }, { ANONYMOUS_USER }] = await Promise.all([
+      const [{ randomUUID }, { chatTurn, CHAT_DETAIL_MAX }, { ChatToolBroker, chatToolsOf }, { readFeatureMap }, { registryOf }, { chatImages }, { ANONYMOUS_USER }, { Withholder }] = await Promise.all([
         import("node:crypto"), import("../../core/chat-agent.js"), import("../../core/chat-agent-tools.js"), import("../feature-map.js"), import("../index.js"),
-        import("../../core/attachments.js"), import("../../core/authorize.js"),
+        import("../../core/attachments.js"), import("../../core/authorize.js"), import("../../ui/withhold.js"),
       ]);
       const checked = chatImages(i.images ?? [], c.d.commands?.actor ?? ANONYMOUS_USER, randomUUID);
       if ("refuse" in checked) return refuse(400, checked.refuse);
@@ -58,7 +59,8 @@ export const CHAT: readonly Declared[] = [
       const store = c.d.store;
       await store.startChatTurn(turn_id, session_id);
       const registry = registryOf(c.d);
-      const broker = new ChatToolBroker(featureMapTools((p) => readFeatureMap(registry, p)));
+      const w = new Withholder(c.d.scanner);
+      const broker = new ChatToolBroker(chatToolsOf((p) => readFeatureMap(registry, p), (id, input) => callCapability(registry, c.d, id, input, w)));
       let result: ChatTurnResult | null = null;
       let thrown = "";
       try {

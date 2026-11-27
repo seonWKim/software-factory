@@ -11,9 +11,9 @@ const filter = () => optional(string());
 export const ITEMS: readonly Declared[] = [
   declare({
     id: "items.list", area: "items",
-    description: "The work items, ranked, with the list's facets and counts; filtered by state, stage, tier, run kind, unblocks, closed, words (q) and task project.",
+    description: "The work items, ranked, with the list's facets and counts; filtered by state, stage, tier, run kind, unblocks, closed, words (q), task project and blocked_on (human: the items blocked on the owner).",
     permission: "read", method: "GET", path: "/api/v1/items",
-    input: object({ state: filter(), stage: filter(), tier: filter(), kind: filter(), unblocks: filter(), closed: filter(), q: filter(), project: filter() }),
+    input: object({ state: filter(), stage: filter(), tier: filter(), kind: filter(), unblocks: filter(), closed: filter(), q: filter(), project: filter(), blocked_on: filter() }),
     output: ITEMS_OUTPUT,
     run: async (c, i) => {
       const { answerOf, listItems } = await import("../../ui/api.js");

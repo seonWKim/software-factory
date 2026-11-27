@@ -1,6 +1,7 @@
 // The chat's eval run (design 04-chat-agent): each owner question of tests/chat-eval/owner-questions.json goes
 // through chatTurn in a new session, on a throwaway in-memory store (the owner's sessions and store rows are never
-// touched), with the four feature-map tools and the Ask model. A reply passes only when the turn answered, called
+// touched), with the chat's tools and the Ask model: the four feature-map tools and call_feature, which answers from
+// CHAT_EVAL_FIXTURE (sample items and alerts), never from a store. A reply passes only when the turn answered, called
 // every tool the question lists, and the judge (the LLMProvider, model_class "standard") answers yes against the
 // question's judged_answer. The run passes at CHAT_EVAL_PASS_BAR passes or more. Pure: the caller reads the file and
 // builds the providers (scripts/chat-eval.ts, and src/compose.ts for the daily run `chat_eval.schedule` turns on).
@@ -10,7 +11,7 @@ import type { ChatMessageRecord } from "../interfaces/factory-store.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import { chatEvalFailedAlert, failuresOf } from "./alarms.js";
 import { type ChatDeps, chatTurn } from "./chat-agent.js";
-import { type ChatTool, ChatToolBroker, type FeatureMapReader, featureMapTools } from "./chat-agent-tools.js";
+import { type ChatTool, ChatToolBroker, type FeatureCaller, type FeatureMapReader, chatToolsOf } from "./chat-agent-tools.js";
 import type { Timestamp } from "./types.js";
 
 /** The fewest passing questions for the run to pass. */
@@ -102,6 +103,34 @@ function throwawayStore(clock: { now(): Date }): ChatDeps["store"] {
   };
 }
 
+/**
+ * The eval's live data (decision 2: a fixed sample, so no eval run reads the owner's store): items.list rows, two
+ * blocked on the owner, and activity.actors' actors and open alerts, in the fields the questions are judged on.
+ */
+export const CHAT_EVAL_FIXTURE = {
+  items: [
+    { id: "wi_eval_spec", title: "Add a dark mode to the dashboard", item_phase: "spec_pending", stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", run_status: null },
+    { id: "wi_eval_merge", title: "Retry failed pushes once", item_phase: "merge_pending", stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", run_status: null },
+    { id: "wi_eval_build", title: "Cache the spend page", item_phase: "implementing", stage: "RUNNING", blocked_on: "none", blocked_reason: null, run_status: "running" },
+  ],
+  actors: [
+    { actor_id: "worker", name: "Worker", state: "running", now: "Implementing wi_eval_build (Cache the spend page)" },
+    { actor_id: "coordinator", name: "Coordinator", state: "idle", now: "Waiting for the next cycle" },
+  ],
+  alerts: [{ alert_id: "al_eval_chat", text: "Alarm: the daily chat check failed; 3 of 12 answered (needs 8).", created_at: "2026-11-27T00:05:00.000Z" }],
+} as const;
+
+/** call_feature in the eval: items.list (its blocked_on filter too) and activity.actors from CHAT_EVAL_FIXTURE; any other id is not found. */
+export const chatEvalCaller: FeatureCaller = async (id, input) => {
+  const f = CHAT_EVAL_FIXTURE;
+  if (id === "items.list") {
+    const items = f.items.filter((it) => typeof input.blocked_on !== "string" || input.blocked_on === "" || it.blocked_on === input.blocked_on);
+    return { status: 200, value: { total: items.length, items } };
+  }
+  if (id === "activity.actors") return { status: 200, value: { actors: f.actors, alerts: f.alerts } };
+  return { status: 404, value: { error: `No feature ${id} in the eval's fixture.` } };
+};
+
 /** The judge's verdict on `reply` against the question's judged_answer: yes only when its answer starts with "yes". */
 async function judgeSaysYes(judge: LLMProvider, q: ChatEvalQuestion, reply: string): Promise<boolean> {
   const content = `Question:\n${q.question}\n\nExpected answer:\n${q.judged_answer}\n\nReply:\n${reply}`;
@@ -109,12 +138,12 @@ async function judgeSaysYes(judge: LLMProvider, q: ChatEvalQuestion, reply: stri
   return r.stop_reason === "end" && /^\W*yes\b/i.test(r.text.trim());
 }
 
-/** One question: a new session on a throwaway store, the four feature-map tools (each call recorded), then the judge. */
+/** One question: a new session on a throwaway store, the chat's tools over the fixture (each call recorded), then the judge. */
 async function runQuestion(d: ChatEvalDeps, q: ChatEvalQuestion): Promise<ChatEvalResult> {
   const id = d.newId();
   const session_id = `cs_${id}`;
   const called = new Set<string>();
-  const tools: ChatTool[] = featureMapTools(d.read).map((t) => ({ ...t, call: (args) => (called.add(t.name), t.call(args)) }));
+  const tools: ChatTool[] = chatToolsOf(d.read, chatEvalCaller).map((t) => ({ ...t, call: (args) => (called.add(t.name), t.call(args)) }));
   const deps: ChatDeps = { store: throwawayStore(d.clock), llm: d.llm, broker: new ChatToolBroker(tools), scanner: d.scanner, clock: d.clock, newTurnId: () => `ct_${id}` };
   const turn = await chatTurn(deps, session_id, q.question);
   const missing_tools = q.tools.filter((t) => !called.has(t));

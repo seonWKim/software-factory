@@ -1,13 +1,15 @@
 // Filters for the status page (design §9). Pure: parses query values, applies them to ranked rows, and
 // counts what each option would show. An unknown value is an error (the server answers 400).
 
-import type { RunKind, Stage, Tier } from "../core/types.js";
+import type { BlockedOn, RunKind, Stage, Tier } from "../core/types.js";
 import { STATE_GROUPS, type StateGroup, filterShowsFinished, groupOf, inStateFilter } from "../shared/states.js";
 import { LEVELS, type Level } from "./priority.js";
 
 export const STAGES: readonly Stage[] = ["NEW", "READY", "RUNNING", "REVIEW", "CLOSED"];
 export const TIERS: readonly Tier[] = [1, 2, 3, 4, 5];
 export const RUN_KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "improve", "judge"];
+/** A work item's blocked_on values: what items.list's `blocked_on` filter takes (`human`: blocked on the owner). */
+export const BLOCKED_ONS: readonly BlockedOn[] = ["none", "human", "upstream", "ci", "budget", "dependency", "outbound"];
 
 /**
  * A state filter: one of the state table's five groups (`needs` is the Needs-you group), or one level. `closed` is
@@ -79,6 +81,12 @@ export function parseFilters(params: URLSearchParams): ParseResult {
     filters: { state: state.value, stage: stage.value, tier: tier.value, kind: kind.value, unblocks: unblocks.value, q, closed: closed.value },
   };
 }
+
+/**
+ * items.list's `blocked_on` filter: one of BLOCKED_ONS, or undefined when absent or empty; an unknown value is an error.
+ * Kept out of Filters, since no facet counts it: it narrows the rows the list answers, read off each row's item.
+ */
+export const parseBlockedOn = (raw: string | null) => pick(raw, BLOCKED_ONS, "blocked_on");
 
 /** True when any filter narrows the list (the default view hides only CLOSED). */
 export function isFiltered(f: Filters): boolean {
