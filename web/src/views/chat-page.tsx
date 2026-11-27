@@ -120,7 +120,7 @@ function Recent({ onOpen }: { onOpen: (sessionId: string) => Promise<void> }) {
       {q.isError ? (
         <ErrorNote error={t("chat.recentFailed")} />
       ) : !q.data ? (
-        <Loading rows={2} label="chat.recentLoading" onRetry={() => void q.refetch()} />
+        <Loading rows={2} label="loading.chatRecent" onRetry={() => void q.refetch()} />
       ) : sessions.length === 0 ? (
         <EmptyState title={t("chat.recentNone")} description={t("chat.recentNoneBody")} />
       ) : (
