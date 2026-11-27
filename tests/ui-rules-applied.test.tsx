@@ -124,8 +124,20 @@ describe("Rules page", () => {
     expect(document.querySelector("[data-applied-raw] [data-row-menu]")).toBeNull();
     fireEvent.click(within(applied("C-001")).getByRole("button", { name: "Actions: summary first" }));
     const items = within(applied("C-001")).getAllByRole("menuitem");
-    expect(items.map((i) => i.textContent)).toEqual(["Edit", "Open evidence", "Retire"]);
-    expect(items.map((i) => i.className.includes("text-pill-bad-fg"))).toEqual([false, false, true]);
+    expect(items.map((i) => i.textContent)).toEqual(["Edit", "Open evidence", "Copy ID", "Retire"]);
+    expect(items.map((i) => i.className.includes("text-pill-bad-fg"))).toEqual([false, false, false, true]);
+  });
+
+  it("In effect titles wrap whole, never cut to one line: an applied rule's name and a standing rule's sentence (390px cut them mid-word)", async () => {
+    s.current = view({ applied: APPLIED });
+    await show();
+    await screen.findByRole("list", { name: "In effect" }, SLOW);
+    const title = applied("C-001").querySelector<HTMLElement>("[data-applied-title]")!;
+    expect(title.textContent).toBe("summary first");
+    // Plain text, not a one-line ID button: the old title was an IdDetails in a `truncate` line.
+    expect(title.querySelector("button")).toBeNull();
+    expect(title.className).not.toMatch(/\btruncate\b/);
+    expect(title.className).toContain("wrap-anywhere");
   });
 
   it("a rule with two default lines shows each on its own line in its Details", async () => {

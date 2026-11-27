@@ -13,13 +13,13 @@ import { t } from "../i18n/index.js";
 import { Card, CardSection } from "../components/ui/card.js";
 import { localDateTime, relativeTime } from "../lib/format.js";
 import { RawDetails, useNow, useViewer } from "./common.js";
-import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
+import { ListRow } from "../components/ui/list-row.js";
 import { OverflowMenu } from "../components/ui/menu.js";
 import { BLOCK_LINK_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { ROW_PAD } from "./rules-shared.js";
+import { ROW_PAD, WRAP_TITLE } from "./rules-shared.js";
 
 // Standing approvals on the Rules page (design 05-standing-approvals and §9, issue #300; two sections since 2026-11-22):
 // each rule that is on is a row of In effect, its Switch, its plain sentence, when it last fired and the items it
@@ -120,7 +120,7 @@ export function StandingRule({ rule, token }: { rule: StandingRuleRow; token: st
       data-rule={rule.rule}
       className={ROW_PAD}
       leading={<Switch aria-label={sentence} checked={rule.enabled} disabled={off} onCheckedChange={(next) => setAction(next ? "add" : "pause")} />}
-      title={<p data-rule-sentence className={`${ROW_TITLE} font-medium`} title={sentence}>{sentence}</p>}
+      title={<p data-rule-sentence className={WRAP_TITLE}>{sentence}</p>}
       details={
         <>
           <span data-fired>{firedText(firedAt, now)}</span>
@@ -262,7 +262,7 @@ export function StandingProposal({ proposal, token }: { proposal: StandingPropos
     <ListRow
       data-proposal={proposal.id}
       className={ROW_PAD}
-      title={<p className={`${ROW_TITLE} font-medium`} title={sentence}>{withNodes("standing.proposalTitle", { rule: <span data-rule-sentence>{sentence}</span> })}</p>}
+      title={<p className={WRAP_TITLE}>{withNodes("standing.proposalTitle", { rule: <span data-rule-sentence>{sentence}</span> })}</p>}
       details={<span className="break-keep">{t("standing.proposal", { count: proposal.run_length, threshold: proposal.threshold, when: localDateTime(proposal.created_at) })}</span>}
       action={
         <Button variant="secondary" size="sm" disabled={busy} onClick={() => answer(true)}>

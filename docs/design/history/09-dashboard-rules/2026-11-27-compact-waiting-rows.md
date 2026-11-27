@@ -9,3 +9,4 @@ Replaced by the decision at the top of [09-dashboard-rules-waiting.md](../../09-
 - **Empty state text.** "Decided entries stay below; applied rules are under Applied." named the Applied tab, gone since 2026-11-22; now "Decided ones are under Details; the rules in effect are below."
 - **Titles (2026-11-18 to 2026-11-27).** A waiting row's title was an `IdDetails` (the ID in its tooltip) cut to one line, so beside Promote and ⋯ a phone showed about a dozen characters.
 - **In effect rows (2026-11-24 to 2026-11-27).** An applied rule row kept a blank switch-wide column so its title lined up with the standing rows'; at 390px a standing row's recent titles stacked as cut underlined links.
+- **In effect titles (2026-11-22 to 2026-11-27).** A standing rule's sentence and an applied rule's name (an `IdDetails`, its ID in the tooltip) were cut to one line.
