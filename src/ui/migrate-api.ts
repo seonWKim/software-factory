@@ -82,7 +82,7 @@ const YES: Offer = { offered: true, reason: null };
 const no = (reason: string): Offer => ({ offered: false, reason });
 
 const NOT_LIVE = "No factory supervisor is running, so this page cannot reach it. Start the factory from a terminal with factory dev.";
-const IN_PLACE = "Running from your checkout. To update, stop `factory dev`, pull, and start it again.";
+const IN_PLACE = "Updates from this page are off while the factory runs from your checkout. To update, stop it, pull the latest code and start it again.";
 const UNDER_WAY = "A migration is under way: no process claims work until it ends. Wait for it to finish.";
 const WAITS = "An update waits for its migration: use Migrate now first.";
 const RUNS = "A factory process already runs and claims work: use Restart now for a fresh one.";
