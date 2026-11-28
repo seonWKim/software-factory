@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { featureMapTools } from "../src/core/chat-agent-tools.js";
+import { chatToolsOf } from "../src/core/chat-agent-tools.js";
 
 interface Question { id: string; question: string; judged_answer: string; tools: string[] }
 const SUITE = JSON.parse(readFileSync(join(import.meta.dirname, "chat-eval", "owner-questions.json"), "utf8")) as { questions: Question[] };
@@ -28,7 +28,7 @@ describe("the chat eval suite", () => {
   });
 
   it("names only the chat's tools as the ones a question expects", () => {
-    const names = new Set(featureMapTools(() => null).map((t) => t.name));
+    const names = new Set(chatToolsOf(() => null, async () => ({ status: 404, value: {} })).map((t) => t.name));
     for (const q of SUITE.questions) {
       expect(Array.isArray(q.tools), q.id).toBe(true);
       expect(q.tools.filter((t) => !names.has(t)), q.id).toEqual([]);

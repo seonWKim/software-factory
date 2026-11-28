@@ -1,11 +1,13 @@
-// The chat's tools (design 04-chat-agent): the chat's own ToolBroker, serving read-only tools only, and the four
-// feature-map read tools it serves today. Each feature-map tool wraps the feature map (src/api/feature-map.ts,
-// design 09-api-registry) through an injected reader, so the tools come from the registry's declarations and no list
-// of factory tools is kept here. core/ imports only core/ and interfaces/, so the reader is passed in: the wiring binds
-// it to `readFeatureMap(REGISTRY, path)`. The feature map's text is the declarations' own (code, not store text), so
-// it holds no secret; the chat still scans every result (src/core/chat-agent.ts). A tool call that names a command
-// of the command table (`task_done`, `merge`) is an agent write in a chat turn: the permission gate refuses it in every
-// mode (design 08-permissions), and the owner types the command instead.
+// The chat's tools (design 04-chat-agent): the chat's own ToolBroker, serving read-only tools only, the four
+// feature-map read tools and call_feature. Each feature-map tool wraps the feature map (src/api/feature-map.ts, design
+// 09-api-registry) through an injected reader, so the tools come from the registry's declarations and no list of
+// factory tools is kept here. call_feature answers live data from any GET capability through an injected caller, cut
+// to CALL_FEATURE_ROWS rows per list and refused over CALL_FEATURE_MAX_CHARS. core/ imports only core/ and interfaces/,
+// so both are passed in: chat.send binds the reader to `readFeatureMap(registry, path)` and the caller to the
+// registry's callCapability, the eval binds the caller to its fixture. A result may hold store text, so the chat scans
+// every result (src/core/chat-agent.ts). A tool call that names a command of the command table (`task_done`, `merge`)
+// is an agent write in a chat turn: the permission gate refuses it in every mode (design 08-permissions), and the owner
+// types the command instead.
 
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../interfaces/tool-broker.js";
 import type { RunId, WorkItemId } from "./types.js";
@@ -14,6 +16,13 @@ import { COMMAND_TABLE, type TableCommand } from "./command-table.js";
 
 /** The feature map's answer for a path under /api/v1/feature-map/ (readFeatureMap over a registry), else null. */
 export type FeatureMapReader = (path: string) => { status: number; value: unknown } | null;
+
+/**
+ * A GET capability's answer for its id and input: 200 with its value, else a status with `{ error }`. chat.send binds
+ * it to callCapability over the registry (src/api/registry.ts: only a GET runs, after its own input check), the eval
+ * to its fixture.
+ */
+export type FeatureCaller = (id: string, input: Record<string, unknown>) => Promise<{ status: number; value: unknown }>;
 
 /** A tool the chat's broker serves: read-only by type, and its call, run in this process. */
 export interface ChatTool extends ToolDescriptor {
@@ -106,6 +115,74 @@ export function featureMapTools(read: FeatureMapReader): ChatTool[] {
     },
   ];
 }
+
+/** The rows call_feature keeps of each top-level array of a result. */
+export const CALL_FEATURE_ROWS = 20;
+/** The most characters of a trimmed result call_feature answers; a larger one answers `too_large`. */
+export const CALL_FEATURE_MAX_CHARS = 16_000;
+
+/** One cut field of a result: its name, the rows shown and the rows it had. */
+export interface TrimmedField { field: string; shown: number; total: number }
+
+/** `value` with each top-level array cut to its first CALL_FEATURE_ROWS rows, and the fields cut. */
+export function trimResult(value: unknown): { value: unknown; trimmed: TrimmedField[] } {
+  if (Array.isArray(value)) {
+    return value.length > CALL_FEATURE_ROWS ? { value: value.slice(0, CALL_FEATURE_ROWS), trimmed: [{ field: "", shown: CALL_FEATURE_ROWS, total: value.length }] } : { value, trimmed: [] };
+  }
+  if (!isRecord(value)) return { value, trimmed: [] };
+  const trimmed: TrimmedField[] = [];
+  const out: Record<string, unknown> = {};
+  for (const [field, v] of Object.entries(value)) {
+    if (Array.isArray(v) && v.length > CALL_FEATURE_ROWS) {
+      out[field] = v.slice(0, CALL_FEATURE_ROWS);
+      trimmed.push({ field, shown: CALL_FEATURE_ROWS, total: v.length });
+    } else out[field] = v;
+  }
+  return { value: out, trimmed };
+}
+
+/** A caller's status as the tool's error code. */
+const callError = (status: number): string => (status === 404 ? "not_found" : status === 405 ? "not_get" : status === 400 ? "bad_input" : "refused");
+
+/** call_feature: one GET capability's live answer, by id and input, trimmed; any refusal is `ok: false` with its text. */
+export function callFeatureTool(callFeature: FeatureCaller): ChatTool {
+  return {
+    name: "call_feature",
+    read_only: true,
+    description: "Calls one GET feature by its id with its input, and answers its live data. "
+      + `Each list in the answer keeps its first ${CALL_FEATURE_ROWS} rows; \`trimmed\` names each cut list with the rows shown and its total. `
+      + "Only GET features run: any other answers an error.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The feature's id, such as items.list." },
+        input: { type: "object", description: "The feature's input, as get_feature_schema gives it; {} for none." },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    async call(args) {
+      const id = stringArg(args, "id");
+      if (id === null) return badArgs("id");
+      const input = isRecord(args) ? (args.input ?? {}) : {};
+      if (!isRecord(input)) return { ok: false, error_code: "bad_args", message: "input must be an object" };
+      const r = await callFeature(id, input);
+      if (r.status !== 200) {
+        const error = isRecord(r.value) && typeof r.value.error === "string" ? r.value.error : `${id} answered ${r.status}`;
+        return { ok: false, error_code: callError(r.status), message: error };
+      }
+      const { value, trimmed } = trimResult(r.value);
+      const content = { id, result: value, ...(trimmed.length > 0 && { trimmed }) };
+      if (JSON.stringify(content).length > CALL_FEATURE_MAX_CHARS) {
+        return { ok: false, error_code: "too_large", message: `too_large: ${id}'s answer is over ${CALL_FEATURE_MAX_CHARS} characters even trimmed; narrow its input.` };
+      }
+      return { ok: true, content };
+    },
+  };
+}
+
+/** The chat's tools: the four feature-map tools, then call_feature. */
+export const chatToolsOf = (read: FeatureMapReader, callFeature: FeatureCaller): ChatTool[] => [...featureMapTools(read), callFeatureTool(callFeature)];
 
 /**
  * The chat's broker: serves only read-only tools, so a chat turn, which has no run, lease or passport, can call

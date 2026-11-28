@@ -32,7 +32,7 @@
 //
 // The page template's structure (docs/design/09-dashboard-shell.md, design-system/patterns.md), one rule each:
 //
-//   one-h1          the page shows other than one h1.
+//   one-h1          the page has other than one h1 (shown, or sr-only on a page that draws no title: Chat).
 //   heading-size    an h1 or h2 is not the font size of the page's first one; responsive-check.mjs also compares each
 //                   page's sizes with the first page's at the same viewport and theme.
 //   page-width      <main>'s max-width is neither --page-wide nor --page-read (PageHeader's width prop picks one).
@@ -307,7 +307,9 @@ export function checkLayout(limits) {
   const sizes = {};
   for (const tag of ["h1", "h2"]) {
     const shown = [...document.body.querySelectorAll(tag)].filter(painted);
-    if (tag === "h1" && shown.length !== 1) fail("one-h1", shown[1] ?? document.body, `${shown.length} visible h1 elements`);
+    // Chat draws no title: its one h1 is sr-only, so a page passes with one h1 either shown or sr-only, never both.
+    const srOnly = tag === "h1" ? [...document.body.querySelectorAll("h1.sr-only")].length : 0;
+    if (tag === "h1" && shown.length + srOnly !== 1) fail("one-h1", shown[1] ?? document.body, `${shown.length} visible and ${srOnly} sr-only h1 elements`);
     sizes[tag] = shown.length > 0 ? style(shown[0]).fontSize : null;
     for (const h of shown.slice(1)) {
       if (style(h).fontSize !== sizes[tag]) fail("heading-size", h, `${tag} at ${style(h).fontSize}, the page's first ${tag} at ${sizes[tag]}`);

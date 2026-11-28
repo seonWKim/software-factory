@@ -150,7 +150,7 @@ export const rules = {
   "rules.runNowRefused": "{error} Run: {run_id}",
   "rules.empty": "New suggestions show here when there are any. Decided ones are under Details; the rules in effect are below.",
   "rules.footer": "A rule you approve goes into every run's prompt, with its exceptions and scope.",
-  "rules.approvals": "Auto-approve specs",
+  "rules.approvals": "Auto-approve plans",
   "rules.appliedEmpty": "No rule is in effect yet.",
   "rules.inEffect": "In effect",
   "rules.waitingForYou": "Waiting for you",

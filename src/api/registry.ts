@@ -125,6 +125,18 @@ export async function registryWrite(r: Registry, d: ServerDeps, path: string, bo
 }
 
 /**
+ * A GET capability called in-process by its id, with its input as JSON (the chat's call_feature, design
+ * 04-chat-agent): the same serve as the HTTP route, so its input check, withholding and output check. An unknown id
+ * answers 404 and a POST capability 405; neither runs.
+ */
+export async function callCapability(r: Registry, d: ServerDeps, id: string, input: unknown, w: Pick<Withholder, "plain">): Promise<ApiResult> {
+  const c = r.capabilities.find((x) => x.id === id);
+  if (!c) return { status: 404, value: { error: `No feature ${id}.` } };
+  if (c.method !== "GET") return { status: 405, value: { error: `${id} is a ${c.method} feature; only GET features are called here.` } };
+  return serve(c, d, input, w);
+}
+
+/**
  * The API's version, the OpenAPI document's info.version. Bump it with any breaking change (a removed path or method,
  * a removed property, a changed type, a property that becomes required, a new required input field); an added optional
  * field is not one. tests/api-openapi.test.ts fails on a breaking change without a greater version.
