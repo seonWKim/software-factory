@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { Plugins, type CliIdentity, type FactoryStore } from "../../command.js";
@@ -37,6 +38,7 @@ export async function buildLocalCliDeps(
     ui: loaded.file.ui ?? {},
     answers: { split: splitAnswers, detail: answersDetail },
     ...drafting,
+    makeNotesFolder: async (folder: string) => void (await mkdir(resolve(loaded.config.repo.path, folder), { recursive: true })), // a notes grant's folder, made by `schedule add`/`edit`
     caps: async (project: string) => storedProjectCaps(store, { file: {}, layers: loaded.config.settings }, `${owner}/${name}`, (await resolveProject())?.key ?? null, project),
   };
 }

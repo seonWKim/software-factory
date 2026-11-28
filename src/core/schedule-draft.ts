@@ -8,6 +8,7 @@
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { LLMProvider, LLMRequest } from "../interfaces/llm-provider.js";
 import { fence } from "./resolve.js";
+import { notesFolder } from "./schedule-grants.js";
 import { CADENCE_KINDS, type CadenceKind, cadenceProblem } from "./schedule-cadence.js";
 import {
   SCHEDULE_ACTION_KINDS, type Schedule, type ScheduleAdminStore, type ScheduleCommand, type ScheduleFields, createSchedule, editSchedule, parseScheduleArgs,
@@ -203,6 +204,8 @@ export interface DraftTerminal {
   scanner?: Pick<EgressScanner, "scan">;
   /** A y/N question on the terminal, which prints `shown` (the proposal) before it asks; absent when stdin is no terminal. */
   ask?: (shown: readonly string[], question: string) => Promise<boolean>;
+  /** Makes `folder` (a notes grant's `.factory/notes/<id>/`, relative to the factory repo) when `schedule add` or `edit` stores a notes grant. Absent: none is made. */
+  makeNotesFolder?: (folder: string) => Promise<void>;
 }
 
 interface DraftCliDeps extends Omit<DraftDeps, "llm" | "scanner">, DraftTerminal {
@@ -214,7 +217,11 @@ const isDraftCommand = (c: ScheduleWords): c is DraftCommand => c.verb === "draf
 
 /** Runs any `factory schedule …` command as `user`: draft and improve here, the others through schedule.ts. */
 export function runScheduleWords(d: DraftCliDeps, c: ScheduleWords, user: UserId, isOwner: () => Promise<boolean>): Promise<{ code: number; lines: string[] }> {
-  return isDraftCommand(c) ? runDraftCommand(d, c, user, isOwner) : runScheduleCommand(d.store, c, user, isOwner);
+  return isDraftCommand(c) ? runDraftCommand(d, c, user, isOwner) : runScheduleCommand(d.store, c, user, isOwner).then(async (r) => {
+    // A stored notes grant's folder is made when the grant is added: `.factory/notes/<id>/` in the factory repo.
+    if (r.code === 0 && "fields" in c && c.fields.grants?.includes("notes")) await d.makeNotesFolder?.(notesFolder(c.id));
+    return r;
+  });
 }
 
 /** Runs draft or improve as `user`: the owner check first, then the model, then the ask, then the one write. */
