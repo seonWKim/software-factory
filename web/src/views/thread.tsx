@@ -119,6 +119,7 @@ function Message({ m, now, open: initial }: { m: ThreadEntry; now: number; open:
         </span>
         {owner && <span data-author-id className="font-mono">{m.author}</span>}
         <span data-channel>{t("thread.channel", { channel: inWords(m.channel, CHANNELS, "thread.channel.other") })}</span>
+        {m.permission_mode && <span data-permission-mode={m.permission_mode} title={t("key.permission_mode.label")}>{t(`settings.permissionMode.${m.permission_mode}`)}</span>}
         <Badge>{inWords(m.kind, KINDS, m.role === "owner" ? "thread.kind.message" : "thread.kind.factory")}</Badge>
         <span className="ml-auto tabular-nums"><When at={m.at} now={now} /></span>
       </p>
