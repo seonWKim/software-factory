@@ -1,6 +1,5 @@
 // English text, area: workers. A key's prefix (before its first dot) belongs to this file only.
 export const workers = {
-  "workers.description": "What ran at the same time, and which items wait for others. Read only.",
   "workers.window": "Time window",
   "workers.timeline.title": "Runs over time",
   "workers.timeline.label": "Runs over time, one row per lane",
