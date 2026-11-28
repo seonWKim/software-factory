@@ -514,6 +514,55 @@ describe("Copy on the page", () => {
   });
 });
 
+describe("Regenerate on the newest reply", () => {
+  const regen = () => screen.queryAllByRole("button", { name: "Regenerate" }) as HTMLButtonElement[];
+
+  it("only the newest reply has it, beside Copy; it re-sends your message and replaces the reply", async () => {
+    page();
+    await ask("First?");
+    await screen.findByText("This is a build task.", {}, SLOW);
+    sendBody = { turn_id: "ct_2", session_id: "cs_1", outcome: "answered", reply: "Second answer." };
+    await ask("Second?");
+    await screen.findByText("Second answer.", {}, SLOW);
+    expect(regen()).toHaveLength(1);
+    const button = regen()[0] as HTMLButtonElement;
+    expect(button.title).toBe("Regenerate");
+    expect(button.parentElement).toBe(screen.getAllByRole("button", { name: "Copy reply" }).at(-1)?.closest("span")?.parentElement);
+    sendBody = { turn_id: "ct_3", session_id: "cs_1", outcome: "answered", reply: "Better answer." };
+    fireEvent.click(button);
+    await screen.findByText("Better answer.", {}, SLOW);
+    expect(screen.queryByText("Second answer.")).toBeNull();
+    expect(screen.getAllByText("Second?")).toHaveLength(1);
+    expect(sends.map((x) => x.body.text)).toEqual(["First?", "Second?", "Second?"]);
+    expect(sends[2]?.body.session_id).toBe("cs_1");
+    expect(regen()).toHaveLength(1);
+  });
+
+  it("is on the Stopped line too and re-sends the stopped message; it is not shown while an answer is pending", async () => {
+    const base = fetch;
+    let hold = true;
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if (!hold || !String(url).includes("/api/v1/chat/send")) return base(url, init);
+      return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    }));
+    page();
+    await ask("Hi");
+    expect(regen()).toHaveLength(0);
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    await screen.findByText(/^Stopped\./, {}, SLOW);
+    hold = false;
+    fireEvent.click(regen()[0] as HTMLButtonElement);
+    await screen.findByText("This is a build task.", {}, SLOW);
+    expect(screen.queryByText(/^Stopped\./)).toBeNull();
+    expect(screen.getAllByText("Hi")).toHaveLength(1);
+    expect(sends.map((x) => x.body.text)).toEqual(["Hi"]);
+  });
+
+  it("is not on a reply opened from Recent that follows no message of yours", () => {
+    expect(readFileSync("web/src/views/chat-page.tsx", "utf8")).toContain('chat.said[at - 1]?.who === "you"');
+  });
+});
+
 describe("the typed client only", () => {
   const sources = ["web/src/views/chat-page.tsx", "web/src/views/chat-card.tsx"].map((f) => readFileSync(f, "utf8"));
   it("calls no fetch of its own and reads and writes through the generated client", () => {
