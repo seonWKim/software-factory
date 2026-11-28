@@ -10,14 +10,18 @@ import type { StoreTime } from "./store-steps.js";
 
 /**
  * Under the claim lock: deletes the expired slots, then inserts the holder's slot only while the live count is
- * below the cap. A holder that already holds a live slot gets true and nothing is written (safe to run twice).
+ * below the cap. A holder that already holds a live slot gets true and its own lease is extended to `lease_ms` from
+ * now, no second row (the worker's heartbeat renewal, phase 2); no other holder's row is touched. Safe to run twice.
  */
 export async function takeTestSlot(db: SqlDriver, time: StoreTime, s: Parameters<TestSlotStore["takeTestSlot"]>[0]): Promise<boolean> {
   return db.transaction(async (tx) => {
     await claimLock(tx);
     await tx.run("DELETE FROM worker_test_slots WHERE expires_at <= ?", [time.now()]);
     const live = await tx.all("SELECT holder FROM worker_test_slots");
-    if (live.some((r) => r.holder === s.holder)) return true;
+    if (live.some((r) => r.holder === s.holder)) {
+      await tx.run("UPDATE worker_test_slots SET expires_at = ? WHERE holder = ?", [time.after(s.lease_ms), s.holder]);
+      return true;
+    }
     if (live.length >= s.cap) return false;
     await tx.run("INSERT INTO worker_test_slots (holder, expires_at) VALUES (?, ?)", [s.holder, time.after(s.lease_ms)]);
     return true;
