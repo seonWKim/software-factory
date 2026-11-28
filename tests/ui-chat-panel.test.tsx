@@ -147,10 +147,13 @@ describe("New chat and Recent", () => {
     // New chat is the row's one control: no PageHeader, no close Button.
     expect(within(actions).getAllByRole("button")).toEqual([newChat]);
     expect(actions.querySelector("header, h1, h2")).toBeNull();
+    // The Recent search shows on the empty page only.
+    expect(screen.queryByRole("searchbox")).toBeNull();
     expect(screen.queryByRole("button", { name: /^close/i })).toBeNull();
     expect(screen.getByRole("heading", { level: 1 }).className).toContain("sr-only");
     fireEvent.click(newChat);
     await screen.findByRole("heading", { name: "Recent" }, SLOW);
+    expect((screen.getByRole("searchbox", { name: "Search recent chats" }) as HTMLInputElement).value).toBe("");
     expect((screen.getByLabelText("Your message") as HTMLTextAreaElement).value).toBe("");
     expect(screen.queryByText("A build task.")).toBeNull();
     fireEvent.change(screen.getByLabelText("Your message"), { target: { value: "Hi" } });
@@ -197,9 +200,11 @@ describe("New chat and Recent", () => {
     await waitFor(() => expect(document.querySelectorAll("[data-list-row]")).toHaveLength(10), SLOW);
     const search = screen.getByRole("searchbox", { name: "Search recent chats" }) as HTMLInputElement;
     expect(search.placeholder).toBe("Search by first question");
-    // The field sits above the list, inside the Recent card.
-    const list = screen.getByRole("list", { name: "Recent chats" });
-    expect(search.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The field sits in the page's top action row beside New chat, never inside the Recent card (patterns.md).
+    const row = document.querySelector("[data-chat-actions]")!;
+    expect(row.contains(search)).toBe(true);
+    expect(row.contains(screen.getByRole("button", { name: "New chat" }))).toBe(true);
+    expect(screen.getByRole("heading", { name: "Recent" }).closest("section")?.contains(search)).toBe(false);
     fireEvent.change(search, { target: { value: "COST" } });
     await waitFor(() => expect(document.querySelectorAll("[data-list-row]")).toHaveLength(1));
     expect(document.querySelector("[data-list-row]")?.textContent).toContain("What did it cost?");
@@ -222,6 +227,15 @@ describe("New chat and Recent", () => {
     expect(screen.getByRole("heading", { name: "Recent" }).closest("section")?.contains(empty)).toBe(true);
     fireEvent.change(search, { target: { value: "" } });
     await waitFor(() => expect(document.querySelectorAll("[data-list-row]")).toHaveLength(2));
+  });
+
+  it("keeps the context-line rule in one place: chat.turns and the page reuse withoutContext", () => {
+    const rule = "(?:Open page|About item)";
+    for (const f of ["src/api/capabilities/chat.ts", "web/src/views/chat-card.tsx", "web/src/views/chat-page.tsx"]) {
+      expect(readFileSync(f, "utf8")).not.toContain(rule);
+    }
+    expect(readFileSync("src/shared/chat-context.ts", "utf8")).toContain(rule);
+    expect(readFileSync("src/api/capabilities/chat.ts", "utf8")).toContain("withoutContext(");
   });
 
   it("draws the search with Input and the rows with ListRow and EmptyState only", () => {

@@ -20,7 +20,8 @@ import { type MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { localDateTime, relativeTime } from "../lib/format.js";
-import { OUTCOME_TONE, OUTCOME_WORDS, ReplyTable, type Turn, reasonWords, replyParts, withoutContext } from "./chat-card.js";
+import { OUTCOME_TONE, OUTCOME_WORDS, ReplyTable, type Turn, reasonWords, replyParts } from "./chat-card.js";
+import { withoutContext } from "../../../src/shared/chat-context.js";
 import { ChatDecision, ModeBadge } from "./chat-decision.js";
 import { AttachImages, ComposerTray, type SentImage, SentImages, pastedImages, useComposerImages, useImageDrop } from "./chat-images.js";
 import { useNow } from "./display.js";
@@ -128,13 +129,12 @@ function matching(sessions: RecentTurn[], query: string): RecentTurn[] {
 }
 
 /**
- * The Recent Card of the empty page: earlier sessions from chat.turns, read once when it mounts; Open loads one. The
- * search filters the loaded sessions in the browser by their preview, with no read of its own.
+ * The Recent Card of the empty page: earlier sessions from chat.turns, read once when it mounts; Open loads one. `query`
+ * (the search in the page's action row) filters the loaded sessions in the browser by their preview, with no read of its own.
  */
-function Recent({ onOpen }: { onOpen: (sessionId: string) => Promise<void> }) {
+function Recent({ query, onOpen }: { query: string; onOpen: (sessionId: string) => Promise<void> }) {
   const now = useNow();
   const [failed, setFailed] = useState(false);
-  const [query, setQuery] = useState("");
   const q = useQuery({ queryKey: ["chat", "recent"], queryFn: () => chatTurns({ limit: RECENT_TURNS }) });
   const sessions = sessionsOf((q.data?.turns ?? []) as unknown as RecentTurn[]);
   const shown = matching(sessions, query);
@@ -147,15 +147,7 @@ function Recent({ onOpen }: { onOpen: (sessionId: string) => Promise<void> }) {
       ) : sessions.length === 0 ? (
         <EmptyState title={t("chat.recentNone")} description={t("chat.recentNoneBody")} />
       ) : (
-        <div className="space-y-3 text-left">
-          <Input
-            type="search"
-            aria-label={t("chat.recentSearch")}
-            placeholder={t("chat.recentSearchPlaceholder")}
-            className="w-full"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
+        <div className="text-left">
           {shown.length === 0 ? (
             <EmptyState title={t("chat.recentNoMatch", { query: query.trim() })} description={t("chat.recentNoMatchBody")} />
           ) : (
@@ -199,6 +191,8 @@ export function ChatPage() {
   const { data: chat = EMPTY } = useQuery({ queryKey: KEY, queryFn: () => client.getQueryData<Conversation>(KEY) ?? EMPTY, initialData: EMPTY, staleTime: Infinity, gcTime: Infinity });
   const update = (f: (c: Conversation) => Conversation) => client.setQueryData<Conversation>(KEY, (c) => f(c ?? EMPTY));
   const [text, setText] = useState("");
+  /** The Recent search's text: page state, read only by the Recent Card in the browser. */
+  const [query, setQuery] = useState("");
   const field = useRef<HTMLTextAreaElement>(null);
   const follow = useRef(true);
   const itemId = itemOf();
@@ -318,13 +312,14 @@ export function ChatPage() {
   };
 
   /**
-   * New chat: no messages, no typed text or images, no session: the next send starts a session of its own. A send still
+   * New chat: no messages, no typed text, images or search, no session: the next send starts a session of its own. A send still
    * on its way is stopped, so its reply does not land in the new chat.
    */
   const reset = () => {
     client.getQueryData<Conversation>(KEY)?.pending?.controller.abort();
     update(() => EMPTY);
     setText("");
+    setQuery("");
     for (const i of composer.images) composer.remove(i.key);
   };
 
@@ -357,7 +352,21 @@ export function ChatPage() {
       {/* The mode Badge sits at the start of the row, above the conversation (decision 2); New chat stays at the end. */}
       <div data-chat-actions className="flex min-w-0 flex-wrap items-center justify-between gap-2 pb-3">
         <ModeBadge />
-        <Button variant="secondary" className="ms-auto" onClick={reset}>{t("chat.newChat")}</Button>
+        {/* The Recent search, beside New chat on the empty page only (design-system/patterns.md: a search sits in the
+            page's top row, never inside a Card); it filters the Recent Card's loaded sessions. */}
+        <div className="ms-auto flex min-w-0 flex-wrap items-center gap-2">
+          {empty && (
+            <Input
+              type="search"
+              aria-label={t("chat.recentSearch")}
+              placeholder={t("chat.recentSearchPlaceholder")}
+              className="w-full sm:w-64"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          )}
+          <Button variant="secondary" onClick={reset}>{t("chat.newChat")}</Button>
+        </div>
       </div>
       {/* Opened on an item (?item=): its Needs-you decision, first in the conversation (decisions 3 and 4). */}
       {itemId === null ? null : <ChatDecision item={itemId} token={token} />}
@@ -383,7 +392,7 @@ export function ChatPage() {
             ))}
           </ul>
           <div className="w-full">
-            <Recent onOpen={open} />
+            <Recent query={query} onOpen={open} />
           </div>
         </div>
       ) : (
