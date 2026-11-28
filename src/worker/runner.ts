@@ -23,8 +23,7 @@ import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfaces/tool-broker.js";
 import { checkWrapperSource, wrapperSeedFields } from "./toolchain-seeds.js";
-// The git helpers live in runner-git.ts. Worker keeps same-named one-line delegates on purpose (owner's decision on
-// wi_6559608a): src/worker/bundle.ts, src/worker/runs/ and the triage test stubs call w.git(...) and the like.
+// Git helpers live in runner-git.ts; Worker keeps one-line delegates because bundle.ts, runs/ and test stubs call w.git*.
 import { distrustAgentGit, git, gitDirs, gitRaw, gitWith, liveUntracked, mergeIO, trustedBase } from "./runner-git.js";
 import { LiveTranscript } from "./live-transcript.js";
 import { cachedInstall, isInstallCommand } from "./install-cache.js";
@@ -654,7 +653,6 @@ export class Worker {
     return round;
   }
 
-  /** A run folder as src/core/mechanical.ts sees it (runner-git.ts). */
   mergeIO(handle: SandboxHandle): MergeIO {
     return mergeIO(this, handle);
   }
