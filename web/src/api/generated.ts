@@ -100,3 +100,13 @@ export type SchedulesSuggestionsInput = { "schedule"?: string };
 export type SchedulesSuggestionsOutput = { "suggestions": Array<{ [key: string]: unknown }> };
 /** One schedule's suggestions, oldest first, each state as of now (?schedule=<id>). (GET /api/v1/schedules/suggestions, permission read) */
 export const schedulesSuggestions = (input: SchedulesSuggestionsInput): Promise<SchedulesSuggestionsOutput> => getJson<SchedulesSuggestionsOutput>("/api/v1/schedules/suggestions" + query(input));
+
+export type TasksCreateInput = { "id": string; "words": string; "project"?: string };
+export type TasksCreateOutput = { "task": { [key: string]: unknown } };
+/** Add one plain task from quick-add words (today, tomorrow or YYYY-MM-DD, HH:MM, !1 to !3, #list, +project, every day/week/month; the rest is its title) under the caller's id (tk_ and 8 to 64 characters), so a retry adds one task; project is the page's tab unless the words name one. (POST /api/v1/tasks, permission owner) */
+export const tasksCreate = (token: string, input: TasksCreateInput, signal?: AbortSignal) => postJson<TasksCreateOutput & { error?: string }>("/api/v1/tasks", token, input, signal);
+
+export type TasksListInput = { "project"?: string };
+export type TasksListOutput = { "as_of": string; "today_date": string; "today": { [key: string]: unknown }; "upcoming": Array<{ [key: string]: unknown }>; "projects": Array<{ [key: string]: unknown }>; "active_projects": Array<{ [key: string]: unknown }>; "calendar": Array<{ [key: string]: unknown }>; "csrf_token": string | null; "can_build": boolean; "add_key": string };
+/** The plain tasks' views (Today, Upcoming and Projects by #list): the open tasks and the recently done ones, with the stored calendar events; ?project=<slug> keeps only that task project's tasks (400 for an archived project, 404 for an unknown one). (GET /api/v1/tasks, permission read) */
+export const tasksList = (input: TasksListInput): Promise<TasksListOutput> => getJson<TasksListOutput>("/api/v1/tasks" + query(input));

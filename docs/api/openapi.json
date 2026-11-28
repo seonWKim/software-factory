@@ -1939,6 +1939,193 @@
           }
         }
       }
+    },
+    "/api/v1/tasks": {
+      "post": {
+        "operationId": "tasks.create",
+        "summary": "Add one plain task from quick-add words (today, tomorrow or YYYY-MM-DD, HH:MM, !1 to !3, #list, +project, every day/week/month; the rest is its title) under the caller's id (tk_ and 8 to 64 characters), so a retry adds one task; project is the page's tab unless the words name one.",
+        "tags": [
+          "tasks"
+        ],
+        "x-permission": "owner",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "words": {
+                    "type": "string"
+                  },
+                  "project": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "words"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "task": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "task"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "tasks.list",
+        "summary": "The plain tasks' views (Today, Upcoming and Projects by #list): the open tasks and the recently done ones, with the stored calendar events; ?project=<slug> keeps only that task project's tasks (400 for an archived project, 404 for an unknown one).",
+        "tags": [
+          "tasks"
+        ],
+        "x-permission": "read",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "as_of": {
+                      "type": "string"
+                    },
+                    "today_date": {
+                      "type": "string"
+                    },
+                    "today": {
+                      "type": "object"
+                    },
+                    "upcoming": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "projects": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "active_projects": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "calendar": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "csrf_token": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "can_build": {
+                      "type": "boolean"
+                    },
+                    "add_key": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "as_of",
+                    "today_date",
+                    "today",
+                    "upcoming",
+                    "projects",
+                    "active_projects",
+                    "calendar",
+                    "csrf_token",
+                    "can_build",
+                    "add_key"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

@@ -1,16 +1,16 @@
-// The plain tasks' routes (design 02-tasks): GET /api/v1/tasks, the Tasks page's views (open tasks and the done tasks of the
-// done window) with the stored calendar events; POST /api/v1/tasks/edit,
-// /done, /reopen, /delete and /sub, the page's row actions, each calling the store method of its CLI command (`factory task
-// edit`, `done`, `reopen`, `delete`, `sub`), so the page and the CLI cannot diverge; POST /api/v1/tasks/body, the
-// description dialog (the store's setTaskBody); POST /api/v1/tasks/build,
-// its Build this button (task-build.ts, the same action as `factory task build`); POST /api/v1/tasks/create, a task in a
-// project built at once (createProjectTask, the same action as `factory task create --project`); and POST /api/v1/tasks, which
-// stores one plain task from quick-add words, for the desktop shell's quick-add box. The words go through the same parser as `factory task add` (src/core/quick-add.ts)
-// and the task through the same store method, with the ID the caller chose, so a retry stores one task. The task is
-// created by the page's commands actor (UiCommands), whose per-process token the request carries. The request guards
-// (Host, Origin, Content-Type, CSRF token, body size, JSON) run in server.ts before writeTask is reached; every
-// refusal comes before the store write. GET /api/v1/tasks/preview runs the same parser on the quick-add field's words
-// as the owner types, and writes nothing.
+// The plain tasks' handlers (design 02-tasks). readTasks (the Tasks page's views, with the stored calendar events) and
+// writeTask (one plain task from quick-add words, the Tasks page's and the desktop shell's quick-add box) run behind the
+// tasks.list and tasks.create capabilities (GET and POST /api/v1/tasks, src/api/capabilities/tasks.ts); their routes
+// are the API registry's. The routes of this file: POST /api/v1/tasks/edit, /done, /reopen, /delete and /sub, the
+// page's row actions, each calling the store method of its CLI command (`factory task edit`, `done`, `reopen`,
+// `delete`, `sub`), so the page and the CLI cannot diverge; POST /api/v1/tasks/body, the description dialog (the
+// store's setTaskBody); POST /api/v1/tasks/build, its Build this button (task-build.ts, the same action as `factory
+// task build`); POST /api/v1/tasks/create, a task in a project built at once (createProjectTask, the same action as
+// `factory task create --project`). writeTask's words go through the same parser as `factory task add`
+// (src/core/quick-add.ts) and the task through the same store method (addTask), with the ID the caller chose, so a
+// retry stores one task, created by the page's commands actor (UiCommands). The request guards (Host, Origin,
+// Content-Type, CSRF token, body size, JSON) run before any handler; every refusal comes before the store write. GET
+// /api/v1/tasks/preview runs the same parser on the quick-add field's words as the owner types, and writes nothing.
 
 import { readCalendar } from "../calendar/index.js";
 import { needsDueDate, parseQuickAdd, parseQuickEdit } from "../core/quick-add.js";
@@ -26,7 +26,6 @@ import { TASKS_ADD_KEYS, type TasksAddKey } from "../runtime/settings/tasks-add-
 import { Withholder } from "./withhold.js";
 import { PROJECTS_PATH, PROJECT_DELETE_PATH, TASK_PROJECT_PATH, writeProject, writeProjectDelete, writeTaskProject } from "./projects-api.js";
 
-export const TASKS_PATH = "/api/v1/tasks";
 export const TASK_BUILD_PATH = "/api/v1/tasks/build";
 export const TASK_CREATE_PATH = "/api/v1/tasks/create";
 export const TASK_EDIT_PATH = "/api/v1/tasks/edit";
@@ -52,7 +51,7 @@ async function shown<T extends { title: string; body?: string | null }>(w: Withh
 }
 
 /**
- * GET /api/v1/tasks: the views (Today, Upcoming, Projects (the All view, by #list); core/tasks.ts taskViews) of the open
+ * tasks.list (GET /api/v1/tasks): the views (Today, Upcoming, Projects (the All view, by #list); core/tasks.ts taskViews) of the open
  * tasks and the done tasks of the last DONE_WINDOW_DAYS days (doneWindow; each with its done_at, design 02-tasks, done
  * tasks stay) at the server's clock, in its time zone, with the calendar events stored by the last syncs placed in Today
  * and Upcoming, and `calendar`, each source's last sync time and whether its last sync failed. Each task row carries
@@ -142,7 +141,7 @@ export async function inProject<T extends { item: { id: string } }>(store: Pick<
 }
 
 /**
- * GET /api/v1/tasks/preview?words=<text>: what POST /api/v1/tasks would store for these words, from the same parser
+ * GET /api/v1/tasks/preview?words=<text>: what tasks.create would store for these words, from the same parser
  * (parseQuickAdd), with the due day resolved at the server's clock: `ok`, the title, `due_date`, `due_time`,
  * `recurrence`, `projects` (the `+slug`s typed), `priority`, `list`, `duration_minutes` and `unread`, the title words
  * that look like quick-add words but were not read (an `every …` that does not end the text). Words the parser refuses
@@ -262,7 +261,7 @@ async function orProjectRefused(write: () => Promise<ApiResult>): Promise<ApiRes
 }
 
 /**
- * POST /api/v1/tasks with `{ id, words }` and optionally `project` (a slug: the Tasks page's tab, the task's project unless
+ * tasks.create (POST /api/v1/tasks) with `{ id, words }` and optionally `project` (a slug: the Tasks page's tab, the task's project unless
  * the words name one with `+slug`), after the request guards: 400 for a body that is not one, words the
  * parser refuses (its reason) or a project, typed or sent, that is unknown or archived; 503 when the page has no actor; else 200 with the stored task (the one already stored
  * under that ID on a retry). The title leaves through the Withholder, as on the other routes.
@@ -387,7 +386,6 @@ export async function writeTaskSub(d: UiDeps, body: unknown): Promise<ApiResult>
 
 /** Every POST route of this file and projects-api.ts by path, for server.ts: each after the request guards, with the commands actor's token. */
 export const TASK_WRITES: Readonly<Record<string, (d: UiDeps, body: unknown) => Promise<ApiResult>>> = {
-  [TASKS_PATH]: writeTask,
   [TASK_BUILD_PATH]: writeTaskBuild,
   [TASK_CREATE_PATH]: writeTaskCreate,
   [TASK_EDIT_PATH]: writeTaskEdit,

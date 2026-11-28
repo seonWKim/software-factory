@@ -10,10 +10,13 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { TASKS_PATH, TASK_BODY_PATH, TASK_DELETE_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SUB_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
+import { TASK_BODY_PATH, TASK_DELETE_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SUB_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
 import { PROJECTS_PATH, PROJECT_DELETE_PATH, TASK_PROJECT_PATH } from "../src/ui/projects-api.js";
+import { silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
+/** tasks.list and tasks.create (src/api/capabilities/tasks.ts): the registry's route, the page's URL. */
+const TASKS_PATH = "/api/v1/tasks";
 const HOST = "127.0.0.1:4310";
 const ORIGIN = `http://${HOST}`;
 const ACTOR = "local:owner@example.com" as UserId;
@@ -28,7 +31,11 @@ async function setup(opts: { actor?: UserId | null; wired?: boolean } = {}) {
     clock,
     lease_ms: 300_000,
     health: new HealthMonitor(async () => [], clock),
-    ...(opts.wired === false ? {} : { commands: { actor: opts.actor === undefined ? ACTOR : opts.actor, source: "environment" as const, token } }),
+    // The registry's writes (tasks.create) check the pauses token: in a served page the same per-process token.
+    ...(opts.wired === false ? {} : {
+      commands: { actor: opts.actor === undefined ? ACTOR : opts.actor, source: "environment" as const, token },
+      pauses: { principal: async () => ACTOR, authorize: async () => ({ allow: true }), csrfToken: token, log: silent },
+    }),
   };
   const post = (body: unknown, over: Partial<UiRequest> = {}) =>
     respond(d, {
@@ -97,7 +104,7 @@ describe("POST /api/v1/tasks", () => {
       [{ words: "x" }, /id/],
       [{ id: "bad id", words: "x" }, /id/],
       [{ id: ID }, /words/],
-      [{ id: ID, words: "x", extra: 1 }, /unknown field "extra"/],
+      [{ id: ID, words: "x", extra: 1 }, /extra is not a field/],
       [{ id: ID, words: "call mum every week" }, /every week needs a due date/],
       [{ id: ID, words: "!1 #home" }, /title is empty/],
       [{ id: ID, words: "call 13pm" }, /not a time: 13pm/],
