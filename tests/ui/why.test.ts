@@ -32,7 +32,7 @@ describe("whyWaiting: every case", () => {
   const cases: [string, WhyInput, string, string, number[]][] = [
     ["closed", input({ item: { stage: "CLOSED", close_reason: "wont_do" } }), "Closed: wont do", "none", []],
     ["ready to merge", input({ item: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" } }), "Ready to merge: waiting for a person to merge the PR", "human", []],
-    ["spec", input({ item: { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" } }), "Waiting for a person to approve the spec", "human", []],
+    ["spec", input({ item: { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" } }), "Waiting for a person to approve the plan", "human", []],
     ["budget", input({ item: { blocked_on: "budget", blocked_reason: "budget_checkpoint" } }), "Waiting for a person to answer the budget check", "human", []],
     ["dependency closed", input({ item: { blocked_on: "human", blocked_reason: "dependency_closed:#41" } }), "#41 was closed without a merge: a person decides how this item goes on", "human", [41]],
     ["dependency cycle", input({ item: { blocked_on: "human", blocked_reason: "dependency_cycle: #5 → #6 → #5" } }), "Its dependencies form a cycle (#5 → #6 → #5): a person removes one link", "human", [5, 6]],

@@ -102,3 +102,14 @@ describe("attach help and confirmation text", () => {
     expect(en["attach.contextSent"]).not.toContain("triage run");
   });
 });
+
+describe("English catalog wording", () => {
+  it("no value says spec or specs unless it also says plan; {spec} placeholders are skipped", () => {
+    const bad = Object.entries(en)
+      .map(([key, value]) => [key, String(value)] as const)
+      .filter(([, v]) => !v.includes("{spec}"))
+      .filter(([, v]) => /\bspecs?\b/i.test(v) && !/plan/i.test(v))
+      .map(([key, v]) => `${key}: ${v}`);
+    expect(bad).toEqual([]);
+  });
+});

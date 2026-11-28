@@ -65,7 +65,7 @@ describe("item page: About (the request and the approved spec)", () => {
     const regions = [...document.querySelectorAll("section[aria-label]")];
     expect(regions[0]).toBe(about);
     const toggle = about.querySelector("summary")!;
-    expect(toggle.textContent).toBe("Approved spec");
+    expect(toggle.textContent).toBe("Approved plan");
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(about.querySelector("details")!.open).toBe(false);
     expect(within(about).queryAllByRole("button")).toEqual([]);

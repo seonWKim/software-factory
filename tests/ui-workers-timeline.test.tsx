@@ -155,7 +155,7 @@ describe("tooltips", () => {
   });
 
   it("a node: title, id, stage and blocked reason", () => {
-    expect(nodeTipLines({ id: "wi_2", title: "Base work", stage: "READY", blocked_reason: "spec_pending" })).toEqual(["Base work", "wi_2", "Stage: specced, not started", "Blocked: spec pending"]);
+    expect(nodeTipLines({ id: "wi_2", title: "Base work", stage: "READY", blocked_reason: "spec_pending" })).toEqual(["Base work", "wi_2", "Stage: planned, not started", "Blocked: spec pending"]);
     expect(nodeTipLines({ id: "wi_3", title: null, stage: "CLOSED", blocked_reason: null })).toEqual(["Untitled item", "wi_3", "Stage: closed"]);
   });
 });
@@ -307,7 +307,7 @@ describe("the Workers page", () => {
     const tip = screen.getByRole("tooltip");
     expect(tip.textContent).toContain("Needs base");
     expect(tip.textContent).toContain("wi_dep");
-    expect(tip.textContent).toContain("Stage: specced, not started");
+    expect(tip.textContent).toContain("Stage: planned, not started");
     expect(tip.textContent).toContain("Blocked: dependency pending");
     fireEvent.mouseLeave(node("wi_dep"));
     expect(edge.getAttribute("data-highlight")).toBeNull();
