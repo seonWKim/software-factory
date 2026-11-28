@@ -4,10 +4,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CheckRound } from "../src/core/checks.js";
 import type { Run, RunId } from "../src/core/types.js";
-import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GATE_HOOKS_DIR, gateAnswerer, runDeadline } from "../src/impl/runner/gate-hooks.js";
 import { storeSql } from "../src/impl/store/sql/store-sql.js";
-import { readTestSlots } from "../src/impl/store/sql/test-slots.js";
+import { readTestSlots, recordTestSlotWait } from "../src/impl/store/sql/test-slots.js";
 import type { AgentRunSpec, GateHooks } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import { testSlotCap } from "../src/worker/settings/test-slots.setting.js";
@@ -39,7 +38,6 @@ async function slotFixture(cap = 1) {
   const warned: string[] = [];
   const takes: RunId[] = [];
   const counted = { takeTestSlot: async (s: Parameters<typeof store.takeTestSlot>[0]) => (takes.push(s.holder), store.takeTestSlot(s)), releaseTestSlot: (h: RunId) => store.releaseTestSlot(h) };
-  const { recordTestSlotWait } = await import("../src/impl/store/sql/test-slots.js");
   const at = (ms: number) => new Date(clock.now().getTime() + ms).toISOString() as never;
   const slot = (holder: RunId) => new TestSlot({
     store: counted, clock, test_command: TEST, cap: () => cap, lease_ms: () => LEASE,
@@ -359,8 +357,7 @@ describe("the worker's checks", () => {
 describe("the waiting row", () => {
   it("expires with its lease, so a waiter that died leaves the display", async () => {
     const f = await slotFixture(1);
-    const { recordTestSlotWait } = await import("../src/impl/store/sql/test-slots.js");
-    const at = (ms: number) => new Date(f.clock.now().getTime() + ms).toISOString() as never;
+      const at = (ms: number) => new Date(f.clock.now().getTime() + ms).toISOString() as never;
     await recordTestSlotWait(f.db, { now: () => at(0), after: at }, { holder: id("a"), lease_ms: LEASE });
     expect((await f.slots()).waiting).toEqual([id("a")]);
     // A waiting row counts against no cap.
@@ -369,6 +366,3 @@ describe("the waiting row", () => {
     expect(await f.slots()).toEqual({ held: [], waiting: [] });
   });
 });
-
-// Keep the FakeClock import used where a test builds its own clock.
-void FakeClock;
