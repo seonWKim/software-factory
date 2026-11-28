@@ -1,7 +1,7 @@
 // The chat capabilities (design 04-chat-agent, 09-api-registry): chat.send runs one chat turn (src/core/chat-agent.ts)
 // with the Ask model (settings.ask.llm, as schedules.draft uses) and the chat's read-only broker: the feature map and
 // call_feature, bound to callCapability over the same registry, so the chat reads every GET capability's live data;
-// chat.transcript reads a session's stored messages; chat.turns lists recent turns. Only chat.send writes: one
+// chat.transcript reads a session's stored messages; chat.turns lists recent turns, each with its session's preview. Only chat.send writes: one
 // controller_chat_turns row per turn, running at its start, then answered, refused or failed. With no Ask model
 // chat.send refuses (503) and stores nothing. chat.send takes up to 5 images with the text (design 04-chat-agent),
 // checked by core/attachments.ts chatImages and stored with the turn's user message; chat.transcript names each
@@ -13,6 +13,7 @@
 // commands route's own path after its guards, and chat.mode reads the stored permission_mode (one owner setting).
 
 import type { ChatTurnResult } from "../../core/chat-agent.js";
+import { withoutContext } from "../../shared/chat-context.js";
 import { type Declared, callCapability, declare, refuse } from "../registry.js";
 import { array, boolean, bytes, integer, jsonObject, nullable, number, object, oneOf, optional, string } from "../schema.js";
 
@@ -27,6 +28,21 @@ export const CHAT_SEND_MAX_BODY = 5 * Math.ceil((5 * 1024 * 1024 * 4) / 3) + 102
 
 /** chat.turns' answer when no limit is given. */
 export const CHAT_TURNS_LIMIT = 50;
+
+/** The longest preview chat.turns gives, its ellipsis included. */
+export const CHAT_PREVIEW_MAX = 120;
+
+/**
+ * A session's preview: its first question without the context line the Chat page puts before it (src/shared/chat-context.ts
+ * withoutContext, the rule the dashboard uses), on one line, cut to CHAT_PREVIEW_MAX characters with an ellipsis; null
+ * when the session has no question in words.
+ */
+export function previewOf(question: string | null): string | null {
+  if (question === null) return null;
+  const text = withoutContext(question).replace(/\s+/g, " ").trim();
+  if (text === "") return null;
+  return text.length <= CHAT_PREVIEW_MAX ? text : `${text.slice(0, CHAT_PREVIEW_MAX - 1).trimEnd()}…`;
+}
 
 /** A turn's result as chat.send's outcome and reason: withheld is a refusal, every other failure a failure. */
 function outcomeOf(r: ChatTurnResult): { outcome: Outcome; reason: string | null; detail?: string } {
@@ -108,10 +124,13 @@ export const CHAT: readonly Declared[] = [
   }),
   declare({
     id: "chat.turns", area: "chat",
-    description: `The recent chat turns, newest first, at most limit (default ${CHAT_TURNS_LIMIT}): each with its turn_id, session_id, status, reason, times and preview (the text of its session's first user message as stored, null when that message has no text).`,
+    description: `The recent chat turns, newest first, at most limit (default ${CHAT_TURNS_LIMIT}): each with its turn_id, session_id, status, reason and times, `
+      + `and its session's preview: the first question without its context line, cut to ${CHAT_PREVIEW_MAX} characters (null when it has none).`,
     permission: "owner", method: "GET", path: "/api/v1/chat/turns",
     input: object({ limit: optional(number()) }), output: object({ turns: array(jsonObject()) }),
-    run: async (c, i) => ({ turns: (await c.d.store.listChatTurns(i.limit ?? CHAT_TURNS_LIMIT)).map((t) => ({ ...t })) }),
+    run: async (c, i) => ({
+      turns: (await c.d.store.listChatTurns(i.limit ?? CHAT_TURNS_LIMIT)).map((t) => ({ ...t, preview: previewOf(t.preview) })),
+    }),
   }),
   declare({
     id: "chat.decision", area: "chat",

@@ -183,9 +183,38 @@ describe("chat.transcript and chat.turns", () => {
     expect(all.status).toBe(200);
     expect(all.value.turns.map((t: ChatTurnRecord) => t.turn_id)).toEqual([...ids].reverse());
     expect(all.value.turns[1]).toEqual({ turn_id: ids[1], session_id: expect.stringMatching(/^cs_/), status: "failed", reason: "model_error", preview: null, created_at: "2026-11-26T09:00:01.000Z", finished_at: "2026-11-26T09:00:01.000Z" });
+    expect(all.value.turns[0]).toMatchObject({ preview: "three" });
     expect(all.value.turns[0]).toMatchObject({ status: "answered", reason: null });
     const two = await get("/api/v1/chat/turns?limit=2");
     expect(two.value.turns.map((t: ChatTurnRecord) => t.turn_id)).toEqual([ids[2], ids[1]]);
+  });
+
+  it("chat.turns gives each turn its session's preview: the first question without the context line, cut to 120 characters", async () => {
+    const { store, get } = await setup(null);
+    const long = `${"word ".repeat(40)}end`;
+    await store.appendChatMessages("cs_1", [
+      { seq: 0, role: "user", content: "About item: “X”, state Running, stage implement.\n\nWhat is this?" },
+      { seq: 1, role: "assistant", content: "A build task." },
+      { seq: 2, role: "user", content: "And later?" },
+    ]);
+    await store.appendChatMessages("cs_2", [{ seq: 0, role: "user", content: long }]);
+    await store.startChatTurn("ct_1", "cs_1");
+    await store.startChatTurn("ct_2", "cs_2");
+    await store.startChatTurn("ct_3", "cs_1");
+    await store.startChatTurn("ct_4", "cs_none");
+    const { turns } = (await get("/api/v1/chat/turns")).value as { turns: { turn_id: string; preview: string | null }[] };
+    const byId = Object.fromEntries(turns.map((t) => [t.turn_id, t.preview]));
+    expect(byId.ct_1).toBe("What is this?");
+    expect(byId.ct_3).toBe("What is this?");
+    expect(byId.ct_2).toHaveLength(120);
+    expect(byId.ct_2!.endsWith("…")).toBe(true);
+    expect(long.startsWith(byId.ct_2!.slice(0, -1))).toBe(true);
+    expect(byId.ct_4).toBeNull();
+  });
+
+  it("chat.turns takes a limit only: no search or query input", () => {
+    const turns = CHAT.find((c) => c.id === "chat.turns")!;
+    expect(Object.keys((turns.input.json() as { properties: Record<string, unknown> }).properties)).toEqual(["limit"]);
   });
 
   it("chat.turns defaults to at most CHAT_TURNS_LIMIT turns", async () => {

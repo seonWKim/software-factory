@@ -2,6 +2,8 @@
 
 Replaced decisions of [09-dashboard-chat.md](../09-dashboard-chat.md), newest first.
 
+- **The Recent list had no search and showed no text of a session** (until 2026-11-28, wi_c3660ded; the Recent search decision at the top of 09-dashboard-chat.md). Before: "On the empty page a `Card` titled Recent sits above the composer and lists up to 10 sessions, newest first." and "Each row is a `ListRow`: the relative time of the session's latest turn as its title, an outcome `Badge` and the reason in plain words as its details, and a menu with one Open entry". and "A secondary New chat Button sits alone in the page's action row at the top right". `chat.turns` gave only turn_id, session_id, status, reason and times, so a session older than the 10 shown could not be found from the page.
+
 - **A reply had Copy only** (until 2026-11-28, schedule chat-vs-top-llm-apps-review; the Copy decision in 09-dashboard-chat.md). Before: "A reply ends with a `ButtonRow` holding a Copy icon Button"; nothing else, and the only way to ask again was to retype the question (Try again was only for failed sends). Edit and resend stays declined (owner answer: Copy only).
 
 - **A Recent row had no title: the relative time of its latest turn stood in its place** (until 2026-11-28, schedule chat-vs-top-llm-apps-review; the Recent row decision in 09-dashboard-chat.md). Before: "Each row is a `ListRow`: the relative time of the session's latest turn as its title, an outcome `Badge` and the reason in plain words as its details". After a few days every row looked alike, so each had to be opened to be found. `chat.turns` now returns `preview` and the row is titled by it.
