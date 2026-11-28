@@ -254,8 +254,10 @@ function CalendarTab({ switcher }: { switcher: ReactNode }) {
     <CalendarActionsContext.Provider value={actions}>
     <PageToolbar>
       {switcher}
-      {/* One row (09-dashboard-tasks-calendar): the view switch, Previous / Today / Next, the period, then a quiet Sync at the end. */}
-      <div data-calendar-toolbar className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-2">
+      {/* One row (09-dashboard-tasks-calendar): the view switch, Previous / Today / Next, the period, then a quiet Sync at the end.
+          Its basis is its one-line width (flex-auto, not flex-1: a 0% basis), so a narrow window wraps it under the tab switch
+          and it wraps inside the full width, instead of squeezing beside the switch with its segments past the edge. */}
+      <div data-calendar-toolbar className="flex min-w-0 flex-auto flex-wrap items-center gap-x-3 gap-y-2">
         <SegmentedControl label={t("calendarPage.view")} options={VIEWS} value={view} onChange={setView} />
         <SegmentedControl label={t("calendarPage.filter")} options={FILTERS} value={filter} onChange={setFilter} />
         <ButtonRow role="group" aria-label={t("calendarPage.period")} className="gap-1">
