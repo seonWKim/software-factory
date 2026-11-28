@@ -151,6 +151,11 @@ export interface TestSlotHold {
   runChecks(commands: readonly GateEntry[], signal: AbortSignal, run: (commands: readonly GateEntry[], signal: AbortSignal) => Promise<CheckRound>, unwrap?: (entry: GateEntry) => GateEntry): Promise<CheckRound>;
   /** Whether the run is waiting for a slot now: no time limit counts while it does. */
   waiting(): boolean;
+  /**
+   * The longest wait the wall-clock timers outside the factory leave room for (TEST_SLOT_WAIT_CEILING_MS): the Stop
+   * hook's Claude Code timeout and the claude exec backstop add it once per Stop check.
+   */
+  readonly wait_ceiling_ms: number;
 }
 
 

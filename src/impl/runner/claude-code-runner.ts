@@ -335,7 +335,7 @@ export class ClaudeCodeRunner implements AgentRunner {
       result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridge, [tmp], hooks?.settings, denial), {
         env: { ...env, ...FOREGROUND_ENV },
         stdin: stdinOf(spec),
-        // A backstop: the hooks' deadline ends the run first; a Stop check past its own limit fails it naming the check.
+        // A backstop: the hooks' deadline ends the run first; a Stop check past its limit fails it (maxCheckMs: hookLimits).
         timeout_ms: spec.timeout_ms + (hooks?.maxCheckMs ?? 0),
         signal: AbortSignal.any([spec.signal, watch.signal, ...(hooks ? [hooks.deadline] : [])]),
         onStdout: (chunk) => { watch.feed(chunk); context?.(chunk); if (spec.live) spec.live((soFar += chunk)); },
