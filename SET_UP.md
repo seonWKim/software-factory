@@ -335,6 +335,17 @@ Once, after the workflow has run at least once on GitHub, make the `test` check 
 
 Before an implement run pushes, the worker runs `repo.check_commands` from `factory.config.json` (here `npm run typecheck`, then `npm test`; the same commands as the workflow's `run:` steps, and a test fails if the two drift). A failure gets one fix step; a second failure stops the run with `checks_failed` and a comment naming the command. The update and resolve runs run the same list.
 
+### Feedback schedule grants
+
+A feedback schedule's agent gets Read, Glob and Grep in this repo. To give it more, add `--grant <word>` (repeat it, one per kind) to `factory schedule add` or `edit` with `--action feedback`; `--grant none` clears them. `factory schedule list` shows each grant in plain words.
+
+- `browser=<url>`: the `schedule.browse` broker tool (served through the runner's tool bridge, like the shell grant's), limited to that sandbox URL (http or https on localhost or a loopback address).
+- `notes`: Write and Edit, only inside `.factory/notes/<schedule id>/`, which `add` or `edit` creates.
+- `repo=<absolute path>[#<branch>]`: the agent runs in a fresh checkout of that repo (branch `main` by default), and no other. Set up the repo first: it must be a git repo (`git -C <path> rev-parse` works) outside the factory's `.factory` folder, with the branch present.
+- `shell=<absolute database path>`: one query tool that runs `sqlite3 -safe -readonly` on that database file, and no other command: one SELECT, WITH, EXPLAIN or PRAGMA table_info statement, no dot commands, options or file functions. `sqlite3` 3.37 or newer (for `-safe`) must be on the PATH, and the agent runner must expose broker tools (`claude-code` does).
+
+A grant that is refused when the schedule runs (a repo that is gone, a missing database) fails that run before its agent starts; `factory schedule runs <id>` shows why.
+
 ## Run the factory on your project
 
 The checked-in `factory.config.json` is this repository's own config. To point the factory at another repository, keep your config outside the factory checkout, so `dev`'s updater (which runs `origin/<base_branch>`) never replaces it:

@@ -39,6 +39,8 @@ export interface ThreadRow {
   channel: string;
   anchor: string;
   body: string;
+  /** The permission mode a command ran under (design 08-permissions), as stored on its row; absent on a command stored before the mode was recorded, and on every other entry. */
+  permission_mode?: "ask_all" | "ask_irreversible" | "full";
 }
 
 const isFactory = (m: ItemMessage) => m.marker.startsWith(FACTORY_MARKER);
@@ -95,6 +97,7 @@ export async function threadRows(
       channel: c.origin,
       anchor: `command-${c.id}`,
       body: typeof note === "string" ? await text(note) : "",
+      ...(c.permission_mode === undefined ? {} : { permission_mode: c.permission_mode }),
     });
   }
   return out;

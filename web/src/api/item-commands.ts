@@ -20,6 +20,8 @@ export interface ThreadEntry {
   /** The entry's id on the item page: `msg-<seq>`. */
   anchor: string;
   body: string;
+  /** The permission mode an owner command ran under; absent when the row stored none. */
+  permission_mode?: "ask_all" | "ask_irreversible" | "full";
 }
 
 /** Which steps the transcript filter keeps (tool calls of that kind). */

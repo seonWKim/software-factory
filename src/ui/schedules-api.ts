@@ -1,6 +1,7 @@
 // Schedules over HTTP (design 08-schedules): what `factory schedule …` does, through the same core functions
 // (src/core/schedule.ts). GET /api/v1/schedules lists them, Check a page ones too (with their trigger, paused flag, page
-// URL, instruction and USD caps, as stored); GET /api/v1/schedules/runs?schedule=<id> lists one's runs and /api/v1/schedules/suggestions?schedule=<id> its
+// URL, instruction and USD caps, as stored, and `grants`: a feedback schedule's grants in plain words, as `schedule list`
+// prints them); GET /api/v1/schedules/runs?schedule=<id> lists one's runs and /api/v1/schedules/suggestions?schedule=<id> its
 // suggestions, a Check a page one's too (400 without the parameter, 404 for an unknown ID). POST /api/v1/schedules/add,
 // /edit, /pause, /resume, /run and /delete take a JSON body with `id` and, for add and edit, the CLI's fields (`title`,
 // `cadence`, `spec`, `zone`, `action`, `body`, `skip_when_busy`, `token_cap`, and a check-page action's `instruction`,
@@ -22,12 +23,21 @@ import type { Logger } from "../core/log.js";
 import { type ApiResult, apiError } from "./api.js";
 import type { UiDeps } from "./deps.js";
 
-/** A schedule as the routes return it: as stored, with `skip_when_busy` (true when `missed_rule` is skip), which the Schedules page reads. */
-const withSkip = (s: Schedule) => ({ ...s, skip_when_busy: s.missed_rule === "skip" });
+/**
+ * A schedule as the routes return it: as stored, with `skip_when_busy` (true when `missed_rule` is skip), which the
+ * Schedules page reads, and `grants`: a feedback schedule's grants, each in the plain words `schedule list` prints
+ * (grantList, design 08-schedules); none for no grants or another kind.
+ */
+async function shown(s: Schedule) {
+  // Loaded inside the call, as readScheduleRuns loads its module and the schedules capability the core's writes: a
+  // top-level import of core would add a feature→legacy edge to the layering ratchet.
+  const { grantList } = await import("../core/schedule-grants.js");
+  return { ...s, skip_when_busy: s.missed_rule === "skip", grants: grantList(s.action, s.id) };
+}
 
-/** GET /api/v1/schedules: every schedule, Check a page ones too, as stored, with `skip_when_busy`. */
+/** GET /api/v1/schedules: every schedule, Check a page ones too, as stored, with `skip_when_busy` and `grants`. */
 export async function readSchedules(d: Pick<UiDeps, "store">): Promise<ApiResult> {
-  return { status: 200, value: { schedules: (await d.store.listSchedules({ check_pages: true })).map(withSkip) } };
+  return { status: 200, value: { schedules: await Promise.all((await d.store.listSchedules({ check_pages: true })).map(shown)) } };
 }
 
 /** Whether a schedule, a Check a page one too, has the ID (a store read, so this file imports no core code). */
@@ -117,7 +127,7 @@ export async function postSchedule(d: Pick<UiDeps, "store" | "clock">, w: Schedu
   const r = await c.write(d.store, w, b.id, b.fields, own.user, d.clock.now());
   if (!r.ok) return apiError(409, r.problem);
   c.log.info(`schedule ${w}`, { id: b.id, actor: own.user });
-  return { status: 200, value: { schedule: withSkip(r.schedule) } };
+  return { status: 200, value: { schedule: await shown(r.schedule) } };
 }
 
 /** What a draft or improve runs, passed in by the route table: the core functions, the owner check, the model, a new ID and the log. */

@@ -13,6 +13,7 @@
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { overBudget } from "./budget.js";
 import { type Cadence, type CadenceKind, cadenceProblem, nextDue } from "./schedule-cadence.js";
+import { type GrantFields, grantsLine, withGrantWords } from "./schedule-grants.js";
 import type { Actor, Timestamp, UserId, WorkItem } from "./types.js";
 
 /** The triggers a routine may run on: `merge`, a change merged into the base branch since the routine's last run. */
@@ -344,7 +345,7 @@ export type ScheduleAdminStore = Pick<ScheduleStore, "listSchedules" | "listSche
 export const SCHEDULE_LOST = "changed by another worker, try again";
 
 /** A schedule's fields as the CLI's flags and an HTTP body give them; each absent when not given. */
-export interface ScheduleFields {
+export interface ScheduleFields extends GrantFields {
   title?: string;
   cadence?: string;
   spec?: string;
@@ -408,7 +409,7 @@ export async function createSchedule(store: ScheduleAdminStore, id: string, f: S
   const needs = merge ? (["title", "action"] as const) : (["title", "cadence", "spec", "zone", "action"] as const);
   const missing = [...(id.trim() ? [] : ["id"]), ...needs.filter((k) => !f[k]?.trim())];
   if (missing.length > 0) return refused(`missing ${missing.join(", ")}`);
-  const action = scheduleActionOf(f.action!.trim(), f.body, f);
+  const action = withGrantWords(scheduleActionOf(f.action!.trim(), f.body, f), f.grants, id);
   if ("problem" in action) return refused(action.problem);
   if (merge && action.kind !== "check_page") return refused(ON_MERGE_ONLY);
   if (merge && f.spec !== undefined) return refused(`${ON_MERGE} takes no --spec: it runs on each merge`);
@@ -493,14 +494,14 @@ export async function editSchedule(store: ScheduleAdminStore, id: string, f: Sch
         patch.next_due_at = next;
       }
     }
-    if ([f.action, f.body, f.instruction, f.url].some((v) => v !== undefined)) {
+    if ([f.action, f.body, f.instruction, f.url, f.grants].some((v) => v !== undefined)) {
       const kind = page ? "check-page" : (f.action ?? s.action?.kind);
       if (kind === undefined) return "the schedule has no action: give --action too";
       if (page && f.instruction !== undefined && f.body !== undefined) return "give the instruction as --instruction or --body, not both";
       const old = page || s.action?.kind === kind ? s.action!.settings : {};
-      const action = page
+      const action = withGrantWords(page
         ? scheduleActionOf(kind, undefined, { instruction: f.instruction ?? f.body ?? String(old.instruction ?? ""), url: f.url ?? String(old.url ?? "") })
-        : scheduleActionOf(kind, f.body ?? String(old.body ?? old.prompt ?? ""), f);
+        : scheduleActionOf(kind, f.body ?? String(old.body ?? old.prompt ?? ""), f), f.grants, id);
       if ("problem" in action) return action.problem;
       patch.action = page ? action : { kind: action.kind, settings: { ...old, ...action.settings } };
     }
@@ -527,7 +528,7 @@ export function writeSchedule(store: ScheduleAdminStore, w: ScheduleWrite, id: s
 export type ScheduleCommand = { verb: "list" } | { verb: "runs"; id: string } | { verb: ScheduleWrite; id: string; fields: ScheduleFields };
 
 const FLAGS: Readonly<Record<string, keyof ScheduleFields>> = {
-  "--title": "title", "--cadence": "cadence", "--spec": "spec", "--zone": "zone", "--action": "action", "--body": "body", "--missed": "missed", "--run-now": "run_now", "--token-cap": "token_cap",
+  "--grant": "grants", "--title": "title", "--cadence": "cadence", "--spec": "spec", "--zone": "zone", "--action": "action", "--body": "body", "--missed": "missed", "--run-now": "run_now", "--token-cap": "token_cap",
   "--instruction": "instruction", "--url": "url", "--run-cap": "run_cap_usd", "--daily-cap": "daily_cap_usd",
 };
 /** `--missed` words and the rule each stores. */
@@ -548,7 +549,7 @@ export function parseScheduleArgs(args: readonly string[]): ScheduleCommand | st
   for (let i = 0; i < rest.length; i += 2) {
     const [flag, v] = [rest[i]!, rest[i + 1]];
     const key = FLAGS[flag];
-    const unexpected = flag === "--id" ? verb === "edit" || id !== undefined : key === undefined || key in fields || (key === "run_now" && verb === "edit");
+    const unexpected = flag === "--id" ? verb === "edit" || id !== undefined : key === undefined || (key in fields && key !== "grants") || (key === "run_now" && verb === "edit");
     if (v === undefined || unexpected) return `schedule ${verb}: unexpected ${JSON.stringify(flag)}`;
     if (flag === "--id") id = v;
     else if (key === "missed") {
@@ -564,16 +565,15 @@ export function parseScheduleArgs(args: readonly string[]): ScheduleCommand | st
     } else if (key === "run_cap_usd" || key === "daily_cap_usd") {
       if (v !== "none" && !/^-?\d+(\.\d+)?$/.test(v)) return `${flag} takes a dollar amount or none`;
       fields[key] = v === "none" ? null : Number(v);
-    } else fields[key!] = v;
+    } else Object.assign(fields, { [key!]: key === "grants" ? [...(fields.grants ?? []), v] : v }); // --grant repeats: one grant each
   }
-  if (id === undefined) return "schedule add needs --id <id>";
-  return { verb, id, fields };
+  return id === undefined ? "schedule add needs --id <id>" : { verb, id, fields };
 }
 
-/** One schedule as `schedule list` prints it: its next run is `paused`, `on each merge` (an on-merge one) or a time. */
+/** One schedule as `schedule list` prints it: its next run is `paused`, `on each merge` (an on-merge one) or a time; a feedback schedule's grants last. */
 export const scheduleLine = (s: Schedule): string => [
   s.id, s.title, s.paused ? "paused" : s.trigger === "merge" ? "on each merge" : s.next_due_at ?? "paused", s.running_since === null ? "idle" : "running", s.action?.kind ?? "no action",
-  `missed ${s.missed_rule === "skip" ? "skip" : "catch-up"}`, `token cap ${tokenCap(s)}`,
+  `missed ${s.missed_rule === "skip" ? "skip" : "catch-up"}`, `token cap ${tokenCap(s)}`, ...grantsLine(s.action, s.id),
 ].join("\t");
 
 const runLine = (r: ScheduleRun): string =>
