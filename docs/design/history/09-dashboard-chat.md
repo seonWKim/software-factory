@@ -2,6 +2,8 @@
 
 Replaced decisions of [09-dashboard-chat.md](../09-dashboard-chat.md), newest first.
 
+- **A reply had Copy only** (until 2026-11-28, schedule chat-vs-top-llm-apps-review; the Copy decision in 09-dashboard-chat.md). Before: "A reply ends with a `ButtonRow` holding a Copy icon Button"; nothing else, and the only way to ask again was to retype the question (Try again was only for failed sends). Edit and resend stays declined (owner answer: Copy only).
+
 - **A reload started a new conversation, with no way back to it** (until 2026-11-28, schedule chat-vs-top-llm-apps-review; the New chat and Recent decision in 09-dashboard-chat.md). Before, in "The conversation outlives the page, not a reload": "A reload starts a new conversation, as the side panel did." There was no New chat action and no list of earlier sessions.
 
 - **Send stayed in place, disabled, while an answer was on its way** (2026-11-27 until 2026-11-27, nightly chat review; the Composer bullet and the Stop decision in 09-dashboard-chat.md). Before, in the Composer bullet: "the send icon Button (primary, round, arrow up, named Send) sits inside its right edge, disabled while the text is empty or an answer is on its way (you can type the next message meanwhile)." There was no way to cancel a pending answer.
