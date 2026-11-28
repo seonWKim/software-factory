@@ -7,10 +7,12 @@ import { postJson } from "../api/client.js";
 import { Button } from "../components/ui/button.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Disclosure } from "../components/ui/disclosure.js";
-import { BANNER_LINK_CLASS } from "../components/ui/link-style.js";
+import { BANNER_LINK_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
+import { Link } from "../nav.js";
+import { BASE } from "../pages.js";
 import { ListRow, ROW_TITLE } from "../components/ui/list-row.js";
 import { type MenuItem, OverflowMenu } from "../components/ui/menu.js";
 import { useWide } from "../components/ui/parts.js";
@@ -451,12 +453,23 @@ function HeldVersionAlarmRow({ action }: { action: SystemAction }) {
   );
 }
 
-/** A non-auto-stop alarm's row: Dismiss and its refusal, then the "⋯" menu when the alarm has a dialog. */
+/**
+ * A non-auto-stop alarm's row: Dismiss and its refusal, then the "⋯" menu when the alarm has a dialog. A failed chat
+ * check (issue #915) links Health before Dismiss; an alarm with a raw `detail` shows it under a closed Details toggle
+ * only, and its plain sentence wraps instead of being cut, so its first clause reads in full at 390 px.
+ */
 function PlainAlarmRow({ action }: { action: SystemAction }) {
   const what = action.pattern === "red_main" ? "what_failed" : action.pattern === "repeated_error" && action.error_code ? "show_failures" : null;
   const dismiss = useDismissAlarm(action.alert_id ?? null);
+  const health = action.pattern === "chat_eval_failed" && <Link data-alarm-health href={`${BASE}health`} className={cn(LINK_CLASS, "shrink-0 text-sm")}>{t("system.openHealth")}</Link>;
+  const detail = action.detail ?? null;
   return (
-    <AlarmMenuRow action={action} title={action.text} lead={[]} dialog={what} output={action} end={dismiss.button}>
+    <AlarmMenuRow action={action} title={action.text} wrap={action.detail !== undefined} lead={[]} dialog={what} output={action} end={health || dismiss.button ? <>{health}{dismiss.button}</> : null}>
+      {detail !== null && (
+        <Disclosure data-alarm-details lazy summary={t("needs.alarmDetails")}>
+          <p data-raw className="text-xs text-pretty wrap-anywhere text-text-2">{detail}</p>
+        </Disclosure>
+      )}
       {dismiss.error}
     </AlarmMenuRow>
   );
@@ -516,13 +529,15 @@ function AutoStopRow({ action, stop }: { action: SystemAction; stop: AutoStop })
 }
 
 /**
- * An alarm row's ListRow: its title on one line, `end` (Dismiss) in the row's end slot before the "⋯" menu, `lead` then
+ * An alarm row's ListRow: its title on one line (or wrapped), `end` (Dismiss) in the row's end slot before the "⋯" menu, `lead` then
  * the item that opens its dialog in that menu, and the dialog.
  */
-function AlarmMenuRow({ action, id, title, lead, dialog, output, end, children }: {
+function AlarmMenuRow({ action, id, title, wrap = false, lead, dialog, output, end, children }: {
   action: SystemAction;
   id?: string;
   title: string;
+  /** The title wraps onto more lines instead of being cut with an ellipsis (a fixed, plain sentence). */
+  wrap?: boolean;
   lead: MenuItem[];
   dialog: "what_failed" | "show_failures" | null;
   output: Pick<SystemAction, "failing_tests" | "output_tail">;
@@ -536,7 +551,7 @@ function AlarmMenuRow({ action, id, title, lead, dialog, output, end, children }
     <ListRow
       data-check="alarm"
       {...(id ? { id } : {})}
-      title={<p data-alarm-summary data-raw title={title} className={cn(ROW_TITLE, "text-text-1")}>{title}</p>}
+      title={<p data-alarm-summary data-raw title={title} className={cn(wrap ? "block text-sm text-pretty" : ROW_TITLE, "text-text-1")}>{title}</p>}
       {...(items.length > 0 || end ? { menu: <span className="flex items-center gap-2">{end}{items.length > 0 && <OverflowMenu label={t("commands.more")} items={items} />}</span> } : {})}
     >
       {children}

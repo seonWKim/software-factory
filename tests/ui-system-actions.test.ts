@@ -29,7 +29,7 @@ const REV_B = "b".repeat(40);
 
 interface Action {
   code: string; text: string; command: string; until: string | null; work_item_id: string | null; pause?: string;
-  pattern?: string; error_code?: string; failing_tests?: string[]; output_tail?: string | null;
+  pattern?: string; error_code?: string; failing_tests?: string[]; output_tail?: string | null; detail?: string | null;
 }
 interface Overview { needs_you: number; unpushed_merges: number; system_actions: Action[]; server_rev: string | null; github_token_days: number | "unknown" | null }
 
