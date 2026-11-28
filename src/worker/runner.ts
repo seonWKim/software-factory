@@ -23,9 +23,10 @@ import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfaces/tool-broker.js";
 import { checkWrapperSource, wrapperSeedFields } from "./toolchain-seeds.js";
+import { distrustAgentGit, git, gitDirs, gitRaw, gitWith, liveUntracked, mergeIO, trustedBase } from "./runner-git.js";
 import { LiveTranscript } from "./live-transcript.js";
 import { cachedInstall, isInstallCommand } from "./install-cache.js";
-import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, outputRecorder, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, thrownFailure, toolsNamed, untrustedGitConfig, claimableKinds, requeueForCredential } from "./support.js";
+import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_USAGE, outputRecorder, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, thrownFailure, toolsNamed, claimableKinds, requeueForCredential } from "./support.js";
 
 /** Agent plane host: claims runs, executes them in a Sandbox, reports outcomes. Never decides a transition; the controller does that from the outcome. Holds nothing between runs. */
 export class Worker {
@@ -651,40 +652,9 @@ export class Worker {
     return round;
   }
 
-  /**
-   * A run folder as src/core/mechanical.ts sees it. Reads come from the index (`ls-files -s`, then the blob), and
-   * only for regular files; writes go through git (a blob, its index entry, then `checkout-index`), never
-   * through a path in the working tree, so a symlink there cannot redirect them. Hooks stay off.
-   */
+  /** A run folder as src/core/mechanical.ts sees it (runner-git.ts). */
   mergeIO(handle: SandboxHandle): MergeIO {
-    const entries = async (path: string) => {
-      const ls = await this.git(handle, ["ls-files", "-s", "-z", "--", path]);
-      return ls.split("\0").filter(Boolean).flatMap((line) => {
-        const m = /^(\d{6}) ([0-9a-f]+) ([0-3])\t(.*)$/s.exec(line);
-        return m && m[4] === path ? [{ mode: m[1]!, sha: m[2]!, stage: Number(m[3]) }] : [];
-      });
-    };
-    return {
-      stage: async (path, n) => {
-        const e = (await entries(path)).find((x) => x.stage === n);
-        if (!e || !/^100(644|755)$/.test(e.mode)) return null;
-        const blob = await this.gitRaw(handle, ["cat-file", "blob", e.sha]);
-        return blob.exit_code === 0 && !blob.stdout.includes("\0") ? blob.stdout : null;
-      },
-      write: async (path, text) => {
-        const mode = (await entries(path)).find((x) => x.stage === 2 || x.stage === 0)?.mode ?? "100644";
-        const hashed = await this.d.sandbox.exec(handle, ["git", "hash-object", "-w", "--stdin"], {
-          env: { ...this.d.toolEnv, ...TRUSTED_GIT_ENV },
-          stdin: text,
-        });
-        const sha = hashed.stdout.trim();
-        if (hashed.exit_code !== 0 || !/^[0-9a-f]{40,64}$/.test(sha)) {
-          throw new RunFailure("git_failed", `git hash-object: ${hashed.stderr.trim()}`, true);
-        }
-        await this.git(handle, ["update-index", "--cacheinfo", `${mode},${sha},${path}`]);
-        await this.git(handle, [...NO_HOOKS, "checkout-index", "-f", "--", path]);
-      },
-    };
+    return mergeIO(this, handle);
   }
 
   /**
@@ -842,16 +812,8 @@ export class Worker {
     return sent;
   }
 
-  /**
-   * The untracked, not ignored files in the live checkout (`repo.path`, the owner's checkout), from a trusted git
-   * call through the sandbox. Null when git cannot list them (a sandbox that cannot see the host checkout): then
-   * the check is skipped. Best effort, never a failure (design §5 Sandbox).
-   */
-  async liveUntracked(handle: SandboxHandle): Promise<Set<string> | null> {
-    const r = await this.d.sandbox.exec(handle, ["git", "-C", this.cfg.repo.path, "ls-files", "--others", "--exclude-standard", "-z"], {
-      env: { ...this.d.toolEnv, ...TRUSTED_GIT_ENV },
-    }).catch(() => null);
-    return r?.exit_code === 0 ? new Set(r.stdout.split("\0").filter(Boolean)) : null;
+  liveUntracked(handle: SandboxHandle): Promise<Set<string> | null> {
+    return liveUntracked(this, handle);
   }
 
   /**
@@ -944,19 +906,16 @@ export class Worker {
     return out.join("\n");
   }
 
-  async git(handle: SandboxHandle, args: string[]): Promise<string> {
-    return this.gitWith(handle, args);
+  git(handle: SandboxHandle, args: string[]): Promise<string> {
+    return git(this, handle, args);
   }
 
-  async gitWith(handle: SandboxHandle, args: string[], env: Record<string, string> = {}): Promise<string> {
-    const r = await this.gitRaw(handle, args, env);
-    if (r.exit_code !== 0) throw new RunFailure("git_failed", `git ${gitVerb(args)}: ${r.stderr.trim()}`, true);
-    return r.stdout;
+  gitWith(handle: SandboxHandle, args: string[], env: Record<string, string> = {}): Promise<string> {
+    return gitWith(this, handle, args, env);
   }
 
-  /** Every worker git call in a run folder: the trusted env ranks above whatever the run's .git/config says. */
   gitRaw(handle: SandboxHandle, args: string[], env: Record<string, string> = {}) {
-    return this.d.sandbox.exec(handle, ["git", ...args], { env: { ...this.d.toolEnv, ...env, ...TRUSTED_GIT_ENV } });
+    return gitRaw(this, handle, args, env);
   }
 
   /** The item's broker and sandbox, by its source type (design 05-sources, Local items). */
@@ -975,36 +934,16 @@ export class Worker {
     await this.d.store.recordItemMessage({ work_item_id: item.id, marker: c.marker, body: c.body, delivery });
   }
 
-  /**
-   * The base commit the gates diff against: the factory repo's origin/<base>, as the sandbox resolved it before
-   * any agent ran. A sandbox that does not report it: origin/<base> in the run folder, still before the agent.
-   */
-  async trustedBase(handle: SandboxHandle): Promise<string> {
-    if (handle.base_sha) return handle.base_sha;
-    const base = this.cfg.repo.base_branch;
-    return (await this.git(handle, ["rev-parse", "--verify", "--end-of-options", `origin/${base}^{commit}`])).trim();
+  trustedBase(handle: SandboxHandle): Promise<string> {
+    return trustedBase(this, handle);
   }
 
-  /** The run folder's git dir and common dir, as real paths. Taken before the agent, compared after. */
-  async gitDirs(handle: SandboxHandle): Promise<string> {
-    return (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"])).trim();
+  gitDirs(handle: SandboxHandle): Promise<string> {
+    return gitDirs(this, handle);
   }
 
-  /**
-   * After an agent ran in the run folder, before any other worker or broker git call there. The git folder must
-   * still be the one the sandbox made (not swapped for a link or a `gitdir:` file pointing elsewhere), and every
-   * config key the agent added that is not plain data is removed, so no trusted call runs a program it named.
-   */
-  async distrustAgentGit(handle: SandboxHandle, before: string): Promise<void> {
-    const after = await this.gitDirs(handle);
-    if (after !== before) throw new RunFailure("untrusted_git_dir", "the run's git folder changed while the agent ran");
-    const file = `${after.split("\n")[0]}/config`;
-    const list = () => this.git(handle, ["config", "--file", file, "--name-only", "--list", "-z"]);
-    for (const key of untrustedGitConfig(await list())) {
-      await this.git(handle, ["config", "--file", file, "--unset-all", key]);
-    }
-    const left = untrustedGitConfig(await list());
-    if (left.length > 0) throw new RunFailure("untrusted_git_config", `git config keys left: ${left.join(", ")}`.slice(0, 500));
+  distrustAgentGit(handle: SandboxHandle, before: string): Promise<void> {
+    return distrustAgentGit(this, handle, before);
   }
 }
 
