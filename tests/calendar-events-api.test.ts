@@ -13,6 +13,7 @@ import type { UiDeps } from "../src/ui/deps.js";
 import type { HealthMonitor } from "../src/ui/health.js";
 import type { UiSettings } from "../src/ui/settings-api.js";
 import { FakeCalendarSource, calendarEvent } from "./calendar/fakes.js";
+import type { Timestamp, UserId } from "../src/core/types.js";
 import { newStore } from "./helpers/store.js";
 
 // The Calendar page over the real read of GET /api/v1/calendar/events (src/ui/calendar-events-api.ts readCalendarEvents)
@@ -96,5 +97,24 @@ describe("Calendar page over the server read", () => {
     expect(link.getAttribute("href")).toBe("/app/settings?tab=integrations#calendar");
     expect(screen.getByText("No calendar is connected.")).toBeTruthy();
     expect(entries()).toEqual([]);
+  });
+
+  it("schedule runs and next slots are agent entries on their days; a paused schedule gives none; no calendar source is read", async () => {
+    const clock = new FakeClock(new Date(2026, 10, 12, 9, 0));
+    const { store } = await newStore(clock);
+    const base = { zone: "UTC", created_by: "local:owner" as UserId, created_at: "2026-11-01T00:00:00.000Z" as Timestamp };
+    const ran = new Date(2026, 10, 10, 9).toISOString() as Timestamp;
+    const next = new Date(2026, 10, 13, 9).toISOString() as Timestamp;
+    await store.addSchedule({ ...base, id: "sch_a", title: "Daily digest", cadence: { kind: "daily", spec: "09:00" }, next_due_at: ran });
+    expect(await store.claimScheduleOccurrence({ schedule_id: "sch_a", occurrence_at: ran, next_due_at: next, outcome: "fired" })).not.toBeNull();
+    await store.addSchedule({ ...base, id: "sch_p", title: "Paused one", cadence: { kind: "daily", spec: "09:00" }, next_due_at: null });
+    const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: {} as HealthMonitor, settings: { calendar: { flow: { listed: async () => [] } } } as unknown as UiSettings };
+    const read = async (from: string, to: string) => ((await readCalendarEvents(d, from, to)).value as { days: { date: string; events: { kind: string; source: string; title: string; id: string; next?: boolean }[] }[] }).days;
+    const week = await read("2026-11-09", "2026-11-15");
+    const agent = (date: string) => week.find((x) => x.date === date)!.events;
+    expect(agent("2026-11-10")).toMatchObject([{ kind: "agent", source: "agent", title: "Daily digest" }]);
+    expect(agent("2026-11-13")).toMatchObject([{ kind: "agent", title: "Daily digest", next: true }]);
+    expect(week.flatMap((x) => x.events).some((e) => e.title === "Paused one")).toBe(false);
+    expect((await read("2026-11-16", "2026-11-22")).flatMap((x) => x.events)).toEqual([]);
   });
 });
