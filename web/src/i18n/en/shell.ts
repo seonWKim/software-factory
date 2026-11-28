@@ -10,7 +10,6 @@ export const shell = {
   "nav.setup": "Setup",
   "page.tasks": "Tasks",
   "page.calendar": "Calendar",
-  "page.schedules": "Schedules",
   "page.chat": "Chat",
   "page.needs": "Needs you",
   "page.work": "Work",
