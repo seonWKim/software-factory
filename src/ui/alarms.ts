@@ -102,8 +102,20 @@ function zeroTokensDetail(detail: string): string {
   return detail === "the last succeeded" ? "the last one succeeded" : detail;
 }
 
-/** An alarm's sentence with its detail, as Needs you and the alarms API show it. */
+/**
+ * Patterns whose detail is raw text (a failed chat check's error or provider message, which can name env vars, commands
+ * or doc paths): their Needs-you row keeps the plain sentence and shows the detail under Details (alarmDetail).
+ */
+const DETAIL_APART: ReadonlySet<Alert["pattern"]> = new Set(["chat_eval_failed"]);
+
+/** An alarm's raw detail, kept off its sentence, for its row's Details; null for a pattern whose sentence carries it. */
+export function alarmDetail(a: Alert): string | null {
+  return DETAIL_APART.has(a.pattern) ? a.detail : null;
+}
+
+/** An alarm's sentence with its detail, as Needs you and the alarms API show it (a DETAIL_APART pattern: the sentence alone). */
 export function alarmFullText(a: Alert): string {
+  if (DETAIL_APART.has(a.pattern)) return alarmText(a);
   const detail = a.pattern === "red_main" ? redMainDetail(a).text : a.pattern === "zero_tokens" && a.detail !== null ? zeroTokensDetail(a.detail) : a.detail;
   return detail === null ? alarmText(a) : `${alarmText(a)}: ${detail}`;
 }
@@ -182,7 +194,7 @@ export function alarmCommand(a: Alert): string {
   if (a.pattern === "dead_letter") return `bus_${deadLetterTopic(a).replace(/\./g, "_")}_dead_letters (replay once the cause is fixed)`;
   if (a.pattern === "skill_draft_limit") return `${a.error_code} in factory.config.json`;
   if (a.pattern === "coordinator_limit") return "factory approve <usd> (sets spend.coordinator_daily_usd and resumes cycles) or factory reject (cycles stay stopped until the UTC day ends)";
-  if (a.pattern === "chat_eval_failed") return "npm run eval:chat (runs the chat check again; factory llm-check checks the model), then factory alarm dismiss <id>";
+  if (a.pattern === "chat_eval_failed") return "Health page (/app/health)";
   if (a.pattern === "ci_rerun_failed") return "Rerun the cancelled jobs on the PR's checks, or push a new commit; the factory reads the checks again each checks step";
   if (a.pattern === "skill_version_gate") return "Use this version or Keep the current version on the alarm or the skill's Evals page, or factory approve (the newest held version becomes current) or factory reject (the version current before it stays current); factory eval compare shows the held version's gate run against the current version's run";
   return "factory doctor";

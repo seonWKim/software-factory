@@ -12,7 +12,7 @@ import type { AlertPattern, FactoryStore } from "../interfaces/factory-store.js"
 import { MIGRATION_PENDING } from "../interfaces/updater.js";
 import { type Check, TOKEN_WARN_DAYS } from "../core/health-check.js";
 import type { FactoryStatus } from "./factory-status.js";
-import { type AutoStopNote, alarmCommand, alarmFullText, alarmUntil, lastAutoStop, openAlarms, redMainDetail } from "./alarms.js";
+import { type AutoStopNote, alarmCommand, alarmDetail, alarmFullText, alarmUntil, lastAutoStop, openAlarms, redMainDetail } from "./alarms.js";
 import type { ResumablePause } from "../resume-cmd.js";
 import { RESUME_IN_NEEDS_YOU, activePauses } from "./pause-api.js";
 import { MODEL_CREDENTIAL } from "../core/policy.js";
@@ -42,6 +42,8 @@ export interface SystemAction {
   /** On an alarm: its pattern and error code, which pick its row's menu (What failed, Show failures). */
   pattern?: AlertPattern;
   error_code?: string;
+  /** On an alarm whose detail is raw text (a failed chat check): that detail, which its row shows under Details only. */
+  detail?: string | null;
   /** On a red_main alarm: what the red-main check printed (empty and null when it kept nothing). */
   failing_tests?: string[];
   output_tail?: string | null;
@@ -189,6 +191,8 @@ export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
   for (const a of await openAlarms(x.store, x.now)) {
     add("alarm", alarmFullText(a), alarmCommand(a), alarmUntil(a));
     const row = Object.assign(out.at(-1)!, { alert_id: a.id, pattern: a.pattern, error_code: a.error_code });
+    const detail = alarmDetail(a);
+    if (detail !== null) row.detail = detail;
     if (a.pattern === "red_main") {
       const output = redMainDetail(a).output;
       Object.assign(row, { failing_tests: output?.failing_tests ?? [], output_tail: output?.output_tail ?? null });

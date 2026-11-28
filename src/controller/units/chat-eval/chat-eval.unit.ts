@@ -4,7 +4,8 @@
 // is not awaited: its model calls never hold up the controller's other steps. The result is logged with the pass
 // bar. A run that ends below its bar (ok false) or throws stores one Needs-you alert for the UTC day, its detail
 // scanned as UI text first, through the kernel's `alert` write. With the key absent compose builds no run, and the
-// step returns before any call. The unit reaches no store of its own and imports no core module: the run, and the
+// step returns before any call. While no model credential is saved (the workers' check, one claim pause already) the
+// step returns before it claims the day: no run, no alert, and the first poll after one is saved runs the day. The unit reaches no store of its own and imports no core module: the run, and the
 // alarm builders it logs and alerts with (failuresOf, chatEvalFailedAlert in src/core/alarms.ts), come in through the
 // controller's deps.
 
@@ -18,6 +19,8 @@ type Failure = { passed: number; total: number; bar: number; results?: readonly 
 
 /** The run as the unit uses it (src/core/chat-eval.ts ChatEvalSchedule). */
 export interface ChatEvalPort {
+  /** Whether a model credential is saved, asked before each claim; absent: the run reads none. */
+  credentialSaved?(): Promise<boolean>;
   claim(day: string): Promise<boolean>;
   run(): Promise<{ passed: number; total: number; bar: number; ok: boolean; results?: readonly Turn[] }>;
   /** The failed turns' reasons counted, for the log line (failuresOf). */
@@ -48,6 +51,7 @@ export class ChatEvalUnit {
     if (!port || this.running) return;
     const day = new Date(k.nowMs()).toISOString().slice(0, 10); // the UTC day
     if (this.day === day) return;
+    if (port.credentialSaved && !(await port.credentialSaved())) return;
     const claimed = await port.claim(day);
     this.day = day;
     if (!claimed) return;

@@ -6,4 +6,5 @@ export const system = {
   "stop.consequence": "Building and review stop within a minute and wait in line, their work kept. Other steps finish first. Nothing new starts until you resume. Tasks you work on yourself keep going.",
   "stop.stopped": "Agents stopped",
   "stop.stoppedAt": "Agents stopped by you at {time}",
+  "system.openHealth": "Open Health",
 } as const;

@@ -184,9 +184,12 @@ export function chatEvalDaily(raw: unknown): boolean {
  * The daily run as the controller's chat-eval unit calls it. `claim(day)` takes the UTC day for this process with a
  * conditional cursor advance, so replicas on one store run the day once; `run()` reads the questions and runs them.
  * `failures` and `failedAlert` are the alarm builders (src/core/alarms.ts) the unit logs and alerts with, handed in so
- * the unit imports no core module.
+ * the unit imports no core module. `credentialSaved()` (absent: the run reads no model credential) is the workers'
+ * model credential check (src/compose.ts modelCredentialCheck): the unit asks it before it claims the day, so a
+ * missing credential, already one claim pause, uses up no day and stores no alert.
  */
 export interface ChatEvalSchedule {
+  credentialSaved?(): Promise<boolean>;
   claim(day: string): Promise<boolean>;
   run(): Promise<ChatEvalReport>;
   failures: typeof failuresOf;
@@ -197,8 +200,10 @@ export function chatEvalSchedule(
   store: { getCursor(name: string): Promise<string | null>; advanceCursor(name: string, expected: string | null, next: string): Promise<boolean> },
   deps: ChatEvalDeps,
   questions: () => Promise<string>,
+  credentialSaved?: () => Promise<boolean>,
 ): ChatEvalSchedule {
   return {
+    ...(credentialSaved && { credentialSaved }),
     async claim(day) {
       const mark = await store.getCursor(CHAT_EVAL_CURSOR);
       return (mark === null || mark < day) && store.advanceCursor(CHAT_EVAL_CURSOR, mark, day);

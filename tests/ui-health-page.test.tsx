@@ -371,3 +371,30 @@ describe("Health page: Improve tab", () => {
     expect(rulesReads).toBe(before);
   });
 });
+
+// The failed chat check's Needs-you row (issue #915), which points to this page: its plain sentence, wrapped and never
+// cut (its first clause reads in full at 390 px), a link to Health, and the raw error only under its closed Details.
+describe("Needs you: the failed chat check's row links Health", () => {
+  const BANNER_MODULE = "../web/src/views/system-banner.js";
+  const SENTENCE = "Alarm: the daily chat check failed; chat answers may be broken until the cause is fixed";
+  const RAW = "Chat check failed today: the run stopped with an error: no answer from CHAT_MODEL (docs/setup.md §3, run: npm run setup).";
+
+  it("shows the sentence in full, a Health link, and the raw error only inside Details", async () => {
+    const { CheckRow } = (await import(/* @vite-ignore */ BANNER_MODULE)) as { CheckRow: FunctionComponent<{ action: unknown }> };
+    const action = { code: "alarm", text: SENTENCE, command: "Health page (/app/health)", until: null, alert_id: "al_1", pattern: "chat_eval_failed", error_code: "run_error", detail: RAW };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(createElement(QueryClientProvider, { client }, createElement("ul", null, createElement(CheckRow, { action }))));
+    const row = document.querySelector<HTMLElement>('li[data-check="alarm"]')!;
+    const summary = row.querySelector<HTMLElement>("[data-alarm-summary]")!;
+    expect(summary.textContent).toBe(SENTENCE);
+    expect(summary.textContent).not.toMatch(/[A-Z][A-Z0-9_]{3,}|docs\/|npm run|§/);
+    expect(summary.className.split(" ")).not.toContain("truncate");
+    expect(within(row).getByRole("link", { name: "Open Health" }).getAttribute("href")).toBe("/app/health");
+    const details = row.querySelector<HTMLElement>("[data-alarm-details]")!;
+    expect(details).toBeTruthy();
+    fireEvent.click(within(details).getByText("Details"));
+    expect(await within(details).findByText(RAW)).toBeTruthy();
+    expect(row.textContent!.split(RAW)).toHaveLength(2); // printed once, under Details
+    expect(summary.textContent).not.toContain(RAW);
+  });
+});

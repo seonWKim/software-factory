@@ -280,6 +280,8 @@ export async function build(
   });
   await settings.refresh();
 
+  // The model credential check the workers claim by and the daily chat eval run waits on (design 05-restart-pauses).
+  const credentialCheck = modelCredentialCheck(loaded, secrets);
   const controller = new ControllerRole({
     store,
     sources, forge, links,
@@ -309,7 +311,7 @@ export async function build(
     ...(loaded.config.local_only === true ? {} : { github_budget: () => github.status(), refresh_forge_budget: () => github.refreshSharedBudget() }),
     // The red-main check after an automatic merge (design 03-risk) runs the checks with the worker's base env.
     check_env: baseEnv(),
-    cleanup: await hostCleaner(loaded, store, clock), ...(chatEvalDaily(loaded.file) && { chat_eval: chatEvalSchedule(store, { llm, judge: llm, read: (p) => readFeatureMap(REGISTRY, p), scanner, clock, newId: randomUUID }, () => readFile(join(loaded.codeRoot, CHAT_EVAL_QUESTIONS), "utf8")) }), // closed items' leftovers (design 08-cleanup); the daily chat eval run with chat_eval.schedule "daily" (design 04-chat-agent)
+    cleanup: await hostCleaner(loaded, store, clock), ...(chatEvalDaily(loaded.file) && { chat_eval: chatEvalSchedule(store, { llm, judge: llm, read: (p) => readFeatureMap(REGISTRY, p), scanner, clock, newId: randomUUID }, () => readFile(join(loaded.codeRoot, CHAT_EVAL_QUESTIONS), "utf8"), credentialPresence(credentialCheck).modelCredential) }), // closed items' leftovers (design 08-cleanup); the daily chat eval run with chat_eval.schedule "daily" (design 04-chat-agent), skipped while no model credential is saved
   });
 
   const id_prefix = `${hostname()}:${process.pid}`;
@@ -324,7 +326,7 @@ export async function build(
     store, sandbox, runner,
     broker: guarded, local, passports,
     scanner, storage, llm,
-    ...credentialPresence(modelCredentialCheck(loaded, secrets)),
+    ...credentialPresence(credentialCheck),
     clock, config,
     prompts: loaded.prompts,
     log: new ConsoleLogger(clock, "worker"),

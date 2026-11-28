@@ -32,6 +32,8 @@ export interface SystemAction {
   /** On an alarm: its pattern (`repeated_error`, `red_main`, `auto_stopped`, …) and error code, which pick its row's menu. */
   pattern?: string;
   error_code?: string;
+  /** On an alarm whose detail is raw text (a failed chat check): that detail, shown under the row's Details only. */
+  detail?: string | null;
   /** On a red_main alarm: the failing tests and output tail the red-main check kept (empty and null: none kept). */
   failing_tests?: string[];
   output_tail?: string | null;
