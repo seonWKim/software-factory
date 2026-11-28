@@ -1,17 +1,18 @@
 // Feedback schedule grants (design 08-schedules): what a feedback schedule's agent may use beyond the read-only
 // tools Read, Glob and Grep, each named by the owner on the schedule (`--grant`, stored as `settings.grants`).
-//   browser  the Browse tool, GET of the schedule's sandbox URL (a local server: localhost or a loopback address) only
+//   browser  a broker tool (BROWSE_TOOL), GET of the schedule's sandbox URL (a local server: localhost or a loopback address) only
 //   notes    Write and Edit, inside the schedule's notes folder `.factory/notes/<schedule id>/` only
 //   repo     the agent runs in a fresh checkout of the git repo the owner names, outside the factory's state folder, and no other
 //   shell    one command: `sqlite3 -readonly` on the database file the owner names
 // Every grant is checked and handed out by ScheduleGrantBroker, a ToolBroker: a grant it refuses fails the run
-// before any agent starts, and the shell grant's only tool is a broker tool (`tool_grants`), served through the
-// runner's tool bridge by scheduleGrantTools, which calls the run's schedule's broker, inside the G2 guard: each call
+// before any agent starts, and the browser and shell grants' tools are broker tools (`tool_grants`), served through the
+// runner's tool bridge on any runner by scheduleGrantTools, which calls the run's schedule's broker, inside the G2 guard: each call
 // is checked against the schedule run's passport (withSchedulePassports) and audited like every broker tool.
 
 import type { AgentRunner } from "../interfaces/agent-runner.js";
 import type { ToolCallContext, ToolDescriptor, ToolBroker, ToolResult as BrokerResult } from "../interfaces/tool-broker.js";
-import { Browse, Edit, Write } from "./tools/index.js";
+import { Edit, Write } from "./tools/index.js";
+import { fetchOwnerUrl } from "./tools/browse.js";
 import { isAbsolute, isUnder, normalize, resolvePath } from "./tools/paths.js";
 import type { ScheduleActionSpec, ScheduleStore } from "./schedule.js";
 import type { ToolSpec } from "./tools/types.js";
@@ -22,6 +23,10 @@ export const STATE_DIR = ".factory";
 export const SCHEDULE_SHELL_COMMAND = "sqlite3 -readonly";
 /** The broker tool a shell grant hands out. */
 export const SQLITE_TOOL = "schedule.sqlite_readonly";
+/** The broker tool a browser grant hands out. */
+export const BROWSE_TOOL = "schedule.browse";
+/** The most characters of a page the browser grant's tool answers. */
+const BROWSE_CHARS = 100_000;
 
 export type ScheduleGrant =
   | { kind: "browser"; url: string }
@@ -171,7 +176,7 @@ export interface GrantedRun {
   base_ref: string;
   /** The notes folder (absolute), when granted: the only place its Write and Edit reach. */
   writable_paths: string[];
-  /** The broker tools granted: SQLITE_TOOL for a shell grant. */
+  /** The broker tools granted: BROWSE_TOOL for a browser grant, SQLITE_TOOL for a shell grant. */
   tool_grants: string[];
 }
 
@@ -181,6 +186,8 @@ export interface GrantBrokerDeps {
   mkdir(path: string): Promise<void>;
   /** Runs `file` with `args`, no shell, and returns its stdout or throws. */
   exec(file: string, args: readonly string[], signal?: AbortSignal): Promise<string>;
+  /** The browser grant's HTTP client; absent: the global fetch. Tests pass a fake, so no test reaches the network. */
+  fetch?: (url: string, init: RequestInit) => Promise<Response>;
 }
 
 /** The one statement the read-only shell runs: a SELECT, WITH, EXPLAIN or PRAGMA table_info, with at most a trailing `;`. */
@@ -198,9 +205,19 @@ const SQLITE_DESCRIPTOR: ToolDescriptor = {
   read_only: true,
 };
 
+const BROWSE_DESCRIPTOR: ToolDescriptor = {
+  name: BROWSE_TOOL,
+  description: "Fetch the one sandbox URL the owner granted this schedule (GET only) and return its text. Any other URL is refused.",
+  input_schema: { type: "object", properties: { url: { type: "string", description: "The granted URL; may be left out" } }, additionalProperties: false },
+  read_only: true,
+};
+
+const GRANT_TOOLS: readonly ToolDescriptor[] = [BROWSE_DESCRIPTOR, SQLITE_DESCRIPTOR];
+
 /**
- * The ToolBroker of one feedback run's grants: `handOut` checks every grant and returns what the run gets; the shell
- * grant's tool is served by `call`, which runs `sqlite3 -safe -readonly` on the granted database and nothing else.
+ * The ToolBroker of one feedback run's grants: `handOut` checks every grant and returns what the run gets; `call` serves
+ * the browser grant's tool, one GET of the granted URL and no other, and the shell grant's, which runs
+ * `sqlite3 -safe -readonly` on the granted database and nothing else.
  */
 export class ScheduleGrantBroker implements ToolBroker {
   constructor(
@@ -209,12 +226,12 @@ export class ScheduleGrantBroker implements ToolBroker {
     private readonly deps: GrantBrokerDeps,
   ) {}
 
-  private shell() {
-    return this.grants.find((g): g is Extract<ScheduleGrant, { kind: "shell" }> => g.kind === "shell");
+  private grant<K extends ScheduleGrant["kind"]>(kind: K) {
+    return this.grants.find((g): g is Extract<ScheduleGrant, { kind: K }> => g.kind === kind);
   }
 
   allTools(): readonly ToolDescriptor[] {
-    return this.shell() ? [SQLITE_DESCRIPTOR] : [];
+    return [...(this.grant("browser") ? [BROWSE_DESCRIPTOR] : []), ...(this.grant("shell") ? [SQLITE_DESCRIPTOR] : [])];
   }
 
   listTools(grants: readonly string[]): ToolDescriptor[] {
@@ -222,7 +239,9 @@ export class ScheduleGrantBroker implements ToolBroker {
   }
 
   async call(_ctx: ToolCallContext, name: string, args: unknown): Promise<BrokerResult> {
-    const shell = this.shell();
+    const browser = this.grant("browser");
+    if (name === BROWSE_TOOL && browser) return this.browse(browser.url, args);
+    const shell = this.grant("shell");
     if (name !== SQLITE_TOOL || !shell) return { ok: false, error_code: "not_granted", message: `${name} is not granted to schedule ${this.schedule_id}` };
     const sql = (args as { sql?: unknown } | null)?.sql;
     if (typeof sql !== "string" || sql.trim() === "") return { ok: false, error_code: "bad_args", message: "sql must be a query" };
@@ -231,6 +250,19 @@ export class ScheduleGrantBroker implements ToolBroker {
     try {
       // -safe turns off the CLI's commands and functions that touch files; fsdir is still refused above.
       return { ok: true, content: await this.deps.exec("sqlite3", ["-safe", "-readonly", shell.db, sql]) };
+    } catch (e) {
+      return { ok: false, error_code: "failed", message: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /** One GET of the granted `url`: an asked `url` that is any other is refused. */
+  private async browse(url: string, args: unknown): Promise<BrokerResult> {
+    const asked = (args as { url?: unknown } | null)?.url;
+    const granted = new URL(url);
+    if (asked !== undefined && asked !== url && asked !== granted.href) return { ok: false, error_code: "refused", message: `${BROWSE_TOOL} fetches only ${url}` };
+    try {
+      const text = await fetchOwnerUrl(granted, this.deps.fetch ? { fetch: this.deps.fetch } : {});
+      return { ok: true, content: text.slice(0, BROWSE_CHARS) };
     } catch (e) {
       return { ok: false, error_code: "failed", message: e instanceof Error ? e.message : String(e) };
     }
@@ -246,7 +278,7 @@ export class ScheduleGrantBroker implements ToolBroker {
     for (const g of this.grants) {
       const problem = grantProblem(g);
       if (problem) throw new Error(`schedule ${this.schedule_id}: ${problem}`);
-      if (g.kind === "browser") run.tools.push(browseOnly(g.url));
+      if (g.kind === "browser") run.tool_grants.push(BROWSE_TOOL);
       else if (g.kind === "notes") {
         const folder = resolvePath(base.repo, notesFolder(this.schedule_id));
         const root = resolvePath(base.repo, `${STATE_DIR}/notes`);
@@ -278,18 +310,18 @@ export const storedScheduleGrants = (store: Pick<ScheduleStore, "listSchedules">
 const SCHEDULE_ITEM = "schedule:";
 
 /**
- * The runner's broker `inner` with the shell grant's tool: listed when a run is granted it, and each call served by
+ * The runner's broker `inner` with the browser and shell grants' tools: each listed when a run is granted it, and each call served by
  * the ScheduleGrantBroker of the run's schedule (work item `schedule:<id>`) over its stored grants, read per call by
- * `grantsOf`. Any other run, or a schedule with no shell grant, gets not_granted. Every other tool goes to `inner`.
+ * `grantsOf`. Any other run, or a schedule without that grant, gets not_granted. Every other tool goes to `inner`.
  * Compose wraps the result in the G2 guard (PassportToolBroker), so each call is checked against the run's passport
  * and audited in authz_audit first; withSchedulePassports gives a schedule run that passport.
  */
 export function scheduleGrantTools(inner: ToolBroker, grantsOf: (schedule_id: string) => Promise<readonly ScheduleGrant[]>, deps: GrantBrokerDeps): ToolBroker {
   return {
-    listTools: (grants) => [...inner.listTools(grants), ...(grants.includes(SQLITE_TOOL) ? [SQLITE_DESCRIPTOR] : [])],
-    allTools: () => [...inner.allTools(), SQLITE_DESCRIPTOR],
+    listTools: (grants) => [...inner.listTools(grants), ...GRANT_TOOLS.filter((t) => grants.includes(t.name))],
+    allTools: () => [...inner.allTools(), ...GRANT_TOOLS],
     call: async (ctx, name, args) => {
-      if (name !== SQLITE_TOOL) return inner.call(ctx, name, args);
+      if (!GRANT_TOOLS.some((t) => t.name === name)) return inner.call(ctx, name, args);
       const id = ctx.work_item_id.startsWith(SCHEDULE_ITEM) ? ctx.work_item_id.slice(SCHEDULE_ITEM.length) : null;
       const grants = id === null ? [] : await grantsOf(id).catch(() => []);
       return new ScheduleGrantBroker(id ?? ctx.work_item_id, grants, deps).call(ctx, name, args);
@@ -331,7 +363,7 @@ type GrantBase = { tools: readonly ToolSpec[]; repo: string; base_ref: string };
 
 /**
  * Compose's wiring of feedback schedule grants (design 08-schedules), over this machine's I/O `deps` (nodeGrantDeps in
- * src/impl/schedule-action/routed-action.ts): `broker` gives the runner's broker the shell grant's tool (compose wraps
+ * src/impl/schedule-action/routed-action.ts): `broker` gives the runner's broker the browser and shell grants' tools (compose wraps
  * it in the G2 guard, so it reaches a run through the runner's tool bridge), `handOut` is the feedback route's
  * hand-out over `base`, and `runner` holds a run passport for a schedule run granted broker tools in `project`.
  */
@@ -353,11 +385,6 @@ export const feedbackGrantHandOut = (base: GrantBase, deps: GrantBrokerDeps) =>
     if (grants.length === 0) return null;
     return { ...(await new ScheduleGrantBroker(s.id, grants, deps).handOut(base)), granted: grants.map((g) => grantWords(g, s.id)) };
   };
-
-/** Browse, fetching `url` only, whatever the run's policy holds. */
-function browseOnly(url: string): ToolSpec {
-  return { ...Browse, run: (input, ctx) => Browse.run(input, { ...ctx, policy: { ...ctx.policy, browse_url: url } }) };
-}
 
 /** `tool` (Write or Edit), refusing any `file_path` outside `folder`. */
 function insideOnly(tool: ToolSpec, folder: string): ToolSpec {

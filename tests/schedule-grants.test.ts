@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
-  type GrantBrokerDeps, SCHEDULE_SHELL_COMMAND, SQLITE_TOOL, ScheduleGrantBroker, grantWords, grantsOfWords, notesFolder, scheduleGrantTools, scheduleIdProblem, storedGrants, storedScheduleGrants,
+  BROWSE_TOOL, type GrantBrokerDeps, SCHEDULE_SHELL_COMMAND, SQLITE_TOOL, ScheduleGrantBroker, grantWords, grantsOfWords, notesFolder, scheduleGrantTools, scheduleIdProblem, storedGrants, storedScheduleGrants,
   SCHEDULE_PASSPORT_KIND, feedbackGrants, grantList, withGrantWords, withSchedulePassports,
 } from "../src/core/schedule-grants.js";
 import { improveAction } from "../src/controller/units/schedule/plugins/improve/improve-action.js";
@@ -42,10 +42,9 @@ function deps(over: Partial<GrantBrokerDeps> = {}) {
   return { d, made, ran };
 }
 
-const toolCtx = (fetch?: ToolContext["fetch"]): ToolContext => ({
+const toolCtx = (): ToolContext => ({
   sandbox: {} as never, handle: {} as never,
   policy: guardPolicy({ workdir: "/run", deny_paths: [], writable_paths: [], env_allowlist: {} }),
-  ...(fetch ? { fetch } : {}),
 });
 
 describe("grant words", () => {
@@ -89,14 +88,24 @@ describe("ScheduleGrantBroker.handOut", () => {
     expect(run).toMatchObject({ repo: "/factory", base_ref: "main", writable_paths: [] });
   });
 
-  it("a browser grant adds Browse, which fetches the sandbox URL only", async () => {
-    const run = await new ScheduleGrantBroker("s1", [{ kind: "browser", url: "http://localhost:5173/" }], deps().d).handOut(base);
-    const browse = run.tools.find((t) => t.name === "Browse")!;
+  it("a browser grant hands out the broker tool, which fetches the sandbox URL only through the broker's call", async () => {
     const fetched: string[] = [];
-    const fetch = async (url: string) => (fetched.push(url), new Response("page"));
-    expect(await browse.run({}, toolCtx(fetch))).toMatchObject({ ok: true, content: "page" });
-    expect(await browse.run({ url: "http://evil.example/" }, toolCtx(fetch))).toMatchObject({ ok: false });
-    expect(fetched).toEqual(["http://localhost:5173/"]);
+    const fetch = async (url: string, init: RequestInit) => (fetched.push(`${init.method} ${url}`), new Response("page"));
+    const broker = new ScheduleGrantBroker("s1", [{ kind: "browser", url: "http://localhost:5173/" }], deps({ fetch }).d);
+    const run = await broker.handOut(base);
+    expect(run.tool_grants).toEqual([BROWSE_TOOL]);
+    expect(run.tools.map((t) => t.name)).toEqual(["Read", "Glob", "Grep"]);
+    expect(broker.listTools([BROWSE_TOOL]).map((t) => [t.name, t.read_only])).toEqual([[BROWSE_TOOL, true]]);
+    expect(await broker.call(ctxCall, BROWSE_TOOL, {})).toEqual({ ok: true, content: "page" });
+    expect(await broker.call(ctxCall, BROWSE_TOOL, { url: "http://localhost:5173/" })).toEqual({ ok: true, content: "page" });
+    for (const url of ["http://evil.example/", "http://localhost:5173/admin", "http://localhost:8080/"]) {
+      expect(await broker.call(ctxCall, BROWSE_TOOL, { url })).toMatchObject({ ok: false, error_code: "refused" });
+    }
+    expect(fetched).toEqual(["GET http://localhost:5173/", "GET http://localhost:5173/"]);
+    expect(await new ScheduleGrantBroker("s1", [], deps({ fetch }).d).call(ctxCall, BROWSE_TOOL, {})).toMatchObject({ ok: false, error_code: "not_granted" });
+    const redirect = async () => new Response(null, { status: 302, headers: { location: "http://evil.example/" } });
+    expect(await new ScheduleGrantBroker("s1", [{ kind: "browser", url: "http://localhost:5173/" }], deps({ fetch: redirect }).d).call(ctxCall, BROWSE_TOOL, {})).toMatchObject({ ok: false, message: expect.stringContaining("redirect") });
+    expect(fetched).toHaveLength(2);
   });
 
   it("a notes grant creates .factory/notes/<id>/ and writes only inside it", async () => {
@@ -173,6 +182,17 @@ describe("scheduleGrantTools: the runner's broker with the shell grant's tool", 
     expect(await broker.call({ ...ctxCall, work_item_id: "wi_1" as never }, SQLITE_TOOL, { sql: "select 1" })).toMatchObject({ ok: false, error_code: "not_granted" });
     expect(asked).toEqual(["s1", "s2"]);
     expect(await broker.call(ctxCall, "forge.read", {})).toEqual({ ok: true, content: "inner forge.read" });
+  });
+
+  it("serves the browser grant's tool from the run's schedule's stored grants, on any runner's tool bridge", async () => {
+    const fetch = async () => new Response("page");
+    const browser = { kind: "browser", url: "http://localhost:5173/" } as const;
+    const broker = scheduleGrantTools(inner, async (id) => (id === "s1" ? [browser] : []), deps({ fetch }).d);
+    expect(broker.listTools([BROWSE_TOOL]).map((t) => t.name)).toEqual([BROWSE_TOOL]);
+    expect(broker.listTools(["forge.read"]).map((t) => t.name)).not.toContain(BROWSE_TOOL);
+    expect(await broker.call({ ...ctxCall, work_item_id: "schedule:s1" as never }, BROWSE_TOOL, {})).toEqual({ ok: true, content: "page" });
+    expect(await broker.call({ ...ctxCall, work_item_id: "schedule:s1" as never }, BROWSE_TOOL, { url: "http://evil.example/" })).toMatchObject({ ok: false, error_code: "refused" });
+    expect(await broker.call({ ...ctxCall, work_item_id: "schedule:s2" as never }, BROWSE_TOOL, {})).toMatchObject({ ok: false, error_code: "not_granted" });
   });
 
   it("reads the grants of the feedback schedule with the ID from the store, none for another kind", async () => {

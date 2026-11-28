@@ -339,7 +339,7 @@ Before an implement run pushes, the worker runs `repo.check_commands` from `fact
 
 A feedback schedule's agent gets Read, Glob and Grep in this repo. To give it more, add `--grant <word>` (repeat it, one per kind) to `factory schedule add` or `edit` with `--action feedback`; `--grant none` clears them. `factory schedule list` shows each grant in plain words.
 
-- `browser=<url>`: the Browse tool, limited to that sandbox URL (http or https on localhost or a loopback address).
+- `browser=<url>`: the `schedule.browse` broker tool (served through the runner's tool bridge, like the shell grant's), limited to that sandbox URL (http or https on localhost or a loopback address).
 - `notes`: Write and Edit, only inside `.factory/notes/<schedule id>/`, which `add` or `edit` creates.
 - `repo=<absolute path>[#<branch>]`: the agent runs in a fresh checkout of that repo (branch `main` by default), and no other. Set up the repo first: it must be a git repo (`git -C <path> rev-parse` works) outside the factory's `.factory` folder, with the branch present.
 - `shell=<absolute database path>`: one query tool that runs `sqlite3 -safe -readonly` on that database file, and no other command: one SELECT, WITH, EXPLAIN or PRAGMA table_info statement, no dot commands, options or file functions. `sqlite3` 3.37 or newer (for `-safe`) must be on the PATH, and the agent runner must expose broker tools (`claude-code` does).

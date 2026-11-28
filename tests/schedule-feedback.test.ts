@@ -7,7 +7,7 @@ import { agentAction } from "../src/controller/units/schedule/plugins/agent/agen
 import { buildAction } from "../src/controller/units/schedule/plugins/build/build-action.js";
 import { FEEDBACK_MAX_TASKS, feedbackActionWith } from "../src/controller/units/schedule/plugins/feedback/feedback-action.js";
 import { scheduledAction } from "../src/core/controller-deps.js";
-import { type GrantBrokerDeps, SCHEDULE_SHELL_COMMAND, SQLITE_TOOL, feedbackGrantHandOut } from "../src/core/schedule-grants.js";
+import { BROWSE_TOOL, type GrantBrokerDeps, SCHEDULE_SHELL_COMMAND, SQLITE_TOOL, feedbackGrantHandOut } from "../src/core/schedule-grants.js";
 import { type AddScheduleInput, type ScheduleActionSpec, addSchedule } from "../src/core/schedule.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -110,17 +110,19 @@ describe("readOnlyCheckout", () => {
 describe("feedback grants", () => {
   const feedback = (grants: unknown[]): ScheduleActionSpec => ({ kind: "feedback", settings: { prompt: "Review", grants } });
 
-  it("a browser grant gives Browse on the sandbox URL only; without it there is no Browse", async () => {
+  it("a browser grant gives the broker's browse tool on the sandbox URL only; without it there is none", async () => {
     const withGrant = await setup(feedback([{ kind: "browser", url: "http://localhost:5173/" }]), () => ({ output: { tasks: [] } }));
     await withGrant.fire();
     const spec = withGrant.runner.specs[0]!;
-    expect(spec.tools.map((t) => t.name)).toEqual(["Read", "Glob", "Grep", "Browse"]);
+    expect(spec.tools.map((t) => t.name)).toEqual(["Read", "Glob", "Grep"]);
+    expect(spec.tool_grants).toEqual([BROWSE_TOOL]);
     expect(spec.prompt).toContain("browser: Browse may read only http://localhost:5173/");
     expect(spec.system_prompt).toContain("http://localhost:5173/");
     await withGrant.store.close();
     const without = await setup(feedback([]), () => ({ output: { tasks: [] } }));
     await without.fire();
     expect(without.runner.specs[0]!.tools.map((t) => t.name)).not.toContain("Browse");
+    expect(without.runner.specs[0]!.tool_grants).toEqual([]);
     await without.store.close();
   });
 

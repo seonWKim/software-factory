@@ -47,7 +47,7 @@ export interface AgentTool { readonly name: string; readonly capability: "read" 
 
 /** A schedule's grants as ScheduleGrantBroker handed them out (src/core/schedule-grants.ts): what its agent run gets. */
 export interface GrantedAgentRun {
-  /** The read-only tools, then each granted one (Browse on the sandbox URL, Write and Edit in the notes folder). */
+  /** The read-only tools, then each granted one (Write and Edit in the notes folder; the browser and shell grants are broker tools in tool_grants). */
   tools: readonly AgentTool[];
   /** The repo the run checks out, and its base: the factory repo's, or the granted repo's. */
   repo: string;

@@ -4,7 +4,7 @@
 // (3, the owner's value; a lower `max_tasks` setting lowers it) evidence-backed tasks as local work items, in the
 // agent's order, and records the rest on the run: over the cap, without evidence or a title, or withheld by the leak scanner.
 // The items' source IDs come from the schedule, the slot and the task's place, so a second run files none twice
-// and never more than the cap for one occurrence. Without a browser grant there is no Browse tool.
+// and never more than the cap for one occurrence. Without a browser grant there is no browse tool.
 
 import type { GrantHandOut, ScheduleActionRoute } from "../ports.js";
 
