@@ -128,15 +128,15 @@ describe("the capture set", () => {
     const real = await readFile(join(import.meta.dirname, "..", "web", "src", "pages.ts"), "utf8");
     const pages = capturePages(real);
     const named = new Map(pages.map((p) => [p.name, p]));
-    const tabs = ["settings-integrations", "settings-advanced", "plugins-skills", "plugins-tools", "plugins-models", "health-runs", "health-cost", "health-review"];
+    const tabs = ["calendar-schedules", "settings-integrations", "settings-advanced", "plugins-skills", "plugins-tools", "plugins-models", "health-runs", "health-cost", "health-review"];
     expect(tabs.every((n) => named.has(n))).toBe(true);
     expect(named.get("settings-integrations")).toEqual({ name: "settings-integrations", path: "settings?tab=integrations" });
     expect(named.get("plugins-skills")?.open).toBeUndefined();
     // A page's default tab keeps its existing capture and gets no second one.
     expect(["settings-general", "plugins-mcp", "health-overview"].some((n) => named.has(n))).toBe(false);
     expect(named.get("plugins-skills-evals")).toEqual({ name: "plugins-skills-evals", path: "plugins?tab=skills", open: "evals" });
-    // A dialog on a page with no tabs is named <page>-<dialog> and opened from the page's default URL.
-    expect(named.get("schedules-new-schedule")).toEqual({ name: "schedules-new-schedule", path: "schedules", open: "new-schedule" });
+    // A dialog on a tab is named <page>-<tab>-<dialog>.
+    expect(named.get("calendar-schedules-new-schedule")).toEqual({ name: "calendar-schedules-new-schedule", path: "calendar?tab=schedules", open: "new-schedule" });
     expect(pages.at(-1)?.name).toBe("plugins-skills-evals");
     // A checkout whose sidebar lacks a tabbed page has none of its tabs; a page with no tabs gains nothing.
     expect(capturePages(PAGES_TS).map((p) => p.name).filter((n) => n.startsWith("plugins") || n.startsWith("health"))).toEqual([]);
@@ -261,11 +261,11 @@ describe("the Chrome browser", () => {
     };
     const out = await captureAll(chromeBrowser(), new MemoryStorage(), { item_id: "i", run_id: "r", exec, signal });
     const sent = stdin.trim().split("\n").map((l) => (JSON.parse(l) as { shoot: { path: string; open?: string } }).shoot);
-    expect(sent.filter((x) => x.open).map((x) => `${x.path}:${x.open}`)).toEqual([...Array(4).fill("schedules:new-schedule"), ...Array(4).fill("plugins?tab=skills:evals")]);
+    expect(sent.filter((x) => x.open).map((x) => `${x.path}:${x.open}`)).toEqual([...Array(4).fill("calendar?tab=schedules:new-schedule"), ...Array(4).fill("plugins?tab=skills:evals")]);
     expect(sent.filter((x) => !x.open).every((x) => !("open" in x))).toBe(true);
     expect(out.reason).toBe("the capture of plugins-skills-evals at 390px, light failed: the evals dialog did not open");
     expect(out.captures.map((c) => c.page)).toContain("plugins-skills");
-    expect(out.captures.map((c) => c.page)).toContain("schedules-new-schedule");
+    expect(out.captures.map((c) => c.page)).toContain("calendar-schedules-new-schedule");
     expect(out.captures.map((c) => c.page)).not.toContain("plugins-skills-evals");
   });
 
