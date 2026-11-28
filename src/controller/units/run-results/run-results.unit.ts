@@ -41,6 +41,8 @@ export {
 
 /** blocked_reason of an adopted PR whose review found bugs: the factory never changes a person's branch. */
 const CHANGES_REQUESTED = "changes_requested";
+/** The reason of the close of an implement run that answered already_done. */
+const ALREADY_DONE = "already_done";
 /** The state a PR waiting on its merge conflict is in; every comment that sets it ends with its footer (`/resolve`). */
 export const CONFLICT_PATCH = { stage: "REVIEW", blocked_on: "human", blocked_reason: CONFLICT_PENDING } as const;
 /**
@@ -76,6 +78,27 @@ function autoAnswers(spec: TriageOutput): string {
   const head = "Auto mode (`system:auto`) approves a spec below tier 4 with no owner-only decision and no path on the gate list.";
   if (items.length === 0) return head;
   return [head, "", "Answers taken (each decision's proposed default):", ...items.map((d) => `- ${d.text} → ${d.default}`)].join("\n");
+}
+
+/**
+ * An implement run with no commits that answered already_done, its checks passing on the base (design 04-pre-push-gates,
+ * decided 2026-11-28): CLOSED / completed with no merge sha, as a merge closes it, so its linked tasks complete
+ * (sql/tasks.ts) and its split parent closes or releases the next phase (closeSplitIfDone). A flagged text blocks on the leak.
+ */
+async function alreadyDone(c: Ctx, it: WorkItem, run: Run, text: string, tokens: number, checks: StateChangeDetail | undefined): Promise<Decision> {
+  const scan = await c.k.d.scanner.scan("comment", text);
+  if (!scan.clean) return leakBlock(c, it, run, scan.findings.map((f) => f.rule), { token_cost: tokens }, "implement");
+  await c.unit("outbox").comment(it, ALREADY_DONE, [
+    "## Factory: already done",
+    "",
+    `The implement run made no commits: the work is already on \`${c.k.cfg.repo.base_branch}\`. The factory ran the checks there and they passed, so the item closes as completed, with no merge.`,
+    "",
+    quote(text),
+  ].join("\n"));
+  return {
+    patch: { stage: "CLOSED", close_reason: "completed", merge_sha: null, blocked_on: "none", blocked_reason: null, token_cost: tokens },
+    actor: SYSTEM, reason: ALREADY_DONE, detail: { run_id: run.id, ...checks }, ack_run: run.id,
+  };
 }
 
 /** Applies finished runs: triage, implement, review, update and resolve outcomes, failures, retries and blocks. */
@@ -232,6 +255,8 @@ export class RunResultsUnit {
         }
         case "implement": {
           if (data.floor_block === true) return floorBlock(this.c, it, run, data, tokens);
+          // No commits and an already_done answer that passed the check gate (design 04-pre-push-gates, decided 2026-11-28).
+          if (typeof data.already_done === "string" && data.already_done.trim()) return alreadyDone(this.c, it, run, data.already_done.trim(), tokens, doneChecksDetail(data));
           // What the PR changes, for the coordination cost (design §5, 2026-11-03); absent on older outcomes.
           const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? (data.files as string[]) : null;
           // The run stored its push and PR as intents (RFC 0015 M7): the item waits for outbound, and `prDelivered`

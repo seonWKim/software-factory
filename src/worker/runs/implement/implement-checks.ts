@@ -40,6 +40,25 @@ export async function checksBeforePush(w: Worker, run: Run, item: WorkItem, hand
 }
 
 /**
+ * The check gate of an already-done answer (design 04-pre-push-gates, decided 2026-11-28): the branch has no commits, so
+ * the check list and the item's done checks run once on the base, with no fix step (there is no change to fix). A
+ * failure fails the run with `checks_failed` and the item does not close. Returns each done-when line's result.
+ */
+export async function alreadyDoneChecks(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, baseSha: string, sel: PrePushSelection): Promise<DoneCheckResult[] | undefined> {
+  const done = doneCheckRound(w.cfg.repo, item.done_checks);
+  await cleanTree(w, handle);
+  let r = done.mark(sel.saw(await w.runCheckList(run, handle, signal, { commands: await sel.commands(done.commands, (a) => w.git(handle, a), baseSha) })));
+  if (done.testFile(r)) r = done.missing(r, (await w.git(handle, ["ls-files", "-z", "--", "tests"])).split("\0").filter(Boolean));
+  if (!r.failed) return done.results(r);
+  const missing = toolchainMissing(r.failed.tail);
+  if (missing) throw new RunFailure(TOOLCHAIN_MISSING, `\`${ranText(w, r.failed)}\` could not start its tools: ${missing}`.slice(0, 500), true, { output_tail: r.failed.tail });
+  const results = done.results(r);
+  throw new RunFailure(CHECKS_FAILED_RUN, `the implementer answered already_done, but ${failedText(w, r.failed)}${checkedLinesText(r.failed)}`.slice(0, 500), false, {
+    output_tail: r.failed.tail, ...(results ? { done_checks: results } : {}),
+  } as RunFailure["extra"]);
+}
+
+/**
  * The base rerun (design §4, decided 2026-11-07): the test files `failed` names run again with the same
  * command and env, on a temporary detached worktree of `baseSha` inside the run folder (BASE_CHECKOUT_DIR),
  * removed afterwards. Returns the files when every one fails on the base too; null when the output names no

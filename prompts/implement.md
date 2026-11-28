@@ -36,6 +36,9 @@ Merge conflicts:
 - Change only what the resolution needs. The allowed paths still apply; a change outside them blocks the push.
 - Migrations: name and place each migration by the repository's own migration naming rule. When both sides add a migration that clashes under that rule, keep the base's migration as it is and rename ours to the next free name the rule allows.
 
+When the work is already done (already_done):
+- Only when the spec's work is already on the base and you make no commits: run the done-when checks, and answer `already_done` naming each check you ran and saw pass (for example "tests/x.test.ts passed 24/24"). Plain text, at most 500 characters. The factory runs the checks again and closes the item as completed; a failing check fails the run. With any commit, `already_done` is ignored, so leave it out.
+
 When the spec cannot be met (spec_conflict):
 - When the plan is right but misses a few files (at most 3, for example a text area file, a component that moved, a test that checks the old behaviour, a generated doc), do not return `spec_conflict`: return `needs_human` with those files in its `paths` (below). The factory usually adds them itself and runs you again, without a new plan.
 - Return `spec_conflict` with its reason (which criterion, and why it cannot be met inside the spec) when criteria contradict each other or a repo rule, or the change needs more than 3 files outside the allowed paths. Plain text, at most 500 characters.
