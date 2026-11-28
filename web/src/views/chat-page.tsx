@@ -7,7 +7,6 @@ import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { CopyIcon } from "../components/ui/copy.js";
 import { Markdown } from "../components/ui/markdown.js";
-import { PageHeader } from "../components/ui/notice.js";
 import { Textarea } from "../components/ui/textarea.js";
 import { TypingDots } from "../components/ui/typing-dots.js";
 import { type MessageKey } from "../i18n/en.js";
@@ -222,7 +221,8 @@ export function ChatPage() {
   const empty = chat.said.length === 0;
   return (
     <div data-page-fill className="mx-auto flex w-full max-w-[48rem] min-w-0 flex-1 flex-col">
-      <PageHeader title={t("page.chat")} />
+      {/* No visible title (owner, 2026-11-28): the sidebar already says Chat. The h1 stays for screen readers. */}
+      <h1 className="sr-only">{t("page.chat")}</h1>
       {empty ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-6 py-10 text-center">
           <div className="space-y-2">
