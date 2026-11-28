@@ -28,7 +28,11 @@ export interface EventDetails {
 }
 
 /** One event of a Calendar page day: the row the Tasks views list too, with its instants and its details. */
-export interface CalendarEvent extends EventRow {
+export interface CalendarEvent extends Omit<EventRow, "kind"> {
+  /** `agent`: a schedule's run or next slot (source `agent`), read-only; `event`: every other entry (a human event). */
+  kind: "event" | "agent";
+  /** Only on an agent entry: the schedule's next slot, not a run. */
+  next?: boolean;
   starts_at: string;
   ends_at: string;
   /** Null for an event stored before details were kept, or one its calendar said nothing more about. */

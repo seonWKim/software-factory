@@ -16,10 +16,25 @@ export type ActivityActorsOutput = { "as_of": string; "retention_days": number; 
 /** Every autonomous actor with its name, what it does now, its last and next run and its recent actions (outcome, reason, transcript or log link; none older than the retention days), and the open factory alerts (clear one with POST /api/v1/alarms/dismiss). (GET /api/v1/activity, permission read) */
 export const activityActors = (input: ActivityActorsInput): Promise<ActivityActorsOutput> => getJson<ActivityActorsOutput>("/api/v1/activity" + query(input));
 
+export type ChatCommandInput = { "item": string; "command": string; "note"?: string; "proposal"?: string };
+export type ChatCommandOutput = { "seq": number; "command": string; "outcome"?: string; "refusal"?: string | null; "state"?: { [key: string]: unknown } };
+/** Send one item command from the chat: a decision's button (command, with the reply box's words as note when it takes one), a reply as a sentence (command sentence, its words as note: the controller reads it into pending proposals), or a proposal's Confirm all (proposal_confirm) or Cancel (proposal_cancel) with the proposal's id. It is the item commands route's own request, with the same owner check: Approve and Merge answer their outcome and the item's state. (POST /api/v1/chat/command, permission owner) */
+export const chatCommand = (token: string, input: ChatCommandInput, signal?: AbortSignal) => postJson<ChatCommandOutput & { error?: string }>("/api/v1/chat/command", token, input, signal);
+
+export type ChatDecisionInput = { "item": string };
+export type ChatDecisionOutput = { "waiting": boolean; "title": string | null; "why": { [key: string]: unknown }; "in_short": string | null; "evidence": string | null; "commands": Array<{ [key: string]: unknown }>; "proposals": Array<{ "id": string; "lines": Array<string> }> };
+/** The Needs-you decision of one item (?item=<id>), as the chat shows it: waiting (the owner is next), the item's title, its why (the question), In short and the newest factory message (the evidence), its commands (one button each, with the viewer's allowed and reason) and its pending proposals (each with its typed lines). An unknown item is a 404. (GET /api/v1/chat/decision, permission owner) */
+export const chatDecision = (input: ChatDecisionInput): Promise<ChatDecisionOutput> => getJson<ChatDecisionOutput>("/api/v1/chat/decision" + query(input));
+
 export type ChatImageInput = { "id": string };
 export type ChatImageOutput = { "id": string; "name": string; "media_type": string; "size_bytes": number; "data": string };
 /** One image a chat message was sent with (?id=<id> from chat.transcript): its name, type and bytes as base64. An unknown id is a 404. (GET /api/v1/chat/image, permission owner) */
 export const chatImage = (input: ChatImageInput): Promise<ChatImageOutput> => getJson<ChatImageOutput>("/api/v1/chat/image" + query(input));
+
+export type ChatModeInput = { [key: string]: never };
+export type ChatModeOutput = { "mode": string };
+/** The stored permission mode (permission_mode, one setting for the owner): ask_all, ask_irreversible (the default) or full. Read only: the chat shows it in its mode badge. (GET /api/v1/chat/mode, permission owner) */
+export const chatMode = (input: ChatModeInput): Promise<ChatModeOutput> => getJson<ChatModeOutput>("/api/v1/chat/mode" + query(input));
 
 export type ChatSendInput = { "session_id"?: string; "text": string; "images"?: Array<{ "name": string; "data": string }> };
 export type ChatSendOutput = { "turn_id": string; "session_id": string; "outcome": "answered" | "refused" | "failed"; "reason"?: string; "detail"?: string; "reply"?: string; "images_withheld"?: Array<string> };
@@ -100,3 +115,13 @@ export type SchedulesSuggestionsInput = { "schedule"?: string };
 export type SchedulesSuggestionsOutput = { "suggestions": Array<{ [key: string]: unknown }> };
 /** One schedule's suggestions, oldest first, each state as of now (?schedule=<id>). (GET /api/v1/schedules/suggestions, permission read) */
 export const schedulesSuggestions = (input: SchedulesSuggestionsInput): Promise<SchedulesSuggestionsOutput> => getJson<SchedulesSuggestionsOutput>("/api/v1/schedules/suggestions" + query(input));
+
+export type TasksCreateInput = { "id": string; "words": string; "project"?: string };
+export type TasksCreateOutput = { "task": { [key: string]: unknown } };
+/** Add one plain task from quick-add words (today, tomorrow or YYYY-MM-DD, HH:MM, !1 to !3, #list, +project, every day/week/month; the rest is its title) under the caller's id (tk_ and 8 to 64 characters), so a retry adds one task; project is the page's tab unless the words name one. (POST /api/v1/tasks, permission owner) */
+export const tasksCreate = (token: string, input: TasksCreateInput, signal?: AbortSignal) => postJson<TasksCreateOutput & { error?: string }>("/api/v1/tasks", token, input, signal);
+
+export type TasksListInput = { "project"?: string };
+export type TasksListOutput = { "as_of": string; "today_date": string; "today": { [key: string]: unknown }; "upcoming": Array<{ [key: string]: unknown }>; "projects": Array<{ [key: string]: unknown }>; "active_projects": Array<{ [key: string]: unknown }>; "calendar": Array<{ [key: string]: unknown }>; "csrf_token": string | null; "can_build": boolean; "add_key": string };
+/** The plain tasks' views (Today, Upcoming and Projects by #list): the open tasks and the recently done ones, with the stored calendar events; ?project=<slug> keeps only that task project's tasks (400 for an archived project, 404 for an unknown one). (GET /api/v1/tasks, permission read) */
+export const tasksList = (input: TasksListInput): Promise<TasksListOutput> => getJson<TasksListOutput>("/api/v1/tasks" + query(input));

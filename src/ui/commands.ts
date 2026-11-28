@@ -119,6 +119,9 @@ export interface CommandsResult {
 
 const err = (status: number, error: string): CommandsResult => ({ status, value: { error } });
 
+/** The 503 with no actor: commands need ui.user_id off loopback. */
+const COMMANDS_OFF = "Commands are off: this server is not on loopback, so it needs ui.user_id. Settings (/app/settings#page-commands) says what to set.";
+
 /** The code of the missing-or-stale-token 403: the page fetches a fresh token from GET /api/v1/session and retries once. */
 export const STALE_CSRF = "stale_csrf";
 /** The 403 for a missing or stale x-csrf-token, on every write route; the only 403 that carries a code. */
@@ -174,7 +177,7 @@ export async function commandsPost(d: UiDeps, rawId: string, req: CommandsReques
   if (req.origin === undefined || req.origin.trim().toLowerCase() !== own) return err(403, "Origin must be this page's own origin.");
   if (mediaType(req.contentType) !== "application/json") return err(415, "Content-Type must be application/json.");
   const c = d.commands;
-  const off = err(503, "Commands are off: this server is not on loopback, so it needs ui.user_id. Settings (/app/settings#page-commands) says what to set.");
+  const off = err(503, COMMANDS_OFF);
   if (!c) return off;
   if (!csrfMatches(c.token, req.csrfToken)) return staleCsrf();
   if (c.actor === null) return off;
@@ -185,14 +188,28 @@ export async function commandsPost(d: UiDeps, rawId: string, req: CommandsReques
   } catch {
     return err(400, "The body must be JSON.");
   }
-  const parsed = parseCommand(body);
-  if ("error" in parsed) return err(400, parsed.error);
   let id: string;
   try {
     id = decodeURIComponent(rawId);
   } catch {
-    return err(404, "No such work item.");
+    // The body's own error comes first, as before: a bad body is a 400 whatever the path's id.
+    const parsed = parseCommand(body);
+    return "error" in parsed ? err(400, parsed.error) : err(404, "No such work item.");
   }
+  return itemCommandSend(d, id, body);
+}
+
+/**
+ * One item command request after the route's guards (Origin, Content-Type, token, body size): the body checked by
+ * parseCommand, the item looked up, then one app_command_requests row and, for Approve and Merge, applyNow's owner
+ * check and transition. commandsPost and the chat's chat.command capability (design 04-chat-commands) both end here,
+ * so a button in the chat sends exactly what the item page and a typed command send.
+ */
+export async function itemCommandSend(d: UiDeps, id: string, body: unknown): Promise<CommandsResult> {
+  const c = d.commands;
+  if (!c || c.actor === null) return err(503, COMMANDS_OFF);
+  const parsed = parseCommand(body);
+  if ("error" in parsed) return err(400, parsed.error);
   const item = await d.store.getWorkItem(id as WorkItemId);
   if (!item) return err(404, "No such work item.");
   const key = `app:${randomUUID()}`;

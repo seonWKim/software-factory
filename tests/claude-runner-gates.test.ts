@@ -406,13 +406,26 @@ for (const mode of MODES) describe(`gate hooks: Stop (${mode})`, () => {
 
   it("blocks at most stop_checks times, then allows the next stop: no loop", async () => {
     const f = setup();
-    f.sandbox.revLists = {};
+    f.sandbox.checks["npm run typecheck"] = { exit: 2, out: "src/a.ts(3,1): error TS2304" };
     const reasons: string[] = [];
     f.sandbox.agent = stopper(reasons);
     const result = await drive(f, mode);
     expect(reasons).toHaveLength(3);
     expect(reasons[2]).toContain("stop check 3 of 3");
-    expect(result.gate_blocks?.map((b) => b.attempt)).toEqual([1, 2, 3]);
+    expect(result.gate_blocks?.map((b) => [b.check, b.attempt])).toEqual([["npm run typecheck", 1], ["npm run typecheck", 2], ["npm run typecheck", 3]]);
+  });
+
+  it("blocks a stop with no commits once, naming already_done; the next stop passes and the outcome decides", async () => {
+    const f = setup();
+    f.sandbox.revLists = {};
+    const reasons: string[] = [];
+    f.sandbox.agent = stopper(reasons);
+    const result = await drive(f, mode);
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toContain("no commits yet: commit your work, or answer `already_done` naming the passing checks");
+    // No check runs for a run with no commits: the check gate after the run does, on an already_done answer.
+    expect(f.sandbox.commands.some((c) => c.startsWith("npm"))).toBe(false);
+    expect(result.gate_blocks).toEqual([{ hook: "stop", check: "no_commits", attempt: 1 }]);
   });
 
   it("counts the blocks earlier steps used against the cap", async () => {

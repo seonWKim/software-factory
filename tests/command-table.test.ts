@@ -92,11 +92,11 @@ describe("the command table", () => {
   });
 
 
-  it("every entry declares reversible as true or false, and the reversible ones are exactly the twelve that can be undone (design 08-permissions)", () => {
+  it("every entry declares reversible as true or false, and the reversible ones are exactly the thirteen that can be undone (design 08-permissions)", () => {
     for (const c of COMMAND_TABLE) expect(typeof c.reversible, c.name).toBe("boolean");
     expect(COMMAND_TABLE.filter((c) => c.reversible).map((c) => c.name).sort()).toEqual([
       "mode", "project archive", "project rename", "project restore", "run-next", "schedule pause", "schedule resume",
-      "settings reset", "settings set", "task done", "task project", "task reopen",
+      "settings reset", "settings set", "task add", "task done", "task project", "task reopen",
     ]);
   });
 

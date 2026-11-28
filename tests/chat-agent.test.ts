@@ -348,7 +348,7 @@ describe("chatTurn", () => {
     const { d, store } = await turnDeps(llm);
     try {
       expect(await chatTurn(d, "s1", "What areas are there?")).toEqual({ ok: true, reply: "One area: store." });
-      expect(llm.seen[0]!.tools!.map((t) => t.name)).toEqual(["list_areas", "list_features", "get_feature", "get_feature_schema"]);
+      expect(llm.seen[0]!.tools!.map((t) => t.name)).toEqual(["list_areas", "list_features", "get_feature", "get_feature_schema", "add_task"]);
       const tool = { role: "tool", content: JSON.stringify({ areas: [{ id: "store", capabilities: ["store.ping"] }] }), tool_call_id: "c_list_areas" };
       expect(llm.seen[1]!.messages).toContainEqual(tool);
       const stored = (await store.listChatMessages("s1")).map((m) => [m.seq, m.role, m.content]);
@@ -379,7 +379,7 @@ describe("chatTurn", () => {
     }
   });
 
-  it("offers no write tool and refuses a call to one, or to an unknown name, without reaching the broker", async () => {
+  it("offers no write tool of the broker (add_task is the chat's own, design 04-chat-agent) and refuses a call to one, or to an unknown name, without reaching the broker", async () => {
     const calls: string[] = [];
     const tools: ToolDescriptor[] = [
       { name: "repo.read", read_only: true, description: "Reads.", input_schema: { type: "object" } },
@@ -397,7 +397,7 @@ describe("chatTurn", () => {
     const { d, store } = await turnDeps(llm, broker);
     try {
       expect(await chatTurn(d, "s1", "Push it.")).toEqual({ ok: true, reply: "I cannot write." });
-      expect(llm.seen[0]!.tools!.map((t) => t.name)).toEqual(["repo.read"]);
+      expect(llm.seen[0]!.tools!.map((t) => t.name)).toEqual(["repo.read", "add_task"]);
       expect(calls).toEqual(["repo.read"]);
       const refused = llm.seen[1]!.messages.find((m) => m.tool_call_id === "c_git.store_branch")!;
       expect(refused.content).toMatch(/not a read-only tool/);

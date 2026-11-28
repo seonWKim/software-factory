@@ -171,13 +171,26 @@ describe("worker: gate hook blocks", () => {
     ]);
   });
 
-  it("the worker's gates still decide: a step that stopped after its blocks with no commits fails with no_commits", async () => {
-    const f = await pipeline({ implement: reporting([{ hook: "stop", check: "no_commits", attempt: 3 }]) });
+  it("the worker's gates still decide: a step that stopped after its one no-commit block, with no commits and no already_done, fails with no_commits", async () => {
+    const f = await pipeline({ implement: reporting([{ hook: "stop", check: "no_commits", attempt: 1 }]) });
     f.sandbox.commits = [];
     const item = await f.submit();
     await f.step();
     const [run] = await f.runs(item, "implement");
     expect(run!.outcome).toMatchObject({ status: "failed", error_code: "no_commits", detail: "the implementer made no commits" });
+  });
+
+  it("a step with no commits that answered already_done is not failed by no_commits: its answer goes through the check gate", async () => {
+    const f = await pipeline({
+      config: { repo: { ...config.repo, check_commands: CHECKS } },
+      implement: () => ({ output: { ...DONE.output, already_done: "npm test passed" }, gate_blocks: [{ hook: "stop", check: "no_commits", attempt: 1 }] }),
+    });
+    f.sandbox.commits = [];
+    const item = await f.submit();
+    await f.step();
+    const [run] = await f.runs(item, "implement");
+    expect(run!.outcome).toMatchObject({ status: "succeeded", data: { already_done: "npm test passed" } });
+    expect(f.sandbox.commands.filter((c) => c.startsWith("npm")).slice(0, 2)).toEqual(["npm run typecheck", "npm test"]);
   });
 });
 
