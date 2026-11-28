@@ -4,13 +4,13 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CheckRound } from "../src/core/checks.js";
 import type { Run, RunId } from "../src/core/types.js";
-import { GATE_HOOKS_DIR, gateAnswerer, runDeadline } from "../src/impl/runner/gate-hooks.js";
+import { GATE_HOOKS_DIR, STOP_HOOK_SLACK_MS, gateAnswerer, hookLimits, runDeadline } from "../src/impl/runner/gate-hooks.js";
 import { storeSql } from "../src/impl/store/sql/store-sql.js";
 import { readTestSlots, recordTestSlotWait } from "../src/impl/store/sql/test-slots.js";
 import type { AgentRunSpec, GateHooks } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import { testSlotCap } from "../src/worker/settings/test-slots.setting.js";
-import { TEST_SLOT_POLL_MS, TestSlot, isFullTestRun } from "../src/worker/test-slot.js";
+import { TEST_SLOT_POLL_MS, TEST_SLOT_WAIT_CEILING_MS, TestSlot, isFullTestRun } from "../src/worker/test-slot.js";
 import { config } from "./helpers/fakes/config.js";
 import { FakeSandbox } from "./helpers/fakes/runner.js";
 import { pipeline } from "./helpers/harness.js";
@@ -262,8 +262,46 @@ describe("the Stop check", () => {
     const t = timers();
     const spec = { run_id: id("a"), sandbox: { id: "h", workdir }, signal: new AbortController().signal, timeout_ms: 60_000, gate_hooks: gates, stop_check_ms: LIMIT, test_slot: slot } as unknown as AgentRunSpec & { gate_hooks: GateHooks; stop_check_ms: number };
     const answers = await gateAnswerer({ dir, spec, sandbox, after: t.after }, spec.signal);
-    return { ...f, answers, ran, slot, t };
+    return { ...f, answers, ran, slot, t, spec };
   }
+
+  it("a wait longer than the hook slack and the backstop margin cuts neither the check nor the run; the block reaches the agent", async () => {
+    const s = await stopFixture(async () => ({ ...ok(), exit_code: 1 }));
+    // The outside timers a run without a slot gets, and the ones this run gets with its slot.
+    const without = hookLimits({ stop_check_ms: s.spec.stop_check_ms, gate_hooks: s.spec.gate_hooks });
+    const withSlot = hookLimits(s.spec);
+    const wait = without.maxCheckMs + TEST_SLOT_POLL_MS;
+    expect(wait).toBeGreaterThan(STOP_HOOK_SLACK_MS);
+    expect(wait).toBeGreaterThan(without.stopHookMs);
+    expect(wait + LIMIT).toBeLessThanOrEqual(withSlot.stopHookMs);
+    expect(s.spec.timeout_ms + wait + LIMIT).toBeLessThanOrEqual(s.spec.timeout_ms + withSlot.maxCheckMs);
+    expect(withSlot).toEqual({ stopHookMs: without.stopHookMs + TEST_SLOT_WAIT_CEILING_MS, maxCheckMs: without.maxCheckMs + 4 * TEST_SLOT_WAIT_CEILING_MS });
+
+    await s.store.takeTestSlot({ holder: id("other"), cap: 1, lease_ms: LEASE });
+    const answer = s.answers.answer({ event: "stop" });
+    const run = runDeadline(1_000, () => s.answers.checking() || s.slot.waiting(), s.t.after);
+    for (let waited = 0; waited < wait; waited += TEST_SLOT_POLL_MS) {
+      // The other run's heartbeat renews its slot, so this run keeps waiting past the other's lease.
+      await s.store.takeTestSlot({ holder: id("other"), cap: 1, lease_ms: LEASE });
+      s.t.advance(TEST_SLOT_POLL_MS);
+      s.clock.advance(TEST_SLOT_POLL_MS);
+      await settle();
+      expect(s.slot.waiting()).toBe(true);
+    }
+    expect(run.signal.aborted).toBe(false);
+    expect(s.answers.stopTimeout()).toBeNull();
+    // The grant: the check runs, fails, and its block is the answer the agent gets.
+    await s.store.releaseTestSlot(id("other"));
+    s.clock.advance(TEST_SLOT_POLL_MS);
+    const a = await answer;
+    expect(s.ran.at(-1)).toEqual({ cmd: "npm test", held: [id("a")] });
+    expect(a?.block.check).toBe("npm test");
+    expect(s.answers.stopTimeout()).toBeNull();
+    expect(run.signal.aborted).toBe(false);
+    // Not waiting and no check open: the run timeout counts again and ends the run.
+    s.t.advance(1_000);
+    expect(run.signal.aborted).toBe(true);
+  });
 
   it("runs the full test command under the slot and frees it, also when the check fails", async () => {
     const s = await stopFixture(async () => ({ ...ok(), exit_code: 1 }));

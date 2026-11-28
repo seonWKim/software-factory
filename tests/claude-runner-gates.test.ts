@@ -12,10 +12,11 @@ import type { RunKind } from "../src/core/types.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { ClaudeCodeRunner, buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";
 import {
-  GATE_HOOKS_DIR, HOOK_SCRIPT, HOOK_SPEC, PATH_REFUSAL, STOP_HOOK_SLACK_MS, editCovered, gateAnswerer, hookScript, runDeadline, specFile,
+  GATE_HOOKS_DIR, HOOK_SCRIPT, HOOK_SPEC, PATH_REFUSAL, STOP_HOOK_SLACK_MS, editCovered, gateAnswerer, hookLimits, hookScript, runDeadline, specFile,
 } from "../src/impl/runner/gate-hooks.js";
 import { type AgentRunResult, type AgentRunSpec, type GateHooks, STOP_CHECK_TIMED_OUT, type StopSelection } from "../src/interfaces/agent-runner.js";
 import agentStopCheck from "../src/worker/settings/agent-stop-check-ms.setting.js";
+import { TEST_SLOT_WAIT_CEILING_MS } from "../src/worker/test-slot.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 import { PackCheckRunner } from "../src/runtime/hooks/pack-checks.js";
@@ -118,6 +119,8 @@ class GateSandbox implements Sandbox {
   gitThrows = false;
   agent: (a: Agent) => Promise<void> = async () => {};
   claudeArgs: string[] = [];
+  /** The timeout the claude exec got: the runner's backstop. */
+  claudeTimeoutMs: number | undefined;
 
   async create(): Promise<SandboxHandle> {
     throw new Error("unused");
@@ -129,6 +132,7 @@ class GateSandbox implements Sandbox {
     const res = (exit_code: number, stdout = ""): ExecResult => ({ exit_code, signal: null, stdout, stderr: "", timed_out: false });
     if (cmd[0] === BIN) {
       this.claudeArgs = [...cmd];
+      this.claudeTimeoutMs = o.timeout_ms;
       const settings = JSON.parse(cmd[cmd.indexOf("--settings") + 1]!) as { hooks?: Hooks };
       const hooks = settings.hooks;
       // The real sandboxes kill the CLI on its signal or its timeout; the fake agent is left behind.
@@ -563,6 +567,30 @@ describe("gate hooks: the Stop check's time limit", () => {
       timeouts.push((await hookSettings(f)).Stop![0]!.hooks[0]!.timeout);
     }
     expect(timeouts).toEqual([600 + STOP_HOOK_SLACK_MS / 1000, 3_600 + STOP_HOOK_SLACK_MS / 1000]);
+  });
+
+  it.runIf(canListen)("a run with a test_slot adds the slot wait ceiling to the Stop hook timeout and, per Stop check, to the backstop; one without keeps both", async () => {
+    const slot = { waiting: () => false, wait_ceiling_ms: TEST_SLOT_WAIT_CEILING_MS, runChecks: (c: never, sig: AbortSignal, run: (c: never, s: AbortSignal) => never) => run(c, sig) };
+    const seen: { hook: number; backstop: number | undefined }[] = [];
+    for (const test_slot of [undefined, slot]) {
+      const f = setup("implement", GATES, 4_000);
+      f.spec = { ...f.spec, ...(test_slot ? { test_slot } : {}) };
+      const hook = (await hookSettings(f)).Stop![0]!.hooks[0]!.timeout;
+      seen.push({ hook, backstop: f.sandbox.claudeTimeoutMs });
+    }
+    const checks = GATES.stop_checks + 1;
+    const before = { hook: Math.ceil((4_000 + STOP_HOOK_SLACK_MS) / 1000), backstop: 60_000 + checks * (4_000 + STOP_HOOK_SLACK_MS) };
+    expect(seen).toEqual([before, {
+      hook: Math.ceil((4_000 + STOP_HOOK_SLACK_MS + TEST_SLOT_WAIT_CEILING_MS) / 1000),
+      backstop: before.backstop + checks * TEST_SLOT_WAIT_CEILING_MS,
+    }]);
+  });
+
+  it("the outside limits add the slot wait ceiling only for a run with a test_slot", () => {
+    const spec = { stop_check_ms: 4_000, gate_hooks: { ...GATES, stop_blocks_used: 1 } };
+    expect(hookLimits(spec)).toEqual({ stopHookMs: 4_000 + STOP_HOOK_SLACK_MS, maxCheckMs: 3 * (4_000 + STOP_HOOK_SLACK_MS) });
+    const slotted = hookLimits({ ...spec, test_slot: { waiting: () => true, wait_ceiling_ms: TEST_SLOT_WAIT_CEILING_MS, runChecks: async () => ({ results: [], failed: null }) } });
+    expect(slotted).toEqual({ stopHookMs: 4_000 + STOP_HOOK_SLACK_MS + TEST_SLOT_WAIT_CEILING_MS, maxCheckMs: 3 * (4_000 + STOP_HOOK_SLACK_MS + TEST_SLOT_WAIT_CEILING_MS) });
   });
 
   it("a check within its limit passes as before, with nothing killed", async () => {
