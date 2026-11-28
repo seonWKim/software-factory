@@ -405,6 +405,18 @@ export function ItemPage({ id }: { id: string }) {
   const hasTabs = item.has_changes === true || q.data.screenshots != null;
   const tab: ItemTab = hasTabs && picked === "changes" ? "changes" : "overview";
   const tabs: { id: ItemTab; label: string }[] = [{ id: "overview", label: t("item.tabOverview") }, { id: "changes", label: t("item.tabChanges") }];
+  const decisionCard = (
+    <ItemDecision
+      id={item.id}
+      commands={q.data.commands ?? []}
+      replies={q.data.replies ?? []}
+      reason={item.stage === "CLOSED" ? <ClosedStatus item={item} timeline={timeline} thread={q.data.thread ?? []} now={now} viewer={viewer} /> : item.why ? (
+        <p data-testid="why" className="text-sm text-pretty break-words">
+          <WhyText why={item.why} />
+        </p>
+      ) : null}
+    />
+  );
   return (
     <>
       <nav aria-label={t("item.breadcrumb")} className="mb-1 text-sm">
@@ -419,27 +431,22 @@ export function ItemPage({ id }: { id: string }) {
           {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
         </p>
       )}
-      {/* The page's blocks in one gap-6 column; `*:mt-0` drops each Card's own top margin here, so the gap is not doubled. */}
-      <div className="flex flex-col gap-6 *:mt-0">
-      <ItemAbout item={item} />
-      <ItemDecision
-        id={item.id}
-        commands={q.data.commands ?? []}
-        replies={q.data.replies ?? []}
-        reason={item.stage === "CLOSED" ? <ClosedStatus item={item} timeline={timeline} thread={q.data.thread ?? []} now={now} viewer={viewer} /> : item.why ? (
-          <p data-testid="why" className="text-sm text-pretty break-words">
-            <WhyText why={item.why} />
-          </p>
-        ) : null}
-      />
+      {/* The page's blocks sit in gap-6 columns; `*:mt-0` drops each Card's own top margin here, so the gap is not doubled.
+          The decision and About come first; from lg the Facts rail sits beside them, below lg the blocks stack in that order. */}
       {tab === "changes" ? (
-        <>
+        <div className="flex flex-col gap-6 *:mt-0">
+          {decisionCard}
+          <ItemAbout item={item} />
           {item.has_changes && <ItemChangesTab id={item.id} />}
           <ItemChanges itemId={item.id} screenshots={q.data.screenshots ?? null} review={q.data.screenshot_review ?? null} />
-        </>
+        </div>
       ) : (
-        <>
-        {/* The facts are a block of the page like the others: in a Card, so they start on the cards' content edge. */}
+        <div data-item-overview className="flex flex-col gap-6 *:mt-0 lg:grid lg:grid-cols-[minmax(0,1fr)_17.5rem] lg:items-start">
+        <div data-item-main className="flex min-w-0 flex-col gap-6 *:mt-0">
+          {decisionCard}
+          <ItemAbout item={item} />
+        </div>
+        <div data-item-rail className="min-w-0 lg:col-start-2 lg:row-span-2 lg:row-start-1">
         <Card label={t("item.facts")}>
           <ItemFacts item={item} now={now} />
           <Disclosure data-ids className="mt-2" summary={t("ids.summary")}>
@@ -451,6 +458,8 @@ export function ItemPage({ id }: { id: string }) {
             </dl>
           </Disclosure>
         </Card>
+        </div>
+        <div className="flex min-w-0 flex-col gap-6 *:mt-0 lg:col-start-1">
         <CurrentRun runs={runs} itemId={item.id} now={now} />
         <Thread entries={q.data.thread ?? []} now={now} />
         <Phases phases={item.phases ?? []} />
@@ -492,9 +501,9 @@ export function ItemPage({ id }: { id: string }) {
             })}
           </ol>
         </Card>
-        </>
+        </div>
+        </div>
       )}
-      </div>
     </>
   );
 }

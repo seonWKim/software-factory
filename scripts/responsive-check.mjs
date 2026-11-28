@@ -28,6 +28,8 @@ const SHOTS = join(ROOT, ".playwright-mcp", "responsive");
 
 export const VIEWPORTS = [
   { width: 1280, height: 800 },
+  // The item page's wireframe size: item-primary-top checks the primary Button's top here (design 09-dashboard-item).
+  { width: 1440, height: 900 },
   { width: 1024, height: 768 },
   // Below the sidebar's 1024px breakpoint, with the icon-only sidebar: row titles must not wrap (title-wrap).
   { width: 800, height: 1024 },

@@ -13,6 +13,8 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 - Every button on a page is 28px (`sm`, the segments, a Disclosure's trigger) or 32px (`md`, `icon`, tabs, a Select) tall. Controls on one toolbar row are one height, 32px: a `sm` Button in a `PageToolbar` is drawn `md`.
 - Text a page shows as stored or as written (a title, a body, a check's message, an error detail, a stored code, a transcript, a Data table) sits inside `[data-raw]`; outside it a page shows no snake_case name and no `wi_` ID.
 - Blocks of one page are stacked in one flex column with a `gap-6` (the Card gap), not with `mb-*` or `mt-*` on each block.
+- A detail page has a facts rail at 1024px and wider: its facts sit in one column about 280px wide beside the main column, and stack under the main column below 1024px (the item page, 09-dashboard-item.md).
+- A status badge sits before the text it judges (a done-when row's Pass or Fail comes before its criterion), so the two are read together.
 - Spacing comes from the scale in `foundations.md` (gap and padding classes), never a pixel value.
 - Colours are token classes. No hex colour, no Tailwind palette class (`tests/design-system.test.ts`).
 
@@ -98,6 +100,8 @@ Seven short rules from the owner's review of 2026-11-15. Each can be checked on 
    - Bad: a row prints a 10-line description, so only three skills fit on the screen; or a view writes `line-clamp-2` by hand.
 
 ## History
+
+- **Detail-page facts rail and badge-first rows** (2026-11-28, item page layout, 09-dashboard-item.md): added the two rules "a detail page has a facts rail at 1024px and wider" and "a status badge sits before the text it judges" to Page layout. No rule replaced.
 
 - **A page's views and filters went "in the row under the page title"** (until 2026-11-20, the page template decision in docs/design/09-dashboard-shell.md). Before: each page placed its tabs, search and switches itself (Work's search above its state tabs, Calendar's switch in a column of its own, Health's failure window in the middle of the page), pages set their own widths (Rules `max-w-3xl`) and sub-group h3s had three styles.
 

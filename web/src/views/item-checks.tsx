@@ -5,7 +5,7 @@ import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 
 // The About card's done-when checks (docs/design/09-dashboard-item.md): each line with its check in plain words and
-// its latest result as a Badge; a failed line's output tail sits behind a closed Disclosure. A withheld text shows the
+// its latest result as a Badge before the line; a failed line's output tail sits behind a closed Disclosure. A withheld text shows the
 // withheld note, never the marker.
 
 /** Each result's Badge: its level (the one status colour map) and its label. */
@@ -28,6 +28,7 @@ function CheckRow({ row }: { row: ItemCheck }) {
   const tail = row.result === "fail" && row.output_tail !== null && !withheld(row.output_tail) ? row.output_tail : null;
   return (
     <li data-check={row.result} className="flex min-w-0 items-start gap-3 py-2 first:pt-0 last:pb-0">
+      <span data-check-badge className="shrink-0"><Badge level={r.level}>{t(r.label)}</Badge></span>
       <div className="min-w-0 flex-1">
         <p className="text-sm text-pretty break-words">{shown(row.line)}</p>
         <p className="mt-0.5 text-xs text-pretty text-text-2 wrap-anywhere">{t(HOW[row.check.kind], { check: shown(row.check.text) })}</p>
@@ -37,7 +38,6 @@ function CheckRow({ row }: { row: ItemCheck }) {
           </Disclosure>
         )}
       </div>
-      <span data-check-badge className="shrink-0"><Badge level={r.level}>{t(r.label)}</Badge></span>
     </li>
   );
 }
