@@ -1,4 +1,5 @@
 import { Refusal, capped, defineTool, str } from "./guard.js";
+import type { ToolContext } from "./types.js";
 
 /** How long one Browse fetch may take before it is cut off. */
 const BROWSE_TIMEOUT_MS = 30_000;
@@ -15,6 +16,25 @@ function ownerUrl(raw: string | null): URL {
   if (url.protocol !== "https:" && url.protocol !== "http:") throw new Refusal(`Browse: the owner-set URL must be http or https, not ${url.protocol}`);
   if (url.username !== "" || url.password !== "") throw new Refusal("Browse: the owner-set URL may not carry credentials");
   return url;
+}
+
+/**
+ * One GET of `url` with no body, no credentials and no redirect followed; its text, or a Refusal. Browse's fetch, and the
+ * schedule browser grant's broker tool's (src/core/schedule-grants.ts).
+ */
+export async function fetchOwnerUrl(url: URL, opts: { fetch?: ToolContext["fetch"]; signal?: AbortSignal }): Promise<string> {
+  const timeout = AbortSignal.timeout(BROWSE_TIMEOUT_MS);
+  const res = await (opts.fetch ?? fetch)(url.href, {
+    method: "GET",
+    redirect: "manual",
+    credentials: "omit",
+    signal: opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout,
+  });
+  if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
+    throw new Refusal(`Browse: the owner-set URL answered with a redirect (${res.status}); redirects are not followed`);
+  }
+  if (!res.ok) throw new Refusal(`Browse: the owner-set URL answered ${res.status}`);
+  return res.text();
 }
 
 /**
@@ -38,17 +58,6 @@ export const Browse = defineTool({
     if (asked !== undefined && asked !== ctx.policy.browse_url && asked !== url.href) {
       throw new Refusal("Browse fetches only the owner-set URL");
     }
-    const timeout = AbortSignal.timeout(BROWSE_TIMEOUT_MS);
-    const res = await (ctx.fetch ?? fetch)(url.href, {
-      method: "GET",
-      redirect: "manual",
-      credentials: "omit",
-      signal: ctx.signal ? AbortSignal.any([ctx.signal, timeout]) : timeout,
-    });
-    if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
-      throw new Refusal(`Browse: the owner-set URL answered with a redirect (${res.status}); redirects are not followed`);
-    }
-    if (!res.ok) throw new Refusal(`Browse: the owner-set URL answered ${res.status}`);
-    return capped(ctx, await res.text());
+    return capped(ctx, await fetchOwnerUrl(url, ctx));
   },
 });

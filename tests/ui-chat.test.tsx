@@ -96,7 +96,9 @@ describe("Chat is a page of its own", () => {
     expect(link.getAttribute("href")).toBe("/app/chat");
     fireEvent.click(link);
     expect(location.pathname).toBe("/app/chat");
-    expect(await screen.findByRole("heading", { level: 1, name: "Chat" })).toBeTruthy();
+    // The page draws no "Chat" title (owner, 2026-11-28); its h1 is only for screen readers.
+    expect((await screen.findByRole("heading", { level: 1, name: "Chat" })).className).toContain("sr-only");
+    expect(document.querySelector("main header")).toBeNull();
     expect(link.getAttribute("aria-current")).toBe("page");
     expect(screen.getByLabelText("Your message").tagName).toBe("TEXTAREA");
   });
