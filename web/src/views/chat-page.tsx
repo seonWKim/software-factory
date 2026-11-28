@@ -310,7 +310,7 @@ export function ChatPage() {
       <h1 className="sr-only">{t("page.chat")}</h1>
       {/* The page's own action row at the top right, in the place of a header's actions, with no title beside it. */}
       {/* The mode Badge sits at the start of the row, above the conversation (decision 2); New chat stays at the end. */}
-      <div data-chat-actions className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+      <div data-chat-actions className="flex min-w-0 flex-wrap items-center justify-between gap-2 pb-3">
         <ModeBadge />
         <Button variant="secondary" className="ms-auto" onClick={reset}>{t("chat.newChat")}</Button>
       </div>
