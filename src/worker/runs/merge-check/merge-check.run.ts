@@ -95,7 +95,8 @@ async function mergeCheck(w: Worker, c: RunCall): Promise<Record<string, unknown
     if (jdk) w.d.log.info(`merge check runs on JDK ${await checkJdk(w, handle, jdk)} (${jdk.from})`, { run_id: run.id });
     const red = async (failed: Failed, ui = false) => ({ result: "red", why: "checks", ...(await failure(w, failed, ui)), base_sha, merged_sha, node: nodeUsed });
     const runOn = async (commands: readonly GateEntry[]) => {
-      const r = await w.runCheckList(run, handle, signal, { commands: commands.map((c) => viaNode(node, c)), env: checkEnv(w) });
+      // The full test command runs under the run's host test slot (design 04-pre-push-gates), matched off its Node wrapper.
+      const r = await w.runCheckList(run, handle, signal, { commands: commands.map((c) => viaNode(node, c)), env: checkEnv(w), slot: offNodeEntry });
       return { ...r, failed: r.failed && { ...r.failed, command: offNode(r.failed.command) } };
     };
     const install = await w.checkTools.installStep(w.cfg.repo, runOn, (go) => cachedInstall(w, handle, go));
@@ -160,6 +161,11 @@ async function checkList(w: Worker, runOn: (commands: readonly GateEntry[]) => P
 /** A gate entry on the chosen Node (onNode), its folder kept. */
 function viaNode(node: NodeChoice, e: GateEntry): GateEntry {
   return "argv" in e ? { dir: e.dir, argv: onNode(node, e.argv) } : onNode(node, e);
+}
+
+/** A gate entry as the project names it, without the Node wrapper `viaNode` adds. */
+function offNodeEntry(e: GateEntry): GateEntry {
+  return "argv" in e ? { dir: e.dir, argv: offNode(e.argv) } : offNode(e);
 }
 
 /**

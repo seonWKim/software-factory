@@ -18,9 +18,10 @@ import { outputLines } from "./conflict-ask.js";
 export async function checksBeforePush(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, s: FixContext, sel: PrePushSelection): Promise<{ results: CheckResult[]; fixed: boolean; done: DoneCheckResult[] | undefined }> {
   // Each round selects the test files its own diff reaches; enforce mode runs only those, shadow mode notes misses (design §4).
   // The item's done checks run in the same round, after the check list (doneCheckRound); their failure is a failed check.
+  // The full test command runs under the run's host test slot (design 04-pre-push-gates); a narrowed one takes none.
   const done = doneCheckRound(w.cfg.repo, item.done_checks);
   const round = async () => {
-    const r = done.mark(sel.saw(await w.runCheckList(run, handle, signal, { ...SHRINK_ENV, commands: await sel.commands(done.commands, (a) => w.git(handle, a), s.baseSha) })));
+    const r = done.mark(sel.saw(await w.runCheckList(run, handle, signal, { ...SHRINK_ENV, slot: true, commands: await sel.commands(done.commands, (a) => w.git(handle, a), s.baseSha) })));
     // A failed test file check whose file the branch does not have says so, not its exit code (design 04-pre-push-gates).
     return done.testFile(r) ? done.missing(r, (await w.git(handle, ["ls-files", "-z", "--", "tests"])).split("\0").filter(Boolean)) : r;
   };
@@ -47,7 +48,7 @@ export async function checksBeforePush(w: Worker, run: Run, item: WorkItem, hand
 export async function alreadyDoneChecks(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, baseSha: string, sel: PrePushSelection): Promise<DoneCheckResult[] | undefined> {
   const done = doneCheckRound(w.cfg.repo, item.done_checks);
   await cleanTree(w, handle);
-  let r = done.mark(sel.saw(await w.runCheckList(run, handle, signal, { commands: await sel.commands(done.commands, (a) => w.git(handle, a), baseSha) })));
+  let r = done.mark(sel.saw(await w.runCheckList(run, handle, signal, { slot: true, commands: await sel.commands(done.commands, (a) => w.git(handle, a), baseSha) })));
   if (done.testFile(r)) r = done.missing(r, (await w.git(handle, ["ls-files", "-z", "--", "tests"])).split("\0").filter(Boolean));
   if (!r.failed) return done.results(r);
   const missing = toolchainMissing(r.failed.tail);

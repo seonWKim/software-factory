@@ -42,6 +42,22 @@ describe("test slots: take", () => {
     expect(await rows(store)).toEqual([{ holder: run(1) }]);
   });
 
+  it("a take by a holder of a live slot extends only that holder's own lease (the heartbeat renewal)", async () => {
+    const { store, clock } = await newStore();
+    expect(await store.takeTestSlot({ holder: run(1), cap: 2, lease_ms: LEASE })).toBe(true);
+    expect(await store.takeTestSlot({ holder: run(2), cap: 2, lease_ms: LEASE })).toBe(true);
+    const other = await store.db.all("SELECT expires_at FROM worker_test_slots WHERE holder = ?", [run(2)]);
+    clock.advance(LEASE / 2);
+    expect(await store.takeTestSlot({ holder: run(1), cap: 2, lease_ms: LEASE })).toBe(true);
+    const renewed = new Date(clock.now().getTime() + LEASE).toISOString();
+    expect(await store.db.all("SELECT expires_at FROM worker_test_slots WHERE holder = ?", [run(1)])).toEqual([{ expires_at: renewed }]);
+    expect(await store.db.all("SELECT expires_at FROM worker_test_slots WHERE holder = ?", [run(2)])).toEqual(other);
+    // Past the first lease, the renewed slot still counts against the cap; the other one has expired.
+    clock.advance(LEASE / 2);
+    expect(await store.takeTestSlot({ holder: run(3), cap: 1, lease_ms: LEASE })).toBe(false);
+    expect(await rows(store)).toEqual([{ holder: run(1) }]);
+  });
+
   it("runs under the claim lock: with no claim lock row to read, the take fails and writes nothing", async () => {
     const { store } = await newStore();
     await store.db.run("ALTER TABLE worker_claim_locks RENAME TO moved_claim_locks");

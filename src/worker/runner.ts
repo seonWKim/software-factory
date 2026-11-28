@@ -7,6 +7,7 @@ import { TimeBasedTicks } from "../shared/ticks/plugins/time-based/time-based-ti
 import type { HookDescriptor } from "../shared/hook.js";
 import { type RoleCatalog, SqlHookAudit, loadHooks, loadRoles, runHooks } from "../runtime/index.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
+import { TestSlots } from "./test-slot.js";
 import { PACK_TOOL_REFUSED, type PackRefusal as PackGrantRefusal, checkPackGrants, packRefusalMessage } from "../packs/pack-grants.js";
 import { type FactoryConfig, type GateEntry, type Prompts, STALL_DEFAULTS, grantsFor, readOnlyOverlaps, readOnlyRunFields } from "../core/config.js";
 import { LiveSettings } from "../core/settings.js";
@@ -19,7 +20,6 @@ import type { MergeIO } from "../core/mechanical.js";
 import { Read, type ToolSpec } from "../core/tools/index.js";
 import { type Run, type RunKind, type RunOutcome, type RunUsage, type Timestamp, type WorkItem, type WorkerId, usageTokens } from "../core/types.js";
 import { type AgentRunResult, type AgentRunSpec, type PackCheckPoint, type PackMcpServer, type PackChecks, type PackGate, type PackRefusal, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, runFailureDetail, toolsNotExposedMessage } from "../interfaces/agent-runner.js";
-import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfaces/tool-broker.js";
 import { checkWrapperSource, wrapperSeedFields } from "./toolchain-seeds.js";
@@ -59,7 +59,7 @@ export class Worker {
 
   /** The lease signal of each run the engine holds: aborted when the engine loses the run. */
   readonly leases = new Map<string, AbortController>();
-
+  /** The host test slot of each run being executed (test-slot.ts), renewed by its heartbeat. Scratch for one run. */ readonly testSlots = new TestSlots(this);
   private readonly engines: ExecutionEngines;
   private readonly ticks: TickSource;
   private rolesReady: Promise<RoleCatalog> | null;
@@ -298,7 +298,7 @@ export class Worker {
     } finally {
       this.d.passports?.end(run.id, token);
       this.meters.delete(run);
-      this.scratch.delete(run);
+      this.scratch.delete(run); this.testSlots.end(run.id);
       stopHeartbeat.abort();
       stopWatch.abort();
       await heartbeat;
@@ -469,8 +469,8 @@ export class Worker {
       await this.live.refresh();
       const { lease_ms } = this.live.values();
       if (gap > 2 * heartbeat_ms) this.d.log.warn("heartbeat late; renewing now", { run_id: run.id, gap_ms: gap, lease_ms });
-      // The engine renews the lease (the live lease_ms) and times out steps; a lost lease aborts the run (onLost).
-      await engine.heartbeat(t);
+      // The engine renews the lease (the live lease_ms) and times out steps; a lost lease aborts the run (onLost). A held test slot is renewed with it (test-slot.ts).
+      await Promise.all([engine.heartbeat(t), this.testSlots.renew(run.id)]);
       // Recorded after the renewal, so a late wake renews first (design §5 Host sleep).
       await this.checkWake(due, woke, run);
       if (this.leases.get(run.id)?.signal.aborted) {
@@ -642,13 +642,13 @@ export class Worker {
 
   /**
    * The check list in the run folder (or `o.cwd` inside it) with the check env: the tool env and the slot env
-   * (worker index, test workers), plus `o.env`. That env never reaches an agent. Stops at the first failure. `o.commands`: the list to run; absent, the configured checks.
+   * (worker index, test workers), plus `o.env`. That env never reaches an agent. Stops at the first failure. `o.commands`: the list to run; absent, the configured checks. `o.slot` (the pre-push and merge checks): the full test command runs under the run's host test slot (true, or a map to the configured command).
    */
-  async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal, o: { commands?: readonly GateEntry[]; cwd?: string; env?: Record<string, string> } = {}): Promise<CheckRound> {
-    const round = await runChecks({
-      sandbox: this.d.sandbox, handle, commands: o.commands ?? checkCommands(this.cfg.repo), ...(o.cwd === undefined ? {} : { cwd: o.cwd }),
-      env: { ...this.d.toolEnv, ...this.slotEnv(), ...o.env }, timeout_ms: this.cfg.run_timeout_ms, signal, redact: [],
-    });
+  async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal, o: { commands?: readonly GateEntry[]; cwd?: string; env?: Record<string, string>; slot?: true | ((entry: GateEntry) => GateEntry) } = {}): Promise<CheckRound> {
+    const round = await this.testSlots.run(run.id, o.commands ?? checkCommands(this.cfg.repo), signal, o.slot, (commands, sig) => runChecks({
+      sandbox: this.d.sandbox, handle, commands, ...(o.cwd === undefined ? {} : { cwd: o.cwd }),
+      env: { ...this.d.toolEnv, ...this.slotEnv(), ...o.env }, timeout_ms: this.cfg.run_timeout_ms, signal: sig, redact: [],
+    })).catch((err: unknown) => { throw signal.aborted ? new RunFailure("lease_lost", "run aborted", true) : err; });
     if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
     return round;
   }
@@ -744,7 +744,7 @@ export class Worker {
       on_output: outputRecorder(this.d, run, this.cfg.stall_ms ?? STALL_DEFAULTS.stall_ms),
       ...declared,
       ...role,
-      ...(on_tool_call ? { gate_hooks: { ...role.gate_hooks!, on_tool_call } } : {}),
+      ...(on_tool_call ? { gate_hooks: { ...role.gate_hooks!, on_tool_call } } : {}), ...(role.gate_hooks ? { test_slot: this.testSlots.slot(run.id) } : {}), // the Stop check's full test runs under the slot
       env_allowlist: { ...role.env_allowlist, ...this.slotEnv() },
       ...readOnlyRunFields(this.cfg), ...(await wrapperSeedFields(this.cfg, this.d, handle, this.slotEnv())), // design 05-sandbox.md: read-only fields, wrapper seeds
       ...(session ? { session } : {}),
