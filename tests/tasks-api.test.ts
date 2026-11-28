@@ -10,13 +10,11 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { TASK_BODY_PATH, TASK_DELETE_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SUB_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
+import { TASKS_PATH, TASK_BODY_PATH, TASK_DELETE_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SUB_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
 import { PROJECTS_PATH, PROJECT_DELETE_PATH, TASK_PROJECT_PATH } from "../src/ui/projects-api.js";
 import { silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
-/** tasks.list and tasks.create (src/api/capabilities/tasks.ts): the registry's route, the page's URL. */
-const TASKS_PATH = "/api/v1/tasks";
 const HOST = "127.0.0.1:4310";
 const ORIGIN = `http://${HOST}`;
 const ACTOR = "local:owner@example.com" as UserId;

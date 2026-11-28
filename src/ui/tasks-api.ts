@@ -26,6 +26,8 @@ import { TASKS_ADD_KEYS, type TasksAddKey } from "../runtime/settings/tasks-add-
 import { Withholder } from "./withhold.js";
 import { PROJECTS_PATH, PROJECT_DELETE_PATH, TASK_PROJECT_PATH, writeProject, writeProjectDelete, writeTaskProject } from "./projects-api.js";
 
+/** The Tasks page's URL: tasks.list and tasks.create (src/api/capabilities/tasks.ts) are the registry's route there. */
+export const TASKS_PATH = "/api/v1/tasks";
 export const TASK_BUILD_PATH = "/api/v1/tasks/build";
 export const TASK_CREATE_PATH = "/api/v1/tasks/create";
 export const TASK_EDIT_PATH = "/api/v1/tasks/edit";
