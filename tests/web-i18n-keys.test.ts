@@ -112,4 +112,12 @@ describe("English catalog wording", () => {
       .map(([key, v]) => `${key}: ${v}`);
     expect(bad).toEqual([]);
   });
+
+  it("the chat greeting says the chat can add a task, and promises nothing automatic", () => {
+    const body = String(en["chat.greetingBody"]);
+    expect(body).not.toContain("makes no task");
+    expect(body).toContain("add a task");
+    expect(body).toContain("when you ask");
+    expect(body).not.toMatch(/automatically|without asking/i);
+  });
 });

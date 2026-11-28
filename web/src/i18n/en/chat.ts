@@ -1,7 +1,7 @@
 // English text, area: chat. A key's prefix (before its first dot) belongs to this file only.
 export const chat = {
   "chat.greeting": "What do you want to know?",
-  "chat.greetingBody": "Ask about your tasks, the work in progress or the factory itself. The chat only answers: it makes no task and runs no command.",
+  "chat.greetingBody": "Ask about your tasks, the work in progress or the factory itself. The chat answers questions. It can add a task when you ask, and runs no other command.",
   "chat.examples": "Example questions",
   "chat.example.needs": "What needs me today?",
   "chat.example.working": "What is the factory working on?",
