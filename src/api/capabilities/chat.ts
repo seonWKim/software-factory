@@ -108,7 +108,7 @@ export const CHAT: readonly Declared[] = [
   }),
   declare({
     id: "chat.turns", area: "chat",
-    description: `The recent chat turns, newest first, at most limit (default ${CHAT_TURNS_LIMIT}): each with its turn_id, session_id, status, reason and times.`,
+    description: `The recent chat turns, newest first, at most limit (default ${CHAT_TURNS_LIMIT}): each with its turn_id, session_id, status, reason, times and preview (the text of its session's first user message as stored, null when that message has no text).`,
     permission: "owner", method: "GET", path: "/api/v1/chat/turns",
     input: object({ limit: optional(number()) }), output: object({ turns: array(jsonObject()) }),
     run: async (c, i) => ({ turns: (await c.d.store.listChatTurns(i.limit ?? CHAT_TURNS_LIMIT)).map((t) => ({ ...t })) }),

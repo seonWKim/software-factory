@@ -48,7 +48,7 @@ export const chatTranscript = (input: ChatTranscriptInput): Promise<ChatTranscri
 
 export type ChatTurnsInput = { "limit"?: number };
 export type ChatTurnsOutput = { "turns": Array<{ [key: string]: unknown }> };
-/** The recent chat turns, newest first, at most limit (default 50): each with its turn_id, session_id, status, reason and times. (GET /api/v1/chat/turns, permission owner) */
+/** The recent chat turns, newest first, at most limit (default 50): each with its turn_id, session_id, status, reason, times and preview (the text of its session's first user message as stored, null when that message has no text). (GET /api/v1/chat/turns, permission owner) */
 export const chatTurns = (input: ChatTurnsInput): Promise<ChatTurnsOutput> => getJson<ChatTurnsOutput>("/api/v1/chat/turns" + query(input));
 
 export type CoordinatorStatusInput = { [key: string]: never };
