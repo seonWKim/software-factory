@@ -381,7 +381,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
   const st = await itemState({ store: s, w: c.w, now: c.now, lease_ms: c.d.lease_ms }, it, runs, changes); // as the list reads it
   const timeline = [];
   for (const sc of changes) timeline.push(await stateChange(c, sc));
-  const runRows = [];
+  const runRows = [], waits = new Set(runs.length > 0 ? await s.listTestSlotWaits() : []); // the store's waiting rows, read in this request
   for (const r of runs) {
     const attempts = [];
     for (const a of attemptsOf.get(r.id) ?? []) attempts.push(await attemptRow(c, a));
@@ -399,6 +399,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
           ? { code: await c.text(r.outcome.error_code, "run_outcome"), detail: await c.text(r.outcome.detail, "run_outcome") }
           : null,
       attempts,
+      waiting_for_slot: waits.has(r.id),
     });
   }
   return {

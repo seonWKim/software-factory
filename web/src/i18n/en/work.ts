@@ -120,6 +120,7 @@ export const work = {
   "item.result.succeeded": "Done",
   "item.result.failed": "Failed",
   "item.result.canceled": "Stopped",
+  "item.result.waitingForSlot": "waiting for a test slot",
   "item.open": "Open",
   "item.timeline": "Timeline",
   "item.on": " on ",

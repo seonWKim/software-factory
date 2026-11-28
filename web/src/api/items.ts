@@ -277,6 +277,8 @@ export interface ItemDetail {
     error: { code: string | null; detail: string | null } | null;
     /** One record per claim, in attempt order; the last one's worker is the run's worker. */
     attempts?: { attempt: number; worker_id: string | null }[];
+    /** True while the run waits for a host test slot (the store's `waiting:` row); its status stays `running`. */
+    waiting_for_slot?: boolean;
   }[];
   /** Host sleeps recorded during one of the item's runs, newest first. */
   sleeps?: HostSleepRow[];
