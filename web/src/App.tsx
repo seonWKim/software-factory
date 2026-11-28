@@ -27,7 +27,6 @@ import { ProposalsPage } from "./views/proposals.js";
 import { CalendarPage } from "./views/calendar.js";
 import { SchedulesPage } from "./views/schedules.js";
 import { TasksPage } from "./views/tasks.js";
-import { WorkersPage } from "./views/workers.js";
 
 const VIEWS: Record<string, () => JSX.Element> = {
   items: ItemsPage,
@@ -35,7 +34,6 @@ const VIEWS: Record<string, () => JSX.Element> = {
   calendar: CalendarPage,
   schedules: SchedulesPage,
   chat: ChatPage,
-  workers: WorkersPage,
   health: HealthPage,
   rules: RulesPage,
   proposals: ProposalsPage,

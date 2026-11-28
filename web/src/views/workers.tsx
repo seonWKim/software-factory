@@ -1,9 +1,8 @@
-import { useState } from "react";
 import { type GraphEdge, type GraphNode, type ItemGraph, WINDOW_MS, WORKER_WINDOWS, type WindowRun, type WindowRuns, type WorkerWindow, useItemGraph, useWindowRuns } from "../api/workers.js";
 import { Card } from "../components/ui/card.js";
 import { FOCUS } from "../components/ui/control.js";
 import { Tooltip } from "../components/ui/menu.js";
-import { EmptyState, PageHeader, PageToolbar } from "../components/ui/notice.js";
+import { EmptyState } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { en, type MessageKey } from "../i18n/en.js";
@@ -15,7 +14,7 @@ import { itemPath } from "../pages.js";
 import { runKindLabel } from "./common.js";
 import { type KindCategory, KIND_CATEGORIES, connectedNodes, kindCategory, layerOrder, packLanes, timelineSpans } from "./workers-layout.js";
 
-// The Workers page (design 09-dashboard-workers): a timeline of the runs in the window, packed into lanes so the
+// The Workers cards of Health's Runs tab (design 09-dashboard-workers): a timeline of the runs in the window, packed into lanes so the
 // lanes in use at a moment are the runs that ran at once, and the items' dependency graph in layers left to right.
 // Read only: the window switch is the only control. Bars and nodes are links to the item, each in the shared Tooltip;
 // hovering or focusing a node highlights its edges and its runs. Plain elements and one SVG on token colours.
@@ -261,25 +260,22 @@ export function DependencyGraph({ data, highlight, onHighlight }: { data: ItemGr
   );
 }
 
-/** The Workers page: the window switch in its PageToolbar, the timeline card and the graph card. Nothing on it edits anything. */
-export function WorkersPage() {
-  const [win, setWin] = useState<WorkerWindow>("6h");
-  const [highlight, setHighlight] = useState<string | null>(null);
+/** The timeline card of Health's Runs tab: the window switch (it narrows the graph card too) is the card's action. */
+export function WorkersTimelineCard({ win, onWindow, highlight }: { win: WorkerWindow; onWindow(w: WorkerWindow): void; highlight: string | null }) {
   const runs = useWindowRuns(win);
+  return (
+    <Card title={t("workers.timeline.title")} action={<SegmentedControl label={t("workers.window")} options={WORKER_WINDOWS.map((w) => ({ id: w, label: w }))} value={win} onChange={onWindow} />}>
+      {runs.data ? <Timeline data={runs.data} windowMs={WINDOW_MS[win]} highlight={highlight} /> : runs.isError ? <ErrorNote error={runs.error} /> : <Loading label="loading.timeline" onRetry={() => void runs.refetch()} />}
+    </Card>
+  );
+}
+
+/** The dependency graph card of Health's Runs tab. Nothing on it edits anything. */
+export function WorkersGraphCard({ win, highlight, onHighlight }: { win: WorkerWindow; highlight: string | null; onHighlight(id: string | null): void }) {
   const graph = useItemGraph(win);
   return (
-    <div>
-      <PageHeader title={t("page.workers")} description={t("workers.description")} />
-      {/* The window narrows both cards, so it is a page control: the toolbar's second row. */}
-      <PageToolbar>
-        <SegmentedControl label={t("workers.window")} options={WORKER_WINDOWS.map((w) => ({ id: w, label: w }))} value={win} onChange={setWin} />
-      </PageToolbar>
-      <Card title={t("workers.timeline.title")}>
-        {runs.data ? <Timeline data={runs.data} windowMs={WINDOW_MS[win]} highlight={highlight} /> : runs.isError ? <ErrorNote error={runs.error} /> : <Loading label="loading.timeline" onRetry={() => void runs.refetch()} />}
-      </Card>
-      <Card title={t("workers.graph.title")}>
-        {graph.data ? <DependencyGraph data={graph.data} highlight={highlight} onHighlight={setHighlight} /> : graph.isError ? <ErrorNote error={graph.error} /> : <Loading label="loading.graph" onRetry={() => void graph.refetch()} />}
-      </Card>
-    </div>
+    <Card title={t("workers.graph.title")}>
+      {graph.data ? <DependencyGraph data={graph.data} highlight={highlight} onHighlight={onHighlight} /> : graph.isError ? <ErrorNote error={graph.error} /> : <Loading label="loading.graph" onRetry={() => void graph.refetch()} />}
+    </Card>
   );
 }

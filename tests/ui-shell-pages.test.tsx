@@ -81,12 +81,12 @@ describe("app pages", () => {
     expect(within(running).getByText("Being built")).toBeTruthy();
   });
 
-  it("the sidebar leads with Chat (owner 2026-11-27: \"Chat should be the first menu\") and links Workers after Health; Activity, Failures, Spend, Runners and Data are not among them", () => {
+  it("the sidebar leads with Chat (owner 2026-11-27: \"Chat should be the first menu\") and ends its System block with Work, Health; Activity, Failures, Spend, Runners and Data are not among them", () => {
     mount();
     const side = screen.getByRole("complementary", { name: "Sidebar" });
     const links = [...side.querySelectorAll("a")].filter((a) => a.getAttribute("href")?.startsWith("/app/") && a.getAttribute("href") !== "/app/");
     expect(links.map((a) => [a.textContent, a.getAttribute("href")])).toEqual([
-      ["Chat", "/app/chat"], ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Schedules", "/app/schedules"], ["Work", "/app/items"], ["Health", "/app/health"], ["Workers", "/app/workers"],
+      ["Chat", "/app/chat"], ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Schedules", "/app/schedules"], ["Work", "/app/items"], ["Health", "/app/health"],
       ["Rules", "/app/rules"], ["Plugins", "/app/plugins"], ["Settings", "/app/settings"],
     ]);
     for (const gone of ["Activity", "Failures", "Spend", "Runners", "Data"]) expect(within(side).queryByRole("link", { name: gone })).toBeNull();
@@ -127,13 +127,14 @@ describe("app pages", () => {
     expect(within(screen.getByRole("navigation", { name: "Tasks" })).getByRole("link", { name: "Schedules" }).getAttribute("aria-current")).toBe("page");
   });
 
-  it("/app/workers opens the Workers page with no redirect; /app/users is no longer an old path", async () => {
+  it("/app/workers redirects to Health's Runs tab and keeps its query; Workers is not in the sidebar; /app/users is not an old path", async () => {
+    expect(redirectFor("/app/workers")).toBe("/app/health?tab=runs");
+    expect(redirectFor("/app/workers", "?x=1")).toBe("/app/health?tab=runs&x=1");
+    expect(redirectFor("/app/users")).toBeNull();
     history.replaceState(null, "", "/app/workers");
     mount();
-    expect(await screen.findByRole("heading", { level: 1, name: "Workers" })).toBeTruthy();
-    expect(location.pathname).toBe("/app/workers");
-    expect(redirectFor("/app/workers")).toBeNull();
-    expect(redirectFor("/app/users")).toBeNull();
+    await vi.waitFor(() => expect(location.pathname + location.search).toBe("/app/health?tab=runs"));
+    expect(within(screen.getByRole("complementary", { name: "Sidebar" })).queryByRole("link", { name: "Workers" })).toBeNull();
   });
 
   it("/app/spend, /app/failures and /app/runners redirect to their Health tab, keeping the query; /app/queue still does", async () => {
@@ -169,7 +170,7 @@ describe("app pages", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
     expect(await screen.findByRole("heading", { level: 2, name: "Failures" })).toBeTruthy();
     expect(screen.getByRole("heading", { level: 2, name: "Host sleeps" })).toBeTruthy();
-    expect([...document.querySelectorAll("[data-health-section]")].map((e) => e.getAttribute("data-health-section"))).toEqual(["runners", "failures", "sleeps"]);
+    expect([...document.querySelectorAll("[data-health-section]")].map((e) => e.getAttribute("data-health-section"))).toEqual(["runners", "timeline", "graph", "failures", "sleeps"]);
     expect(document.querySelector("[data-failures-window]")).not.toBeNull();
     expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
     cleanup();
