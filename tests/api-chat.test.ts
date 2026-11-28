@@ -87,7 +87,7 @@ describe("chat.send", () => {
     // Running while the model was called, answered after.
     expect(seenStatus).toEqual(["running"]);
     const rows = await turns();
-    expect(rows).toEqual([{ turn_id: r.value.turn_id, session_id: r.value.session_id, status: "answered", reason: null, created_at: "2026-11-26T09:00:00.000Z", finished_at: "2026-11-26T09:00:00.000Z", first_question: "What can you do?" }]);
+    expect(rows).toEqual([{ turn_id: r.value.turn_id, session_id: r.value.session_id, status: "answered", reason: null, preview: "What can you do?", created_at: "2026-11-26T09:00:00.000Z", finished_at: "2026-11-26T09:00:00.000Z" }]);
   });
 
   it("keeps a given session, and the spend row uses the turn's own id", async () => {
@@ -182,7 +182,7 @@ describe("chat.transcript and chat.turns", () => {
     const all = await get("/api/v1/chat/turns");
     expect(all.status).toBe(200);
     expect(all.value.turns.map((t: ChatTurnRecord) => t.turn_id)).toEqual([...ids].reverse());
-    expect(all.value.turns[1]).toEqual({ turn_id: ids[1], session_id: expect.stringMatching(/^cs_/), status: "failed", reason: "model_error", created_at: "2026-11-26T09:00:01.000Z", finished_at: "2026-11-26T09:00:01.000Z", preview: null });
+    expect(all.value.turns[1]).toEqual({ turn_id: ids[1], session_id: expect.stringMatching(/^cs_/), status: "failed", reason: "model_error", preview: null, created_at: "2026-11-26T09:00:01.000Z", finished_at: "2026-11-26T09:00:01.000Z" });
     expect(all.value.turns[0]).toMatchObject({ preview: "three" });
     expect(all.value.turns[0]).toMatchObject({ status: "answered", reason: null });
     const two = await get("/api/v1/chat/turns?limit=2");
@@ -210,7 +210,6 @@ describe("chat.transcript and chat.turns", () => {
     expect(byId.ct_2!.endsWith("…")).toBe(true);
     expect(long.startsWith(byId.ct_2!.slice(0, -1))).toBe(true);
     expect(byId.ct_4).toBeNull();
-    expect(turns.every((t) => !("first_question" in t))).toBe(true);
   });
 
   it("chat.turns takes a limit only: no search or query input", () => {
@@ -233,7 +232,20 @@ describe("the chat turn store", () => {
     expect(await store.finishChatTurn("ct_1", "answered", null)).toBe(true);
     expect(await store.finishChatTurn("ct_1", "failed", "error")).toBe(false);
     expect(await store.finishChatTurn("ct_none", "failed", "error")).toBe(false);
-    expect(await store.listChatTurns(10)).toEqual([expect.objectContaining({ turn_id: "ct_1", session_id: "cs_1", status: "answered", reason: null })]);
+    expect(await store.listChatTurns(10)).toEqual([expect.objectContaining({ turn_id: "ct_1", session_id: "cs_1", status: "answered", reason: null, preview: null })]);
+  });
+
+  it("reads each turn's preview, its session's first user message, in the same read; null without text", async () => {
+    const { store } = await setup(null);
+    await store.startChatTurn("ct_1", "cs_1");
+    await store.startChatTurn("ct_2", "cs_2");
+    await store.startChatTurn("ct_3", "cs_3");
+    await store.appendChatMessages("cs_1", [{ seq: 0, role: "user", content: "First question" }, { seq: 1, role: "assistant", content: "Reply" }, { seq: 2, role: "user", content: "Second" }]);
+    await store.appendChatMessages("cs_2", [{ seq: 0, role: "user", content: "" }]);
+    const byId = new Map((await store.listChatTurns(10)).map((t) => [t.turn_id, t.preview]));
+    expect(byId.get("ct_1")).toBe("First question");
+    expect(byId.get("ct_2")).toBeNull();
+    expect(byId.get("ct_3")).toBeNull();
   });
 });
 

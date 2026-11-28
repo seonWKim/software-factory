@@ -120,7 +120,7 @@ export const OUTCOME_WORDS: Record<"running" | "answered" | "refused" | "failed"
   failed: () => t("chat.outcome.failed"),
 };
 
-export interface Turn { turn_id: string; session_id: string; status: "running" | "answered" | "refused" | "failed"; reason: string | null; created_at: string }
+export interface Turn { turn_id: string; session_id: string; status: "running" | "answered" | "refused" | "failed"; reason: string | null; preview?: string | null; created_at: string }
 
 export const OUTCOME_TONE: Record<Turn["status"], string> = { running: "running", answered: "done", refused: "needs_approval", failed: "failed" };
 

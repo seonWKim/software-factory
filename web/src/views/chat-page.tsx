@@ -107,13 +107,20 @@ function Elapsed({ startedAt }: { startedAt: number }) {
 const RECENT_SESSIONS = 10;
 const RECENT_TURNS = 50;
 
-/** A chat.turns row with its session's preview: the first question without its context line, at most 120 characters. */
-type RecentTurn = Turn & { preview?: string | null };
+/** The longest title of a Recent row, in characters. */
+const TITLE_CHARS = 60;
+
+/** A session's title: the first line of its first question, the context line taken off, cut to TITLE_CHARS with an ellipsis; null when there is no text. */
+function titleOf(preview: string | null | undefined): string | null {
+  const line = withoutContext(preview ?? "").split("\n").find((l) => l.trim() !== "")?.trim() ?? "";
+  if (line === "") return null;
+  return line.length > TITLE_CHARS ? `${line.slice(0, TITLE_CHARS - 1).trimEnd()}…` : line;
+}
 
 /** The sessions of `turns` (newest first), each as its latest turn: all of them, the list and the search cut them to RECENT_SESSIONS. */
-function sessionsOf(turns: RecentTurn[]): RecentTurn[] {
+function sessionsOf(turns: Turn[]): Turn[] {
   const seen = new Set<string>();
-  const latest: RecentTurn[] = [];
+  const latest: Turn[] = [];
   for (const x of turns) {
     if (seen.has(x.session_id)) continue;
     seen.add(x.session_id);
@@ -123,7 +130,7 @@ function sessionsOf(turns: RecentTurn[]): RecentTurn[] {
 }
 
 /** The sessions whose preview holds `query`, any case; every session for an empty query. At most RECENT_SESSIONS. */
-function matching(sessions: RecentTurn[], query: string): RecentTurn[] {
+function matching(sessions: Turn[], query: string): Turn[] {
   const q = query.trim().toLowerCase();
   return (q === "" ? sessions : sessions.filter((x) => x.preview?.toLowerCase().includes(q))).slice(0, RECENT_SESSIONS);
 }
@@ -136,7 +143,7 @@ function Recent({ query, onOpen }: { query: string; onOpen: (sessionId: string) 
   const now = useNow();
   const [failed, setFailed] = useState(false);
   const q = useQuery({ queryKey: ["chat", "recent"], queryFn: () => chatTurns({ limit: RECENT_TURNS }) });
-  const sessions = sessionsOf((q.data?.turns ?? []) as unknown as RecentTurn[]);
+  const sessions = sessionsOf((q.data?.turns ?? []) as unknown as Turn[]);
   const shown = matching(sessions, query);
   return (
     <Card title={t("chat.recent")}>
@@ -154,14 +161,16 @@ function Recent({ query, onOpen }: { query: string; onOpen: (sessionId: string) 
             <ul aria-label={t("chat.recentList")} className={cn("divide-y divide-border", LIST_BOX)}>
               {shown.map((x) => {
                 const when = relativeTime(x.created_at, now);
+                const title = titleOf(x.preview);
+                const time = <span title={localDateTime(x.created_at)}>{when}</span>;
                 return (
                   <ListRow
                     key={x.session_id}
-                    title={<span className={ROW_TITLE} title={localDateTime(x.created_at)}>{when}</span>}
+                    title={title === null ? <span className={ROW_TITLE} title={localDateTime(x.created_at)}>{when}</span> : <span className={ROW_TITLE}>{title}</span>}
                     details={<>
+                      {title !== null && time}
                       <Badge level={OUTCOME_TONE[x.status]}>{OUTCOME_WORDS[x.status]()}</Badge>
                       {x.reason !== null && <span>{reasonWords(x.reason)}</span>}
-                      {x.preview && <span data-raw className="min-w-0 wrap-anywhere">{x.preview}</span>}
                     </>}
                     menu={<OverflowMenu label={t("chat.openMenu", { when })} items={[{ label: t("chat.open"), onSelect: () => void onOpen(x.session_id).catch(() => setFailed(true)) }]} />}
                   />

@@ -77,7 +77,7 @@ describe("New chat and Recent", () => {
   let calls: string[];
   let turns: Record<string, unknown>[];
   let turnsStatus: number;
-  const turn = (n: number, session: string, status: string, reason: string | null) => ({ turn_id: `ct_${n}`, session_id: session, status, reason, created_at: AT, finished_at: AT });
+  const turn = (n: number, session: string, status: string, reason: string | null, preview: string | null = null) => ({ turn_id: `ct_${n}`, session_id: session, status, reason, preview, created_at: AT, finished_at: AT });
 
   beforeEach(() => {
     sends = [];
@@ -121,6 +121,21 @@ describe("New chat and Recent", () => {
     expect(list[1]?.textContent).toContain("private");
     expect(document.body.textContent).not.toMatch(/cs_|ct_/);
     expect(calls.filter((c) => c.startsWith("/api/v1/chat/turns"))).toEqual(["/api/v1/chat/turns?limit=50"]);
+  });
+
+  it("titles a row by its first question, the context line off and cut to 60 characters; no preview keeps the time", async () => {
+    const long = "Why did the nightly build fail twice in a row on the main branch last week?";
+    turns = [turn(3, "cs_a", "answered", null, `About item: “X”, state Running, stage implement.\n\n${long}\nsecond line`), turn(2, "cs_b", "answered", null, "What is this?"), turn(1, "cs_c", "answered", null, null)];
+    mount();
+    await waitFor(() => expect(document.querySelectorAll("[data-list-row]")).toHaveLength(3), SLOW);
+    const [a, b, c] = [...document.querySelectorAll("[data-list-row]")] as HTMLElement[];
+    expect(a?.textContent).toContain(`${long.slice(0, 59).trimEnd()}…`);
+    expect(a?.textContent).not.toContain("About item");
+    expect(a?.textContent).not.toContain("second line");
+    expect(b?.textContent).toContain("What is this?");
+    expect(b?.textContent).toMatch(/ago|now|just|min|hour|day/i); // the time moved to the details
+    expect(c?.textContent).toMatch(/ago|now|just|min|hour|day/i); // no preview: the time is the title
+    expect(c?.textContent).not.toContain("What is this?");
   });
 
   it("Open loads the stored messages in order without the context line, and the next send carries its session_id", async () => {

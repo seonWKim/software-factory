@@ -81,16 +81,14 @@ export async function finishChatTurn(db: SqlDriver, turn_id: string, status: Exc
   return (await db.transaction((tx) => tx.run(sql, [status, reason, at, turn_id]))) > 0;
 }
 
-/** The session's first user message, as a column of the turns read: no second query per session. */
-const FIRST_QUESTION = `(SELECT m.content FROM controller_chat_messages m WHERE m.session_id = t.session_id AND m.role = 'user' ORDER BY m.seq LIMIT 1)`;
-
-/** The newest turns first (insertion order breaks a tie of times), at most `limit`, each with its session's first question. Read-only, one transaction. */
+/** The newest turns first (insertion order breaks a tie of times), at most `limit`, each with its session's first user message text as `preview` (null without text). Read-only, one transaction. */
 export async function listChatTurns(db: SqlDriver, limit: number): Promise<ChatTurnRecord[]> {
-  const sql = `SELECT t.*, ${FIRST_QUESTION} AS first_question FROM controller_chat_turns t ORDER BY t.created_at DESC, t.${db.dialect.seq} DESC LIMIT ?`;
+  const sql = `SELECT t.*, (SELECT m.content FROM controller_chat_messages m WHERE m.session_id = t.session_id AND m.role = 'user' ORDER BY m.seq LIMIT 1) AS preview
+    FROM controller_chat_turns t ORDER BY t.created_at DESC, t.${db.dialect.seq} DESC LIMIT ?`;
   const rows = await db.transaction((tx) => tx.all(sql, [Math.max(0, Math.floor(limit))]));
   return rows.map((r) => ({
     turn_id: String(r.turn_id), session_id: String(r.session_id), status: String(r.status) as ChatTurnStatus, reason: r.reason == null ? null : String(r.reason),
+    preview: r.preview == null || String(r.preview) === "" ? null : String(r.preview),
     created_at: String(r.created_at) as Timestamp, finished_at: r.finished_at == null ? null : (String(r.finished_at) as Timestamp),
-    first_question: r.first_question == null ? null : String(r.first_question),
   }));
 }

@@ -76,6 +76,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_chat_spend", // chat turn spend (design 04-chat-agent): src/state/migrations/20261126T1300-state-chat-spend
       "controller_chat_turns", // chat turn outcomes (design 04-chat-agent): src/state/migrations/20261126T1400-state-chat-turns
       "controller_held_writes", // agent writes the permission gate held (design 08-permissions): src/state/migrations/20261127T1100-state-held-writes
+      "worker_test_slots", // host test slots (one per full test run in progress): src/state/migrations/20261128T1000-state-test-slots
       "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
       "ext_skill_refs", // imported skill references (design 11-plugin-import): src/state/migrations/20261115T1200-state-ext-skill-refs

@@ -129,7 +129,7 @@ export const CHAT: readonly Declared[] = [
     permission: "owner", method: "GET", path: "/api/v1/chat/turns",
     input: object({ limit: optional(number()) }), output: object({ turns: array(jsonObject()) }),
     run: async (c, i) => ({
-      turns: (await c.d.store.listChatTurns(i.limit ?? CHAT_TURNS_LIMIT)).map(({ first_question, ...t }) => ({ ...t, preview: previewOf(first_question) })),
+      turns: (await c.d.store.listChatTurns(i.limit ?? CHAT_TURNS_LIMIT)).map((t) => ({ ...t, preview: previewOf(t.preview) })),
     }),
   }),
   declare({

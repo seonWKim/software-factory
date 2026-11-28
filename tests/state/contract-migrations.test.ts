@@ -89,6 +89,7 @@ describe("contract migrations", () => {
     expect(await tableExists(d, "inbound_commands")).toBe(true);
     expect(await tableExists(d, "worker_claim_locks")).toBe(true);
     expect(await tableExists(d, "controller_held_writes")).toBe(true);
+    expect(await tableExists(d, "worker_test_slots")).toBe(true);
   });
 
   it("copies a row that is only in legacy_claim_decisions to its current table with the same key and values, then drops the legacy table", async () => {
