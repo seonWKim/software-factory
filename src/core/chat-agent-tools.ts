@@ -1,18 +1,25 @@
 // The chat's tools (design 04-chat-agent): the chat's own ToolBroker, serving read-only tools only, the four
-// feature-map read tools and call_feature. Each feature-map tool wraps the feature map (src/api/feature-map.ts, design
+// feature-map read tools and call_feature, and add_task, the one write a chat turn may make, which chatTurn calls
+// itself (never through the broker). Each feature-map tool wraps the feature map (src/api/feature-map.ts, design
 // 09-api-registry) through an injected reader, so the tools come from the registry's declarations and no list of
 // factory tools is kept here. call_feature answers live data from any GET capability through an injected caller, cut
 // to CALL_FEATURE_ROWS rows per list and refused over CALL_FEATURE_MAX_CHARS. core/ imports only core/ and interfaces/,
 // so both are passed in: chat.send binds the reader to `readFeatureMap(registry, path)` and the caller to the
 // registry's callCapability, the eval binds the caller to its fixture. A result may hold store text, so the chat scans
-// every result (src/core/chat-agent.ts). A tool call that names a command of the command table (`task_done`, `merge`)
-// is an agent write in a chat turn: the permission gate refuses it in every mode (design 08-permissions), and the owner
-// types the command instead.
+// every result (src/core/chat-agent.ts). add_task parses quick-add words as `factory task add` and tasks.create do and
+// stores the task with the store's addTask under `tk_<turn id>`, so a turn sent again adds nothing new; it is the
+// table's `task add` through authorizeWrite (design 08-permissions): held in ask_all, run in ask_irreversible and full.
+// A tool call that names a command of the command table (`task_done`, `merge`) is an agent write in a chat turn: the
+// permission gate refuses it in every mode, and the owner types the command instead.
 
+import type { EgressScanner } from "../interfaces/egress-scanner.js";
+import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../interfaces/tool-broker.js";
-import type { RunId, WorkItemId } from "./types.js";
-import { permissionGate } from "./authorize.js";
+import type { RunId, UserId, WorkItemId } from "./types.js";
+import { CHAT_ADD_TASK, authorizeWrite, permissionGate } from "./authorize.js";
 import { COMMAND_TABLE, type TableCommand } from "./command-table.js";
+import { parseQuickAdd } from "./quick-add.js";
+import { ProjectRefused } from "./tasks.js";
 
 /** The feature map's answer for a path under /api/v1/feature-map/ (readFeatureMap over a registry), else null. */
 export type FeatureMapReader = (path: string) => { status: number; value: unknown } | null;
@@ -35,7 +42,7 @@ function chatToolCommand(name: string): TableCommand | null {
   return COMMAND_TABLE.find((c) => c.name === name || c.name.replaceAll(" ", "_") === name) ?? null;
 }
 
-/** The gate's answer to a chat tool call that names a command: refused, even in `full` (no mode lets an agent write from a chat turn). */
+/** The gate's answer to a chat tool call that names a command: refused, even in `full` (no mode lets an agent write from a chat turn but add_task). */
 function chatWriteRefusal(c: TableCommand): ToolResult | null {
   const gate = permissionGate({ mode: "full", reversible: c.reversible, origin: "agent", in_chat_turn: true });
   return gate.outcome === "refuse" ? { ok: false, error_code: gate.reason, message: `${c.name} is a command, and an agent runs no command from a chat turn. Type \`factory ${c.name}\` instead.` } : null;
@@ -222,6 +229,65 @@ export class ChatToolBroker implements ToolBroker {
       return { ok: false, error_code: "tool_error", message: `${name} failed` };
     }
   }
+}
+
+/** The store methods add_task needs: the task write and the permission gate's mode and rows. */
+export type ChatTaskStore = Pick<FactoryStore, "addTask" | "listSettingOverrides" | "holdWrite" | "recordAgentWrite">;
+const TASK_METHODS = ["addTask", "listSettingOverrides", "holdWrite", "recordAgentWrite"] as const;
+/** True when the store can back add_task (chat.send passes the full store; the eval's throwaway store cannot). */
+export const canAddTask = (store: object): store is ChatTaskStore => TASK_METHODS.every((m) => typeof (store as Record<string, unknown>)[m] === "function");
+
+/** Who a chat-added task is created by, and who its gate row names: the chat agent. */
+export const CHAT_ACTOR = "service:chat" as UserId;
+
+/** A task add_task stored: its ID and title, which the turn's reply names. */
+export interface AddedTask { id: string; title: string }
+
+/** add_task for one chat turn: its descriptor, its call, and the task it stored (null until one is). */
+export interface AddTaskTool {
+  descriptor: ToolDescriptor;
+  call(args: unknown): Promise<ToolResult>;
+  added(): AddedTask | null;
+}
+
+/**
+ * add_task for the turn `turn_id`: the words through parseQuickAdd, then authorizeWrite as the agent's `task add` in a
+ * chat turn (chat_tool add_task), then the store's addTask under `tk_<turn_id>` created by CHAT_ACTOR. Held, it answers
+ * the held write's `confirm <id>`; refused (a guard), its reason. A second call in the same turn, or the turn sent
+ * again with the same ID, stores nothing new and answers the task already stored.
+ */
+export function addTaskTool(d: { store: ChatTaskStore; scanner: Pick<EgressScanner, "scan"> }, turn_id: string): AddTaskTool {
+  const id = `tk_${turn_id}`;
+  let added: AddedTask | null = null;
+  return {
+    descriptor: {
+      name: CHAT_ADD_TASK.tool,
+      read_only: false,
+      description: "Adds one plain task from quick-add words (today, tomorrow or YYYY-MM-DD, HH:MM, !1 to !3, #list, +project, every day/week/month; "
+        + "the words left are its title), under the permission mode: it may be held for the owner's confirm. Never files an issue or a work item.",
+      input_schema: stringInput("words", "The task's quick-add words, such as `call the bank tomorrow 09:00`."),
+    },
+    async call(args) {
+      const words = stringArg(args, "words");
+      if (words === null) return badArgs("words");
+      const parsed = parseQuickAdd(words);
+      if (!parsed.ok) return { ok: false, error_code: "bad_args", message: parsed.reason };
+      const gate = await authorizeWrite(d, {
+        command: CHAT_ADD_TASK.command, args: [words], actor: CHAT_ACTOR, origin: "agent", in_chat_turn: true, chat_tool: CHAT_ADD_TASK.tool, key: id,
+      });
+      if (gate.outcome === "refused") return { ok: false, error_code: gate.reason, message: gate.reply };
+      if (gate.outcome === "held") return { ok: true, content: { outcome: "held", held_write: gate.id, mode: gate.mode, message: gate.reply } };
+      try {
+        const task = await d.store.addTask({ ...parsed.task, id, created_by: CHAT_ACTOR });
+        added = { id: task.id, title: task.title };
+        return { ok: true, content: { outcome: "added", mode: gate.mode, task: { id: task.id, title: task.title, due_date: task.due_date, due_time: task.due_time, list: task.list } } };
+      } catch (err) {
+        if (err instanceof ProjectRefused) return { ok: false, error_code: "bad_args", message: err.message };
+        throw err;
+      }
+    },
+    added: () => added,
+  };
 }
 
 /** What a chat turn's tool call names in place of a run: the session. A chat turn holds no lease (token 0). */

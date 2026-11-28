@@ -80,7 +80,7 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
     name: "task add", args: "<words>", who: "submit_work", group: "task",
     does: "Add a plain task, never a work item or a triage run; quick-add words set its fields: `today`, `tomorrow` or `YYYY-MM-DD`, " +
       "`HH:MM`, `!1` to `!3`, `#label`, `+project`, `every day`, `every week` or `every month`, and the words left are its title",
-    prints: "the task: ID, title, due, priority, list and recurrence", chat: "task add <words>", chat_args: "any", item: false, edge: false, reversible: false,
+    prints: "the task: ID, title, due, priority, list and recurrence", chat: "task add <words>", chat_args: "any", item: false, edge: false, reversible: true,
   },
   {
     name: "task done", args: "<task_id>", who: "submit_work", group: "task",

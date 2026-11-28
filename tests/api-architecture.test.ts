@@ -43,12 +43,12 @@ const UNREGISTERED: readonly string[] = [
   "/api/v1/queue", "/api/v1/routines", "/api/v1/rules", "/api/v1/rules/edit", "/api/v1/rules/entry",
   "/api/v1/rules/pushbacks/dismiss", "/api/v1/rules/skill-verdict", "/api/v1/rules/verdict", "/api/v1/runs",
   "/api/v1/screenshot", "/api/v1/session", "/api/v1/settings", "/api/v1/settings/capabilities", "/api/v1/spend",
-  "/api/v1/standing", "/api/v1/supervisor", "/api/v1/tasks", "/api/v1/tasks/:param", "/api/v1/tasks/body",
+  "/api/v1/standing", "/api/v1/supervisor", "/api/v1/tasks/:param", "/api/v1/tasks/body",
   "/api/v1/tasks/build", "/api/v1/tasks/create", "/api/v1/tasks/delete", "/api/v1/tasks/done", "/api/v1/tasks/edit",
   "/api/v1/tasks/preview", "/api/v1/tasks/project", "/api/v1/tasks/reopen", "/api/v1/tasks/sub",
   "/api/v1/unreviewed-merges", "/api/v1/workers",
 ];
-const CEILING = 73;
+const CEILING = 72;
 
 /** Text with its comments blanked (a `//` after `:` is a URL's, kept). */
 const code = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/[^\n]*/gm, "$1");

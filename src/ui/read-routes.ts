@@ -1,6 +1,6 @@
 // The dashboard's GET route chain under /api/v1 (design §9): GET /api/v1/notices (notices-api.ts), /api/v1/rules and
-// /api/v1/rules/entry (rules-api.ts), /api/v1/proposals (improve-api.ts), /api/v1/tasks (`?project=<slug>`: the
-// project switcher) and /api/v1/tasks/preview (the quick-add preview; tasks-api.ts), /api/v1/plugins (the Plugins
+// /api/v1/rules/entry (rules-api.ts), /api/v1/proposals (improve-api.ts), /api/v1/tasks/preview (the quick-add preview;
+// tasks-api.ts), /api/v1/plugins (the Plugins
 // page; plugins-api.ts), /api/v1/plugins/import (it reads the user's own Claude Code and Codex configs, so it also
 // needs the CSRF token; plugins-import-api.ts), /api/v1/calendar (calendar-api.ts), /api/v1/model-credential (the
 // dialog's secret names; model-credential.ts), /api/v1/supervisor (what Migrate now, Start and Restart now may do;
@@ -10,7 +10,7 @@
 // (a skill's versions and the diff of two; plugins-api.ts, a path pattern), /calibration (the owner's labels on the
 // judge; evals-api.ts) and
 // /api/v1/items/:id/changes (the item page's Changes tab; changes.ts); the API registry's GET capabilities (among them
-// /api/v1/items and /api/v1/schedules, /runs and /suggestions; src/api/capabilities/) and the feature map are its one
+// /api/v1/items, /api/v1/tasks and /api/v1/schedules, /runs and /suggestions; src/api/capabilities/) and the feature map are its one
 // entry, last; every other path is api.ts's. They are served here beside api.ts so it stays within its size budget. A new read route adds one
 // entry to READ_ROUTES, not a line in server.ts.
 
@@ -20,7 +20,7 @@ import { caseResults, compareSkillEvalRuns, latestLinkedRun, lineDiff, skillEval
 import { type ApiResult, api, apiError } from "./api.js";
 import { staleCsrf } from "./commands.js";
 import { csrfMatches } from "./settings-api.js";
-import { TASKS_PATH, TASK_PREVIEW_PATH, readTaskPreview, readTasks } from "./tasks-api.js";
+import { TASK_PREVIEW_PATH, readTaskPreview } from "./tasks-api.js";
 import { RULES_PATH, RULE_ENTRY_PATH, readRuleEntry, readRules } from "./rules-api.js";
 import { PROPOSALS_PATH, readProposals } from "./improve-api.js";
 import { NOTICES_PATH, readNotices } from "./notices-api.js";
@@ -57,7 +57,6 @@ const READ_ROUTES: readonly ReadRoute[] = [
   { path: RULES_PATH, run: (d) => readRules(d) },
   { path: RULE_ENTRY_PATH, run: (d, u) => readRuleEntry(d, u.searchParams.get("id")) },
   { path: PROPOSALS_PATH, run: (d) => readProposals(d) },
-  { path: TASKS_PATH, run: (d, u) => readTasks(d, u.searchParams.get("project")) },
   { path: TASK_PREVIEW_PATH, run: (d, u) => readTaskPreview(d, u.searchParams.get("words")) },
   { path: PLUGINS_PATH, run: (d) => readPlugins(d) },
   { path: CALENDAR_PATH, run: (d) => readCalendarStatus(d) },
