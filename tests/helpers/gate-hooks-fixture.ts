@@ -42,7 +42,7 @@ export const canListen = await new Promise<boolean>((resolve) => {
  * --settings (needs a Unix socket); `direct` asks the same answerer the hook host uses, with no socket.
  */
 export const MODES = canListen ? (["hooks", "direct"] as const) : (["direct"] as const);
-export type Mode = (typeof MODES)[number];
+type Mode = (typeof MODES)[number];
 
 const RESULT = `${JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done", usage: {} })}\n`;
 
@@ -81,7 +81,7 @@ export interface Hooks {
 }
 
 /** What the fake agent can do: its settings, a tool call through PreToolUse, and a stop through Stop. */
-export interface Agent {
+interface Agent {
   args: readonly string[];
   hooks: Hooks | undefined;
   workdir: string;
@@ -91,7 +91,7 @@ export interface Agent {
   stop(): Promise<string | null>;
 }
 
-export class GateSandbox implements Sandbox {
+class GateSandbox implements Sandbox {
   async updateBase(): Promise<string> {
     return "base";
   }
