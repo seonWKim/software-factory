@@ -111,11 +111,11 @@ describe("Calendar page", () => {
     const toolbar = (await screen.findByRole("radiogroup", { name: "Calendar view" }, SLOW)).parentElement!;
     expect(toolbar.hasAttribute("data-calendar-toolbar")).toBe(true);
     await within(toolbar).findByRole("button", { name: "Sync" }, SLOW);
-    expect(within(toolbar).getAllByRole("radio").map((b) => b.textContent)).toEqual(["Week", "Month"]);
+    expect(within(toolbar).getAllByRole("radio").map((b) => b.textContent)).toEqual(["Week", "Month", "All", "Human", "Agent"]);
     // Previous, Next and Sync are icon buttons: their names are their aria-labels.
     expect(within(toolbar).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Previous week", "Today", "Next week", "Sync", "New event"]);
     const order = [...toolbar.querySelectorAll("[role=radiogroup], button:not([role=radio]), h2")].map((e) => e.tagName === "H2" ? "period" : e.getAttribute("aria-label") ?? e.textContent);
-    expect(order).toEqual(["Calendar view", "Previous week", "Today", "Next week", "period", "Sync", "New event"]);
+    expect(order).toEqual(["Calendar view", "Show entries", "Previous week", "Today", "Next week", "period", "Sync", "New event"]);
     expect(document.querySelectorAll("[data-calendar-toolbar]")).toHaveLength(1);
     expect(toolbar.closest("[data-page-toolbar]")).not.toBeNull();
     expect(toolbar.closest("section")).toBeNull();
@@ -539,5 +539,50 @@ describe("Calendar page: event details", () => {
     expect(p.hasAttribute("data-popover")).toBe(false);
     expect(p.textContent).toContain(LONG);
     expect(p.querySelector("[data-event-notes]")).not.toBeNull();
+  });
+
+  describe("the All / Human / Agent filter", () => {
+    beforeEach(() => {
+      events["2026-11-14"] = [{ ...ev("sch_1:2026-11-14T07:00:00.000Z", "07:00", "agent"), kind: "agent", title: "Daily digest" }, { ...ev("sch_1:next", "08:00", "agent"), kind: "agent", title: "Daily digest", next: true }];
+    });
+    const chips = () => [...document.querySelectorAll<HTMLElement>("[data-event]")].map((e) => e.dataset.event);
+    const pick = (name: string) => fireEvent.click(screen.getByRole("radio", { name }));
+
+    it("is a SegmentedControl All, Human, Agent in that order, All checked on load", async () => {
+      show();
+      await screen.findByText("event holiday", undefined, SLOW);
+      const group = screen.getByRole("radiogroup", { name: "Show entries" });
+      expect(within(group).getAllByRole("radio").map((r) => r.textContent)).toEqual(["All", "Human", "Agent"]);
+      expect(screen.getByRole("radio", { name: "All" }).getAttribute("aria-checked")).toBe("true");
+    });
+
+    it("Human hides agent entries and Agent hides human events, in Week and Month", async () => {
+      show();
+      await screen.findByText("event holiday", undefined, SLOW);
+      expect(chips()).toContain("agent:sch_1:next");
+      pick("Human");
+      expect(chips()).toContain("google-calendar:holiday");
+      expect(chips().some((c) => c?.startsWith("agent:"))).toBe(false);
+      pick("Agent");
+      expect(chips()).toEqual(["agent:sch_1:2026-11-14T07:00:00.000Z", "agent:sch_1:next"]);
+      fireEvent.click(screen.getByRole("radio", { name: "Month" }));
+      await screen.findAllByText("Daily digest", undefined, SLOW);
+      expect(chips().every((c) => c?.startsWith("agent:"))).toBe(true);
+      pick("Human");
+      expect(chips().some((c) => c?.startsWith("agent:"))).toBe(false);
+    });
+
+    it("an agent entry has the Agent Badge (info), the next slot says Next run, and its details have no Edit or Delete", async () => {
+      show();
+      await screen.findByText("event holiday", undefined, SLOW);
+      const next = document.querySelector<HTMLElement>('[data-event="agent:sch_1:next"]')!;
+      expect(within(next).getByText("Agent").closest("[data-level]")?.getAttribute("data-level")).toBe("info");
+      expect(within(next).getByText("Next run")).toBeTruthy();
+      expect(document.querySelector('[data-event="agent:sch_1:2026-11-14T07:00:00.000Z"]')!.textContent).not.toContain("Next run");
+      fireEvent.click(next);
+      await screen.findByRole("dialog", undefined, SLOW).catch(() => undefined);
+      expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    });
   });
 });

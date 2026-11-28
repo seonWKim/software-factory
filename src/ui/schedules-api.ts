@@ -40,6 +40,27 @@ export async function readSchedules(d: Pick<UiDeps, "store">): Promise<ApiResult
   return { status: 200, value: { schedules: await Promise.all((await d.store.listSchedules({ check_pages: true })).map(shown)) } };
 }
 
+/** One place a schedule shows on the Calendar page: a run (its occurrence) or the next slot, with the schedule's title. */
+export interface ScheduleSlot {
+  schedule_id: string;
+  title: string;
+  at: string;
+  next: boolean;
+}
+
+/**
+ * Every run's occurrence_at and every unpaused schedule's next_due_at (a paused one has none), each with its schedule's
+ * title: the Calendar read's agent entries. Store reads only; a Check a page row is not a schedule here.
+ */
+export async function readScheduleSlots(d: Pick<UiDeps, "store">): Promise<ScheduleSlot[]> {
+  const out: ScheduleSlot[] = [];
+  for (const s of await d.store.listSchedules()) {
+    for (const r of await d.store.listScheduleRuns(s.id)) out.push({ schedule_id: s.id, title: s.title, at: r.occurrence_at, next: false });
+    if (s.next_due_at !== null) out.push({ schedule_id: s.id, title: s.title, at: s.next_due_at, next: true });
+  }
+  return out;
+}
+
 /** Whether a schedule, a Check a page one too, has the ID (a store read, so this file imports no core code). */
 const isStored = async (d: Pick<UiDeps, "store">, id: string): Promise<boolean> => (await d.store.listSchedules({ check_pages: true })).some((s) => s.id === id);
 
