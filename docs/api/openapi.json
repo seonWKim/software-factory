@@ -257,6 +257,230 @@
         }
       }
     },
+    "/api/v1/chat/command": {
+      "post": {
+        "operationId": "chat.command",
+        "summary": "Send one item command from the chat: a decision's button (command, with the reply box's words as note when it takes one), a reply as a sentence (command sentence, its words as note: the controller reads it into pending proposals), or a proposal's Confirm all (proposal_confirm) or Cancel (proposal_cancel) with the proposal's id. It is the item commands route's own request, with the same owner check: Approve and Merge answer their outcome and the item's state.",
+        "tags": [
+          "chat"
+        ],
+        "x-permission": "owner",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "item": {
+                    "type": "string"
+                  },
+                  "command": {
+                    "type": "string"
+                  },
+                  "note": {
+                    "type": "string"
+                  },
+                  "proposal": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "item",
+                  "command"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "seq": {
+                      "type": "integer"
+                    },
+                    "command": {
+                      "type": "string"
+                    },
+                    "outcome": {
+                      "type": "string"
+                    },
+                    "refusal": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "state": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "seq",
+                    "command"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat/decision": {
+      "get": {
+        "operationId": "chat.decision",
+        "summary": "The Needs-you decision of one item (?item=<id>), as the chat shows it: waiting (the owner is next), the item's title, its why (the question), In short and the newest factory message (the evidence), its commands (one button each, with the viewer's allowed and reason) and its pending proposals (each with its typed lines). An unknown item is a 404.",
+        "tags": [
+          "chat"
+        ],
+        "x-permission": "owner",
+        "parameters": [
+          {
+            "name": "item",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "waiting": {
+                      "type": "boolean"
+                    },
+                    "title": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "why": {
+                      "type": "object"
+                    },
+                    "in_short": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "evidence": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "commands": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "proposals": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "lines": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "lines"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "waiting",
+                    "title",
+                    "why",
+                    "in_short",
+                    "evidence",
+                    "commands",
+                    "proposals"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/chat/image": {
       "get": {
         "operationId": "chat.image",
@@ -306,6 +530,56 @@
                     "media_type",
                     "size_bytes",
                     "data"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat/mode": {
+      "get": {
+        "operationId": "chat.mode",
+        "summary": "The stored permission mode (permission_mode, one setting for the owner): ask_all, ask_irreversible (the default) or full. Read only: the chat shows it in its mode badge.",
+        "tags": [
+          "chat"
+        ],
+        "x-permission": "owner",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "mode": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "mode"
                   ],
                   "additionalProperties": false
                 }
