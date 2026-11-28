@@ -103,7 +103,7 @@ Read this index, then only the topics you touch. Add a line here only for a new 
 - [09-dashboard-proposals.md](design/09-dashboard-proposals.md): Proposals page.
 - [09-dashboard-settings.md](design/09-dashboard-settings.md): Settings and Plugins.
 - [09-dashboard-system.md](design/09-dashboard-system.md): Work, Spend, Data.
-- [09-dashboard-workers.md](design/09-dashboard-workers.md): run timeline and graph (cards of Health's Runs tab).
+- [09-dashboard-workers.md](design/09-dashboard-workers.md): run timeline, graph.
 - [09-dashboard-evals.md](design/09-dashboard-evals.md): a skill's evals page.
 - [09-dashboard-item.md](design/09-dashboard-item.md): item page.
 - [09-dashboard-item-commands.md](design/09-dashboard-item-commands.md): item commands.
