@@ -105,6 +105,16 @@ function Elapsed({ startedAt }: { startedAt: number }) {
 const RECENT_SESSIONS = 10;
 const RECENT_TURNS = 50;
 
+/** The longest title of a Recent row, in characters. */
+const TITLE_CHARS = 60;
+
+/** A session's title: the first line of its first question, the context line taken off, cut to TITLE_CHARS with an ellipsis; null when there is no text. */
+function titleOf(preview: string | null | undefined): string | null {
+  const line = withoutContext(preview ?? "").split("\n").find((l) => l.trim() !== "")?.trim() ?? "";
+  if (line === "") return null;
+  return line.length > TITLE_CHARS ? `${line.slice(0, TITLE_CHARS - 1).trimEnd()}…` : line;
+}
+
 /** The sessions of `turns` (newest first), each as its latest turn, at most RECENT_SESSIONS. */
 function sessionsOf(turns: Turn[]): Turn[] {
   const seen = new Set<string>();
@@ -135,11 +145,14 @@ function Recent({ onOpen }: { onOpen: (sessionId: string) => Promise<void> }) {
         <ul aria-label={t("chat.recentList")} className={cn("divide-y divide-border text-left", LIST_BOX)}>
           {sessions.map((x) => {
             const when = relativeTime(x.created_at, now);
+            const title = titleOf(x.preview);
+            const time = <span title={localDateTime(x.created_at)}>{when}</span>;
             return (
               <ListRow
                 key={x.session_id}
-                title={<span className={ROW_TITLE} title={localDateTime(x.created_at)}>{when}</span>}
+                title={title === null ? <span className={ROW_TITLE} title={localDateTime(x.created_at)}>{when}</span> : <span className={ROW_TITLE}>{title}</span>}
                 details={<>
+                  {title !== null && time}
                   <Badge level={OUTCOME_TONE[x.status]}>{OUTCOME_WORDS[x.status]()}</Badge>
                   {x.reason !== null && <span>{reasonWords(x.reason)}</span>}
                 </>}
