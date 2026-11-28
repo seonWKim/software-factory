@@ -2,6 +2,8 @@
 
 Replaced decisions of [09-dashboard-chat.md](../09-dashboard-chat.md), newest first.
 
+- **A reload started a new conversation, with no way back to it** (until 2026-11-28, schedule chat-vs-top-llm-apps-review; the New chat and Recent decision in 09-dashboard-chat.md). Before, in "The conversation outlives the page, not a reload": "A reload starts a new conversation, as the side panel did." There was no New chat action and no list of earlier sessions.
+
 - **Send stayed in place, disabled, while an answer was on its way** (2026-11-27 until 2026-11-27, nightly chat review; the Composer bullet and the Stop decision in 09-dashboard-chat.md). Before, in the Composer bullet: "the send icon Button (primary, round, arrow up, named Send) sits inside its right edge, disabled while the text is empty or an answer is on its way (you can type the next message meanwhile)." There was no way to cancel a pending answer.
 
 - **Errors sat under the failed message** (2026-11-27 until 2026-11-27, owner screenshot at 767px; the "failed send reads as the chat's turn" decision in 09-dashboard-chat.md). Before: **Errors sit under the failed message.** A send that fails (chat off with no model: "Add one in Plugins, then try again"; a refused or failed turn, its reason in plain words; a lost connection) shows its words in the `failed` colour (`role=alert`) under your bubble, with a Try again Button that sends the same message again in its place, so it never shows twice.
