@@ -16,6 +16,7 @@ import { commandText, ranEntry, runChecks, selectedChecks } from "../../core/che
 import { diffStat, overSizeLimit, sizeDetail } from "../../core/diff-gate.js";
 import { isCovered } from "../../core/policy.js";
 import { NO_COMMITS_DETAIL, TRUSTED_GIT_ENV, fenced, runCommits } from "../../worker/index.js";
+import type { GateEntry } from "../../core/config.js";
 import { type AgentRunSpec, type GateBlock, type GateHooks, STOP_CHECK_TIMED_OUT } from "../../interfaces/agent-runner.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { Sandbox } from "../../interfaces/sandbox.js";
@@ -138,8 +139,9 @@ export type After = (ms: number, fn: () => void) => () => void;
 const DEADLINE_TICK_MS = 1_000;
 
 /**
- * The run timeout (design §5 Restarts): `ms` of the run's own time, counted in ticks of `after`. A tick while `held`
- * (a Stop check running, bounded by its own limit) does not count, so a slow check never uses up the agent's time.
+ * A time limit of `ms`, counted in ticks of `after`; a tick while `held` does not count. The run timeout (design §5
+ * Restarts) is held while a Stop check runs (bounded by its own limit), so a slow check never uses up the agent's time;
+ * the Stop check's own limit is held while the run waits for a test slot (design 04-pre-push-gates).
  * Out of time: `signal` aborts. Exported for tests.
  */
 export function runDeadline(ms: number, held: () => boolean, after: After): { signal: AbortSignal; stop: () => void } {
@@ -225,6 +227,8 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
   let noCommitsSent = false; // the one no-commit reminder this answerer sends
   const selections: string[] = [];
   const blocksFile = join(o.dir, HOOK_BLOCKS);
+  const slot = o.spec.test_slot;
+  const waiting = (): boolean => slot?.waiting() ?? false;
 
   const git = async (args: string[], sig: AbortSignal): Promise<string> => {
     const r = await o.sandbox.exec(o.spec.sandbox, ["git", ...args], { env: { ...g.check_env, ...TRUSTED_GIT_ENV }, signal: sig });
@@ -276,9 +280,11 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
       ? (await selectedChecks(g.selection, g.check_commands, (args) => git(args, sig), g.base_sha, (l) => selections.push(l), g.selection.mode)).commands
       : g.check_commands;
     at(commandText(commands[0] ?? []));
-    const round = await runChecks({
-      sandbox: o.sandbox, handle: o.spec.sandbox, commands, env: { ...g.check_env }, timeout_ms: limitMs, signal: sig, redact: [],
+    // The full test command runs under the run's host test slot (design 04-pre-push-gates); a narrowed one takes none.
+    const go = (list: readonly GateEntry[], s: AbortSignal) => runChecks({
+      sandbox: o.sandbox, handle: o.spec.sandbox, commands: list, env: { ...g.check_env }, timeout_ms: limitMs, signal: s, redact: [],
     });
+    const round = slot ? await slot.runChecks(commands, sig, go) : await go(commands, sig);
     // Aborted: the check running is the failed one (it threw) or the one after the last that finished.
     at(commandText(round.failed ? ranEntry(round.failed) : commands[round.results.length] ?? []));
     if (!round.failed || sig.aborted) return null;
@@ -291,11 +297,12 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
   };
 
   // The Stop check under its own limit (`stop_check_ms`): past it the check is aborted, which kills its process group,
-  // the stop is allowed and the timeout is kept for the runner. After one, no later stop runs a check.
+  // the stop is allowed and the timeout is kept for the runner. After one, no later stop runs a check. The limit counts
+  // no time while the run waits for a test slot, so it starts again at the grant.
   const stop = async (): Promise<Answer | null> => {
     if (timedOut || g.stop_blocks_used + counts.stop >= g.stop_checks) return null;
-    const limit = new AbortController();
-    const cancel = o.after(limitMs, () => limit.abort());
+    const { signal: limitSignal, stop: cancel } = runDeadline(limitMs, waiting, o.after);
+    const limit = { signal: limitSignal };
     let check = "";
     try {
       const a = await checks(AbortSignal.any([signal, limit.signal]), (c) => (check = c)).catch((err: unknown) => {
@@ -363,7 +370,8 @@ export async function startGateHooks(o: GateHooksOptions): Promise<RunningGateHo
   const command = (event: string) => [process.execPath, script, event].map(shellQuote).join(" ");
   const stopMs = o.spec.stop_check_ms + STOP_HOOK_SLACK_MS;
   const g = o.spec.gate_hooks;
-  const deadline = runDeadline(o.spec.timeout_ms, answers.checking, o.after);
+  // A Stop check holds the run timeout, its wait for a test slot included.
+  const deadline = runDeadline(o.spec.timeout_ms, () => answers.checking() || (o.spec.test_slot?.waiting() ?? false), o.after);
   return {
     settings: {
       PreToolUse: [{ matcher: PATH_TOOLS.join("|"), hooks: [{ type: "command", command: command("pre_tool_use"), timeout: PRE_TOOL_TIMEOUT_S }] }],

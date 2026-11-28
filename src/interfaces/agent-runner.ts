@@ -1,3 +1,4 @@
+import type { CheckRound } from "../core/checks.js";
 import type { GateEntry } from "../core/config.js";
 import type { SelectionMode, TestSelectionConfig } from "../core/test-selection.js";
 import type { ToolSpec } from "../core/tools/types.js";
@@ -128,7 +129,30 @@ export interface AgentRunSpec {
    * worker's gates would fail it. Advisory: the worker's gates still decide. Absent: no hooks.
    */
   gate_hooks?: GateHooks;
+  /**
+   * The run's host test slot (design 04-pre-push-gates, test slots): the Stop check runs a full test command under
+   * it, and its limit and the run timeout do not count while it waits. Given with `gate_hooks`; absent: no slot.
+   */
+  test_slot?: TestSlotHold;
 }
+
+/**
+ * A run's host test slot as a check runs under it (src/worker/test-slot.ts): one per run, renewed by the worker's
+ * heartbeat. Only a full test command (argv equal to `repo.test_command`, no test files added) holds it.
+ */
+export interface TestSlotHold {
+  /**
+   * `commands` through `run` in order, stopping at the first failure, as one `run` call would: the full test command
+   * on its own call under the slot, every other command with no slot. For the slot it waits (on the worker's clock),
+   * runs, then frees the slot, also on a throw or an abort; if a renewal finds the slot gone, that call's signal
+   * aborts, the run waits for a new slot and the command runs again. `unwrap`: the command as configured, for a
+   * caller that wraps each one; absent: as given.
+   */
+  runChecks(commands: readonly GateEntry[], signal: AbortSignal, run: (commands: readonly GateEntry[], signal: AbortSignal) => Promise<CheckRound>, unwrap?: (entry: GateEntry) => GateEntry): Promise<CheckRound>;
+  /** Whether the run is waiting for a slot now: no time limit counts while it does. */
+  waiting(): boolean;
+}
+
 
 /** One image for the model: its type (png, jpeg, gif or webp) and its bytes, base64; the LLM call's image too. */
 export type AgentImage = LLMImage;

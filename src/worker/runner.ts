@@ -6,7 +6,11 @@ import { type Period, type TickHandler, type TickSource, tickAt } from "../share
 import { TimeBasedTicks } from "../shared/ticks/plugins/time-based/time-based-tick-generator.js";
 import type { HookDescriptor } from "../shared/hook.js";
 import { type RoleCatalog, SqlHookAudit, loadHooks, loadRoles, runHooks } from "../runtime/index.js";
-import { storeSql } from "../impl/store/sql/store-sql.js";
+import { storeSql, storeSqlOrNull } from "../impl/store/sql/store-sql.js";
+import { recordTestSlotWait } from "../impl/store/sql/test-slots.js";
+import { TestSlot } from "./test-slot.js";
+import { testSlotCap } from "./settings/test-slots.setting.js";
+import { availableParallelism } from "node:os";
 import { PACK_TOOL_REFUSED, type PackRefusal as PackGrantRefusal, checkPackGrants, packRefusalMessage } from "../packs/pack-grants.js";
 import { type FactoryConfig, type GateEntry, type Prompts, STALL_DEFAULTS, grantsFor, readOnlyOverlaps, readOnlyRunFields } from "../core/config.js";
 import { LiveSettings } from "../core/settings.js";
@@ -57,6 +61,9 @@ export class Worker {
 
   /** The lease signal of each run the engine holds: aborted when the engine loses the run. */
   readonly leases = new Map<string, AbortController>();
+
+  /** The host test slot of each run being executed (test-slot.ts), renewed by its heartbeat. Scratch for one run. */
+  readonly testSlots = new Map<string, TestSlot>();
 
   private readonly engines: ExecutionEngines;
   private readonly ticks: TickSource;
@@ -232,6 +239,7 @@ export class Worker {
     const log = { run_id: run.id, work_item_id: run.work_item_id, kind: run.kind, attempt: run.attempt, worker_id: this.d.id }, startedAt = this.d.clock.now().getTime();
     const hold = run.kind === "implement" ? (await this.d.store.listClaimDecisions(run.work_item_id)).find((d) => d.run_id === run.id && d.decision !== "held") : undefined, p = this.live.values().hold_policy; // a run past a cost hold names its decision and, timed_out, the limit (design 05-dependencies)
     this.d.log.info("run start", { ...log, hold_decision: hold?.decision, hold_limit_minutes: hold?.decision === "timed_out" && p.mode === "run_after_minutes" ? p.minutes : undefined });
+    this.testSlots.set(run.id, this.newTestSlot(run));
     const stopHeartbeat = new AbortController();
     const heartbeat = this.heartbeat(run, engine, stopHeartbeat.signal);
     // `workers pause` reaches a running implement or review run within one tick_ms (design §5 Pause).
@@ -297,6 +305,7 @@ export class Worker {
       this.d.passports?.end(run.id, token);
       this.meters.delete(run);
       this.scratch.delete(run);
+      this.testSlots.delete(run.id);
       stopHeartbeat.abort();
       stopWatch.abort();
       await heartbeat;
@@ -469,6 +478,8 @@ export class Worker {
       if (gap > 2 * heartbeat_ms) this.d.log.warn("heartbeat late; renewing now", { run_id: run.id, gap_ms: gap, lease_ms });
       // The engine renews the lease (the live lease_ms) and times out steps; a lost lease aborts the run (onLost).
       await engine.heartbeat(t);
+      // A held test slot is renewed with the run: a take by the same holder (a slot found gone makes the run wait for a new one).
+      await this.testSlots.get(run.id)?.renew();
       // Recorded after the renewal, so a late wake renews first (design §5 Host sleep).
       await this.checkWake(due, woke, run);
       if (this.leases.get(run.id)?.signal.aborted) {
@@ -641,14 +652,38 @@ export class Worker {
   /**
    * The check list in the run folder (or `o.cwd` inside it) with the check env: the tool env and the slot env
    * (worker index, test workers), plus `o.env`. That env never reaches an agent. Stops at the first failure. `o.commands`: the list to run; absent, the configured checks.
+   * `o.slot` (the pre-push and merge checks, opt-in): the full test command runs under the run's host test slot, and its
+   * time limit starts at the grant; a function maps a given command back to the configured one. Absent: no slot.
    */
-  async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal, o: { commands?: readonly GateEntry[]; cwd?: string; env?: Record<string, string> } = {}): Promise<CheckRound> {
-    const round = await runChecks({
-      sandbox: this.d.sandbox, handle, commands: o.commands ?? checkCommands(this.cfg.repo), ...(o.cwd === undefined ? {} : { cwd: o.cwd }),
-      env: { ...this.d.toolEnv, ...this.slotEnv(), ...o.env }, timeout_ms: this.cfg.run_timeout_ms, signal, redact: [],
+  async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal, o: { commands?: readonly GateEntry[]; cwd?: string; env?: Record<string, string>; slot?: true | ((entry: GateEntry) => GateEntry) } = {}): Promise<CheckRound> {
+    const commands = o.commands ?? checkCommands(this.cfg.repo);
+    const go = (list: readonly GateEntry[], sig: AbortSignal) => runChecks({
+      sandbox: this.d.sandbox, handle, commands: list, ...(o.cwd === undefined ? {} : { cwd: o.cwd }),
+      env: { ...this.d.toolEnv, ...this.slotEnv(), ...o.env }, timeout_ms: this.cfg.run_timeout_ms, signal: sig, redact: [],
     });
+    const slot = o.slot ? this.testSlots.get(run.id) : undefined;
+    let round: CheckRound;
+    try {
+      round = slot ? await slot.runChecks(commands, signal, go, o.slot === true ? undefined : o.slot) : await go(commands, signal);
+    } catch (err) {
+      if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
+      throw err;
+    }
     if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
     return round;
+  }
+
+  /** A run's host test slot: the live cap (`test_slots`, else the host's cores) and lease, the waits on the clock and recorded in the store. */
+  newTestSlot(run: Run): TestSlot {
+    const db = storeSqlOrNull(this.d.store);
+    const at = (ms: number) => new Date(this.d.clock.now().getTime() + ms).toISOString() as Timestamp;
+    return new TestSlot({
+      store: this.d.store, clock: this.d.clock, test_command: this.cfg.repo.test_command,
+      cap: () => testSlotCap(this.live.values().test_slots, this.d.cpus ?? availableParallelism()),
+      lease_ms: () => this.live.values().lease_ms,
+      ...(db ? { recordWait: (holder, lease_ms) => recordTestSlotWait(db, { now: () => at(0), after: at }, { holder, lease_ms }) } : {}),
+      warn: (msg, fields) => this.d.log.warn(msg, fields),
+    }, run.id);
   }
 
   /**
@@ -775,6 +810,7 @@ export class Worker {
       ...declared,
       ...role,
       ...(on_tool_call ? { gate_hooks: { ...role.gate_hooks!, on_tool_call } } : {}),
+      ...(role.gate_hooks && this.testSlots.has(run.id) ? { test_slot: this.testSlots.get(run.id)! } : {}), // the Stop check's full test command runs under it
       env_allowlist: { ...role.env_allowlist, ...this.slotEnv() },
       ...readOnlyRunFields(this.cfg), ...(await wrapperSeedFields(this.cfg, this.d, handle, this.slotEnv())), // design 05-sandbox.md: read-only fields, wrapper seeds
       ...(session ? { session } : {}),
