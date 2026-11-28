@@ -172,8 +172,12 @@ describe("Migrate now (POST /api/v1/migrate)", { timeout: 30_000 }, () => {
 });
 
 describe("a factory running in place (none updater: a live child, no supervisor_pid)", () => {
-  const CHECKOUT = "Running from your checkout. To update, stop `factory dev`, pull, and start it again.";
+  const CHECKOUT = "Updates from this page are off while the factory runs from your checkout. To update, stop it, pull the latest code and start it again.";
   const inPlace = () => setup({ status: { supervisor_pid: undefined }, alive: [CHILD] });
+
+  it("the reason is plain words: no backtick", () => {
+    expect(CHECKOUT).not.toContain("`");
+  });
 
   it("gives the checkout reason for all three offers, not the start message", async () => {
     const s = await inPlace();
