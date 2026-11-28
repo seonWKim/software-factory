@@ -196,7 +196,7 @@ export const ME = "local:me@example.com" as UserId;
 export const DEV = "local:dev@example.com" as UserId;
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
 export const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: GIT_ENV }).trim();
-export const ident = ["-c", "user.name=t", "-c", "user.email=t@example.com"];
+const ident = ["-c", "user.name=t", "-c", "user.email=t@example.com"];
 export const commitIn = (dir: string, files: Record<string, string>, msg: string) => {
   for (const [path, text] of Object.entries(files)) {
     mkdirSync(join(dir, path, ".."), { recursive: true });
@@ -207,7 +207,7 @@ export const commitIn = (dir: string, files: Record<string, string>, msg: string
 };
 /** A check that passes everywhere except on a merge commit (the merge queue's merge-check run checks one). */
 export const FAILS_ON_MERGE = ["sh", "-c", "git rev-parse -q --verify HEAD^2 >/dev/null && exit 1; exit 0"];
-export const OK = ["sh", "-c", "exit 0"];
+const OK = ["sh", "-c", "exit 0"];
 /**
  * A UI check that passes on the merge check's merged commit (its subject ends in "(merge check)") and runs `script`
  * anywhere else, such as on the new base tip after an automatic merge: the change lands, and the red-main check fails.
