@@ -23,6 +23,8 @@ import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfaces/tool-broker.js";
 import { checkWrapperSource, wrapperSeedFields } from "./toolchain-seeds.js";
+// The git helpers live in runner-git.ts. Worker keeps same-named one-line delegates on purpose (owner's decision on
+// wi_6559608a): src/worker/bundle.ts, src/worker/runs/ and the triage test stubs call w.git(...) and the like.
 import { distrustAgentGit, git, gitDirs, gitRaw, gitWith, liveUntracked, mergeIO, trustedBase } from "./runner-git.js";
 import { LiveTranscript } from "./live-transcript.js";
 import { cachedInstall, isInstallCommand } from "./install-cache.js";
