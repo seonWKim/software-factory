@@ -8,6 +8,7 @@ import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Card } from "../components/ui/card.js";
 import { CopyIcon } from "../components/ui/copy.js";
+import { Input } from "../components/ui/input.js";
 import { ROW_TITLE, ListRow } from "../components/ui/list-row.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { OverflowMenu } from "../components/ui/menu.js";
@@ -98,24 +99,38 @@ function Elapsed({ startedAt }: { startedAt: number }) {
 const RECENT_SESSIONS = 10;
 const RECENT_TURNS = 50;
 
-/** The sessions of `turns` (newest first), each as its latest turn, at most RECENT_SESSIONS. */
-function sessionsOf(turns: Turn[]): Turn[] {
+/** A chat.turns row with its session's preview: the first question without its context line, at most 120 characters. */
+type RecentTurn = Turn & { preview?: string | null };
+
+/** The sessions of `turns` (newest first), each as its latest turn: all of them, the list and the search cut them to RECENT_SESSIONS. */
+function sessionsOf(turns: RecentTurn[]): RecentTurn[] {
   const seen = new Set<string>();
-  const latest: Turn[] = [];
+  const latest: RecentTurn[] = [];
   for (const x of turns) {
     if (seen.has(x.session_id)) continue;
     seen.add(x.session_id);
     latest.push(x);
   }
-  return latest.slice(0, RECENT_SESSIONS);
+  return latest;
 }
 
-/** The Recent Card of the empty page: earlier sessions from chat.turns, read once when it mounts; Open loads one. */
+/** The sessions whose preview holds `query`, any case; every session for an empty query. At most RECENT_SESSIONS. */
+function matching(sessions: RecentTurn[], query: string): RecentTurn[] {
+  const q = query.trim().toLowerCase();
+  return (q === "" ? sessions : sessions.filter((x) => x.preview?.toLowerCase().includes(q))).slice(0, RECENT_SESSIONS);
+}
+
+/**
+ * The Recent Card of the empty page: earlier sessions from chat.turns, read once when it mounts; Open loads one. The
+ * search filters the loaded sessions in the browser by their preview, with no read of its own.
+ */
 function Recent({ onOpen }: { onOpen: (sessionId: string) => Promise<void> }) {
   const now = useNow();
   const [failed, setFailed] = useState(false);
+  const [query, setQuery] = useState("");
   const q = useQuery({ queryKey: ["chat", "recent"], queryFn: () => chatTurns({ limit: RECENT_TURNS }) });
-  const sessions = sessionsOf((q.data?.turns ?? []) as unknown as Turn[]);
+  const sessions = sessionsOf((q.data?.turns ?? []) as unknown as RecentTurn[]);
+  const shown = matching(sessions, query);
   return (
     <Card title={t("chat.recent")}>
       {q.isError ? (
@@ -125,22 +140,37 @@ function Recent({ onOpen }: { onOpen: (sessionId: string) => Promise<void> }) {
       ) : sessions.length === 0 ? (
         <EmptyState title={t("chat.recentNone")} description={t("chat.recentNoneBody")} />
       ) : (
-        <ul aria-label={t("chat.recentList")} className={cn("divide-y divide-border text-left", LIST_BOX)}>
-          {sessions.map((x) => {
-            const when = relativeTime(x.created_at, now);
-            return (
-              <ListRow
-                key={x.session_id}
-                title={<span className={ROW_TITLE} title={localDateTime(x.created_at)}>{when}</span>}
-                details={<>
-                  <Badge level={OUTCOME_TONE[x.status]}>{OUTCOME_WORDS[x.status]()}</Badge>
-                  {x.reason !== null && <span>{reasonWords(x.reason)}</span>}
-                </>}
-                menu={<OverflowMenu label={t("chat.openMenu", { when })} items={[{ label: t("chat.open"), onSelect: () => void onOpen(x.session_id).catch(() => setFailed(true)) }]} />}
-              />
-            );
-          })}
-        </ul>
+        <div className="space-y-3 text-left">
+          <Input
+            type="search"
+            aria-label={t("chat.recentSearch")}
+            placeholder={t("chat.recentSearchPlaceholder")}
+            className="w-full"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          {shown.length === 0 ? (
+            <EmptyState title={t("chat.recentNoMatch", { query: query.trim() })} description={t("chat.recentNoMatchBody")} />
+          ) : (
+            <ul aria-label={t("chat.recentList")} className={cn("divide-y divide-border", LIST_BOX)}>
+              {shown.map((x) => {
+                const when = relativeTime(x.created_at, now);
+                return (
+                  <ListRow
+                    key={x.session_id}
+                    title={<span className={ROW_TITLE} title={localDateTime(x.created_at)}>{when}</span>}
+                    details={<>
+                      <Badge level={OUTCOME_TONE[x.status]}>{OUTCOME_WORDS[x.status]()}</Badge>
+                      {x.reason !== null && <span>{reasonWords(x.reason)}</span>}
+                      {x.preview && <span data-raw className="min-w-0 wrap-anywhere">{x.preview}</span>}
+                    </>}
+                    menu={<OverflowMenu label={t("chat.openMenu", { when })} items={[{ label: t("chat.open"), onSelect: () => void onOpen(x.session_id).catch(() => setFailed(true)) }]} />}
+                  />
+                );
+              })}
+            </ul>
+          )}
+        </div>
       )}
       {failed && <ErrorNote error={t("chat.openFailed")} />}
     </Card>

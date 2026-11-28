@@ -2,6 +2,7 @@
 
 Replaced decisions of [09-dashboard-chat.md](../09-dashboard-chat.md), newest first.
 
+- **The Recent list had no search and showed no text of a session** (until 2026-11-28, wi_c3660ded; the Recent search decision at the top of 09-dashboard-chat.md). Before: "On the empty page a `Card` titled Recent sits above the composer and lists up to 10 sessions, newest first." and "Each row is a `ListRow`: the relative time of the session's latest turn as its title, an outcome `Badge` and the reason in plain words as its details, and a menu with one Open entry". `chat.turns` gave only turn_id, session_id, status, reason and times, so a session older than the 10 shown could not be found from the page.
 - **A reload started a new conversation, with no way back to it** (until 2026-11-28, schedule chat-vs-top-llm-apps-review; the New chat and Recent decision in 09-dashboard-chat.md). Before, in "The conversation outlives the page, not a reload": "A reload starts a new conversation, as the side panel did." There was no New chat action and no list of earlier sessions.
 
 - **Send stayed in place, disabled, while an answer was on its way** (2026-11-27 until 2026-11-27, nightly chat review; the Composer bullet and the Stop decision in 09-dashboard-chat.md). Before, in the Composer bullet: "the send icon Button (primary, round, arrow up, named Send) sits inside its right edge, disabled while the text is empty or an answer is on its way (you can type the next message meanwhile)." There was no way to cancel a pending answer.

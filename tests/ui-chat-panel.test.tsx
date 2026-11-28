@@ -186,6 +186,51 @@ describe("New chat and Recent", () => {
     expect(document.body.textContent).not.toContain("boom");
   });
 
+  it("filters the loaded sessions by preview in the browser, at most 10, with no new chatTurns read", async () => {
+    turns = [
+      { ...turn(3, "cs_a", "answered", null), preview: "Why did the Deploy fail?" },
+      { ...turn(2, "cs_b", "refused", "withheld"), preview: "What did it cost?" },
+      { ...turn(1, "cs_a", "failed", "model_error"), preview: "Why did the Deploy fail?" },
+      ...Array.from({ length: 12 }, (_, n) => ({ ...turn(10 + n, `cs_m${n}`, "answered", null), preview: `deploy note ${n}` })),
+    ];
+    mount();
+    await waitFor(() => expect(document.querySelectorAll("[data-list-row]")).toHaveLength(10), SLOW);
+    const search = screen.getByRole("searchbox", { name: "Search recent chats" }) as HTMLInputElement;
+    expect(search.placeholder).toBe("Search by first question");
+    // The field sits above the list, inside the Recent card.
+    const list = screen.getByRole("list", { name: "Recent chats" });
+    expect(search.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.change(search, { target: { value: "COST" } });
+    await waitFor(() => expect(document.querySelectorAll("[data-list-row]")).toHaveLength(1));
+    expect(document.querySelector("[data-list-row]")?.textContent).toContain("What did it cost?");
+    fireEvent.change(search, { target: { value: "deploy" } });
+    await waitFor(() => expect(document.querySelectorAll("[data-list-row]")).toHaveLength(10));
+    expect(document.querySelector("[data-list-row]")?.textContent).toContain("Why did the Deploy fail?");
+    expect(calls.filter((c) => c.startsWith("/api/v1/chat/turns"))).toEqual(["/api/v1/chat/turns?limit=50"]);
+    expect(screen.queryByRole("button", { name: /show more/i })).toBeNull();
+  });
+
+  it("shows an EmptyState in the card when nothing matches, and the list again when cleared", async () => {
+    turns = [{ ...turn(3, "cs_a", "answered", null), preview: "Why did it fail?" }, { ...turn(2, "cs_b", "answered", null), preview: null }];
+    mount();
+    await waitFor(() => expect(document.querySelectorAll("[data-list-row]")).toHaveLength(2), SLOW);
+    const search = screen.getByRole("searchbox", { name: "Search recent chats" });
+    fireEvent.change(search, { target: { value: "zebra" } });
+    const empty = await screen.findByText("No chat matches “zebra”");
+    expect(empty.closest("[data-empty]")).toBeTruthy();
+    expect(document.querySelectorAll("[data-list-row]")).toHaveLength(0);
+    expect(screen.getByRole("heading", { name: "Recent" }).closest("section")?.contains(empty)).toBe(true);
+    fireEvent.change(search, { target: { value: "" } });
+    await waitFor(() => expect(document.querySelectorAll("[data-list-row]")).toHaveLength(2));
+  });
+
+  it("draws the search with Input and the rows with ListRow and EmptyState only", () => {
+    const source = readFileSync("web/src/views/chat-page.tsx", "utf8");
+    expect(source).toContain('from "../components/ui/input.js"');
+    expect(source).toMatch(/<Input\b[^>]*type="search"/);
+    expect(source).not.toMatch(/<input\b/);
+  });
+
   it("uses its own query key and leaves the Chat Card's key and limit alone", () => {
     expect(readFileSync("web/src/views/chat-page.tsx", "utf8")).toContain('queryKey: ["chat", "recent"]');
     expect(readFileSync("web/src/views/chat-card.tsx", "utf8")).toContain('queryKey: ["chat", "turns"], queryFn: () => chatTurns({ limit: 10 })');
