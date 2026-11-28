@@ -1,8 +1,8 @@
 import type { WorkerDeps } from "./support.js";
-import type { FactoryConfig } from "../core/config.js";
-import type { MergeIO } from "../core/mechanical.js";
-import type { SandboxHandle } from "../interfaces/sandbox.js";
 import { NO_HOOKS, RunFailure, TRUSTED_GIT_ENV, gitVerb, untrustedGitConfig } from "./support.js";
+
+/** The sandbox handle type, taken from the deps so this module imports no interface file. */
+type SandboxHandle = Parameters<WorkerDeps["sandbox"]["destroy"]>[0];
 
 /**
  * What the worker's git helpers read: the sandbox and tool env, and the run's repo settings. A Worker satisfies it.
@@ -10,7 +10,7 @@ import { NO_HOOKS, RunFailure, TRUSTED_GIT_ENV, gitVerb, untrustedGitConfig } fr
  */
 export interface GitCtx {
   readonly d: Pick<WorkerDeps, "sandbox" | "toolEnv">;
-  readonly cfg: { readonly repo: Pick<FactoryConfig["repo"], "path" | "base_branch"> };
+  readonly cfg: { readonly repo: { path: string; base_branch: string } };
 }
 
 export async function git(w: GitCtx, handle: SandboxHandle, args: string[]): Promise<string> {
@@ -77,7 +77,7 @@ export async function liveUntracked(w: GitCtx, handle: SandboxHandle): Promise<S
  * only for regular files; writes go through git (a blob, its index entry, then `checkout-index`), never
  * through a path in the working tree, so a symlink there cannot redirect them. Hooks stay off.
  */
-export function mergeIO(w: GitCtx, handle: SandboxHandle): MergeIO {
+export function mergeIO(w: GitCtx, handle: SandboxHandle) {
   const entries = async (path: string) => {
     const ls = await git(w, handle, ["ls-files", "-s", "-z", "--", path]);
     return ls.split("\0").filter(Boolean).flatMap((line) => {
@@ -86,13 +86,13 @@ export function mergeIO(w: GitCtx, handle: SandboxHandle): MergeIO {
     });
   };
   return {
-    stage: async (path, n) => {
+    stage: async (path: string, n: number) => {
       const e = (await entries(path)).find((x) => x.stage === n);
       if (!e || !/^100(644|755)$/.test(e.mode)) return null;
       const blob = await gitRaw(w, handle, ["cat-file", "blob", e.sha]);
       return blob.exit_code === 0 && !blob.stdout.includes("\0") ? blob.stdout : null;
     },
-    write: async (path, text) => {
+    write: async (path: string, text: string) => {
       const mode = (await entries(path)).find((x) => x.stage === 2 || x.stage === 0)?.mode ?? "100644";
       const hashed = await w.d.sandbox.exec(handle, ["git", "hash-object", "-w", "--stdin"], {
         env: { ...w.d.toolEnv, ...TRUSTED_GIT_ENV },
