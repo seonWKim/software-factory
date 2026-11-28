@@ -1,13 +1,13 @@
 import { Pause, Pencil, Play, Trash2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { API, type ScheduleFields, type ScheduleRow, type ScheduleRunRow, type ScheduleVerb, type Session, isPaused, postSchedule, useApi, useScheduleRuns, useSchedules } from "../api.js";
 import { Badge } from "../components/ui/badge.js";
 import { Button } from "../components/ui/button.js";
 import { Card } from "../components/ui/card.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { OverflowMenu } from "../components/ui/menu.js";
-import { Notice, PageHeader } from "../components/ui/notice.js";
+import { Notice, PageToolbar } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
@@ -21,7 +21,7 @@ import { ScheduleDetail, TitleCell, nextText, when } from "./schedules/detail.js
 import { repeatsText } from "../lib/repeats.js";
 import { ACTION_TEXT, OUTCOME_TEXT, STATE_TEXT } from "./schedules/labels.js";
 
-// The Schedules page (design 09-dashboard-schedules, over 08-schedules): every schedule in a DataTable inside a Card,
+// The Schedules tab of the Calendar page (design 09-dashboard-schedules, over 08-schedules): every schedule in a DataTable inside a Card,
 // read through GET /api/v1/schedules, Check a page schedules too. Repeats reads in plain words through the shared formatter
 // (lib/repeats.ts); an On each merge schedule's Repeats and Next run say On each merge, a paused schedule's Next run says
 // Paused. Each row's Switch is on while the schedule is not paused (a Check a page one's `paused` flag; for any other,
@@ -31,8 +31,9 @@ import { ACTION_TEXT, OUTCOME_TEXT, STATE_TEXT } from "./schedules/labels.js";
 // Each title has one muted line under it saying what the schedule does (schedules/detail.tsx). Pressing a row's title
 // (DataTable's `select`) marks the row as current and shows a detail Card (what it does, its settings, its last and next
 // run) above its runs (GET /api/v1/schedules/runs). New schedule, the page's one primary action, and Edit open one Dialog
-// (schedules/form.tsx). A refusal shows in a Notice above the table.
-// The Cards follow the PageHeader as siblings, spaced by the Card's own top margin as on the other pages (no flex gap).
+// (schedules/form.tsx). The toolbar row holds the Calendar | Schedules switch (`switcher`, from the Calendar page), then on the right
+// the Activity link and New schedule; the page's heading is the Calendar's. A refusal shows in a Notice above the table.
+// The Cards follow the PageToolbar as siblings, spaced by the Card's own top margin as on the other pages (no flex gap).
 
 const stateOf = (s: ScheduleRow) => (isPaused(s) ? "paused" : s.running_since !== null ? "running" : "waiting");
 
@@ -121,7 +122,8 @@ function ScheduleRows({ rows, selected, onSelect, onEdit, onDelete, w }: {
 
 type FormState = { kind: "edit"; schedule: ScheduleRow | null } | { kind: "delete"; schedule: ScheduleRow };
 
-export function SchedulesPage() {
+/** The Schedules tab: its toolbar (starting with the Calendar page's `switcher`), the schedules Card, the detail Card and the runs Card. */
+export function SchedulesTab({ switcher }: { switcher: ReactNode }) {
   const q = useSchedules();
   const w = useScheduleWrites();
   const [selected, setSelected] = useState<string | null>(null);
@@ -156,16 +158,13 @@ export function SchedulesPage() {
     });
   return (
     <>
-      <PageHeader
-        title={t("page.schedules")}
-        description={t("schedules.description")}
-        actions={(
-          <div className="flex items-center gap-4">
-            <Link href={`${BASE}health?tab=activity&actor=${SCHEDULE_ACTOR}`} className={LINK_CLASS}>{t("schedules.activityLink")}</Link>
-            <Button ref={addButton} variant="primary" data-capture-open="new-schedule" disabled={!w.ready} onClick={() => open({ kind: "edit", schedule: null }, addButton.current)}>{t("schedules.new")}</Button>
-          </div>
-        )}
-      />
+      <PageToolbar>
+        {switcher}
+        <div className="ml-auto flex items-center gap-4">
+          <Link href={`${BASE}health?tab=activity&actor=${SCHEDULE_ACTOR}`} className={LINK_CLASS}>{t("schedules.activityLink")}</Link>
+          <Button ref={addButton} variant="primary" data-capture-open="new-schedule" disabled={!w.ready} onClick={() => open({ kind: "edit", schedule: null }, addButton.current)}>{t("schedules.new")}</Button>
+        </div>
+      </PageToolbar>
       {form?.kind === "delete" && (
         <DeleteScheduleDialog schedule={form.schedule} busy={w.busy} error={w.error} returnFocusTo={opener} onConfirm={() => remove(form.schedule)} onClose={close} />
       )}

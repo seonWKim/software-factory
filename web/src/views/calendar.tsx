@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight, Plus, RefreshCw } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { type ReactNode, useMemo, useRef, useState } from "react";
 import { API, type CalendarDay, type CalendarEvent, type CalendarEvents, type CalendarSync, type EventRow, type Session, postCalendarSync, useApi, useCalendarEvents } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
@@ -9,6 +9,8 @@ import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { CARD_TITLE, Card } from "../components/ui/card.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { t } from "../i18n/index.js";
+import { useUrlParam } from "../lib/url-param.js";
+import { SchedulesTab } from "./schedules.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
@@ -217,7 +219,26 @@ function Events({ v, view, label, month, s, filter }: { v: CalendarEvents; view:
   );
 }
 
+const TABS = [
+  { id: "calendar", label: t("calendarTabs.calendar") },
+  { id: "schedules", label: t("calendarTabs.schedules") },
+] as const;
+type Tab = (typeof TABS)[number]["id"];
+
+/** The Calendar page: a Calendar | Schedules switch starts the toolbar row; the tab is `?tab=schedules` in the URL, Calendar the default. */
 export function CalendarPage() {
+  const [param, setParam] = useUrlParam("tab", (v) => v === "schedules");
+  const tab: Tab = param === "schedules" ? "schedules" : "calendar";
+  const switcher = <SegmentedControl label={t("calendarTabs.label")} options={TABS} value={tab} onChange={(id) => setParam(id === "schedules" ? id : null)} />;
+  return (
+    <>
+      <PageHeader title={t("page.calendar")} />
+      {tab === "schedules" ? <SchedulesTab switcher={switcher} /> : <CalendarTab switcher={switcher} />}
+    </>
+  );
+}
+
+function CalendarTab({ switcher }: { switcher: ReactNode }) {
   const [view, setView] = useState<View>("week");
   const [filter, setFilter] = useState<Filter>("all");
   const [focus, setFocus] = useState(() => new Date());
@@ -231,10 +252,12 @@ export function CalendarPage() {
   const actions = useMemo(() => ({ newOn: (date: string) => setDialog({ kind: "new", date }), edit: (event: CalendarEvent) => setDialog({ kind: "edit", event }), refetch }), [refetch]);
   return (
     <CalendarActionsContext.Provider value={actions}>
-    <PageHeader title={t("page.calendar")} />
     <PageToolbar>
-      {/* One row (09-dashboard-tasks-calendar): the view switch, Previous / Today / Next, the period, then a quiet Sync at the end. */}
-      <div data-calendar-toolbar className="flex w-full min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-2">
+      {switcher}
+      {/* One row (09-dashboard-tasks-calendar): the view switch, Previous / Today / Next, the period, then a quiet Sync at the end.
+          Its basis is its one-line width (flex-auto, not flex-1: a 0% basis), so a narrow window wraps it under the tab switch
+          and it wraps inside the full width, instead of squeezing beside the switch with its segments past the edge. */}
+      <div data-calendar-toolbar className="flex min-w-0 flex-auto flex-wrap items-center gap-x-3 gap-y-2">
         <SegmentedControl label={t("calendarPage.view")} options={VIEWS} value={view} onChange={setView} />
         <SegmentedControl label={t("calendarPage.filter")} options={FILTERS} value={filter} onChange={setFilter} />
         <ButtonRow role="group" aria-label={t("calendarPage.period")} className="gap-1">

@@ -1,5 +1,8 @@
 // English text, area: calendar. A key's prefix (before its first dot) belongs to this file only.
 export const calendar = {
+  "calendarTabs.label": "Page",
+  "calendarTabs.calendar": "Calendar",
+  "calendarTabs.schedules": "Schedules",
   "calendarCopy.switch": "Also add to {calendar}",
   "calendarCopy.readOnly": "Reconnect {calendar} with write access to add events there",
   "calendarCopy.unavailable": "Saved here only: {reason}",

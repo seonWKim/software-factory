@@ -18,7 +18,7 @@ describe("app shell", () => {
     expect(screen.queryByRole("navigation", { name: "Factory" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Needs you" })).toBeNull();
     const tasks = screen.getByRole("navigation", { name: "Tasks" });
-    expect([...tasks.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Chat", "Tasks4", "Calendar", "Schedules"]);
+    expect([...tasks.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Chat", "Tasks4", "Calendar"]);
     const nav = screen.getByRole("navigation", { name: "System" });
     expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Health"]);
     fireEvent.click(within(nav).getByText("Health"));
@@ -226,7 +226,7 @@ describe("sidebar", () => {
       expect(nav.getAttribute("aria-label")).toBe(name);
     }
     const links = (name: string) => within(screen.getByRole("navigation", { name })).getAllByRole("link").map((a) => a.textContent);
-    expect(links("Tasks")).toEqual(["Chat", "Tasks", "Calendar", "Schedules"]);
+    expect(links("Tasks")).toEqual(["Chat", "Tasks", "Calendar"]);
     expect(links("System")).toEqual(["Work", "Health"]);
     expect(links("Setup")).toEqual(["Rules", "Plugins", "Settings"]);
     expect(document.querySelector("aside details, aside summary, aside [data-chevron]")).toBeNull();
