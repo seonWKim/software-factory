@@ -41,7 +41,7 @@ interface Conversation {
 
 const EMPTY: Conversation = { said: [] };
 // Kept in the query cache, not in the page: going to another page and back keeps the conversation and its session, and a
-// send that finishes while the page is away still lands. A reload starts a new conversation.
+// send that finishes while the page is away still lands. A reload starts empty; Recent lists the stored sessions.
 const KEY = ["chat", "conversation"] as const;
 
 /** The example questions of the empty page; one click puts the question in the composer. */

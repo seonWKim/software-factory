@@ -144,6 +144,10 @@ describe("New chat and Recent", () => {
     const actions = document.querySelector("[data-chat-actions]") as HTMLElement;
     const newChat = within(actions).getByRole("button", { name: "New chat" });
     expect(newChat.className).toContain("border-border-strong"); // the secondary variant
+    // New chat is the row's one control: no PageHeader, no close Button.
+    expect(within(actions).getAllByRole("button")).toEqual([newChat]);
+    expect(actions.querySelector("header, h1, h2")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^close/i })).toBeNull();
     expect(screen.getByRole("heading", { level: 1 }).className).toContain("sr-only");
     fireEvent.click(newChat);
     await screen.findByRole("heading", { name: "Recent" }, SLOW);
@@ -153,6 +157,22 @@ describe("New chat and Recent", () => {
     fireEvent.keyDown(screen.getByLabelText("Your message"), { key: "Enter" });
     await waitFor(() => expect(sends).toHaveLength(1), SLOW);
     expect(sends[0]).toEqual({ text: "Hi" });
+  });
+
+  it("shows a Loading placeholder while the read is in flight", async () => {
+    let release = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const inner = vi.mocked(fetch).getMockImplementation()!;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes("/api/v1/chat/turns")) await gate;
+      return inner(url, init);
+    }));
+    mount();
+    expect(await screen.findByRole("heading", { name: "Recent" }, SLOW)).toBeTruthy();
+    expect(await screen.findByLabelText("Recent chats", { selector: "[aria-busy=true]" }, SLOW)).toBeTruthy();
+    release();
+    await waitFor(() => expect(document.querySelectorAll("[data-list-row]")).toHaveLength(2), SLOW);
+    expect(document.querySelector("[aria-busy=true]")).toBeNull();
   });
 
   it("says so with no sessions and in plain words when the read fails", async () => {
