@@ -81,10 +81,11 @@ describe("add a task: <words> in the chat", () => {
 });
 
 describe("the chat's system prompt", () => {
-  it("offers adding a task for work, never filing a GitHub or factory issue", () => {
-    expect(CHAT_SYSTEM).toMatch(/offer to add a task, never to file a GitHub or factory issue/);
+  // core/ is forge-neutral (tests/boundaries.test.ts): the forge is GitHub when the GitHub plugin is on.
+  it("offers adding a task for work, never filing a GitHub (forge) or factory issue", () => {
+    expect(CHAT_SYSTEM).toMatch(/offer to add a task, never to file an issue, on the forge or in the factory/);
     expect(CHAT_SYSTEM).toContain("add_task");
-    expect(CHAT_SYSTEM.replace(/never to file a GitHub or factory issue/, "")).not.toMatch(/file (a|an) .*issue/i);
+    expect(CHAT_SYSTEM.replace(/never to file an issue, on the forge or in the factory/, "")).not.toMatch(/\bissue\b/i);
   });
 });
 
