@@ -12,6 +12,7 @@ import { DataTable } from "../components/ui/data-table.js";
 import { ModalPanel } from "../components/ui/dialog.js";
 import { EmptyState } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
+import { withoutContext } from "../../../src/shared/chat-context.js";
 import { t } from "../i18n/index.js";
 import { localDateTime, relativeTime } from "../lib/format.js";
 import { useNow } from "./display.js";
@@ -95,9 +96,6 @@ export function ReplyTable({ rows }: { rows: string[][] }) {
   const data = body.map((r) => Object.fromEntries(r.map((c, i) => [`c${i}`, c])));
   return <DataTable columns={columns} rows={data} rowKey={(r) => JSON.stringify(r)} label={t("chat.table")} empty={null} />;
 }
-
-/** The context line a sent message may start with (chat-page.tsx), taken off again where a stored message is shown. */
-export const withoutContext = (text: string): string => text.replace(/^(?:Open page|About item): [^\n]*\n\n/, "");
 
 /** A failed turn's reason in plain words; `detail` (chat.send's, the provider's own words) is shown with it when given. */
 export function reasonWords(reason: string | null | undefined, detail?: string): string {

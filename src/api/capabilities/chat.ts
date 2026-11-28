@@ -13,6 +13,7 @@
 // commands route's own path after its guards, and chat.mode reads the stored permission_mode (one owner setting).
 
 import type { ChatTurnResult } from "../../core/chat-agent.js";
+import { withoutContext } from "../../shared/chat-context.js";
 import { type Declared, callCapability, declare, refuse } from "../registry.js";
 import { array, boolean, bytes, integer, jsonObject, nullable, number, object, oneOf, optional, string } from "../schema.js";
 
@@ -32,13 +33,13 @@ export const CHAT_TURNS_LIMIT = 50;
 export const CHAT_PREVIEW_MAX = 120;
 
 /**
- * A session's preview: its first question without the context line the Chat page puts before it (the same rule as
- * web/src/views/chat-card.tsx withoutContext), on one line, cut to CHAT_PREVIEW_MAX characters with an ellipsis; null
+ * A session's preview: its first question without the context line the Chat page puts before it (src/shared/chat-context.ts
+ * withoutContext, the rule the dashboard uses), on one line, cut to CHAT_PREVIEW_MAX characters with an ellipsis; null
  * when the session has no question in words.
  */
 export function previewOf(question: string | null): string | null {
   if (question === null) return null;
-  const text = question.replace(/^(?:Open page|About item): [^\n]*\n\n/, "").replace(/\s+/g, " ").trim();
+  const text = withoutContext(question).replace(/\s+/g, " ").trim();
   if (text === "") return null;
   return text.length <= CHAT_PREVIEW_MAX ? text : `${text.slice(0, CHAT_PREVIEW_MAX - 1).trimEnd()}…`;
 }
