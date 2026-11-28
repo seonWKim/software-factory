@@ -41,9 +41,9 @@ export {
 
 /** blocked_reason of an adopted PR whose review found bugs: the factory never changes a person's branch. */
 const CHANGES_REQUESTED = "changes_requested";
-/** The state a PR waiting on its merge conflict is in; every comment that sets it ends with its footer (`/resolve`). */
 /** The reason of the close of an implement run that answered already_done. */
-export const ALREADY_DONE = "already_done";
+const ALREADY_DONE = "already_done";
+/** The state a PR waiting on its merge conflict is in; every comment that sets it ends with its footer (`/resolve`). */
 export const CONFLICT_PATCH = { stage: "REVIEW", blocked_on: "human", blocked_reason: CONFLICT_PENDING } as const;
 /**
  * A failed or cancelled run's decision with its usage added to `token_cost` (design §6 Measurement): only a
