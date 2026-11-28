@@ -7,10 +7,14 @@
 // checked by core/attachments.ts chatImages and stored with the turn's user message; chat.transcript names each
 // message's images and chat.image answers one image's bytes. Code outside src/api/ is imported inside each run, so
 // scripts/gen-api.mjs never loads it.
+// A Needs-you decision in the chat (design 04-chat-commands, 09-dashboard-chat): chat.decision reads the decision of
+// the item the chat is opened on (?item=) from the item detail (src/ui/api.ts), chat.command sends a button press, a
+// reply (sentence) or a proposal's Confirm all and Cancel through itemCommandSend (src/ui/commands.ts), the item
+// commands route's own path after its guards, and chat.mode reads the stored permission_mode (one owner setting).
 
 import type { ChatTurnResult } from "../../core/chat-agent.js";
 import { type Declared, callCapability, declare, refuse } from "../registry.js";
-import { array, bytes, integer, jsonObject, number, object, oneOf, optional, string } from "../schema.js";
+import { array, boolean, bytes, integer, jsonObject, nullable, number, object, oneOf, optional, string } from "../schema.js";
 
 const OUTCOMES = ["answered", "refused", "failed"] as const;
 type Outcome = (typeof OUTCOMES)[number];
@@ -109,4 +113,76 @@ export const CHAT: readonly Declared[] = [
     input: object({ limit: optional(number()) }), output: object({ turns: array(jsonObject()) }),
     run: async (c, i) => ({ turns: (await c.d.store.listChatTurns(i.limit ?? CHAT_TURNS_LIMIT)).map((t) => ({ ...t })) }),
   }),
+  declare({
+    id: "chat.decision", area: "chat",
+    description: "The Needs-you decision of one item (?item=<id>), as the chat shows it: waiting (the owner is next), the item's title, its why (the question), "
+      + "In short and the newest factory message (the evidence), its commands (one button each, with the viewer's allowed and reason) and its pending proposals "
+      + "(each with its typed lines). An unknown item is a 404.",
+    permission: "owner", method: "GET", path: "/api/v1/chat/decision",
+    input: object({ item: string() }),
+    output: object({
+      waiting: boolean(), title: nullable(string()), why: jsonObject(), in_short: nullable(string()), evidence: nullable(string()),
+      commands: array(jsonObject()), proposals: array(object({ id: string(), lines: array(string()) })),
+    }),
+    run: async (c, i) => {
+      const { answerOf, api } = await import("../../ui/api.js");
+      const detail = answerOf<ChatItemDetail>(await api(c.d, new URL(`http://chat/api/v1/items/${encodeURIComponent(i.item)}`)));
+      if ("status" in detail) return detail;
+      return decisionOf(detail);
+    },
+  }),
+  declare({
+    id: "chat.command", area: "chat",
+    description: "Send one item command from the chat: a decision's button (command, with the reply box's words as note when it takes one), a reply as a sentence "
+      + "(command sentence, its words as note: the controller reads it into pending proposals), or a proposal's Confirm all (proposal_confirm) or Cancel (proposal_cancel) "
+      + "with the proposal's id. It is the item commands route's own request, with the same owner check: Approve and Merge answer their outcome and the item's state.",
+    permission: "owner", method: "POST", path: "/api/v1/chat/command",
+    input: object({ item: string(), command: string(), note: optional(string()), proposal: optional(string()) }),
+    output: object({
+      seq: integer(), command: string(), outcome: optional(string()), refusal: optional(nullable(string())), state: optional(jsonObject()),
+    }),
+    run: async (c, i) => {
+      const { itemCommandSend } = await import("../../ui/commands.js");
+      const { item, ...body } = i;
+      const r = await itemCommandSend(c.d, item, Object.fromEntries(Object.entries(body).filter(([, v]) => v !== undefined)));
+      const v = r.value as { error?: string; seq: number; command: string; outcome?: string; refusal?: string | null; state?: Record<string, unknown> };
+      if (r.status !== 202) return refuse(r.status, v.error ?? "The command was not sent.");
+      return { seq: v.seq, command: v.command, ...(v.outcome !== undefined && { outcome: v.outcome }), ...("refusal" in v && { refusal: v.refusal ?? null }), ...(v.state && { state: v.state }) };
+    },
+  }),
+  declare({
+    id: "chat.mode", area: "chat",
+    description: "The stored permission mode (permission_mode, one setting for the owner): ask_all, ask_irreversible (the default) or full. Read only: the chat shows it in its mode badge.",
+    permission: "owner", method: "GET", path: "/api/v1/chat/mode",
+    input: object({}), output: object({ mode: string() }),
+    run: async (c) => {
+      const { effectiveGlobal } = await import("../../ui/settings-api.js");
+      return { mode: String((await effectiveGlobal(c.d, "permission_mode")).value) };
+    },
+  }),
 ];
+
+/** The item detail fields chat.decision reads (src/ui/api.ts item). */
+interface ChatItemDetail {
+  item: { title: string | null; why: { next_actor?: string } & Record<string, unknown> };
+  thread: readonly { role: string; kind: string; body: string }[];
+  commands: readonly Record<string, unknown>[];
+  spec: { in_short: string | null } | null;
+  proposals: readonly { id: string; commands: readonly { line: string }[] }[];
+}
+
+/** A command refusal in the thread (marker `factory:refused:`): it answers a command, so it is no evidence for a wait. */
+const isRefusal = (m: { kind: string; body: string }) => m.kind === "refused" || m.body.includes(" was not applied");
+
+/**
+ * The chat's decision from the item detail: the why as the question, In short and the newest factory message (not a
+ * refusal) as evidence, the commands as the buttons and the pending proposals' typed lines. Ids stay data: the page
+ * shows none of them.
+ */
+export function decisionOf(d: ChatItemDetail) {
+  const latest = [...d.thread].reverse().find((m) => m.role === "factory" && !isRefusal(m));
+  return {
+    waiting: d.item.why.next_actor === "human", title: d.item.title, why: { ...d.item.why }, in_short: d.spec?.in_short ?? null, evidence: latest?.body ?? null,
+    commands: d.commands.map((x) => ({ ...x })), proposals: d.proposals.map((p) => ({ id: p.id, lines: p.commands.map((x) => x.line) })),
+  };
+}
