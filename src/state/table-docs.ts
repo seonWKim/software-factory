@@ -1,4 +1,4 @@
-// What each store table State declares holds, one line each: the migration bookkeeping, the extension packs, the chat messages, the chat spend, the chat turns and the held writes.
+// What each store table State declares holds, one line each: the migration bookkeeping, the extension packs, the chat messages, the chat spend, the chat turns, the held writes and the host test slots.
 // `legacy_` copies get no line: no code reads them, and the contract migration drops them (design 10-event-driven).
 // Read by the Data page (src/ui/data.ts, design 09-dashboard-app); checked by tests/data-table-docs.test.ts.
 
@@ -12,5 +12,6 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   controller_chat_spend: "The spend of every chat turn and coordinator cycle, one per turn id, with its session and kind (chat or coordinator): its UTC day, its known cost in dollars (empty when unknown) and its tokens.",
   controller_chat_turns: "Every chat turn the dashboard sent, one per turn id, with its session: running at its start, then answered, refused or failed, the reason when refused or failed, and when it started and ended.",
   controller_held_writes: "Every agent write the permission gate held for the owner's confirm, one per held write and pending once per write key: the command, its arguments (JSON), the agent, the permission mode it ran under, its write origin (agent; empty on older rows), its status and when it was held.",
+  worker_test_slots: "Every full test run in progress on the host, one per holder: the run ID that took the slot and when its lease expires; an expired slot is deleted by the next take.",
   ext_skill_versions: "Every version of an imported skill, one per changed folder hash: the skill folder's hash, its full SKILL.md text, its source and when the import saw it.",
 };
