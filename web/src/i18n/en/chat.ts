@@ -9,7 +9,6 @@ export const chat = {
   "chat.example.cost": "How much has the factory spent this week?",
   "chat.newChat": "New chat",
   "chat.recent": "Recent",
-  "loading.chatRecent": "Recent chats",
   "chat.recentFailed": "recent chats",
   "chat.recentNone": "No earlier chats yet",
   "chat.recentNoneBody": "Chats you have had show here, and you can pick one up again.",

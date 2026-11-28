@@ -174,6 +174,7 @@ export const shell = {
   "loading.changedFiles": "Changed files",
   "loading.fileDiff": "File diff",
   "loading.running": "Running work",
+  "loading.chatRecent": "Recent chats",
   "loading.queue": "Queue",
   "loading.items": "Work items",
   "loading.coordinator": "Coordinator",
