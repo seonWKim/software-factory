@@ -222,6 +222,7 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
   const limitMs = o.spec.stop_check_ms;
   let stopsOpen = 0;
   let timedOut: StopTimeout | null = null;
+  let noCommitsSent = false; // the one no-commit reminder this answerer sends
   const selections: string[] = [];
   const blocksFile = join(o.dir, HOOK_BLOCKS);
 
@@ -258,8 +259,12 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
   // `at` names the check running, for the failure detail when the limit runs out.
   const checks = async (sig: AbortSignal, at: (check: string) => void): Promise<Answer | null> => {
     at("no_commits");
+    // No commits: one reminder, then the stop passes and the outcome decides (design 04-pre-push-gates): an answer
+    // with already_done goes through the check gate and closes the item, any other fails the run with no_commits.
     if ((await runCommits((args) => git(args, sig), g.start_sha, g.base_sha)).length === 0) {
-      return stopBlock("no_commits", `${NO_COMMITS_DETAIL} since this run started, so the factory would fail the run with \`no_commits\`. Commit your work with \`git commit\`, then finish.`);
+      if (noCommitsSent) return null;
+      noCommitsSent = true;
+      return stopBlock("no_commits", `no commits yet: commit your work, or answer \`already_done\` naming the passing checks if the work is already on the base. ${NO_COMMITS_DETAIL} since this run started, and without either the factory fails the run with \`no_commits\`.`);
     }
     at("diff_too_large");
     const stat = diffStat(await git(["diff", "--numstat", "-z", "-M", `${g.base_sha}...HEAD`], sig));

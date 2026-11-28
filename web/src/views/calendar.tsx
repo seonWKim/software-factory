@@ -30,6 +30,8 @@ import { MonthGrid, WeekDays } from "./calendar-grid.js";
 // Settings. New event (the toolbar's last button, primary) and a click on a day's empty area open the shared dialog
 // (calendar-event-dialog.tsx); a local event's details offer Edit and Delete (calendar-event.tsx) through
 // CalendarActionsContext, so no props reach the grids.
+// A second SegmentedControl, All / Human / Agent (All on load), filters the entries shown, in the page only: Human hides
+// the agent entries (a schedule's runs and next slot), Agent hides the owner's and the calendars' events.
 // Sync (shown once a calendar is connected) and the note's "Sync these days" post one request to sync every calendar
 // for the days shown (POST /api/v1/calendar/sync); both show "Syncing…", disabled, until the request is done (the
 // read's `sync_pending`), and a second press sends nothing.
@@ -39,6 +41,19 @@ const VIEWS = [
   { id: "month", label: t("calendarPage.month") },
 ] as const;
 type View = (typeof VIEWS)[number]["id"];
+
+const FILTERS = [
+  { id: "all", label: t("calendarPage.filterAll") },
+  { id: "human", label: t("calendarPage.filterHuman") },
+  { id: "agent", label: t("calendarPage.filterAgent") },
+] as const;
+type Filter = (typeof FILTERS)[number]["id"];
+
+/** The days with only the entries `filter` shows: Human hides agent entries, Agent hides human events. View only. */
+function filtered(days: readonly CalendarDay[], filter: Filter): readonly CalendarDay[] {
+  if (filter === "all") return days;
+  return days.map((d) => ({ ...d, events: d.events.filter((e) => (e.kind === "agent") === (filter === "agent")) }));
+}
 
 const CONNECT_PATH = `${BASE}settings?tab=integrations#calendar`;
 
@@ -172,10 +187,10 @@ function SyncIconButton({ s }: { s: SyncDays }) {
   );
 }
 
-function Events({ v, view, label, month, s }: { v: CalendarEvents; view: View; label: string; month: string; s: SyncDays }) {
+function Events({ v, view, label, month, s, filter }: { v: CalendarEvents; view: View; label: string; month: string; s: SyncDays; filter: Filter }) {
   const none = v.calendar.length === 0;
   // With no calendar connected there is nothing to sync, so no day is unknown: the grid shows the local events.
-  const days = none ? v.days.map((d) => ({ ...d, synced: true })) : v.days;
+  const days = filtered(none ? v.days.map((d) => ({ ...d, synced: true })) : v.days, filter);
   const unsynced = v.calendar.filter((c) => c.synced_at === null && !c.failed);
   const today = iso(new Date());
   const showSource = v.calendar.length > 1;
@@ -204,6 +219,7 @@ function Events({ v, view, label, month, s }: { v: CalendarEvents; view: View; l
 
 export function CalendarPage() {
   const [view, setView] = useState<View>("week");
+  const [filter, setFilter] = useState<Filter>("all");
   const [focus, setFocus] = useState(() => new Date());
   const label = heading(view, period(view, focus));
   const shown = shownDays(view, period(view, focus));
@@ -220,6 +236,7 @@ export function CalendarPage() {
       {/* One row (09-dashboard-tasks-calendar): the view switch, Previous / Today / Next, the period, then a quiet Sync at the end. */}
       <div data-calendar-toolbar className="flex w-full min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-2">
         <SegmentedControl label={t("calendarPage.view")} options={VIEWS} value={view} onChange={setView} />
+        <SegmentedControl label={t("calendarPage.filter")} options={FILTERS} value={filter} onChange={setFilter} />
         <ButtonRow role="group" aria-label={t("calendarPage.period")} className="gap-1">
           <Button size="icon" aria-label={t(view === "week" ? "calendarPage.previousWeek" : "calendarPage.previousMonth")} title={t(view === "week" ? "calendarPage.previousWeek" : "calendarPage.previousMonth")} onClick={() => setFocus(step(view, focus, -1))}>
             <ChevronLeft aria-hidden className="size-4" />
@@ -242,7 +259,7 @@ export function CalendarPage() {
     </PageToolbar>
     {/* The week or month, named by the period for assistive tech; the toolbar holds its visible title. */}
     <Card label={label}>
-      {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} label="loading.calendar" onRetry={() => void q.refetch()} /> : <Events v={v} view={view} label={label} month={iso(focus).slice(0, 7)} s={s} />}
+      {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} label="loading.calendar" onRetry={() => void q.refetch()} /> : <Events v={v} view={view} label={label} month={iso(focus).slice(0, 7)} s={s} filter={filter} />}
     </Card>
     {dialog !== null && v !== undefined && <EventDialog target={dialog} zone={v.time_zone ?? Intl.DateTimeFormat().resolvedOptions().timeZone} onClose={() => setDialog(null)} onSaved={refetch} />}
     </CalendarActionsContext.Provider>

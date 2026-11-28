@@ -186,6 +186,7 @@ const GRAPH = {
 };
 const RESPONSES: Record<string, unknown> = {
   "/api/v1/overview": { as_of: PAGE_AT, stages: {}, needs_you: 0, running: 1, queued: 1, last_24h: { succeeded: 0, failed: 1, tokens: 0 }, system_actions: [] },
+  "/api/v1/health": { checked_at: PAGE_AT, checks: [] },
   "/api/v1/runs": RUNS,
   "/api/v1/items/graph": GRAPH,
 };
@@ -213,10 +214,10 @@ afterEach(() => {
 });
 
 async function mountWorkers() {
-  history.replaceState(null, "", "/app/workers");
+  history.replaceState(null, "", "/app/health?tab=runs");
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><App /></QueryClientProvider>);
-  await screen.findByRole("heading", { level: 1, name: "Workers" });
+  await screen.findByRole("heading", { level: 1, name: "Health" });
   await screen.findByRole("list", { name: "Runs over time, one row per lane" });
   await screen.findByRole("list", { name: "Dependency graph, prerequisites on the left" });
 }
@@ -224,7 +225,7 @@ async function mountWorkers() {
 const bar = (id: string) => document.querySelector(`[data-run="${id}"]`) as HTMLElement;
 const node = (id: string) => document.querySelector(`[data-node="${id}"]`) as HTMLElement;
 
-describe("the Workers page", () => {
+describe("the Workers cards in Health's Runs tab", () => {
   it("has window segments 1h, 6h and 24h with 6h checked, and a switch reads the other window", async () => {
     await mountWorkers();
     const group = screen.getByRole("radiogroup", { name: "Time window" });
@@ -324,12 +325,18 @@ describe("the Workers page", () => {
     await vi.waitFor(() => expect(location.pathname).toBe("/app/items/wi_base"));
   });
 
-  it("has no control that edits anything: its only buttons are the window switch", async () => {
+  it("sits after Runners and before Failures and Host sleeps, and its two cards have only the window switch to press", async () => {
     await mountWorkers();
-    const main = document.querySelector("main")!;
-    const group = within(main).getByRole("radiogroup", { name: "Time window" });
-    for (const b of main.querySelectorAll("button")) expect(group.contains(b)).toBe(true);
-    expect(main.querySelector("input, select, textarea, form")).toBeNull();
+    const sections = [...document.querySelectorAll("[data-health-section]")].map((e) => e.getAttribute("data-health-section"));
+    expect(sections.slice(0, 1)).toEqual(["runners"]);
+    expect(sections.slice(1, 3)).toEqual(["timeline", "graph"]);
+    expect(sections.indexOf("failures")).toBeGreaterThan(2);
+    for (const name of ["timeline", "graph"]) {
+      const card = document.querySelector(`[data-health-section=${name}]`)!;
+      const group = within(card as HTMLElement).queryByRole("radiogroup", { name: "Time window" });
+      for (const b of card.querySelectorAll("button")) expect(group?.contains(b)).toBe(true);
+      expect(card.querySelector("input, select, textarea, form")).toBeNull();
+    }
   });
 
   it("renders in dark too", async () => {

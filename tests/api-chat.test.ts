@@ -58,8 +58,8 @@ async function setup(llm: LLMProvider | null) {
 }
 
 describe("the chat declarations", () => {
-  it("declares chat.send, chat.transcript, chat.image and chat.turns, owner-only with schemas and a description, listed in src/api/index.ts", () => {
-    const ids = ["chat.send", "chat.transcript", "chat.image", "chat.turns"];
+  it("declares chat.send, chat.transcript, chat.image, chat.turns, chat.decision, chat.command and chat.mode, owner-only with schemas and a description, listed in src/api/index.ts", () => {
+    const ids = ["chat.send", "chat.transcript", "chat.image", "chat.turns", "chat.decision", "chat.command", "chat.mode"];
     expect(CHAT.map((c) => c.id)).toEqual(ids);
     for (const c of CHAT) {
       expect(c.permission).toBe("owner");
@@ -68,7 +68,7 @@ describe("the chat declarations", () => {
       expect(c.output.json()).toMatchObject({ type: "object" });
       expect(DECLARATIONS).toContain(c);
     }
-    expect(CHAT.find((c) => c.id === "chat.send")!.method).toBe("POST");
+    expect(CHAT.filter((c) => c.method === "POST").map((c) => c.id)).toEqual(["chat.send", "chat.command"]);
   });
 });
 

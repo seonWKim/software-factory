@@ -4,15 +4,22 @@ import { describe, expect, it } from "vitest";
 import { COMMAND_TABLE, SENTENCE_FORM } from "../src/core/command-table.js";
 import { REGISTRY } from "../src/api/index.js";
 
+/**
+ * The entries whose capability is not their `<noun>s.<verb>`: `task add` stores a plain task, as tasks.create does;
+ * `task create` (a work item) and `task list` (work items, then tasks) are other commands than tasks.create and tasks.list.
+ */
+const NOT_BY_NAME: Readonly<Record<string, string | null>> = { "task add": "tasks.create", "task create": null, "task list": null };
+
 /** The capability an entry maps to: `<noun> <verb>` is `<noun>s.<verb>` (`schedule list` is `schedules.list`). */
 const capabilityOf = (name: string): string | null => {
+  if (name in NOT_BY_NAME) return NOT_BY_NAME[name]!;
   const [noun, ...verb] = name.split(" ");
   return verb.length === 0 ? null : `${noun}s.${verb.join("-")}`;
 };
 
 /** The command-table entries with no capability yet (design 09-api-registry): each moves off this list when declared. */
 const NO_CAPABILITY: readonly string[] = [
-  "task create", "task add", "task done", "task reopen", "task edit", "task delete", "task sub", "task build", "task list", "task project",
+  "task create", "task done", "task reopen", "task edit", "task delete", "task sub", "task build", "task list", "task project",
   "project create", "project list", "project rename", "project archive", "project restore", "project delete", "task show",
   "approve", "retry", "revise", "reject", "resolve", "task paths", "task note", "hold", "verdict", "merge", "run-next", SENTENCE_FORM, "confirm",
   "settings list", "settings set", "settings reset", "settings history", "mode",

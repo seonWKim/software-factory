@@ -14,6 +14,8 @@ import { Notice, PageHeader, PageToolbar, EmptyState } from "../components/ui/no
 import { ID_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { FailuresSection, FailuresWindowSwitch, useFailuresWindow } from "./failures.js";
 import { SpendSection } from "./spend.js";
+import type { WorkerWindow } from "../api/workers.js";
+import { WorkersGraphCard, WorkersTimelineCard } from "./workers.js";
 import { EfficiencyTab } from "./efficiency.js";
 import { Improve } from "./rules-improve.js";
 import { Markdown } from "../components/ui/markdown.js";
@@ -796,7 +798,7 @@ function CheckList({ checks }: { checks: HealthCheck[] }) {
  */
 const HEALTH_TABS = {
   overview: ["pauses", "checks"],
-  runs: ["runners", "failures", "sleeps"],
+  runs: ["runners", "timeline", "graph", "failures", "sleeps"],
   cost: ["spend", "efficiency", "github"],
   review: ["merges", "improve"],
   activity: ["actors"],
@@ -893,6 +895,9 @@ export function HealthPage() {
   useScrollToSection(section);
   // The Failures window (`?window=`): a page control in the toolbar's second row while the Runs tab is open.
   const [failuresWindow, setFailuresWindow] = useFailuresWindow();
+  // The timeline's window and the item a graph node lights up in it (design 09-dashboard-workers).
+  const [workersWindow, setWorkersWindow] = useState<WorkerWindow>("6h");
+  const [highlight, setHighlight] = useState<string | null>(null);
   if (health.isError) return <><PageHeader title={t("page.health")} /><ErrorNote error={health.error} /></>;
   if (!health.data || health.data.pending) return <><PageHeader title={t("page.health")} /><Loading rows={6} label="loading.health" onRetry={() => void health.refetch()} /></>;
   const order = ["fail", "warn", "ok"];
@@ -933,6 +938,8 @@ export function HealthPage() {
       </Card>
     ),
     runners: () => <RunnersTab />,
+    timeline: () => <WorkersTimelineCard win={workersWindow} onWindow={setWorkersWindow} highlight={highlight} />,
+    graph: () => <WorkersGraphCard win={workersWindow} highlight={highlight} onHighlight={setHighlight} />,
     failures: () => <FailuresSection win={failuresWindow} />,
     sleeps: () => <HostSleeps sleeps={health.data!.sleeps ?? []} now={now} />,
     spend: () => <SpendSection />,

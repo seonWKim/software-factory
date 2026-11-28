@@ -15,7 +15,6 @@ export const shell = {
   "page.needs": "Needs you",
   "page.work": "Work",
   "page.health": "Health",
-  "page.workers": "Workers",
   "page.failures": "Failures",
   "page.spend": "Spend",
   "page.rules": "Rules",

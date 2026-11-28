@@ -1,5 +1,6 @@
 import { type MouseEvent, useContext, useRef, useState } from "react";
 import type { CalendarDay, CalendarEvent } from "../api.js";
+import { Badge } from "../components/ui/badge.js";
 import { SUB_TITLE } from "../components/ui/card.js";
 import { useWide } from "../components/ui/parts.js";
 import { CHIP_TITLE, ChipButton, Popover } from "../components/ui/popover.js";
@@ -71,12 +72,35 @@ function DayNumber({ date, today, outside = false }: { date: string; today: stri
   );
 }
 
+/** The dot of an agent entry in the compact month: the Badge's info tone. */
+const AGENT_DOT = "bg-current text-pill-info-fg";
+
+/**
+ * An agent entry (a schedule's run or next slot) as a chip: the time, the Badge (level info) and the title, with the
+ * "Next run" label on the next slot. It opens the same details as any chip, which offer no Edit and no Delete.
+ */
+function AgentChip({ event, showSource, wrap }: { event: CalendarEvent; showSource: boolean; wrap: boolean }) {
+  return (
+    <EventButton event={event} showSource={showSource} className={cn("gap-1.5 px-1.5 text-xs hover:bg-surface-2 aria-expanded:bg-surface-2", wrap ? "items-start py-1" : "items-center")}>
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-center gap-1.5 text-text-2">
+          <span className={cn("tabular-nums", !wrap && "max-lg:sr-only")}>{event.time}</span>
+          <Badge level="info">{t("calendarPage.agentBadge")}</Badge>
+          {event.next === true && <span className="truncate">{t("calendarPage.nextRun")}</span>}
+        </span>
+        <span data-raw className={cn(wrap ? CHIP_TITLE : "block truncate", "font-medium text-text-1")}>{titleOf(event)}</span>
+      </span>
+    </EventButton>
+  );
+}
+
 /**
  * One event as a chip that opens its details. All day: a filled pill in its calendar's colour (`text-surface` on it
  * reads in both themes). Timed: a dot in that colour, the time in muted text, then the title. `wrap` (Week, a day's
  * list) cuts the title at 2 lines under the time; else (Month) it is one line cut with an ellipsis.
  */
 function EventChip({ event, showSource, wrap = false }: { event: CalendarEvent; showSource: boolean; wrap?: boolean }) {
+  if (event.kind === "agent") return <AgentChip event={event} showSource={showSource} wrap={wrap} />;
   const colour = colourOf(event.source);
   const source = showSource ? <span data-raw> · {event.source}</span> : null;
   if (event.all_day) {
@@ -229,7 +253,7 @@ function CompactCell({ day, today, outside, selected, onSelect }: { day: Calenda
         <DayNumber date={day.date} today={today} outside={outside} />
         <span aria-hidden className="flex h-1.5 gap-0.5">
           {events.slice(0, 3).map((e) => (
-            <span key={`${e.source}:${e.id}`} data-colour className={cn("size-1.5 rounded-pill", colourOf(e.source))} />
+            <span key={`${e.source}:${e.id}`} data-colour className={cn("size-1.5 rounded-pill", e.kind === "agent" ? AGENT_DOT : colourOf(e.source))} />
           ))}
         </span>
       </ChipButton>
