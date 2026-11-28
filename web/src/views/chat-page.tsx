@@ -315,7 +315,7 @@ export function ChatPage() {
         <Button variant="secondary" className="ms-auto" onClick={reset}>{t("chat.newChat")}</Button>
       </div>
       {/* Opened on an item (?item=): its Needs-you decision, first in the conversation (decisions 3 and 4). */}
-      {itemId === null ? null : <div className="mt-4"><ChatDecision item={itemId} token={token} /></div>}
+      {itemId === null ? null : <ChatDecision item={itemId} token={token} />}
       {empty ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-6 py-10 text-center">
           <div className="space-y-2">

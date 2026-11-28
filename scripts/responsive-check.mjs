@@ -158,6 +158,8 @@ async function main() {
     { name: "evals", path: "data" },
     { name: "dialog-new-event", path: "calendar" },
     { name: "chat-error", path: "chat" },
+    // The Chat page opened on an item waiting for the owner: its Needs-you decision above the conversation (09-dashboard-chat).
+    { name: "chat-decision", path: `chat?item=${enc(fixture.pages.item)}` },
   ].filter((p) => only === null || p.name === only);
   const prepare = { ...PREPARE, evals: openEvals(fixture.pages.skill), "chat-error": CHAT_ERROR };
 

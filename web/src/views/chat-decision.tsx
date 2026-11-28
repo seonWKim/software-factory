@@ -89,7 +89,7 @@ export function ChatDecision({ item, token }: { item: string; token: string | un
   const blocked = commands.find((c) => !c.allowed && c.reason);
   const text = reply.trim();
   return (
-    <section data-chat-decision aria-label={t("chat.decision")} className="min-w-0 space-y-3 rounded-box border border-border-strong p-4">
+    <section data-chat-decision aria-label={t("chat.decision")} className="mt-2 min-w-0 space-y-3 rounded-box border border-border-strong p-4">
       {data.title ? <p className="text-xs text-text-2 break-words">{data.title}</p> : null}
       <div data-decision-question className="min-w-0 break-words">
         <Markdown text={whyText(data.why as unknown as Why)} />
