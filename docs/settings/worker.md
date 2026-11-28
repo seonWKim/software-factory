@@ -20,6 +20,7 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `packs.auto_approve_read_only` | worker | review | global | tighten-only |  | `false` | Whether a read-only pack tool with no credential is approved without the owner's approval. |
 | `run_timeout_ms` | worker | runtime | global | free |  | `2700000` | Longest an agent run may take before it is stopped. |
 | `stall_ms` | worker | runtime | global | free |  | `300000` | Longest an agent run may go with no model output and no open tool call before it counts as stalled. |
+| `test_slots` | worker | runtime | global | free |  |  | Most full test runs at once on one host. None: a quarter of the host's cores, at least 1. |
 | `toolchain` | worker | review | global | free |  |  | Cache folders agents may read but not write, their extra env, and the command that warms them. |
 | `worker_kinds` | worker | runtime | global | free |  | `["triage","review","merge-check","update","restart","improve","implement","resolve","screenshot","judge","routine"]` | Run kinds the workers claim; a queued run of another kind waits for an interactive session. |
 | `workers` | worker | runtime | global | free |  | `1` | Worker loops in each process that claim and run steps. |
