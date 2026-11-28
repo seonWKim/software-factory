@@ -517,7 +517,7 @@
     "/api/v1/chat/turns": {
       "get": {
         "operationId": "chat.turns",
-        "summary": "The recent chat turns, newest first, at most limit (default 50): each with its turn_id, session_id, status, reason and times.",
+        "summary": "The recent chat turns, newest first, at most limit (default 50): each with its turn_id, session_id, status, reason, times and preview (the text of its session's first user message as stored, null when that message has no text).",
         "tags": [
           "chat"
         ],
