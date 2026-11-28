@@ -5,9 +5,10 @@
 // and goes with the run's take or release, so the display reads who holds and who waits (readTestSlots). Store data only.
 
 import type { RunId } from "../../../core/types.js";
-import type { TestSlotStore } from "../../../interfaces/factory-store.js";
+import type { FactoryStore, TestSlotStore } from "../../../interfaces/factory-store.js";
 import type { SqlDriver } from "../../../state/index.js";
 import { claimLock } from "./reservations.js";
+import { storeSqlOrNull } from "./store-sql.js";
 import type { StoreTime } from "./store-steps.js";
 
 /** The holder prefix of a waiting run's row: `waiting:<run id>`. */
@@ -44,13 +45,17 @@ export async function releaseTestSlot(db: SqlDriver, holder: RunId): Promise<boo
 }
 
 /**
- * Records that `holder` waits for a slot: its waiting row, expiring `lease_ms` from now, so a waiter that died
- * disappears with the next take. Written on each poll of the wait; a run that holds a slot writes none.
+ * Records that `holder` waits for a slot: its waiting row, expiring `lease_ms` after `now`, so a waiter that died
+ * disappears with the next take. Written on each poll of the wait; a run that holds a slot writes none. A store that
+ * is not a SQL store records nothing.
  */
-export async function recordTestSlotWait(db: SqlDriver, time: StoreTime, s: { holder: RunId; lease_ms: number }): Promise<void> {
+export async function recordTestSlotWait(store: TestSlotStore, now: Date, s: { holder: RunId; lease_ms: number }): Promise<void> {
+  const db = storeSqlOrNull(store as FactoryStore); // reads only the store's driver mark
+  if (!db) return;
+  const expires = new Date(now.getTime() + s.lease_ms).toISOString();
   await db.transaction(async (tx) => {
     await tx.run("DELETE FROM worker_test_slots WHERE holder = ?", [waitingRow(s.holder)]);
-    await tx.run("INSERT INTO worker_test_slots (holder, expires_at) VALUES (?, ?)", [waitingRow(s.holder), time.after(s.lease_ms)]);
+    await tx.run("INSERT INTO worker_test_slots (holder, expires_at) VALUES (?, ?)", [waitingRow(s.holder), expires]);
   });
 }
 

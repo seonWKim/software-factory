@@ -38,10 +38,9 @@ async function slotFixture(cap = 1) {
   const warned: string[] = [];
   const takes: RunId[] = [];
   const counted = { takeTestSlot: async (s: Parameters<typeof store.takeTestSlot>[0]) => (takes.push(s.holder), store.takeTestSlot(s)), releaseTestSlot: (h: RunId) => store.releaseTestSlot(h) };
-  const at = (ms: number) => new Date(clock.now().getTime() + ms).toISOString() as never;
   const slot = (holder: RunId) => new TestSlot({
     store: counted, clock, test_command: TEST, cap: () => cap, lease_ms: () => LEASE,
-    recordWait: (h, lease_ms) => recordTestSlotWait(db, { now: () => at(0), after: at }, { holder: h, lease_ms }),
+    recordWait: (h, lease_ms) => recordTestSlotWait(store, clock.now(), { holder: h, lease_ms }),
     warn: (m) => warned.push(m),
   }, holder);
   const slots = () => readTestSlots(db, clock.now().toISOString());
@@ -139,6 +138,22 @@ describe("a run that waits for a slot", () => {
     expect(slot.waiting()).toBe(false);
     expect(r.ran).toEqual([{ argv: TEST, held: [id("a")] }]);
     expect(await f.slots()).toEqual({ held: [], waiting: [] });
+  });
+
+  it("a slot freed by another run in this process wakes the waiter at once, with no poll", async () => {
+    const f = await slotFixture(1);
+    let finish: (() => void) | null = null;
+    const first = f.slot(id("a")).runChecks([TEST], new AbortController().signal, recorder(f.slots, () => new Promise((r) => (finish = () => r(ok())))).run);
+    await settle();
+    const r = recorder(f.slots);
+    const second = f.slot(id("b"));
+    const done = second.runChecks([TEST], new AbortController().signal, r.run);
+    await settle();
+    expect(second.waiting()).toBe(true);
+    finish!();
+    await first;
+    expect((await done).failed).toBeNull();
+    expect(r.ran).toEqual([{ argv: TEST, held: [id("b")] }]);
   });
 
   it("an abort while waiting ends the wait and leaves no row", async () => {
@@ -297,7 +312,6 @@ describe("the worker's checks", () => {
   it("a pre-push check list opts in: the full test command runs under the run's slot, its time limit from the grant", async () => {
     const f = await pipeline({});
     const run = { id: id("prepush") } as Run;
-    f.w1.testSlots.set(run.id, f.w1.newTestSlot(run));
     // Fill the host, so the run waits for its slot.
     const cap = testSlotCap(f.w1.live.values().test_slots, availableParallelism());
     for (let i = 0; i < cap; i++) await f.store.takeTestSlot({ holder: id(`busy${i}`), cap, lease_ms: LEASE });
@@ -357,8 +371,7 @@ describe("the worker's checks", () => {
 describe("the waiting row", () => {
   it("expires with its lease, so a waiter that died leaves the display", async () => {
     const f = await slotFixture(1);
-      const at = (ms: number) => new Date(f.clock.now().getTime() + ms).toISOString() as never;
-    await recordTestSlotWait(f.db, { now: () => at(0), after: at }, { holder: id("a"), lease_ms: LEASE });
+    await recordTestSlotWait(f.store, f.clock.now(), { holder: id("a"), lease_ms: LEASE });
     expect((await f.slots()).waiting).toEqual([id("a")]);
     // A waiting row counts against no cap.
     expect(await f.store.takeTestSlot({ holder: id("b"), cap: 1, lease_ms: LEASE })).toBe(true);
