@@ -22,6 +22,10 @@
 // `repeats`; a day's `synced` still reflects only the calendar sources. `time_zone` is this process's zone, the one
 // every local day here is counted in.
 //
+// Schedules are shown too, as agent entries (kind `agent`, source `agent`, the schedule's title, no details): each run on
+// the day of its occurrence_at, each unpaused schedule's next_due_at on its day (`next` true), read from the store only
+// (schedules-api.ts readScheduleSlots) and computed at read time. Every other entry keeps its kind `event`.
+//
 // A local event copied to a connected calendar (design 02-tasks-calendar, copy to a connected calendar) is shown once:
 // the stored copy that calendar's read brought back is left out (calendar-write.ts hideCopies). `copy` names the
 // calendar a new event's switch copies to and whether it takes writes (calendar-api.ts UiCalendar.copyTarget, from the
@@ -37,6 +41,18 @@ import type { UiDeps } from "./deps.js";
 import { Withholder } from "./withhold.js";
 
 export const CALENDAR_EVENTS_PATH = "/api/v1/calendar/events";
+
+/** The source name of an agent entry (a schedule's run or next slot). */
+const AGENT_SOURCE = "agent";
+
+/** The agent entries as calendar events: zero-length at the slot, so each falls on the day of its instant. */
+async function agentEvents(d: UiDeps) {
+  // Loaded inside the read, as schedules-api.ts loads its modules: a top-level import would add a feature→feature edge to the layering ratchet.
+  const { readScheduleSlots } = await import("./schedules-api.js");
+  return (await readScheduleSlots(d)).map((s) => ({
+    source: AGENT_SOURCE, id: `${s.schedule_id}:${s.next ? "next" : s.at}`, title: s.title, starts_at: s.at, ends_at: s.at, all_day: false, details: null, next: s.next,
+  }));
+}
 
 /** Whether every source has a successful read whose window covered the whole local day `date`; false with no source. */
 function synced(sources: readonly SourceSync[], ranges: readonly SyncedRange[], date: string): boolean {
@@ -74,12 +90,14 @@ export async function readCalendarEvents(d: UiDeps, from: string | null, to: str
   const sources = [...connected].sort().map((source) => rows.get(source) ?? { source, synced_at: null, failed: false });
   const w = new Withholder(d.scanner);
   const local = expandLocalEvents(await readLocalEvents(db, from!, to!), from!, to!);
-  const kept = [...(await localEvents(db).hideCopies(stored.events.filter((e) => connected.has(e.source)))), ...local];
+  const kept = [...(await localEvents(db).hideCopies(stored.events.filter((e) => connected.has(e.source)))), ...local, ...(await agentEvents(d))];
   const plain = async (v: string | null | undefined) => (v == null ? v : (await w.plain(v)).text);
   const events = await Promise.all(kept.map(async (e) => ({
     ...e, title: (await w.plain(e.title)).text, details: await shownDetails(w, e.details), ...("sync_error" in e ? { sync_error: await plain(e.sync_error as string | null) } : {}),
   })));
-  const days = calendarDays(events, from!, to!).map((day) => ({ ...day, synced: synced(sources, stored.ranges, day.date) }));
+  const days = calendarDays(events, from!, to!).map((day) => ({
+    ...day, synced: synced(sources, stored.ranges, day.date), events: day.events.map((e) => ({ ...e, kind: e.source === AGENT_SOURCE ? "agent" : "event" })),
+  }));
   const pending = stored.pending.some((p) => p.from === from && p.to === to);
   const copy = (await d.settings?.calendar?.copyTarget?.()) ?? null;
   return { status: 200, value: { from, to, time_zone: processTimeZone(), days, calendar: sources, sync_pending: pending, copy } };
