@@ -19,6 +19,7 @@ import { type PostFetch, fieldChips, taskPoster, tasksUrl } from "../../desktop/
 import { createMacosShell } from "../../desktop/electron/macos/app-shell.js";
 import { BOX, boxOptions, createQuickAdd } from "../../desktop/electron/macos/quick-add.js";
 import { SETTINGS, createSettingsView } from "../../desktop/electron/macos/settings-view.js";
+import { silent } from "../helpers/fakes/config.js";
 import { newStore } from "../helpers/store.js";
 import { electronMock } from "./fakes.js";
 
@@ -96,13 +97,16 @@ describe("quick-add shortcut on the macOS shell", () => {
 async function factoryApi() {
   const clock = new FakeClock(new Date("2026-11-12T09:00:00"));
   const { store } = await newStore(clock);
+  const token = newCsrfToken();
   const d: ApiDeps = {
     store,
     scanner: new PatternEgressScanner(async () => []),
     clock,
     lease_ms: 300_000,
     health: new HealthMonitor(async () => [], clock),
-    commands: { actor: ACTOR, source: "environment", token: newCsrfToken() },
+    commands: { actor: ACTOR, source: "environment", token },
+    // POST /api/v1/tasks is the registry's tasks.create, which takes the pauses token: in the factory the same per-process token.
+    pauses: { principal: async () => ACTOR, authorize: async () => ({ allow: true }), csrfToken: token, log: silent },
   };
   const posts: { url: string; body: unknown; headers: Record<string, string> }[] = [];
   const fetch: PostFetch = async (url, init) => {

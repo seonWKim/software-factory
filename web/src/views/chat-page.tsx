@@ -2,18 +2,27 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUp } from "lucide-react";
 import { type ClipboardEvent, Fragment, type KeyboardEvent, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { API, type Session, useApi } from "../api.js";
-import { chatSend, itemsList } from "../api/generated.js";
+import { chatSend, chatTranscript, chatTurns, itemsList } from "../api/generated.js";
+import { Badge } from "../components/ui/badge.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
+import { Card } from "../components/ui/card.js";
 import { CopyIcon } from "../components/ui/copy.js";
+import { ROW_TITLE, ListRow } from "../components/ui/list-row.js";
 import { Markdown } from "../components/ui/markdown.js";
+import { OverflowMenu } from "../components/ui/menu.js";
+import { EmptyState } from "../components/ui/notice.js";
+import { ErrorNote, LIST_BOX, Loading } from "../components/ui/parts.js";
 import { Textarea } from "../components/ui/textarea.js";
 import { TypingDots } from "../components/ui/typing-dots.js";
 import { type MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
-import { ReplyTable, reasonWords, replyParts } from "./chat-card.js";
+import { localDateTime, relativeTime } from "../lib/format.js";
+import { OUTCOME_TONE, OUTCOME_WORDS, ReplyTable, type Turn, reasonWords, replyParts, withoutContext } from "./chat-card.js";
+import { ChatDecision, ModeBadge } from "./chat-decision.js";
 import { AttachImages, ComposerTray, type SentImage, SentImages, pastedImages, useComposerImages, useImageDrop } from "./chat-images.js";
+import { useNow } from "./display.js";
 
 // The Chat page (design 09-dashboard-chat): one centred column, the conversation above and the composer pinned under
 // it. It reads and writes through the generated typed client (web/src/api/generated.ts) only.
@@ -33,7 +42,7 @@ interface Conversation {
 
 const EMPTY: Conversation = { said: [] };
 // Kept in the query cache, not in the page: going to another page and back keeps the conversation and its session, and a
-// send that finishes while the page is away still lands. A reload starts a new conversation.
+// send that finishes while the page is away still lands. A reload starts empty; Recent lists the stored sessions.
 const KEY = ["chat", "conversation"] as const;
 
 /** The example questions of the empty page; one click puts the question in the composer. */
@@ -83,6 +92,59 @@ function Elapsed({ startedAt }: { startedAt: number }) {
   }, []);
   const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
   return <p className="text-sm text-text-2">{seconds < ELAPSED_AFTER_S ? t("chat.sending") : t("chat.sendingFor", { seconds })}</p>;
+}
+
+/** The most sessions the Recent list shows, and how many turns are read to find them. */
+const RECENT_SESSIONS = 10;
+const RECENT_TURNS = 50;
+
+/** The sessions of `turns` (newest first), each as its latest turn, at most RECENT_SESSIONS. */
+function sessionsOf(turns: Turn[]): Turn[] {
+  const seen = new Set<string>();
+  const latest: Turn[] = [];
+  for (const x of turns) {
+    if (seen.has(x.session_id)) continue;
+    seen.add(x.session_id);
+    latest.push(x);
+  }
+  return latest.slice(0, RECENT_SESSIONS);
+}
+
+/** The Recent Card of the empty page: earlier sessions from chat.turns, read once when it mounts; Open loads one. */
+function Recent({ onOpen }: { onOpen: (sessionId: string) => Promise<void> }) {
+  const now = useNow();
+  const [failed, setFailed] = useState(false);
+  const q = useQuery({ queryKey: ["chat", "recent"], queryFn: () => chatTurns({ limit: RECENT_TURNS }) });
+  const sessions = sessionsOf((q.data?.turns ?? []) as unknown as Turn[]);
+  return (
+    <Card title={t("chat.recent")}>
+      {q.isError ? (
+        <ErrorNote error={t("chat.recentFailed")} />
+      ) : !q.data ? (
+        <Loading rows={2} label="loading.chatRecent" onRetry={() => void q.refetch()} />
+      ) : sessions.length === 0 ? (
+        <EmptyState title={t("chat.recentNone")} description={t("chat.recentNoneBody")} />
+      ) : (
+        <ul aria-label={t("chat.recentList")} className={cn("divide-y divide-border text-left", LIST_BOX)}>
+          {sessions.map((x) => {
+            const when = relativeTime(x.created_at, now);
+            return (
+              <ListRow
+                key={x.session_id}
+                title={<span className={ROW_TITLE} title={localDateTime(x.created_at)}>{when}</span>}
+                details={<>
+                  <Badge level={OUTCOME_TONE[x.status]}>{OUTCOME_WORDS[x.status]()}</Badge>
+                  {x.reason !== null && <span>{reasonWords(x.reason)}</span>}
+                </>}
+                menu={<OverflowMenu label={t("chat.openMenu", { when })} items={[{ label: t("chat.open"), onSelect: () => void onOpen(x.session_id).catch(() => setFailed(true)) }]} />}
+              />
+            );
+          })}
+        </ul>
+      )}
+      {failed && <ErrorNote error={t("chat.openFailed")} />}
+    </Card>
+  );
 }
 
 /** The item a message is about (`/app/chat?item=<id>`), or null. */
@@ -218,11 +280,42 @@ export function ChatPage() {
     submit();
   };
 
+  /**
+   * New chat: no messages, no typed text or images, no session: the next send starts a session of its own. A send still
+   * on its way is stopped, so its reply does not land in the new chat.
+   */
+  const reset = () => {
+    client.getQueryData<Conversation>(KEY)?.pending?.controller.abort();
+    update(() => EMPTY);
+    setText("");
+    for (const i of composer.images) composer.remove(i.key);
+  };
+
+  /** Loads a stored session into the conversation, in order, and continues it with its session_id. */
+  const open = async (sessionId: string) => {
+    const { messages } = await chatTranscript({ session_id: sessionId });
+    const said: Said[] = [];
+    for (const m of messages) {
+      if ((m.role !== "user" && m.role !== "assistant") || typeof m.content !== "string" || m.content === "") continue;
+      said.push(m.role === "user" ? { id: said.length, who: "you", text: withoutContext(m.content) } : { id: said.length, who: "chat", text: m.content });
+    }
+    follow.current = true;
+    update(() => ({ said, sessionId }));
+  };
+
   const empty = chat.said.length === 0;
   return (
     <div data-page-fill className="mx-auto flex w-full max-w-[48rem] min-w-0 flex-1 flex-col">
       {/* No visible title (owner, 2026-11-28): the sidebar already says Chat. The h1 stays for screen readers. */}
       <h1 className="sr-only">{t("page.chat")}</h1>
+      {/* The page's own action row at the top right, in the place of a header's actions, with no title beside it. */}
+      {/* The mode Badge sits at the start of the row, above the conversation (decision 2); New chat stays at the end. */}
+      <div data-chat-actions className="flex min-w-0 flex-wrap items-center justify-between gap-2 pb-3">
+        <ModeBadge />
+        <Button variant="secondary" className="ms-auto" onClick={reset}>{t("chat.newChat")}</Button>
+      </div>
+      {/* Opened on an item (?item=): its Needs-you decision, first in the conversation (decisions 3 and 4). */}
+      {itemId === null ? null : <ChatDecision item={itemId} token={token} />}
       {empty ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-6 py-10 text-center">
           <div className="space-y-2">
@@ -244,6 +337,9 @@ export function ChatPage() {
               </li>
             ))}
           </ul>
+          <div className="w-full">
+            <Recent onOpen={open} />
+          </div>
         </div>
       ) : (
         <ol aria-label={t("chat.conversation")} className="flex min-w-0 flex-1 flex-col gap-8 pb-8">

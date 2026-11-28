@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { HealthMonitor } from "../src/ui/health.js";
-import { type UiDeps, respond } from "../src/ui/server.js";
+import { type ApiDeps, respond } from "../src/ui/server.js";
 import { type UiSettings, newCsrfToken } from "../src/ui/settings-api.js";
 import type { UserId } from "../src/core/types.js";
-import { cleanScanner } from "./helpers/fakes/config.js";
+import { cleanScanner, silent } from "./helpers/fakes/config.js";
 import { newStore } from "./helpers/store.js";
 
 // The stale-token 403 carries code "stale_csrf" (design 09-dashboard-app), so the page's postJson retries it once
@@ -14,18 +14,23 @@ const ORIGIN = `http://${HOST}`;
 const TOKEN = newCsrfToken();
 const MESSAGE = "Missing or stale x-csrf-token; reload the page.";
 
-async function deps(): Promise<UiDeps> {
+async function deps(): Promise<ApiDeps> {
   const { store, clock } = await newStore();
   return {
     store, scanner: cleanScanner, clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], clock),
     commands: { actor: "local:me" as UserId, source: "environment", token: TOKEN },
     // Only the token is read before the refusal.
     settings: { csrfToken: TOKEN } as UiSettings,
+    // The registry's writes (tasks.create) take the pauses token: in a served page the same per-process token.
+    pauses: { principal: async () => "local:me" as UserId, authorize: async () => ({ allow: true }), csrfToken: TOKEN, log: silent },
   };
 }
 
-/** A write route of each kind: the settings write, a task write (both writePost) and the item commands route (commandsPost). */
-const ROUTES = ["/api/v1/settings", "/api/v1/tasks", "/api/v1/items/wi_1/commands"];
+/**
+ * A write route of each kind: the settings write, a task write (both writePost), a registry capability (tasks.create)
+ * and the item commands route (commandsPost).
+ */
+const ROUTES = ["/api/v1/settings", "/api/v1/tasks/done", "/api/v1/tasks", "/api/v1/items/wi_1/commands"];
 
 const post = async (url: string, over: { origin?: string; csrf?: string | undefined }) => {
   const r = await respond(await deps(), {

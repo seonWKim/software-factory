@@ -1,7 +1,7 @@
-import { CalendarCheck, CalendarClock, CalendarDays, ChartGantt, Database, FileDiff, HeartPulse, ListTodo, MessageSquare, Puzzle, ScrollText, Settings, type LucideIcon } from "lucide-react";
+import { CalendarCheck, CalendarClock, CalendarDays, Database, FileDiff, HeartPulse, ListTodo, MessageSquare, Puzzle, ScrollText, Settings, type LucideIcon } from "lucide-react";
 import { REDIRECTS } from "./page-redirects.js";
 
-/** Where a page sits in the sidebar: the Tasks block (Chat first), the System block (Work, Health, Workers), the bottom block (Rules, Plugins, Settings), or nowhere (a routable page with no sidebar link: Data, linked from Settings > Advanced, and Proposals at /app/proposals). Runners is Health's Runners tab. */
+/** Where a page sits in the sidebar: the Tasks block (Chat first), the System block (Work, Health), the bottom block (Rules, Plugins, Settings), or nowhere (a routable page with no sidebar link: Data, linked from Settings > Advanced, and Proposals at /app/proposals). Runners and Workers are Health's Runs tab. */
 export type PageGroup = "tasks" | "system" | "bottom" | "hidden";
 
 /** One routable page. `key` names it in the English catalog (`page.<key>`), which also names its heading. */
@@ -21,7 +21,6 @@ export const PAGES: readonly PageDef[] = [
   { path: "schedules", label: "Schedules", key: "schedules", icon: CalendarClock, group: "tasks" },
   { path: "items", label: "Work", key: "work", icon: ListTodo, group: "system" },
   { path: "health", label: "Health", key: "health", icon: HeartPulse, group: "system" },
-  { path: "workers", label: "Workers", key: "workers", icon: ChartGantt, group: "system" },
   { path: "rules", label: "Rules", key: "rules", icon: ScrollText, group: "bottom" },
   { path: "plugins", label: "Plugins", key: "plugins", icon: Puzzle, group: "bottom" },
   { path: "settings", label: "Settings", key: "settings", icon: Settings, group: "bottom" },

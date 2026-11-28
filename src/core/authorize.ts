@@ -93,8 +93,8 @@ export class OwnerAuth implements AuthProvider {
 }
 
 /**
- * The permission gate (design 08-permissions, local-task-tk_cad55672). Agent writes, from a chat tool call or a
- * coordinator step, and typed commands (`human_command`, from the command inbox) go through `authorizeWrite`: the
+ * The permission gate (design 08-permissions, local-task-tk_cad55672). Agent writes, from a chat tool call (only
+ * add_task passes the gate there) or a coordinator step, and typed commands (`human_command`, from the command inbox) go through `authorizeWrite`: the
  * guards first (a write that reads a secret, then the egress scan of its arguments), refused in every mode and for
  * both origins with their own reasons; then the mode, read from the store at this write; then `permissionGate`. An
  * agent write that runs is stored once as a handled command row (`recordAgentWrite`, keyed by `key`) with origin
@@ -110,20 +110,29 @@ export const SECRET_READ = "secret_read";
 export const EGRESS_BLOCKED = "egress_blocked";
 /** The commands that read a secret, refused by G1 for both origins: none declares it today. */
 const SECRET_COMMANDS: readonly string[] = [];
-/** The gate's refusal: an agent write in a chat turn, in every mode. */
+/** The gate's refusal: an agent write in a chat turn, in every mode, but the chat's add_task. */
 export const AGENT_WRITE_IN_CHAT = "agent_write_in_chat";
+/**
+ * The one write a chat turn may make (design 08-permissions, 04-chat-agent): the chat's add_task tool, which is the
+ * table's `task add`. It goes through the mode like any agent write; every other write from a chat turn is refused.
+ */
+export const CHAT_ADD_TASK = { tool: "add_task", command: "task add" } as const;
 
 /** What the gate decides: run the write, hold it for the owner's confirm, or refuse it. */
 export type GateDecision = { outcome: "run" } | { outcome: "hold" } | { outcome: "refuse"; reason: typeof AGENT_WRITE_IN_CHAT };
 
 /**
- * The gate, a pure function: a typed command runs; an agent write in a chat turn is refused; any other agent write is
- * held in `ask_all`, held when it cannot be undone in `ask_irreversible` (a command that declares no `reversible`
- * counts as irreversible), and runs in `full`.
+ * The gate, a pure function: a typed command runs; an agent write in a chat turn is refused, but the chat's add_task
+ * (`chat_tool` add_task for the command `task add`, CHAT_ADD_TASK); any other agent write, and that one, is held in
+ * `ask_all`, held when it cannot be undone in `ask_irreversible` (a command that declares no `reversible` counts as
+ * irreversible), and runs in `full`.
  */
-export function permissionGate(i: { mode: PermissionMode; reversible: boolean | undefined; origin: WriteOrigin; in_chat_turn: boolean }): GateDecision {
+export function permissionGate(i: {
+  mode: PermissionMode; reversible: boolean | undefined; origin: WriteOrigin; in_chat_turn: boolean; command?: string; chat_tool?: string;
+}): GateDecision {
   if (i.origin === "human_command") return { outcome: "run" };
-  if (i.in_chat_turn) return { outcome: "refuse", reason: AGENT_WRITE_IN_CHAT };
+  const chatAddTask = i.chat_tool === CHAT_ADD_TASK.tool && i.command === CHAT_ADD_TASK.command;
+  if (i.in_chat_turn && !chatAddTask) return { outcome: "refuse", reason: AGENT_WRITE_IN_CHAT };
   const hold = i.mode === "ask_all" || (i.mode === "ask_irreversible" && i.reversible !== true);
   return { outcome: hold ? "hold" : "run" };
 }
@@ -161,6 +170,8 @@ export interface WriteRequest {
   actor: UserId;
   origin: WriteOrigin;
   in_chat_turn: boolean;
+  /** The chat tool that asks for the write in a chat turn: only add_task for `task add` passes the gate there. */
+  chat_tool?: string;
   key: string;
   reads_secret?: boolean;
 }
@@ -179,7 +190,8 @@ export async function authorizeWrite(d: WriteGateDeps, w: WriteRequest): Promise
   if (w.reads_secret ?? SECRET_COMMANDS.includes(w.command)) return refused(SECRET_READ, "it reads a secret");
   if (!(await d.scanner.scan("tool_result", [w.command, ...w.args].join(" "))).clean) return refused(EGRESS_BLOCKED, "the leak scanner flagged it, so nothing of it was stored and nothing changed");
   const mode = await readPermissionMode(d.store);
-  const gate = permissionGate({ mode, reversible: COMMAND_TABLE.find((c) => c.name === w.command)?.reversible, origin: w.origin, in_chat_turn: w.in_chat_turn });
+  const reversible = COMMAND_TABLE.find((c) => c.name === w.command)?.reversible;
+  const gate = permissionGate({ mode, reversible, origin: w.origin, in_chat_turn: w.in_chat_turn, command: w.command, ...(w.chat_tool !== undefined && { chat_tool: w.chat_tool }) });
   if (gate.outcome === "refuse") return refused(gate.reason, "an agent may not write from a chat turn; type the command instead");
   const row = { key: w.key, command: w.command, args: w.args, actor: w.actor, mode };
   if (gate.outcome === "run" && w.origin === "agent") await d.store.recordAgentWrite(row);

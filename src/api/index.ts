@@ -10,9 +10,10 @@ import { CHAT } from "./capabilities/chat.js";
 import { COORDINATOR } from "./capabilities/coordinator.js";
 import { ITEMS } from "./capabilities/items.js";
 import { SCHEDULES } from "./capabilities/schedules.js";
+import { TASKS } from "./capabilities/tasks.js";
 
 /** Every declared capability. */
-export const DECLARATIONS: readonly Declared[] = [...ACTIVITY, ...CHAT, ...COORDINATOR, ...ITEMS, ...SCHEDULES];
+export const DECLARATIONS: readonly Declared[] = [...ACTIVITY, ...CHAT, ...COORDINATOR, ...ITEMS, ...SCHEDULES, ...TASKS];
 
 export const REGISTRY: Registry = buildRegistry(DECLARATIONS);
 
