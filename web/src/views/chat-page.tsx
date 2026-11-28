@@ -20,6 +20,7 @@ import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { localDateTime, relativeTime } from "../lib/format.js";
 import { OUTCOME_TONE, OUTCOME_WORDS, ReplyTable, type Turn, reasonWords, replyParts, withoutContext } from "./chat-card.js";
+import { ChatDecision, ModeBadge } from "./chat-decision.js";
 import { AttachImages, ComposerTray, type SentImage, SentImages, pastedImages, useComposerImages, useImageDrop } from "./chat-images.js";
 import { useNow } from "./display.js";
 
@@ -308,9 +309,13 @@ export function ChatPage() {
       {/* No visible title (owner, 2026-11-28): the sidebar already says Chat. The h1 stays for screen readers. */}
       <h1 className="sr-only">{t("page.chat")}</h1>
       {/* The page's own action row at the top right, in the place of a header's actions, with no title beside it. */}
-      <div data-chat-actions className="flex justify-end">
-        <Button variant="secondary" onClick={reset}>{t("chat.newChat")}</Button>
+      {/* The mode Badge sits at the start of the row, above the conversation (decision 2); New chat stays at the end. */}
+      <div data-chat-actions className="flex min-w-0 flex-wrap items-center justify-between gap-2 pb-3">
+        <ModeBadge />
+        <Button variant="secondary" className="ms-auto" onClick={reset}>{t("chat.newChat")}</Button>
       </div>
+      {/* Opened on an item (?item=): its Needs-you decision, first in the conversation (decisions 3 and 4). */}
+      {itemId === null ? null : <ChatDecision item={itemId} token={token} />}
       {empty ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-6 py-10 text-center">
           <div className="space-y-2">
