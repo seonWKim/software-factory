@@ -282,7 +282,7 @@ export const SETTABLE_KEYS = [
   "models", "model_by",
   "poll_interval_ms", "tick_ms",
   "heartbeat_ms", "lease_ms",
-  "workers",
+  "workers", "test_slots",
   "phases_auto_approve", "hold_policy", "auto_grant_test_paths", "test_globs",
   "alarm_repeat_count", "alarm_window_minutes", "alarm_restart_count",
   "standing_approvals.threshold",
@@ -332,7 +332,7 @@ export interface SettableValues {
   tick_ms: number;
   heartbeat_ms: number;
   lease_ms: number;
-  workers: number;
+  workers: number; test_slots: number | null; // null: none set, the cap follows the host's cores (testSlotCap)
   phases_auto_approve: boolean;
   hold_policy: HoldPolicy; auto_grant_test_paths: boolean; test_globs: string[];
   alarm_repeat_count: number;
@@ -364,7 +364,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   poll_interval_ms: 30_000,
   tick_ms: 2_000,
   heartbeat_ms: 60_000,
-  workers: 1,
+  workers: 1, test_slots: null,
   phases_auto_approve: false,
   hold_policy: DEFAULT_COORDINATION.hold_policy, auto_grant_test_paths: true, test_globs: ["tests/**", "**/*.test.*"],
   ...ALARM_DEFAULTS,
@@ -474,7 +474,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     }
     case "intake_label": return (value === null ? null : intakeLabel(value)) as SettableValues[K]; // null: none, the file's applies
     case "spend.daily_budget_usd": case "spend.weekly_budget_usd": return usdBudget(key, value) as SettableValues[K]; case "spend.coordinator_daily_usd": if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) throw new Error(`${key} must be a positive dollar amount, such as 5; it has no "none"`); return value as SettableValues[K]; // a limit, never null (design 06-spend)
-    case "worker_kinds": return workerKinds(value) as SettableValues[K];
+    case "worker_kinds": return workerKinds(value) as SettableValues[K]; case "test_slots": return (value === null ? null : positiveInteger(key, value)) as SettableValues[K]; // null: none, the cap follows the cores
     default:
       return positiveInteger(key, value) as SettableValues[K];
   }

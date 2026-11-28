@@ -205,6 +205,8 @@ export const settings = {
   "key.max_diff_files.help": "The most files a change may touch before it is stopped.",
   "key.run_timeout_ms.label": "Run time limit",
   "key.run_timeout_ms.help": "How long one run may take before it is stopped.",
+  "key.test_slots.label": "Test runs at once",
+  "key.test_slots.help": "How many full test runs may run at once on one machine. Empty: a quarter of its cores, at least 1.",
   "key.agent_stop_check_ms.label": "Stop check time limit",
   "key.agent_stop_check_ms.help": "How long the checks may run when an agent finishes before they are stopped.",
   "key.first_output_ms.label": "First output limit",

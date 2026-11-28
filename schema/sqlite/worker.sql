@@ -77,6 +77,11 @@ CREATE TABLE worker_runs (
     updated_at        TEXT NOT NULL
   , started_at TEXT, finished_at TEXT, not_before TEXT, input TEXT, paused_at TEXT, paused_by TEXT, session_id TEXT, pause_state TEXT, actor_id TEXT, transcript_url TEXT, session_tokens INTEGER, code_version TEXT, deadline_at TEXT, last_output_at TEXT, run_next_seq INTEGER);
 
+CREATE TABLE worker_test_slots (
+    holder      TEXT NOT NULL PRIMARY KEY,
+    expires_at  TEXT NOT NULL
+  );
+
 CREATE INDEX worker_host_sleeps_run ON worker_host_sleeps (run_id);
 
 CREATE INDEX worker_host_sleeps_woke ON worker_host_sleeps (woke_at);
