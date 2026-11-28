@@ -220,9 +220,9 @@ describe("ui api: items", () => {
     const body = await json<{ runs: { id: string; attempt: number; attempts: Record<string, unknown>[] }[] }>(
       d, `/api/v1/items/${encodeURIComponent(items.done.id)}`,
     );
-    // The run fields as before, plus attempts.
+    // The run fields as before, plus attempts and the test-slot wait flag.
     for (const r of body.runs) {
-      expect(Object.keys(r)).toEqual(["id", "kind", "status", "attempt", "started_at", "finished_at", "created_at", "tokens", "error", "attempts"]);
+      expect(Object.keys(r)).toEqual(["id", "kind", "status", "attempt", "started_at", "finished_at", "created_at", "tokens", "error", "attempts", "waiting_for_slot"]);
     }
     const keys = ["attempt", "worker_id", "status", "started_at", "finished_at", "error_code", "failure_class", "tokens"];
     for (const r of body.runs) for (const a of r.attempts) expect(Object.keys(a)).toEqual(keys);

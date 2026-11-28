@@ -44,6 +44,18 @@ export const STOP_HOOK_SLACK_MS = 30_000;
 /** A request line longer than this is refused and the connection closed (the script sends no file content). */
 const MAX_REQUEST_BYTES = 64 * 1024;
 
+/**
+ * The wall-clock limits outside the factory's own: `stopHookMs`, what Claude Code gives one Stop hook, and
+ * `maxCheckMs`, what the claude exec backstop adds for the Stop checks (each block runs one check, and the stop that
+ * is allowed one more). A run with a test slot adds its `wait_ceiling_ms` (TEST_SLOT_WAIT_CEILING_MS) to each, so a slot wait (which the
+ * host's own limits do not count) is not cut by them; a run without one gets the same limits as before.
+ */
+export function hookLimits(spec: Pick<GateHooksOptions["spec"], "stop_check_ms" | "gate_hooks" | "test_slot">): { stopHookMs: number; maxCheckMs: number } {
+  const stopHookMs = spec.stop_check_ms + STOP_HOOK_SLACK_MS + (spec.test_slot?.wait_ceiling_ms ?? 0);
+  const g = spec.gate_hooks;
+  return { stopHookMs, maxCheckMs: (Math.max(0, g.stop_checks - g.stop_blocks_used) + 1) * stopHookMs };
+}
+
 export function pathRefusal(allowed: readonly string[]): string {
   return `${PATH_REFUSAL} Allowed paths: ${allowed.length > 0 ? allowed.join(", ") : "(none)"}.`;
 }
@@ -368,20 +380,18 @@ export async function startGateHooks(o: GateHooksOptions): Promise<RunningGateHo
     throw err;
   }
   const command = (event: string) => [process.execPath, script, event].map(shellQuote).join(" ");
-  const stopMs = o.spec.stop_check_ms + STOP_HOOK_SLACK_MS;
-  const g = o.spec.gate_hooks;
+  const { stopHookMs, maxCheckMs } = hookLimits(o.spec);
   // A Stop check holds the run timeout, its wait for a test slot included.
   const deadline = runDeadline(o.spec.timeout_ms, () => answers.checking() || (o.spec.test_slot?.waiting() ?? false), o.after);
   return {
     settings: {
       PreToolUse: [{ matcher: PATH_TOOLS.join("|"), hooks: [{ type: "command", command: command("pre_tool_use"), timeout: PRE_TOOL_TIMEOUT_S }] }],
-      Stop: [{ hooks: [{ type: "command", command: command("stop"), timeout: Math.ceil(stopMs / 1000) }] }],
+      Stop: [{ hooks: [{ type: "command", command: command("stop"), timeout: Math.ceil(stopHookMs / 1000) }] }],
     },
     blocks: answers.blocks,
     checking: answers.checking,
     deadline: deadline.signal,
-    // Each block runs one check, and the stop that is allowed one more.
-    maxCheckMs: (Math.max(0, g.stop_checks - g.stop_blocks_used) + 1) * stopMs,
+    maxCheckMs,
     stopTimeout: answers.stopTimeout,
     selections: answers.selections,
     close: async () => {

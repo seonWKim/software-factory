@@ -12,6 +12,12 @@ import { testSlotCap } from "./settings/test-slots.setting.js";
 
 /** How often a waiting run asks for a slot again, on the worker's clock. */
 export const TEST_SLOT_POLL_MS = 5_000;
+/**
+ * The longest test slot wait the wall-clock timers outside the factory leave room for (the Stop hook's Claude Code
+ * timeout, the claude exec backstop): each adds it once per Stop check for a run with a slot. The factory's own
+ * limits hold while a run waits, so they still end a run or a check; a wait past this is cut by the outside timers.
+ */
+export const TEST_SLOT_WAIT_CEILING_MS = 2 * 60 * 60_000;
 
 type SlotStore = Parameters<typeof recordTestSlotWait>[0];
 type Holder = Parameters<typeof recordTestSlotWait>[2]["holder"];
@@ -58,6 +64,7 @@ async function release(store: SlotStore, holder: Holder): Promise<void> {
 export class TestSlot {
   private state: State = "idle";
   private lost: AbortController | null = null;
+  readonly wait_ceiling_ms = TEST_SLOT_WAIT_CEILING_MS;
 
   constructor(private readonly d: TestSlotDeps, readonly holder: Holder) {}
 

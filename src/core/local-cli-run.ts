@@ -42,7 +42,7 @@ export interface LocalCliDeps extends DraftTerminal { // DraftTerminal: `schedul
     | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
     | "createProject" | "listProjects" | "renameProject" | "archiveProject" | "restoreProject" | "deleteProject" | "getProjectBySlug"
     | "addTaskToProject" | "removeTaskFromProject" | "moveTaskToProject" | "listTaskProjectSlugs" | "listSchedules" | "listScheduleRuns" | "addSchedule" | "updateSchedule" | "deleteSchedule" | "scheduleNow"
-    | "listHeldSkillVersionGates" | "settleSkillVersionGate" | "listAlerts" | "getHeldWrite"
+    | "listHeldSkillVersionGates" | "settleSkillVersionGate" | "listAlerts" | "getHeldWrite" | "listTestSlotWaits"
   >;
   /** Who every command acts as (`cliIdentity`). */
   identity: CliIdentity;
@@ -341,6 +341,9 @@ async function runProject(
   }
 }
 
+/** A run line's note while its run waits for a host test slot (design 09-dashboard-item-runs). */
+const TEST_SLOT_WAIT = "waiting for a test slot";
+
 async function showLines(d: LocalCliDeps, item: WorkItem): Promise<string[]> {
   const out: string[] = [
     `${item.id}  ${item.title ?? ""}`, "", "State", `  stage: ${item.stage}`, `  blocked_on: ${item.blocked_on}`, `  blocked_reason: ${item.blocked_reason ?? "-"}`,
@@ -358,7 +361,8 @@ async function showLines(d: LocalCliDeps, item: WorkItem): Promise<string[]> {
   out.push("", "Runs");
   const runs = await d.store.listRuns(item.id);
   if (runs.length === 0) out.push("  (none)");
-  for (const r of runs) out.push(`  ${r.id}  ${r.kind}  ${r.status}  attempt ${r.attempt}`);
+  const waits = new Set(runs.length > 0 ? await d.store.listTestSlotWaits() : []); // the store's waiting rows (worker_test_slots), so every worker shows the same wait
+  for (const r of runs) out.push(`  ${r.id}  ${r.kind}  ${r.status}  attempt ${r.attempt}${waits.has(r.id) ? `  ${TEST_SLOT_WAIT}` : ""}`);
   out.push("", "Messages");
   const messages = await d.store.listItemMessages(item.id);
   if (messages.length === 0) out.push("  (none)");

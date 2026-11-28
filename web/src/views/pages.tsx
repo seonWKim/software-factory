@@ -527,7 +527,7 @@ function runRow(r: ItemDetail["runs"][number], tries: ItemDetail["runs"], itemId
     key: r.id,
     itemId,
     "data-run": r.id,
-    badge: <StatusBadge state={r.status}>{runResultLabel(r.status)}</StatusBadge>,
+    badge: <StatusBadge state={r.status}>{r.waiting_for_slot ? t("item.result.waitingForSlot") : runResultLabel(r.status)}</StatusBadge>, // a run still running while it waits for a host test slot says so
     title,
     why: [tries.length > 1 ? t("item.foldedTries", { count: tries.length }) : null, took, used ? t("item.tokensCount", { tokens: tokens(used) }) : null].filter(Boolean).join(" · ") || undefined,
     worker: <WorkerName id={r.attempts?.at(-1)?.worker_id} />,
