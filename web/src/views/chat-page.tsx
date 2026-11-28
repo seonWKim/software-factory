@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUp } from "lucide-react";
+import { ArrowUp, RotateCw } from "lucide-react";
 import { type ClipboardEvent, Fragment, type KeyboardEvent, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { API, type Session, useApi } from "../api.js";
 import { chatSend, chatTranscript, chatTurns, itemsList } from "../api/generated.js";
@@ -56,7 +56,7 @@ const MAX_LINES = 8;
 const NEAR_END = 80;
 
 /** A reply as readable markdown: paragraphs, lists and code blocks in Markdown, a pipe table as a DataTable. */
-function ChatReply({ text, note }: { text: string; note?: string | undefined }) {
+function ChatReply({ text, note, regenerate }: { text: string; note?: string | undefined; regenerate?: { onClick: () => void; disabled: boolean } }) {
   const groups: ({ kind: "md"; text: string } | { kind: "table"; rows: string[][] })[] = [];
   for (const p of replyParts(text)) {
     if (p.kind === "table") {
@@ -72,7 +72,14 @@ function ChatReply({ text, note }: { text: string; note?: string | undefined }) 
     <div className="min-w-0 space-y-3">
       {note !== undefined && <p data-raw className="text-sm text-text-2 wrap-anywhere">{note}</p>}
       {groups.map((g, i) => (g.kind === "md" ? <Markdown key={i} text={g.text} /> : <ReplyTable key={i} rows={g.rows} />))}
-      <ButtonRow><CopyIcon value={text} what={t("chat.copyReply")} /></ButtonRow>
+      <ButtonRow>
+        <CopyIcon value={text} what={t("chat.copyReply")} />
+        {regenerate && (
+          <Button type="button" variant="ghost" size="icon" aria-label={t("chat.regenerate")} title={t("chat.regenerate")} disabled={regenerate.disabled} onClick={regenerate.onClick}>
+            <RotateCw aria-hidden className="size-4" />
+          </Button>
+        )}
+      </ButtonRow>
     </div>
   );
 }
@@ -333,6 +340,14 @@ export function ChatPage() {
     update(() => ({ said, sessionId }));
   };
 
+  /** Regenerate: drops the newest reply and sends your message before it again, in its own bubble (send's retry branch). */
+  const regenerate = (reply: number) => {
+    const mine = chat.said[reply - 1];
+    if (mine?.who !== "you") return;
+    update((c) => ({ ...c, said: c.said.filter((m) => m.id !== chat.said[reply]?.id) }));
+    void send(mine.text, mine.images ?? [], mine.id);
+  };
+
   const empty = chat.said.length === 0;
   return (
     <div data-page-fill className="mx-auto flex w-full max-w-[48rem] min-w-0 flex-1 flex-col">
@@ -373,7 +388,7 @@ export function ChatPage() {
         </div>
       ) : (
         <ol aria-label={t("chat.conversation")} className="flex min-w-0 flex-1 flex-col gap-8 pb-8">
-          {chat.said.map((m) =>
+          {chat.said.map((m, at) =>
             m.who === "you" ? (
               <Fragment key={m.id}>
                 <li data-from="you" className="flex min-w-0 flex-col items-end">
@@ -403,7 +418,11 @@ export function ChatPage() {
             ) : (
               <li key={m.id} data-from="chat" className="min-w-0">
                 <span className="sr-only">{t("chat.reply")}</span>
-                <ChatReply text={m.text} note={m.note} />
+                <ChatReply
+                  text={m.text}
+                  note={m.note}
+                  {...(at === chat.said.length - 1 && chat.said[at - 1]?.who === "you" && { regenerate: { onClick: () => regenerate(at), disabled: chat.pending !== undefined } })}
+                />
               </li>
             ),
           )}

@@ -24,6 +24,7 @@ export const chat = {
   "chat.you": "You",
   "chat.reply": "Chat",
   "chat.copyReply": "reply",
+  "chat.regenerate": "Regenerate",
   "chat.copyYours": "your message",
   "chat.copyCode": "code",
   "chat.field": "Your message",

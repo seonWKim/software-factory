@@ -23,3 +23,4 @@
 - **Thresholds** (decision changed 2026-11-07, issue #311). Before: the token check warned only above 30 days (rounded to the nearest day), so a token expiring in 2 days showed ok; a schema behind the code was a warn, "schema at version X of Y (the factory migrates it when it starts)".
 - **Claim pauses on the Health page** (new decision, 2026-11-07, issue #291). Before: the Health page showed only the checks, so a timed pause (`rate_limit`, `forge_auth`, `preflight_access`) was not visible and could not be ended from the app.
 - **Read-only schema probe** (decision changed, 2026-11-01). Before: doctor's MySQL check ran `store.migrate()`, so doctor, and `setup` through it, created or upgraded the schema.
+- **Runs tab sections** (decision changed 2026-11-28). Before: the Runs tab held Runners, Failures and Host sleeps, and the run timeline and dependency graph were a separate Workers page. Now they are Runs tab sections after Runners.
