@@ -61,9 +61,11 @@ describe("item page: About (the request and the approved spec)", () => {
     mount("/app/items/wi_about");
     const about = await screen.findByRole("region", { name: "About" });
     expect(about.textContent).toContain("Item page shows what the work is about");
-    // Under the title: About comes before the decision box and every other Card.
+    // Under the title: the decision box comes first, then About, before every other Card.
     const regions = [...document.querySelectorAll("section[aria-label]")];
-    expect(regions[0]).toBe(about);
+    const at = regions.indexOf(about);
+    expect(at).toBeGreaterThan(0);
+    expect(regions.slice(0, at).every((r) => r === regions[0] || regions[0].contains(r))).toBe(true);
     const toggle = about.querySelector("summary")!;
     expect(toggle.textContent).toBe("Approved plan");
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
