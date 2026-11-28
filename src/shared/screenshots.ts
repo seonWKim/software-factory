@@ -92,6 +92,7 @@ const FIXTURE_RUN = ":run";
  * sidebar does not list has none. The item page's Changes tab is not here.
  */
 const TABS: Readonly<Record<string, readonly string[]>> = {
+  calendar: ["schedules"],
   settings: ["integrations", "advanced"],
   plugins: ["skills", "tools", "models"],
   health: ["runs", "cost", "review"],
@@ -99,10 +100,10 @@ const TABS: Readonly<Record<string, readonly string[]>> = {
 
 /**
  * The dialog captures: `<page>[-<tab>]-<dialog>`, the page (at its tab, when given) with the button marked
- * `data-capture-open="<dialog>"` clicked. The Schedules page's New schedule Dialog and the Evals dialog.
+ * `data-capture-open="<dialog>"` clicked. The Calendar page's Schedules tab New schedule Dialog and the Evals dialog.
  */
 const DIALOGS: readonly { page: string; tab?: string; dialog: string }[] = [
-  { page: "schedules", dialog: "new-schedule" },
+  { page: "calendar", tab: "schedules", dialog: "new-schedule" },
   { page: "plugins", tab: "skills", dialog: "evals" },
 ];
 

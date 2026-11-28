@@ -11,7 +11,7 @@ import { PAGES } from "../web/src/pages.js";
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips (as tests/ui-calendar-page.test.tsx does).
 const PAGE_MODULE = "../web/src/views/schedules.js";
-const { SchedulesPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { SchedulesPage: FunctionComponent };
+const { SchedulesTab } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { SchedulesTab: FunctionComponent<{ switcher: unknown }> };
 const BADGE_MODULE = "../web/src/components/ui/badge.js";
 
 // The Schedules page over a faked server (design 09-dashboard-schedules): a table of schedules with a Switch and a
@@ -92,7 +92,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const show = () => render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(SchedulesPage)));
+const show = () => render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(SchedulesTab, { switcher: createElement("span", { "data-switcher": "" }, "tabs") })));
 /** The row of a schedule by its title (the selected one's detail Card shows the title too). */
 const row = async (title: string) => (await screen.findAllByText(title, undefined, SLOW)).map((e) => e.closest("tr")).find((r) => r !== null)!;
 const ready = async () => {
@@ -105,7 +105,7 @@ describe("Schedules page", () => {
     show();
     const table = await screen.findByRole("table", { name: "Schedules" }, SLOW);
     expect(table.closest("section")).toBeTruthy();
-    expect(screen.getByRole("heading", { level: 1, name: "Schedules" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
     const on = within(await row("Nightly docs check")).getByRole("switch");
     const off = within(await row("Weekly review")).getByRole("switch");
     expect([on.getAttribute("aria-checked"), off.getAttribute("aria-checked")]).toEqual(["true", "false"]);
@@ -119,11 +119,12 @@ describe("Schedules page", () => {
     expect(document.body.textContent).not.toMatch(/sch_[a-z0-9]+/);
   });
 
-  it("New schedule is the page's one primary action, in the header", async () => {
+  it("New schedule is the page's one primary action, in the toolbar after the tab switch", async () => {
     show();
     await ready();
-    const header = screen.getByRole("heading", { level: 1 }).closest("header")!;
-    expect(within(header).getByRole("button", { name: "New schedule" })).toBeTruthy();
+    const toolbar = document.querySelector("[data-toolbar]") as HTMLElement;
+    expect(toolbar.firstElementChild!.getAttribute("data-switcher")).toBe("");
+    expect(within(toolbar).getByRole("button", { name: "New schedule" })).toBeTruthy();
     expect(document.querySelectorAll("button.bg-accent")).toHaveLength(1);
   });
 
@@ -666,10 +667,9 @@ describe("Schedules page", () => {
     expect(sections[0]!.parentElement).toBe(sections[1]!.parentElement);
   });
 
-  it("the sidebar lists Schedules after Calendar in the Tasks block, and the page is routed at /app/schedules", () => {
-    const tasks = PAGES.filter((p) => p.group === "tasks").map((p) => p.path);
-    expect(tasks.indexOf("schedules")).toBe(tasks.indexOf("calendar") + 1);
-    expect(PAGES.find((p) => p.path === "schedules")?.label).toBe("Schedules");
+  it("the Tasks block has no Schedules entry: the page is the Calendar page's second tab", () => {
+    expect(PAGES.filter((p) => p.group === "tasks").map((p) => p.path)).toEqual(expect.arrayContaining(["chat", "tasks", "calendar"]));
+    expect(PAGES.find((p) => p.path === "schedules")).toBeUndefined();
   });
 });
 

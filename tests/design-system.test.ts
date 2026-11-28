@@ -571,16 +571,16 @@ describe("a done-when row puts its badge before the criterion", () => {
 // design-system/patterns.md "Autonomous work is visible": the page where each schedule action kind (a persona is a
 // feedback schedule, the daily improve run an improve one) shows what it does and its runs.
 const AUTONOMOUS_SURFACES: Record<ScheduleActionKind, string> = {
-  build: "schedules",
-  agent: "schedules",
-  feedback: "schedules",
-  improve: "schedules",
-  check_page: "schedules",
-  summary: "schedules",
+  build: "calendar",
+  agent: "calendar",
+  feedback: "calendar",
+  improve: "calendar",
+  check_page: "calendar",
+  summary: "calendar",
 };
 
 describe("autonomous work is visible", () => {
-  it("every schedule action kind has a page in AUTONOMOUS_SURFACES, and the Schedules page names it and says what it does", () => {
+  it("every schedule action kind has a page in AUTONOMOUS_SURFACES, and the Schedules tab names it and says what it does", () => {
     expect(Object.keys(AUTONOMOUS_SURFACES).sort()).toEqual([...SCHEDULE_ACTION_KINDS].sort());
     const paths = PAGES.map((p) => p.path);
     for (const page of Object.values(AUTONOMOUS_SURFACES)) expect(paths).toContain(page);

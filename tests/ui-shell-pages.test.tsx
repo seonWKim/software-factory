@@ -86,7 +86,7 @@ describe("app pages", () => {
     const side = screen.getByRole("complementary", { name: "Sidebar" });
     const links = [...side.querySelectorAll("a")].filter((a) => a.getAttribute("href")?.startsWith("/app/") && a.getAttribute("href") !== "/app/");
     expect(links.map((a) => [a.textContent, a.getAttribute("href")])).toEqual([
-      ["Chat", "/app/chat"], ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Schedules", "/app/schedules"], ["Work", "/app/items"], ["Health", "/app/health"],
+      ["Chat", "/app/chat"], ["Tasks", "/app/tasks"], ["Calendar", "/app/calendar"], ["Work", "/app/items"], ["Health", "/app/health"],
       ["Rules", "/app/rules"], ["Plugins", "/app/plugins"], ["Settings", "/app/settings"],
     ]);
     for (const gone of ["Activity", "Failures", "Spend", "Runners", "Data"]) expect(within(side).queryByRole("link", { name: gone })).toBeNull();
@@ -112,19 +112,21 @@ describe("app pages", () => {
     }
   });
 
-  it("the sidebar has no Routines entry, and an old /app/routines link lands on the Schedules page", async () => {
+  it("the sidebar has no Routines entry, and an old /app/routines link lands on the Calendar page's Schedules tab", async () => {
     // The Routines page was removed (design 09-dashboard-routines): routines become Check a page schedules.
     mount();
     const side = screen.getByRole("complementary", { name: "Sidebar" });
     expect(within(side).queryByRole("link", { name: "Routines" })).toBeNull();
     expect(side.querySelector('a[href^="/app/routines"]')).toBeNull();
     cleanup();
-    expect(redirectFor("/app/routines")).toBe("/app/schedules");
+    expect(redirectFor("/app/routines")).toBe("/app/calendar?tab=schedules");
+    expect(redirectFor("/app/schedules")).toBe("/app/calendar?tab=schedules");
     history.replaceState(null, "", "/app/routines");
     mount();
-    await vi.waitFor(() => expect(location.pathname + location.search).toBe("/app/schedules"));
-    expect(await screen.findByRole("heading", { level: 1, name: "Schedules" })).toBeTruthy();
-    expect(within(screen.getByRole("navigation", { name: "Tasks" })).getByRole("link", { name: "Schedules" }).getAttribute("aria-current")).toBe("page");
+    await vi.waitFor(() => expect(location.pathname + location.search).toBe("/app/calendar?tab=schedules"));
+    expect(await screen.findByRole("heading", { level: 1, name: "Calendar" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Schedules" }).getAttribute("aria-checked")).toBe("true");
+    expect(within(side).queryByRole("link", { name: "Schedules" })).toBeNull();
   });
 
   it("/app/workers redirects to Health's Runs tab and keeps its query; Workers is not in the sidebar; /app/users is not an old path", async () => {

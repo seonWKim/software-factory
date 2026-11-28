@@ -1,6 +1,5 @@
 // English text, area: schedules. A key's prefix (before its first dot) belongs to this file only.
 export const schedules = {
-  "schedules.description": "Work the factory starts by itself on a repeating time. Turn a schedule off to pause it.",
   "schedules.new": "New schedule",
   "schedules.listLabel": "Schedules",
   "schedules.empty": "No schedules yet. Add one to have the factory start work on a repeating time.",
