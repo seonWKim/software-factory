@@ -49,8 +49,8 @@
 //
 // The item page (docs/design/09-dashboard-item.md, 2026-11-28):
 //
-//   item-primary-top  on the item page ([data-item-main]) at a viewport 1280px wide or more (the widest the check runs;
-//                   the target is 1440x900), the first primary Button's top is `itemPrimaryTopPx` (600) or more from the
+//   item-primary-top  on the item page ([data-item-main]) at the 1440x900 viewport (1440px wide or more and 900px
+//                   tall or more), the first primary Button's top is `itemPrimaryTopPx` (600) or more from the
 //                   top of the page: the decision and its action must open the page, not sit under About.
 //
 // Alignment (design 09-dashboard-components, 2026-11-24, the owner's "vertical and horizontal alignments are all wrong"):
@@ -458,7 +458,7 @@ export function checkLayout(limits) {
 
   // item-primary-top
   const itemMain = document.body.querySelectorAll("[data-item-main]")[0];
-  if (itemMain && W >= 1280) {
+  if (itemMain && window.innerWidth >= 1440 && window.innerHeight >= 900) {
     const primary = [...itemMain.querySelectorAll("button.bg-accent")].find(painted);
     if (primary) {
       const top = Math.round(primary.getBoundingClientRect().top + window.scrollY);
