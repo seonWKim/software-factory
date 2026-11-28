@@ -270,6 +270,29 @@ describe("system actions: an alarm's pattern, error code and red-main output", (
   });
 });
 
+describe("system actions: a failed chat check's alarm (issue #915)", () => {
+  /** What row text never holds (design-system/writing.md, No code names): env var names, commands, doc paths. */
+  const CODE_NAMES = /[A-Z][A-Z0-9_]{3,}|docs\/|npm run|§/;
+
+  it("keeps its plain sentence as the row text, links Health, and carries the raw error only as its detail", async () => {
+    const { overview, store } = await setup();
+    const raw = "Chat check failed today: the run stopped with an error: the questions file (docs/eval.md §2) is missing CHAT_EVAL_QUESTIONS (run: npm run eval:chat).";
+    await store.recordAlert({ pattern: "chat_eval_failed", pattern_key: "chat_eval_failed:2026-11-27", error_code: "run_error", count: 0, detail: raw }, ALERT_DEDUPE_MS);
+    const row = (await overview()).system_actions.find((a) => a.code === "alarm")!;
+    expect(row.text).toBe("Alarm: the daily chat check failed; chat answers may be broken until the cause is fixed");
+    expect(row.text).not.toMatch(CODE_NAMES);
+    expect(row.command).toContain("/app/health");
+    expect(row.command).not.toMatch(CODE_NAMES);
+    expect(row.detail).toBe(raw);
+  });
+
+  it("other alarms carry no separate detail: their sentence keeps it", async () => {
+    const { overview, store } = await setup();
+    await store.recordAlert({ pattern: "red_main", pattern_key: "red_main:abc", error_code: "red_main", count: 1, detail: "`npm test` exited 1" }, ALERT_DEDUPE_MS);
+    expect((await overview()).system_actions.find((a) => a.code === "alarm")).not.toHaveProperty("detail");
+  });
+});
+
 describe("system actions: the auto-stop alarm", () => {
   it("names the dashboard's Settings page and Turn auto back on first, `factory mode auto` after", async () => {
     const { overview, store } = await setup();

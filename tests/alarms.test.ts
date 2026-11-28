@@ -12,7 +12,7 @@ import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { ChildRestart } from "../src/interfaces/updater.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { alarmCommand, alarmFullText, alarmText, alarmUntil, alarmsFor, openAlarms } from "../src/ui/alarms.js";
+import { alarmCommand, alarmDetail, alarmFullText, alarmText, alarmUntil, alarmsFor, openAlarms } from "../src/ui/alarms.js";
 import { UNKNOWN_FAILURE } from "../src/ui/why.js";
 import { FakeAuth } from "./helpers/fakes/runner.js";
 import { FakeSource } from "./helpers/fakes/source.js";
@@ -689,8 +689,9 @@ describe("alarms: failed chat check", () => {
     const [open] = await openAlarms(store, clock.now());
     expect(open).toMatchObject({ pattern: "chat_eval_failed", pattern_key: "chat_eval_failed:2026-11-27" });
     expect(alarmText(open!)).toBe("Alarm: the daily chat check failed; chat answers may be broken until the cause is fixed");
-    expect(alarmCommand(open!)).toContain("factory alarm dismiss");
-    expect(alarmFullText(open!)).toContain("0 of 12 answered");
+    expect(alarmCommand(open!)).toBe("Health page (/app/health)");
+    expect(alarmFullText(open!)).toBe(alarmText(open!)); // the raw detail stays off the row's sentence
+    expect(alarmDetail(open!)).toContain("0 of 12 answered");
     expect(alarmUntil(open!)).toBeNull();
     const { item } = await store.createWorkItem(issue(904), system);
     expect(alarmsFor([open!], item, [])).toEqual([]);
