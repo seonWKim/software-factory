@@ -104,7 +104,9 @@ export interface ImplementOutput {
   needs_human?: NeedsHuman;
   /** A done criterion that cannot be met inside the spec (issue #222): the run fails with it and a spec revision starts. Absent when empty. */
   spec_conflict?: string;
+  /** The work was already on the base: the passing checks named. Read only with no commits (design 04-pre-push-gates). */ already_done?: string;
 }
+export const ALREADY_DONE_MAX_CHARS = 500;
 
 /** Entries kept per `missing` / `deviations` list, and characters per entry. */
 export const PR_NOTE_MAX_ITEMS = 10;
@@ -266,6 +268,7 @@ export const IMPLEMENT_SCHEMA = {
         "Only when a done criterion cannot be met inside the spec (it needs a file outside the allowed paths, or it conflicts with a repo rule): " +
         "the criterion and why, in plain text. Nothing is pushed and the spec is revised. Empty or absent otherwise.",
     },
+    already_done: { type: "string", maxLength: ALREADY_DONE_MAX_CHARS, description: "Only when the work is already on the base and you made no commits: the done-when checks you saw pass. Empty or absent otherwise." },
   },
 };
 
@@ -525,24 +528,21 @@ export function parseImplement(v: unknown): Validation<ImplementOutput> {
   if (!ask.ok) return ask;
   const notes = (x: unknown) => x === undefined || (isStrs(x) && x.length <= PR_NOTE_MAX_ITEMS && x.every((e) => e.length <= PR_NOTE_MAX_CHARS));
   if (!notes(v.missing) || !notes(v.deviations)) return { ok: false, error: "missing/deviations" };
-  const conflict = v.spec_conflict ?? "";
+  const conflict = v.spec_conflict ?? "", done = v.already_done ?? "";
   if (!isStr(conflict) || conflict.length > SPEC_CONFLICT_MAX_CHARS) return { ok: false, error: "spec_conflict" };
+  if (!isStr(done) || done.length > ALREADY_DONE_MAX_CHARS) return { ok: false, error: "already_done" };
   const lists = {
     missing: ((v.missing as string[] | undefined) ?? []).map((e) => e.trim()).filter(Boolean),
     deviations: ((v.deviations as string[] | undefined) ?? []).map((e) => e.trim()).filter(Boolean),
     ...(conflict.trim() ? { spec_conflict: conflict.trim() } : {}),
+    ...(done.trim() ? { already_done: done.trim() } : {}),
   };
   // An agent that stops (needs_human) or reports a spec it cannot meet (spec_conflict) has no change to summarize.
   if (ask.value || lists.spec_conflict) {
     const optional = (x: unknown) => x === undefined || isStr(x);
     if (!optional(v.summary) || !optional(v.next_steps)) return { ok: false, error: "summary/next_steps" };
-    return {
-      ok: true,
-      value: {
-        summary: (v.summary as string | undefined) ?? "", next_steps: (v.next_steps as string | undefined) ?? "", ...lists,
-        ...(ask.value ? { needs_human: ask.value } : {}),
-      },
-    };
+    const value = { summary: (v.summary as string | undefined) ?? "", next_steps: (v.next_steps as string | undefined) ?? "", ...lists };
+    return { ok: true, value: { ...value, ...(ask.value ? { needs_human: ask.value } : {}) } };
   }
   if (!isStr(v.summary) || !isStr(v.next_steps)) return { ok: false, error: "summary/next_steps" };
   return { ok: true, value: { summary: v.summary, next_steps: v.next_steps, ...lists } };

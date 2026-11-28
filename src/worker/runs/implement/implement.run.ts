@@ -7,7 +7,7 @@ import { decisionsSection } from "../../../shared/command-notes.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 import { repairedAnswer, type KeepWork } from "./implement-repair.js";
 import { syncBase } from "./implement-sync.js";
-import { RATCHET_LISTS, checksBeforePush, fixStep, gateHooks, itemCaps, prePushGates } from "./implement-checks.js";
+import { RATCHET_LISTS, alreadyDoneChecks, checksBeforePush, fixStep, gateHooks, itemCaps, prePushGates } from "./implement-checks.js";
 import { ASKED_NEXT_STEPS, CONTEXT_CEILING_TOKENS, type DiffBudget, commitWorktree, contextCeiling, endSession, keepContinue, keepFailed, keepStopped, keepWip, overBudget, pauseImplement, preflight, restoreWip, resumeWip, saveRunBundle, storeWip, watchDiff } from "./implement-wip.js";
 
 /**
@@ -145,7 +145,10 @@ async function implementSteps(
       if (out.value.spec_conflict) throw new RunFailure(SPEC_CONFLICT, out.value.spec_conflict);
 
       const commits = await runCommits((args) => w.git(handle, args), start, baseSha);
+      // No commits: an already_done answer goes to the check gate below and the item closes completed (design
+      // 04-pre-push-gates, decided 2026-11-28); any other answer fails the run with no_commits.
       if (commits.length === 0) {
+        if (out.value.already_done) return { already_done: out.value.already_done };
         throw new RunFailure("no_commits", NO_COMMITS_DETAIL, false, { output_tail: tail(result.transcript) });
       }
       const done = {
@@ -156,6 +159,12 @@ async function implementSteps(
       return { work: done, start, head, bundle: await saveRunBundle(w, run, item, handle, dirs, start) };
     });
     if ("needs_human" in agentStep) return { needs_human: agentStep.needs_human, ...(agentStep.wip ? { wip: agentStep.wip } : {}) };
+    // Already done: the check list and the done checks run on the base, with no sync, gates, push or PR. A failure is checks_failed.
+    if ("already_done" in agentStep) {
+      const sel = await PrePushSelection.open(w.d.store, w.cfg.repo, item.project, (line) => w.d.log.info(line, { run_id: run.id }));
+      const done = await alreadyDoneChecks(w, run, item, handle, signal, baseSha, sel);
+      return { already_done: agentStep.already_done, commits: 0, test_selection: sel.record() ?? undefined, ...(done ? { done_checks: done } : {}) };
+    }
     if (!ran) {
       // Taken over after the agent step finished: its commits come back from the bundle; no agent runs.
       const resume = { host: w.host, folder: handle.id, base_sha: handle.base_sha ?? null, start_sha: agentStep.start, head: agentStep.head, bundle: agentStep.bundle };
@@ -380,6 +389,8 @@ export default defineRunKind({
 /** The journaled result of the implement agent step: a human was asked for, or the work and its commits' bundle. */
 type AgentStep =
   | { readonly needs_human: NeedsHuman; readonly wip?: WipRef }
+  /** No commits and an already_done answer: the passing checks it named. */
+  | { readonly already_done: string }
   | {
     readonly work: { commits: number; summary: string; next_steps: string; conflicts: string[]; missing: string[]; deviations: string[] };
     readonly start: string;
